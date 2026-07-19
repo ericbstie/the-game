@@ -174,3 +174,59 @@ describe("T2: join a lobby by code", () => {
     expect(joined.code).toBe(code);
   });
 });
+
+describe("T3: live roster", () => {
+  test("an existing member is notified when a new player joins", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const joiner = await connect(server);
+    joiner.send({ type: "lobby/join", code, name: "Ben" });
+
+    const delta = expectMessage(
+      await hostClient.waitFor((m) => m.type === "lobby/player-joined"),
+      "lobby/player-joined",
+    );
+    expect(delta.player.name).toBe("Ben");
+    expect(delta.player.slot).toBe(2);
+    expect(delta.rev).toBe(1);
+  });
+
+  test("an explicit leave frees the slot and notifies the others", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const joiner = await connect(server);
+    joiner.send({ type: "lobby/join", code, name: "Ben" });
+    const joined = expectMessage(
+      await joiner.waitFor((m) => m.type === "lobby/joined"),
+      "lobby/joined",
+    );
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    joiner.send({ type: "lobby/leave" });
+    const left = expectMessage(
+      await hostClient.waitFor((m) => m.type === "lobby/player-left"),
+      "lobby/player-left",
+    );
+    expect(left.id).toBe(joined.you.id);
+    expect(left.slot).toBe(2);
+    expect(left.reason).toBe("left");
+  });
+
+  test("when the host leaves, host passes to the lowest occupied slot", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const ben = await connect(server);
+    ben.send({ type: "lobby/join", code, name: "Ben" });
+    const benJoined = expectMessage(
+      await ben.waitFor((m) => m.type === "lobby/joined"),
+      "lobby/joined",
+    );
+
+    hostClient.send({ type: "lobby/leave" });
+    const hostChanged = expectMessage(
+      await ben.waitFor((m) => m.type === "lobby/host-changed"),
+      "lobby/host-changed",
+    );
+    expect(hostChanged.host).toBe(benJoined.you.id); // Ben is now the lowest occupied slot
+  });
+});

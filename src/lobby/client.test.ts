@@ -53,3 +53,36 @@ describe("T2: LobbyClient join flow", () => {
     expect(state.error).toMatch(/not found/i);
   });
 });
+
+describe("T3: LobbyClient live roster", () => {
+  test("a peer who joins later appears on the host's roster in real time", async () => {
+    const server = spawn();
+    const hostClient = new LobbyClient({ wsUrl: server.url });
+    hostClient.host("Ana");
+    const hosted = await waitForState(hostClient, (s) => s.status === "lobby");
+
+    const joiner = new LobbyClient({ wsUrl: server.url });
+    joiner.join(hosted.code ?? "", "Ben");
+    await waitForState(joiner, (s) => s.status === "lobby");
+
+    const state = await waitForState(hostClient, (s) => (s.snapshot?.players.length ?? 0) === 2);
+    expect(state.snapshot?.players.map((p) => p.name)).toEqual(["Ana", "Ben"]);
+  });
+
+  test("when a peer leaves, the host's roster drops them and reassigns the host if needed", async () => {
+    const server = spawn();
+    const hostClient = new LobbyClient({ wsUrl: server.url });
+    hostClient.host("Ana");
+    const hosted = await waitForState(hostClient, (s) => s.status === "lobby");
+
+    const joiner = new LobbyClient({ wsUrl: server.url });
+    joiner.join(hosted.code ?? "", "Ben");
+    const joined = await waitForState(joiner, (s) => s.status === "lobby");
+    await waitForState(hostClient, (s) => (s.snapshot?.players.length ?? 0) === 2);
+
+    // The host leaves; Ben (the only remaining player) should become host.
+    hostClient.leave();
+    const benState = await waitForState(joiner, (s) => s.snapshot?.host === joined.self?.id);
+    expect(benState.snapshot?.players.map((p) => p.name)).toEqual(["Ben"]);
+  });
+});
