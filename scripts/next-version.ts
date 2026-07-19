@@ -51,9 +51,8 @@ function emit(output: Record<string, string | boolean>): void {
 }
 
 if (import.meta.main) {
-  const { version: current } = (await Bun.file("package.json").json()) as { version: string };
-
   const lastTag = git(["describe", "--tags", "--abbrev=0", "--match", "v*"])?.trim();
+  const current = lastTag ? lastTag.replace(/^v/, "") : "0.0.0";
   const range = lastTag ? `${lastTag}..HEAD` : "HEAD";
   const log = git(["log", range, "--format=%B%x00"]) ?? "";
   const messages = log
