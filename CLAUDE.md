@@ -27,6 +27,7 @@ code) and high-signal prose (lead with the answer; cut filler and hedging).
 
 The remaining skills (`tdd`, `codebase-design`, `diagnosing-bugs`,
 `domain-modeling`, `two-axis-review`, `research`, `prototype`,
-`resolving-merge-conflicts`, and the `/implement` orchestrator) apply in their
+`resolving-merge-conflicts`, the planning orchestrators `/wayfinder`,
+`/to-spec`, and `/to-tickets`, and the `/implement` orchestrator) apply in their
 matching situations. See the README's **Contribute** section for the order to
 invoke them when building a feature.

@@ -6,7 +6,9 @@ is your escape time. Single-file HTML/JS canvas. See [DESIGN.md](DESIGN.md).
 
 ## Contribute
 
-New feature? Invoke skills in this order:
+**Plan (big or unclear work):** `/wayfinder` → `/to-spec` → `/to-tickets`, then build each ticket below.
+
+**Build:**
 
 1. `research` — verify anything unknown against real sources.
 2. `domain-modeling` — name new concepts in the game's language.

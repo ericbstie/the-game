@@ -18,7 +18,10 @@ name (they set `disable-model-invocation: true`).
 | `research` | auto | Answer against primary sources, with citations. |
 | `prototype` | auto | Throwaway spike to answer one design question. |
 | `resolving-merge-conflicts` | auto | Resolve conflicts hunk-by-hunk for intent. |
-| `implement` | /implement | Orchestrator: chains the above from a spec. |
+| `wayfinder` | /wayfinder | Chart large, uncertain work into investigation tickets. |
+| `to-spec` | /to-spec | Synthesize a conversation into a published spec. |
+| `to-tickets` | /to-tickets | Slice a spec into tracer-bullet tickets with edges. |
+| `implement` | /implement | Orchestrator: chains the disciplines from a spec. |
 
 ## Least code
 
