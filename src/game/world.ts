@@ -11,6 +11,7 @@ import type { Arena, Exit, MoveInput, PlayerId, Spawn, Vec2, WorldInit } from ".
 export const ARENA: Arena = { width: 31_200, height: 31_200 };
 export const PLAYER_RADIUS = 14;
 export const PLAYER_SPEED = 260; // world units / second
+export const PLAYER_MAX_HP = 100; // client-authoritative; the client judges its own contact damage
 
 // Avatar-scale constants are absolute — they track player/door size, not arena size.
 const SPAWN_RING = 44; // avatars fan out this far from center so they don't stack

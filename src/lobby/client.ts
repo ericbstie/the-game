@@ -65,6 +65,7 @@ export class LobbyClient {
   private reconnectUntil?: number; // wall-clock deadline for the current reconnect loop
   private posSeq = 0; // monotonic across the client's whole life, so it survives reconnect
   private attackSeq = 0; // monotonic attack sequence, independent of posSeq
+  private healthSeq = 0; // monotonic health sequence, independent of the others
 
   constructor(options: LobbyClientOptions = {}) {
     this.wsUrl = options.wsUrl ?? defaultWsUrl();
@@ -107,6 +108,12 @@ export class LobbyClient {
   // the client never writes enemy HP. `seq` is monotonic, like sendPos.
   sendAttack(weapon: Weapon, pos: Vec2, dir: Vec2): void {
     this.send({ type: "game/attack", weapon, pos, dir, seq: ++this.attackSeq });
+  }
+
+  // Report the client's own HP (it owns it). `hp <= 0` declares death. The server stores and
+  // relays it; it never computes health. `seq` is monotonic, like sendPos.
+  sendHealth(hp: number): void {
+    this.send({ type: "game/health", hp, seq: ++this.healthSeq });
   }
 
   leave(): void {
@@ -218,6 +225,9 @@ export class LobbyClient {
         // Mutate the live world in place — the render loop reads it every frame, so no React
         // re-render at the ~20 Hz tick rate. Arrival time is stamped locally (client clock).
         this.state.world?.applyMapDelta(msg, Date.now());
+        return;
+      case "game/peer-health":
+        this.state.world?.applyPeerHealth(msg.id, msg.hp, msg.seq);
         return;
       case "lobby/player-left":
         this.state.world?.removePeer(msg.id);

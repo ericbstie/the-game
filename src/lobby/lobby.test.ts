@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ARENA } from "../game/world";
-import { LobbyHub, type Transport } from "./lobby";
+import { LobbyHub, livePlayers, type Transport } from "./lobby";
 import type { ServerMessage } from "./protocol";
 import type { LobbyServer } from "./server";
 import { expectMessage, makeClient, startServer, type TestClient } from "./testing";
@@ -575,6 +575,50 @@ describe("M2R: reconnect rebuilds the world", () => {
       "game/peer-pos",
     );
     expect(burst.pos).toEqual({ x: 321, y: 210 }); // host's last-known position, replayed
+  });
+});
+
+describe("M3: player health relay and aggro-gating", () => {
+  test("game/health is relayed to peers as game/peer-health; a stale seq is dropped", async () => {
+    const server = spawn();
+    const { client: hostClient, code, id: hostId } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+    hostClient.send({ type: "game/start" });
+    await ben.waitFor((m) => m.type === "game/world-init");
+
+    hostClient.send({ type: "game/health", hp: 42, seq: 1 });
+    const relayed = expectMessage(
+      await ben.waitFor((m) => m.type === "game/peer-health"),
+      "game/peer-health",
+    );
+    expect(relayed.id).toBe(hostId);
+    expect(relayed.hp).toBe(42);
+
+    hostClient.send({ type: "game/health", hp: 99, seq: 1 }); // stale (equal seq)
+    hostClient.send({ type: "game/health", hp: 7, seq: 2 });
+    await ben.waitFor((m) => m.type === "game/peer-health" && m.hp === 7);
+    await expect(
+      ben.waitFor((m) => m.type === "game/peer-health" && m.hp === 99, 150),
+    ).rejects.toThrow();
+  });
+
+  test("livePlayers drops the dead from aggro; unknown/alive HP stays in", () => {
+    const positions = new Map([
+      ["a", { pos: { x: 1, y: 1 }, seq: 1 }],
+      ["b", { pos: { x: 2, y: 2 }, seq: 1 }],
+      ["c", { pos: { x: 3, y: 3 }, seq: 1 }],
+    ]);
+    const health = new Map([
+      ["b", { hp: 0, seq: 1 }], // dead → excluded
+      ["c", { hp: 50, seq: 1 }], // alive → included
+      // "a" never reported → defaults to alive → included
+    ]);
+    expect(
+      livePlayers(positions, health)
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual(["a", "c"]);
   });
 });
 

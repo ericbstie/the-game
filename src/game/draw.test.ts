@@ -33,8 +33,8 @@ function spyCtx() {
 const world: WorldSnapshot = {
   arena: { width: 31_200, height: 31_200 },
   players: [
-    { id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14 },
-    { id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14 },
+    { id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 100 },
+    { id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14, hp: 100 },
   ],
   enemies: [],
   nests: [
@@ -102,6 +102,18 @@ describe("drawWorld", () => {
     drawWorld(ctx, withEnemies, { camera, viewport });
     // 2 avatars + n1 + one on-screen enemy = 4 arcs; the far enemy is culled.
     expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(4);
+  });
+
+  test("a downed (0 HP) self avatar still draws but drops its self-ring (corpse)", () => {
+    const ctx = spyCtx();
+    const withCorpse: WorldSnapshot = {
+      ...world,
+      players: [{ id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 0 }],
+      nests: [],
+    };
+    drawWorld(ctx, withCorpse, { selfId: "p1", camera, viewport });
+    expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(1); // the corpse circle is drawn
+    expect(ctx.calls.filter((c) => c.fn === "stroke").length).toBe(0); // but no self-ring stroke()
   });
 
   test("draws a silenced (dead) nest in its dimmed colour", () => {

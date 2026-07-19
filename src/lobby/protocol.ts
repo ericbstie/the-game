@@ -62,13 +62,15 @@ export interface Arena {
   height: number;
 }
 
-// A player's in-world circle, keyed by the stable PlayerId so it survives reconnect.
+// A player's in-world circle, keyed by the stable PlayerId so it survives reconnect. `hp` is a
+// render hint (a peer at 0 HP draws as a corpse); it is not authoritative here.
 export interface Avatar {
   id: PlayerId;
   slot: number;
   name: string;
   pos: Vec2;
   radius: number;
+  hp: number;
 }
 
 // The escape door: a rectangle flush on a perimeter wall.
@@ -220,7 +222,17 @@ export type GameAttack = Envelope<
   "game/attack",
   { weapon: Weapon; pos: Vec2; dir: Vec2; seq: number }
 >;
-export type ClientMessage = CreateLobby | JoinLobby | LeaveLobby | StartGame | GamePos | GameAttack;
+// The client owns its HP (it judges contact damage at its own true position) and reports the
+// result; `hp <= 0` declares death. The server never computes it — it stores and relays it.
+export type GameHealth = Envelope<"game/health", { hp: number; seq: number }>;
+export type ClientMessage =
+  | CreateLobby
+  | JoinLobby
+  | LeaveLobby
+  | StartGame
+  | GamePos
+  | GameAttack
+  | GameHealth;
 
 export type LobbyErrorCode = "lobby-not-found" | "lobby-full" | "slot-released" | "invalid";
 
@@ -259,6 +271,11 @@ export type GameWorldInit = Envelope<"game/world-init", { init: WorldInit }>;
 export type GamePeerPos = Envelope<"game/peer-pos", { id: PlayerId; pos: Vec2; seq: number }>;
 // The dynamic enemy/combat stream (M3): a full-`moves` + sparse-events delta each tick.
 export type GameMapDelta = Envelope<"game/map-delta", MapDelta>;
+// A player's relayed HP (M3): the server fans out each client's reported health to the squad.
+export type GamePeerHealth = Envelope<
+  "game/peer-health",
+  { id: PlayerId; hp: number; seq: number }
+>;
 
 export type ServerMessage =
   | LobbyCreated
@@ -271,7 +288,8 @@ export type ServerMessage =
   | LobbyError
   | GameWorldInit
   | GamePeerPos
-  | GameMapDelta;
+  | GameMapDelta
+  | GamePeerHealth;
 
 // Hand-rolled inbound narrowing (no schema dep, per spec). Untrusted client input is
 // never assumed valid: every field is checked before the message is trusted.
@@ -321,6 +339,10 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return null;
       }
       return { type: "game/attack", weapon: msg.weapon, pos, dir, seq: msg.seq };
+    }
+    case "game/health": {
+      if (!isFiniteNumber(msg.hp) || !isFiniteNumber(msg.seq)) return null;
+      return { type: "game/health", hp: msg.hp, seq: msg.seq };
     }
     default:
       return null;

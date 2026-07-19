@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LobbyState } from "../lobby/client";
 import type { Arena, MoveInput, Vec2, Weapon } from "../lobby/protocol";
 import { type Camera, computeCamera } from "./camera";
 import { drawWorld } from "./draw";
 import { aimDir, keyToDirection, movesEqual, NO_MOVE } from "./input";
+import { PLAYER_MAX_HP } from "./world";
 
 const POS_SEND_MS = 50; // ~20 Hz position stream, independent of the render frame rate
 const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the avatar on resume
@@ -13,6 +14,7 @@ interface GameScreenProps {
   onLeave: () => void;
   onPos: (pos: Vec2) => void;
   onAttack: (weapon: Weapon, pos: Vec2, dir: Vec2) => void;
+  onHealth: (hp: number) => void;
 }
 
 // The in-match screen: a fullscreen camera that follows your Avatar through the giant box.
@@ -22,13 +24,15 @@ interface GameScreenProps {
 // crisp on HiDPI). The owner's position streams out at a fixed ~20 Hz. Refs bridge React's
 // render into the loop so a world swapped on reconnect and a changed callback are picked up
 // without restarting it.
-export function GameScreen({ state, onLeave, onPos, onAttack }: GameScreenProps) {
+export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const heldRef = useRef<MoveInput>(NO_MOVE);
   const worldRef = useRef(state.world);
   const selfIdRef = useRef(state.self?.id);
   const onPosRef = useRef(onPos);
   const onAttackRef = useRef(onAttack);
+  const onHealthRef = useRef(onHealth);
+  const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
   const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
   const aimRef = useRef<{ camera: Camera; self: Vec2 }>({
@@ -39,6 +43,7 @@ export function GameScreen({ state, onLeave, onPos, onAttack }: GameScreenProps)
   selfIdRef.current = state.self?.id;
   onPosRef.current = onPos;
   onAttackRef.current = onAttack;
+  onHealthRef.current = onHealth;
 
   // Keyboard → held MoveInput. It drives the local self-sim; nothing is sent per key.
   useEffect(() => {
@@ -95,6 +100,7 @@ export function GameScreen({ state, onLeave, onPos, onAttack }: GameScreenProps)
         const dpr = window.devicePixelRatio || 1;
         if (dpr !== viewRef.current.dpr) resizeForDpr(canvas, viewRef, dpr);
         world.stepSelf(dt, heldRef.current);
+        world.updateHealth(Date.now()); // judge contact damage at the owner's true position
         const { w, h } = viewRef.current;
         const ctx = w > 0 && h > 0 ? canvas.getContext("2d") : null;
         if (ctx) {
@@ -114,9 +120,21 @@ export function GameScreen({ state, onLeave, onPos, onAttack }: GameScreenProps)
   }, []);
 
   useEffect(() => {
+    let lastHp = PLAYER_MAX_HP;
     const timer = setInterval(() => {
-      const pos = worldRef.current?.selfPos();
-      if (pos) onPosRef.current(pos);
+      const world = worldRef.current;
+      if (!world) return;
+      const nextHp = world.hp();
+      if (nextHp !== lastHp) {
+        lastHp = nextHp;
+        setHp(nextHp); // repaint the HUD (rare — only on a health change)
+        onHealthRef.current(nextHp); // report it; hp <= 0 declares death server-side
+      }
+      // A downed player stops streaming position — peers hold its last pos as a corpse.
+      if (!world.isDead()) {
+        const pos = world.selfPos();
+        if (pos) onPosRef.current(pos);
+      }
     }, POS_SEND_MS);
     return () => clearInterval(timer);
   }, []);
@@ -159,6 +177,16 @@ export function GameScreen({ state, onLeave, onPos, onAttack }: GameScreenProps)
         onMouseDown={onMouseDown}
         onContextMenu={(e) => e.preventDefault()}
       />
+      <div className="hud" role="status" aria-label="Health">
+        <div className="hp-bar">
+          <div
+            className="hp-fill"
+            style={{ width: `${Math.max(0, Math.min(100, hp))}%` }}
+            data-low={hp <= 30}
+          />
+        </div>
+        <span className="hp-label">{hp > 0 ? `HP ${hp}` : "Downed"}</span>
+      </div>
       <p className="hint">
         Move with WASD or the arrow keys. Left-click to swing, right-click to shoot.
       </p>

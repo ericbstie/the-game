@@ -24,6 +24,7 @@ const NEST = "#8e44ad"; // spawner nests
 const NEST_DEAD = "#3a2d44"; // a silenced (destroyed) nest
 const LABEL = "#e8e8ee";
 const SELF_RING = "#ffffff";
+const CORPSE_ALPHA = 0.35; // a downed player fades to this
 const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
 
 // One colour per enemy kind; the elite reads darker and, with its larger radius, distinct.
@@ -63,9 +64,11 @@ export function drawWorld(
 
   for (const a of world.players) {
     if (!isVisible(a.pos, a.radius, camera, viewport, LABEL_PAD)) continue;
+    const dead = a.hp <= 0;
+    ctx.globalAlpha = dead ? CORPSE_ALPHA : 1; // a downed player reads as a faded corpse
     ctx.fillStyle = SLOT_COLORS[(a.slot - 1) % SLOT_COLORS.length];
     fillCircle(ctx, a.pos.x, a.pos.y, a.radius);
-    if (a.id === options.selfId) {
+    if (a.id === options.selfId && !dead) {
       ctx.strokeStyle = SELF_RING;
       ctx.lineWidth = 2.5;
       strokeCircle(ctx, a.pos.x, a.pos.y, a.radius + 3);
@@ -74,6 +77,7 @@ export function drawWorld(
     ctx.font = "12px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(a.name, a.pos.x, a.pos.y - a.radius - 5);
+    ctx.globalAlpha = 1;
   }
 }
 

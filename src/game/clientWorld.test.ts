@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { MapDelta, WorldInit } from "../lobby/protocol";
 import { ClientWorld, ENEMY_RENDER_DELAY_MS, RENDER_DELAY_MS } from "./clientWorld";
-import { GRUNT_HP, GRUNT_RADIUS, NEST_COUNT } from "./enemies";
-import { ARENA, PLAYER_RADIUS } from "./world";
+import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, NEST_COUNT } from "./enemies";
+import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS } from "./world";
 
 const STILL = { up: false, down: false, left: false, right: false };
 const held = (dir: keyof typeof STILL) => ({ ...STILL, [dir]: true });
@@ -213,5 +213,60 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
     w.applyMapDelta({ tick: 1, moves: [], nests: [{ id, hp: 0, alive: false }] }, 1000);
     const nest = w.snapshot(9999).nests.find((n) => n.id === id);
     expect(nest).toMatchObject({ hp: 0, alive: false });
+  });
+});
+
+// self spawns at (400,300); a grunt placed on top of it is in contact.
+const spawnOnSelf = (w: ClientWorld, at: { x: number; y: number }) =>
+  w.applyMapDelta(
+    { tick: 1, moves: [], spawns: [{ id: "e1", kind: "grunt", pos: at, hp: GRUNT_HP, sector: 0 }] },
+    0,
+  );
+const GRUNT_CONTACT = enemyContactDamage("grunt");
+
+describe("ClientWorld self-health (client-authoritative contact damage)", () => {
+  test("an enemy in contact deals its contact damage on cadence, not every frame", () => {
+    const w = new ClientWorld(init(), "self");
+    spawnOnSelf(w, { x: 405, y: 300 }); // dist 5 < PLAYER_RADIUS + GRUNT_RADIUS
+    w.updateHealth(1000); // first contact → one hit
+    expect(w.hp()).toBe(PLAYER_MAX_HP - GRUNT_CONTACT);
+    w.updateHealth(1100); // 100 ms later — within the 500 ms cadence, no hit
+    expect(w.hp()).toBe(PLAYER_MAX_HP - GRUNT_CONTACT);
+    w.updateHealth(1600); // 600 ms after the first — cadence elapsed, another hit
+    expect(w.hp()).toBe(PLAYER_MAX_HP - 2 * GRUNT_CONTACT);
+  });
+
+  test("an enemy out of contact deals no damage", () => {
+    const w = new ClientWorld(init(), "self");
+    spawnOnSelf(w, { x: 900, y: 900 }); // far from self
+    w.updateHealth(1000);
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
+  });
+
+  test("HP floors at 0, the player is dead, and takes no further damage", () => {
+    const w = new ClientWorld(init(), "self");
+    spawnOnSelf(w, { x: 400, y: 300 });
+    for (let t = 1000; t <= 1000 + 25 * 500; t += 500) w.updateHealth(t); // hammer past 100 HP
+    expect(w.hp()).toBe(0);
+    expect(w.isDead()).toBe(true);
+    w.updateHealth(1_000_000);
+    expect(w.hp()).toBe(0); // dead: no further change
+  });
+
+  test("applyPeerHealth updates a peer's rendered HP, apply-if-newer", () => {
+    const w = new ClientWorld(init(), "self");
+    const peerHp = () => w.snapshot(0).players.find((p) => p.id === "peer")?.hp;
+    w.applyPeerHealth("peer", 40, 1);
+    expect(peerHp()).toBe(40);
+    w.applyPeerHealth("peer", 999, 1); // equal seq — dropped
+    expect(peerHp()).toBe(40);
+    w.applyPeerHealth("peer", 10, 2); // newer
+    expect(peerHp()).toBe(10);
+  });
+
+  test("applyPeerHealth on self reseeds the owner's authoritative HP (reconnect burst)", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyPeerHealth("self", 55, 1);
+    expect(w.hp()).toBe(55);
   });
 });

@@ -19,6 +19,7 @@ export function App({ wsUrl }: { wsUrl?: string } = {}) {
           onLeave={() => client.leave()}
           onPos={(pos) => client.sendPos(pos)}
           onAttack={(weapon, pos, dir) => client.sendAttack(weapon, pos, dir)}
+          onHealth={(hp) => client.sendHealth(hp)}
         />
       );
     }

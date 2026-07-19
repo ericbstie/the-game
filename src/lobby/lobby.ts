@@ -4,10 +4,11 @@ import {
   admitAttack,
   type EnemyState,
   freshGuard,
+  type PlayerRef,
   spawnEnemyState,
   stepEnemies,
 } from "../game/enemies";
-import { generateWorld } from "../game/world";
+import { generateWorld, PLAYER_MAX_HP } from "../game/world";
 import { generateCode, normalizeCode } from "./code";
 import {
   type LobbyCode,
@@ -64,6 +65,7 @@ interface SessionRecord {
   graceTimers: Map<PlayerId, ReturnType<typeof setTimeout>>;
   worldInit?: WorldInit; // generated once at start; re-sent verbatim on reconnect
   positions: Map<PlayerId, { pos: Vec2; seq: number }>; // last-known relayed position per player
+  health: Map<PlayerId, { hp: number; seq: number }>; // last-reported HP per player (aggro-gating + fan-out)
   sim?: EnemyState; // server-authoritative enemy simulation, live only in-game
   simTimer?: ReturnType<typeof setInterval>; // the 20 Hz tick driving `sim`; cleared on teardown
   tickNo: number; // monotonic map-delta tick counter (apply-if-newer on clients)
@@ -116,6 +118,9 @@ export class LobbyHub {
         return;
       case "game/attack":
         this.gameAttack(socketId, msg.weapon, msg.pos, msg.dir, msg.seq);
+        return;
+      case "game/health":
+        this.gameHealth(socketId, msg.hp, msg.seq);
         return;
     }
   }
@@ -184,6 +189,7 @@ export class LobbyHub {
       players: new Map([[player.id, player]]),
       graceTimers: new Map(),
       positions: new Map(),
+      health: new Map(),
       tickNo: 0,
       attackGuards: new Map(),
       pendingAttacks: [],
@@ -344,7 +350,7 @@ export class LobbyHub {
   // `moves` is always present; spawn/hit/death arrays ride only when non-empty.
   private tick(session: SessionRecord): void {
     if (!session.sim) return;
-    const players = [...session.positions].map(([id, sample]) => ({ id, pos: sample.pos }));
+    const players = livePlayers(session.positions, session.health); // dead players drop from aggro
     const attacks = session.pendingAttacks;
     session.pendingAttacks = [];
     const { events } = stepEnemies(session.sim, players, attacks, this.tickMs);
@@ -375,6 +381,22 @@ export class LobbyHub {
     if (admitAttack(guard, { weapon, pos, seq }, lastPos, Date.now())) {
       session.pendingAttacks.push({ weapon, pos, dir });
     }
+  }
+
+  // Store and relay a client's reported HP (it owns its health; the server never computes it),
+  // dropping a stale/out-of-order frame by its per-player seq. Retained for aggro-gating and
+  // the reconnect burst.
+  private gameHealth(socketId: string, hp: number, seq: number): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (!session.sim) return; // health before the match starts is meaningless
+    const last = session.health.get(player.id);
+    if (last && seq <= last.seq) return; // stale or duplicate — drop it
+    session.health.set(player.id, { hp, seq });
+    this.broadcast(session, { type: "game/peer-health", id: player.id, hp, seq }, socketId);
   }
 
   // Relay a client's own position to the rest of the squad, dropping a stale/out-of-order
@@ -433,6 +455,7 @@ export class LobbyHub {
   ): void {
     session.players.delete(player.id);
     session.positions.delete(player.id);
+    session.health.delete(player.id);
     session.attackGuards.delete(player.id);
     const timer = session.graceTimers.get(player.id);
     if (timer) {
@@ -488,6 +511,19 @@ export class LobbyHub {
   private error(socketId: string, code: LobbyErrorCode): void {
     this.transport.send(socketId, { type: "lobby/error", code });
   }
+}
+
+// The players fed to the enemy sim: everyone with a known position, minus the dead. A player who
+// has never reported HP defaults to alive; one at 0 HP is dropped so enemies stop chasing a corpse.
+export function livePlayers(
+  positions: Map<PlayerId, { pos: Vec2; seq: number }>,
+  health: Map<PlayerId, { hp: number; seq: number }>,
+): PlayerRef[] {
+  const alive: PlayerRef[] = [];
+  for (const [id, sample] of positions) {
+    if ((health.get(id)?.hp ?? PLAYER_MAX_HP) > 0) alive.push({ id, pos: sample.pos });
+  }
+  return alive;
 }
 
 function selfOf(p: PlayerRecord) {

@@ -12,9 +12,16 @@ import type {
   WorldInit,
   WorldSnapshot,
 } from "../lobby/protocol";
-import { enemyRadius, NEST_RADIUS, type Nest, nestLayout } from "./enemies";
+import {
+  enemyContactCadenceMs,
+  enemyContactDamage,
+  enemyRadius,
+  NEST_RADIUS,
+  type Nest,
+  nestLayout,
+} from "./enemies";
 import { interpolateAt, type PosSample } from "./interpolate";
-import { PLAYER_RADIUS, stepPos } from "./world";
+import { PLAYER_MAX_HP, PLAYER_RADIUS, stepPos } from "./world";
 
 // The client's local view of the shared world (Milestone 2 refinement). Built once from
 // `game/world-init`, then driven two ways:
@@ -36,16 +43,20 @@ interface AvatarRecord {
   pos: Vec2; // the owner's live local position, or a peer's spawn fallback before any sample
   buffer: PosSample[]; // a peer's arrival-stamped samples (empty for the owner)
   lastSeq: number; // highest applied seq; guards apply-if-newer
+  hp: number; // a peer's last relayed HP (render hint); the owner's HP lives in `selfHp`
+  healthSeq: number; // highest applied peer-health seq; guards apply-if-newer
 }
 
 // A server-owned enemy the client renders. Its position is buffered and interpolated exactly
-// like a peer; kind and hp arrive once via a spawn and update via events.
+// like a peer; kind and hp arrive once via a spawn and update via events. `lastContactAt` is
+// the client-local time this enemy last dealt the owner contact damage (per-enemy cadence).
 interface EnemyRecord {
   id: string;
   kind: EnemyKind;
   hp: number;
   pos: Vec2; // spawn fallback until the first move sample buffers
   buffer: PosSample[];
+  lastContactAt: number;
 }
 
 export class ClientWorld {
@@ -55,6 +66,7 @@ export class ClientWorld {
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
   private readonly enemies = new Map<string, EnemyRecord>();
   private lastTick = -1; // highest applied map-delta tick; guards apply-if-newer
+  private selfHp = PLAYER_MAX_HP; // client-authoritative: the owner judges its own contact damage
 
   constructor(
     init: WorldInit,
@@ -71,6 +83,8 @@ export class ClientWorld {
         pos: { ...s.pos },
         buffer: [],
         lastSeq: -1,
+        hp: PLAYER_MAX_HP,
+        healthSeq: -1,
       });
     }
   }
@@ -96,6 +110,46 @@ export class ClientWorld {
     this.pushSample(avatar.buffer, pos, arrivalMs);
   }
 
+  // Apply a relayed HP, dropping a stale/duplicate frame by its per-peer seq. A peer's HP is a
+  // render hint (a corpse draws distinctly); the owner's own frame (a reconnect burst) reseeds
+  // its authoritative local HP.
+  applyPeerHealth(id: PlayerId, hp: number, seq: number): void {
+    const avatar = this.avatars.get(id);
+    if (!avatar || seq <= avatar.healthSeq) return;
+    avatar.healthSeq = seq;
+    avatar.hp = hp;
+    if (id === this.selfId) this.selfHp = hp;
+  }
+
+  // Advance the owner's health one frame: any enemy in contact with the owner's TRUE position
+  // (checked against the enemy's rendered position) deals its contact damage on its own cadence.
+  // "If it touched me on my screen, it hit me." A dead owner takes no further damage.
+  updateHealth(now: number): void {
+    if (this.selfHp <= 0) return;
+    const self = this.avatars.get(this.selfId);
+    if (!self) return;
+    const renderTime = now - ENEMY_RENDER_DELAY_MS;
+    for (const enemy of this.enemies.values()) {
+      const pos = interpolateAt(enemy.buffer, renderTime) ?? enemy.pos;
+      const touching =
+        Math.hypot(pos.x - self.pos.x, pos.y - self.pos.y) <=
+        PLAYER_RADIUS + enemyRadius(enemy.kind);
+      if (!touching) continue;
+      if (now - enemy.lastContactAt >= enemyContactCadenceMs(enemy.kind)) {
+        this.selfHp = Math.max(0, this.selfHp - enemyContactDamage(enemy.kind));
+        enemy.lastContactAt = now;
+      }
+    }
+  }
+
+  hp(): number {
+    return this.selfHp;
+  }
+
+  isDead(): boolean {
+    return this.selfHp <= 0;
+  }
+
   // Apply one enemy/combat tick, dropping a stale/out-of-order delta by its monotonic tick.
   // Spawns create a render record before their positions flow; moves buffer each enemy's
   // position for the same delayed interpolation peers use; deaths remove it. Mutates in place —
@@ -105,7 +159,14 @@ export class ClientWorld {
     this.lastTick = delta.tick;
     for (const s of delta.spawns ?? []) {
       if (!this.enemies.has(s.id)) {
-        this.enemies.set(s.id, { id: s.id, kind: s.kind, hp: s.hp, pos: { ...s.pos }, buffer: [] });
+        this.enemies.set(s.id, {
+          id: s.id,
+          kind: s.kind,
+          hp: s.hp,
+          pos: { ...s.pos },
+          buffer: [],
+          lastContactAt: Number.NEGATIVE_INFINITY,
+        });
       }
     }
     for (const [id, x, y] of delta.moves) {
@@ -158,8 +219,10 @@ export class ClientWorld {
   }
 
   private render(a: AvatarRecord, renderTime: number): Avatar {
-    const pos = a.id === this.selfId ? a.pos : (interpolateAt(a.buffer, renderTime) ?? a.pos);
-    return { id: a.id, slot: a.slot, name: a.name, pos: { ...pos }, radius: PLAYER_RADIUS };
+    const isSelf = a.id === this.selfId;
+    const pos = isSelf ? a.pos : (interpolateAt(a.buffer, renderTime) ?? a.pos);
+    const hp = isSelf ? this.selfHp : a.hp;
+    return { id: a.id, slot: a.slot, name: a.name, pos: { ...pos }, radius: PLAYER_RADIUS, hp };
   }
 
   private renderEnemies(now: number): RenderedEnemy[] {

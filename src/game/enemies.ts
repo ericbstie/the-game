@@ -30,15 +30,38 @@ export const ELITE_HP = 200;
 export const ELITE_SPEED = 234; // 0.9× player — nearly un-outrunnable
 export const ELITE_RADIUS = 24;
 
+// Contact damage: an enemy touching a player deals `contactDamage` on its own `contactCadenceMs`.
 interface EnemyStats {
   hp: number;
   speed: number;
   radius: number;
+  contactDamage: number;
+  contactCadenceMs: number;
 }
 const STATS: Record<EnemyKind, EnemyStats> = {
-  grunt: { hp: GRUNT_HP, speed: GRUNT_SPEED, radius: GRUNT_RADIUS },
-  elite: { hp: ELITE_HP, speed: ELITE_SPEED, radius: ELITE_RADIUS },
+  grunt: {
+    hp: GRUNT_HP,
+    speed: GRUNT_SPEED,
+    radius: GRUNT_RADIUS,
+    contactDamage: 6,
+    contactCadenceMs: 500,
+  },
+  elite: {
+    hp: ELITE_HP,
+    speed: ELITE_SPEED,
+    radius: ELITE_RADIUS,
+    contactDamage: 20,
+    contactCadenceMs: 800,
+  },
 };
+
+export function enemyContactDamage(kind: EnemyKind): number {
+  return STATS[kind].contactDamage;
+}
+
+export function enemyContactCadenceMs(kind: EnemyKind): number {
+  return STATS[kind].contactCadenceMs;
+}
 
 // Player weapons (M3 minimal model). Melee is a cleave wedge; ranged (#41) is a hitscan ray.
 export const MELEE_RANGE = 70; // reach of the swing, measured origin → enemy edge
