@@ -30,3 +30,26 @@ describe("T1: LobbyClient host flow", () => {
     expect(state.snapshot?.host).toBe(state.self?.id);
   });
 });
+
+describe("T2: LobbyClient join flow", () => {
+  test("join() seats a second player who sees the full roster", async () => {
+    const server = spawn();
+    const hostClient = new LobbyClient({ wsUrl: server.url });
+    hostClient.host("Ana");
+    const hosted = await waitForState(hostClient, (s) => s.status === "lobby");
+
+    const joiner = new LobbyClient({ wsUrl: server.url });
+    joiner.join(hosted.code ?? "", "Ben");
+    const joined = await waitForState(joiner, (s) => s.status === "lobby");
+    expect(joined.self?.slot).toBe(2);
+    expect(joined.snapshot?.players.map((p) => p.name)).toEqual(["Ana", "Ben"]);
+  });
+
+  test("joining an unknown code returns to the menu with an error", async () => {
+    const server = spawn();
+    const client = new LobbyClient({ wsUrl: server.url });
+    client.join("ZZZZ", "Ben");
+    const state = await waitForState(client, (s) => s.status === "menu" && s.error !== undefined);
+    expect(state.error).toMatch(/not found/i);
+  });
+});
