@@ -17,7 +17,7 @@ Score is your escape time.
 
 ## The arena
 
-- One big box, ~2 minutes to walk end-to-end. No other rooms.
+- One big box, ~2 minutes to walk end-to-end (31,200×31,200 units at 260 u/s — INV-2). No other rooms.
 - **Spawn:** dead center, relatively safe.
 - **Escape door:** a single random spot on the perimeter wall. Found by clearing the edge.
 - **Enemy nests ring the edges**, denser and tougher the closer you get to the wall.
@@ -67,11 +67,24 @@ Score is your escape time.
 ## Scope & tech
 
 - **Platform:** browser — React on an HTML5 canvas, built and tested with Bun. Medium scope.
-- **Build order:** local/hotseat prototype first → online netcode (host-authoritative, 2–6 players) after.
+- **Build order:** local/hotseat prototype first → online netcode (server-relay, client-owned player, 2–6 players) after.
+
+## Netcode
+
+*Server-relay, client-owned player — decided during the M2 refinement (INV-1, #24).*
+
+- **Each client simulates its own avatar** every frame from immediate local input — zero felt
+  input lag — and holds the full world (arena, peers, monsters, exit) locally.
+- **The server is a relay, not a simulator:** it fans out peer positions (~20 Hz per client),
+  owns the one-time **world-init** (arena size, exit placement, monster set, spawns) so all
+  clients share identical state, and is the source of truth handed to a reconnecter.
+- **Remote peers are interpolated** — buffered and rendered ~100 ms behind real time so they
+  glide despite the low update rate (INV-3, #26); your own avatar is instant.
+- M1 identity/reconnect is unchanged: avatars keyed by the stable `PlayerId`, 45 s grace,
+  takeover-on-duplicate-token, host reassignment.
 
 ## Open questions / TODO
 
 - Full weapon & tool roster and exact bonus numbers.
-- Netcode approach (host-authoritative vs relay); lobby/join flow.
 - Elite enemy types and wave composition curve.
-- Map size, cluster density, and economy tuning.
+- Cluster density and economy tuning. *(Arena size decided: 31,200×31,200 units ≈ 2 min edge-to-edge at 260 u/s — INV-2, #25.)*
