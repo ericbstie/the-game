@@ -352,6 +352,7 @@ export class LobbyHub {
     if (events.spawns.length > 0) delta.spawns = events.spawns;
     if (events.hits.length > 0) delta.hits = events.hits;
     if (events.deaths.length > 0) delta.deaths = events.deaths;
+    if (events.nests.length > 0) delta.nests = events.nests;
     if (events.wave) delta.wave = events.wave;
     this.broadcast(session, { type: "game/map-delta", ...delta });
   }

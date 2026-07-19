@@ -17,6 +17,7 @@ import {
   MELEE_DAMAGE,
   NEST_COUNT,
   NEST_HP,
+  type Nest,
   nestLayout,
   RANGED_DAMAGE,
   RANGED_HALFWIDTH,
@@ -298,6 +299,54 @@ describe("stepEnemies ranged resolution (hitscan ray)", () => {
   test("does not hit an enemy behind the shooter", () => {
     const s = stateWith([grunt("e1", { x: 50, y: 100 })]);
     expect(step(s, [ranged({ x: 100, y: 100 }, { x: 1, y: 0 })]).hits).toEqual([]);
+  });
+});
+
+describe("nests are attackable, and silencing one carves a safe lane", () => {
+  const nestAt = (s: EnemyState, sector: number): Nest => {
+    const n = s.nests.find((x) => x.sector === sector);
+    if (!n) throw new Error(`no nest in sector ${sector}`);
+    return n;
+  };
+
+  test("a melee swing on a nest lowers its HP (still alive)", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    const nest = nestAt(s, 0);
+    const events = stepEnemies(s, [], [melee(nest.pos, { x: 1, y: 0 })], 0).events;
+    expect(events.nests).toEqual([{ id: nest.id, hp: NEST_HP - MELEE_DAMAGE, alive: true }]);
+  });
+
+  test("a ranged shot can strike a nest", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    const nest = nestAt(s, 0);
+    const origin = { x: nest.pos.x - 100, y: nest.pos.y };
+    const events = stepEnemies(s, [], [ranged(origin, { x: 1, y: 0 })], 0).events;
+    expect(events.nests).toEqual([{ id: nest.id, hp: NEST_HP - RANGED_DAMAGE, alive: true }]);
+  });
+
+  test("fire to 0 HP silences the nest (alive:false, hp clamped to 0)", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    const nest = nestAt(s, 0);
+    nest.hp = MELEE_DAMAGE; // one swing away from death
+    const events = stepEnemies(s, [], [melee(nest.pos, { x: 1, y: 0 })], 0).events;
+    expect(events.nests).toEqual([{ id: nest.id, hp: 0, alive: false }]);
+    expect(nestAt(s, 0).alive).toBe(false);
+  });
+
+  test("a silenced nest emits nothing into its sector next wave; the others still do", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    nestAt(s, 0).alive = false; // silence sector 0
+    const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS).events.spawns; // fire wave 1
+    expect(spawns.some((sp) => sp.sector === 0)).toBe(false); // the wedge is quiet
+    expect(spawns.some((sp) => sp.sector === 1)).toBe(true); // neighbours still spawn
+    expect(spawns).toHaveLength((NEST_COUNT - 1) * (2 + 1)); // exactly the 7 live nests
+  });
+
+  test("a partially-damaged nest still emits its full wave", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    nestAt(s, 0).hp = 1; // damaged but alive
+    const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS).events.spawns;
+    expect(spawns.filter((sp) => sp.sector === 0)).toHaveLength(2 + 1);
   });
 });
 

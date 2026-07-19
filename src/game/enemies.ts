@@ -4,6 +4,7 @@ import type {
   EnemyKind,
   EnemyMove,
   EnemySpawn,
+  NestDelta,
   PlayerId,
   Vec2,
   WaveDelta,
@@ -135,13 +136,14 @@ export interface Attack {
 }
 
 // What changed this tick, shaped to fill a `game/map-delta` directly: every enemy's position in
-// `moves`, enemies spawned this tick, damaged enemies' new HP, killed ids, and — when a wave
-// fires — the wave clock. Nest changes (#44) land here later.
+// `moves`, enemies spawned this tick, damaged enemies' new HP, killed ids, damaged/silenced
+// nests, and — when a wave fires — the wave clock.
 export interface EnemyEvents {
   moves: EnemyMove[];
   spawns: EnemySpawn[];
   hits: EnemyHit[];
   deaths: string[];
+  nests: NestDelta[];
   wave: WaveDelta | null;
 }
 
@@ -240,7 +242,7 @@ export function stepEnemies(
   dtMs: number,
 ): { state: EnemyState; events: EnemyEvents } {
   const { spawns, wave } = tickWaves(state, dtMs);
-  const { hits, deaths } = resolveAttacks(state, attacks);
+  const { hits, deaths, nests } = resolveAttacks(state, attacks);
 
   const dt = dtMs / 1000;
   const center = { x: state.arena.width / 2, y: state.arena.height / 2 };
@@ -249,7 +251,7 @@ export function stepEnemies(
 
   const moves: EnemyMove[] = [];
   for (const enemy of state.enemies.values()) moves.push([enemy.id, enemy.pos.x, enemy.pos.y]);
-  return { state, events: { moves, spawns, hits, deaths, wave } };
+  return { state, events: { moves, spawns, hits, deaths, nests, wave } };
 }
 
 // Advance the wave clock; when it reaches zero, fire the next wave and re-arm it. Real ticks are
@@ -294,25 +296,45 @@ function jitter(pos: Vec2, rng: () => number): Vec2 {
   };
 }
 
-// Apply every admitted attack to enemy HP — this sim is the sole writer. Damage accumulates
-// across attacks in the tick; an enemy hit then killed reports only its death, not a hit.
+// Apply every admitted attack to enemy and nest HP — this sim is the sole writer. Melee cleaves
+// every enemy/nest in its wedge; ranged strikes the single nearest target (enemy or nest) along
+// its ray. Damage accumulates across attacks; an enemy hit then killed reports only its death.
 function resolveAttacks(
   state: EnemyState,
   attacks: Attack[],
-): { hits: EnemyHit[]; deaths: string[] } {
-  const damaged = new Set<string>();
+): { hits: EnemyHit[]; deaths: string[]; nests: NestDelta[] } {
+  const enemiesHit = new Set<string>();
+  const nestsHit = new Set<string>();
   for (const attack of attacks) {
-    const struck =
-      attack.weapon === "melee" ? meleeTargets(state, attack) : rangedTargets(state, attack);
     const damage = attack.weapon === "melee" ? MELEE_DAMAGE : RANGED_DAMAGE;
-    for (const enemy of struck) {
-      enemy.hp -= damage;
-      damaged.add(enemy.id);
+    if (attack.weapon === "melee") {
+      for (const enemy of state.enemies.values()) {
+        if (enemy.hp > 0 && inMeleeWedge(attack, enemy.pos, enemyRadius(enemy.kind))) {
+          enemy.hp -= damage;
+          enemiesHit.add(enemy.id);
+        }
+      }
+      for (const nest of state.nests) {
+        if (nest.alive && inMeleeWedge(attack, nest.pos, NEST_RADIUS)) {
+          nest.hp -= damage;
+          nestsHit.add(nest.id);
+        }
+      }
+    } else {
+      const hit = nearestRayHit(state, attack);
+      if (hit?.enemy) {
+        hit.enemy.hp -= damage;
+        enemiesHit.add(hit.enemy.id);
+      } else if (hit?.nest) {
+        hit.nest.hp -= damage;
+        nestsHit.add(hit.nest.id);
+      }
     }
   }
+
   const hits: EnemyHit[] = [];
   const deaths: string[] = [];
-  for (const id of damaged) {
+  for (const id of enemiesHit) {
     const enemy = state.enemies.get(id);
     if (!enemy) continue;
     if (enemy.hp <= 0) {
@@ -322,59 +344,66 @@ function resolveAttacks(
       hits.push({ id, hp: enemy.hp });
     }
   }
-  return { hits, deaths };
+
+  const nests: NestDelta[] = [];
+  for (const id of nestsHit) {
+    const nest = state.nests.find((n) => n.id === id);
+    if (!nest) continue;
+    if (nest.hp <= 0) {
+      nest.hp = 0;
+      nest.alive = false; // silenced: it drops out of every future wave's `active` set
+    }
+    nests.push({ id: nest.id, hp: nest.hp, alive: nest.alive });
+  }
+  return { hits, deaths, nests };
 }
 
-// Enemies caught in the melee cleave: within reach of the origin and inside the arc around
-// `dir`. Hits every enemy in the wedge (swarm cleave). A degenerate zero-length aim skips the
-// arc test and hits everything in reach.
-function meleeTargets(state: EnemyState, attack: Attack): Enemy[] {
-  const halfArc = (MELEE_ARC / 2) * (Math.PI / 180);
+// Is a circle at `pos` (of the given radius) inside the melee cleave wedge? Within reach of the
+// origin and inside the arc around `dir`. A degenerate zero-length aim skips the arc test.
+function inMeleeWedge(attack: Attack, pos: Vec2, radius: number): boolean {
+  const dx = pos.x - attack.pos.x;
+  const dy = pos.y - attack.pos.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist > MELEE_RANGE + radius) return false;
   const dirLen = Math.hypot(attack.dir.x, attack.dir.y);
-  const struck: Enemy[] = [];
+  if (dist === 0 || dirLen === 0) return true;
+  const cos = (attack.dir.x * dx + attack.dir.y * dy) / (dirLen * dist);
+  return Math.acos(clampUnit(cos)) <= (MELEE_ARC / 2) * (Math.PI / 180);
+}
+
+// The single nearest target a hitscan ray reaches — an enemy or a nest, whichever is closer
+// along the ray — within range and inside the ray's half-width (plus the target's radius). A
+// degenerate zero-length aim hits nothing.
+function nearestRayHit(state: EnemyState, attack: Attack): { enemy?: Enemy; nest?: Nest } | null {
+  const dirLen = Math.hypot(attack.dir.x, attack.dir.y);
+  if (dirLen === 0) return null;
+  const ux = attack.dir.x / dirLen;
+  const uy = attack.dir.y / dirLen;
+  // Distance along the ray to a target at `pos`, or null if it's behind, out of range, or off-line.
+  const alongIfHit = (pos: Vec2, radius: number): number | null => {
+    const rx = pos.x - attack.pos.x;
+    const ry = pos.y - attack.pos.y;
+    const along = rx * ux + ry * uy;
+    if (along < 0 || along > RANGED_RANGE) return null;
+    const perp = Math.hypot(rx - along * ux, ry - along * uy);
+    return perp <= RANGED_HALFWIDTH + radius ? along : null;
+  };
+  let best: { along: number; enemy?: Enemy; nest?: Nest } | null = null;
   for (const enemy of state.enemies.values()) {
     if (enemy.hp <= 0) continue;
-    const dx = enemy.pos.x - attack.pos.x;
-    const dy = enemy.pos.y - attack.pos.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist > MELEE_RANGE + enemyRadius(enemy.kind)) continue;
-    if (dist > 0 && dirLen > 0) {
-      const cos = (attack.dir.x * dx + attack.dir.y * dy) / (dirLen * dist);
-      if (Math.acos(clampUnit(cos)) > halfArc) continue; // outside the wedge
-    }
-    struck.push(enemy);
+    const along = alongIfHit(enemy.pos, enemyRadius(enemy.kind));
+    if (along !== null && (best === null || along < best.along)) best = { along, enemy };
   }
-  return struck;
+  for (const nest of state.nests) {
+    if (!nest.alive) continue;
+    const along = alongIfHit(nest.pos, NEST_RADIUS);
+    if (along !== null && (best === null || along < best.along)) best = { along, nest };
+  }
+  return best === null ? null : { enemy: best.enemy, nest: best.nest };
 }
 
 function clampUnit(value: number): number {
   return Math.max(-1, Math.min(1, value));
-}
-
-// The single nearest enemy struck by a hitscan ray from the origin along `dir`: within range
-// along the ray and inside its half-width (plus the enemy's radius). Unlike melee's cleave,
-// ranged hits only the first enemy the ray reaches. A degenerate zero-length aim hits nothing.
-function rangedTargets(state: EnemyState, attack: Attack): Enemy[] {
-  const dirLen = Math.hypot(attack.dir.x, attack.dir.y);
-  if (dirLen === 0) return [];
-  const ux = attack.dir.x / dirLen;
-  const uy = attack.dir.y / dirLen;
-  let nearest: Enemy | null = null;
-  let nearestT = Number.POSITIVE_INFINITY;
-  for (const enemy of state.enemies.values()) {
-    if (enemy.hp <= 0) continue;
-    const rx = enemy.pos.x - attack.pos.x;
-    const ry = enemy.pos.y - attack.pos.y;
-    const along = rx * ux + ry * uy; // distance along the ray to the enemy's closest point
-    if (along < 0 || along > RANGED_RANGE) continue; // behind the shooter or out of reach
-    const perp = Math.hypot(rx - along * ux, ry - along * uy);
-    if (perp > RANGED_HALFWIDTH + enemyRadius(enemy.kind)) continue; // off the ray line
-    if (along < nearestT) {
-      nearestT = along;
-      nearest = enemy;
-    }
-  }
-  return nearest ? [nearest] : [];
 }
 
 // One enemy's pure geometric step — one of three states:
