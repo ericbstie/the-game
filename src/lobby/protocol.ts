@@ -130,6 +130,23 @@ export interface WaveDelta {
   clockMs: number;
 }
 
+// Full live state for the reconnect keyframe (`game/enemy-init`), which the immutable world-init
+// can't carry: enemies that have moved/died/spawned and nests that have been silenced.
+export interface EnemySnapshot {
+  id: string;
+  kind: EnemyKind;
+  pos: Vec2;
+  hp: number;
+  sector: number;
+}
+export interface NestSnapshot {
+  id: string;
+  pos: Vec2;
+  hp: number;
+  alive: boolean;
+  sector: number;
+}
+
 // One enemy's position this tick: [id, x, y]. Every live enemy appears in every delta's
 // `moves`, so a client that missed a spawn still can't render an unknown id (guarded).
 export type EnemyMove = [id: string, x: number, y: number];
@@ -276,6 +293,12 @@ export type GamePeerHealth = Envelope<
   "game/peer-health",
   { id: PlayerId; hp: number; seq: number }
 >;
+// The reconnect keyframe (M3): the session's live enemy/nest/wave state, so a (re)joiner rebuilds
+// the world as it actually is now. `tick` seeds the client's apply-if-newer cursor.
+export type GameEnemyInit = Envelope<
+  "game/enemy-init",
+  { tick: number; enemies: EnemySnapshot[]; nests: NestSnapshot[]; wave: WaveDelta }
+>;
 
 export type ServerMessage =
   | LobbyCreated
@@ -289,7 +312,8 @@ export type ServerMessage =
   | GameWorldInit
   | GamePeerPos
   | GameMapDelta
-  | GamePeerHealth;
+  | GamePeerHealth
+  | GameEnemyInit;
 
 // Hand-rolled inbound narrowing (no schema dep, per spec). Untrusted client input is
 // never assumed valid: every field is checked before the message is trusted.

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { NEST_COUNT } from "../game/enemies";
 import { ARENA } from "../game/world";
 import { LobbyHub, livePlayers, type Transport } from "./lobby";
 import type { ServerMessage } from "./protocol";
@@ -619,6 +620,42 @@ describe("M3: player health relay and aggro-gating", () => {
         .map((p) => p.id)
         .sort(),
     ).toEqual(["a", "c"]);
+  });
+});
+
+describe("M3: reconnect rebuilds live combat state", () => {
+  test("a reconnecter gets the live enemy/nest/wave keyframe and their own HP restored", async () => {
+    const server = startServer({ tickMs: 10, firstWaveMs: 5 }); // spawn a wave almost at once
+    servers.push(server);
+    const host = await connect(server);
+    host.send({ type: "lobby/create", name: "Ana" });
+    const created = expectMessage(
+      await host.waitFor((m) => m.type === "lobby/created"),
+      "lobby/created",
+    );
+    host.send({ type: "game/start" });
+    await host.waitFor((m) => m.type === "game/world-init");
+    await host.waitFor((m) => m.type === "game/map-delta" && (m.spawns?.length ?? 0) > 0); // wave fired
+    host.send({ type: "game/health", hp: 40, seq: 1 });
+    await host.close(); // drop mid-match; the slot is held by grace
+
+    const back = await connect(server);
+    back.send({ type: "lobby/join", code: created.code, name: "Ana", token: created.you.token });
+    await back.waitFor((m) => m.type === "lobby/joined");
+
+    const keyframe = expectMessage(
+      await back.waitFor((m) => m.type === "game/enemy-init"),
+      "game/enemy-init",
+    );
+    expect(keyframe.enemies.length).toBeGreaterThan(0); // live enemies, not the (empty) initial set
+    expect(keyframe.nests).toHaveLength(NEST_COUNT);
+    expect(keyframe.wave.index).toBeGreaterThanOrEqual(1); // the wave that fired
+
+    const ownHp = expectMessage(
+      await back.waitFor((m) => m.type === "game/peer-health" && m.hp === 40),
+      "game/peer-health",
+    );
+    expect(ownHp.id).toBe(created.you.id); // their own last HP, restored
   });
 });
 

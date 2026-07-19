@@ -207,6 +207,22 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
     expect(w.snapshot(9999).enemies).toEqual([]);
   });
 
+  test("initEnemies rebuilds live enemy + nest state and guards the first live delta", () => {
+    const w = new ClientWorld(init(), "self");
+    const nestId = w.snapshot(0).nests[0].id;
+    w.initEnemies({
+      tick: 100,
+      enemies: [{ id: "e1", kind: "grunt", pos: { x: 5, y: 5 }, hp: 12, sector: 0 }],
+      nests: [{ id: nestId, pos: { x: 0, y: 0 }, hp: 0, alive: false, sector: 0 }],
+    });
+    expect(enemyIn(w, 9999, "e1")).toMatchObject({ kind: "grunt", hp: 12 });
+    expect(w.snapshot(0).nests.find((n) => n.id === nestId)).toMatchObject({ hp: 0, alive: false });
+    // A delta at the keyframe tick is stale (dropped); the next tick applies.
+    w.applyMapDelta({ tick: 100, moves: [["e1", 999, 999]] }, 0);
+    w.applyMapDelta({ tick: 101, moves: [["e1", 50, 50]] }, 1000);
+    expect(enemyIn(w, 1000 + ENEMY_RENDER_DELAY_MS, "e1")?.pos).toEqual({ x: 50, y: 50 });
+  });
+
   test("a nest delta updates the matching nest's hp and alive flag", () => {
     const w = new ClientWorld(init(), "self");
     const id = w.snapshot(0).nests[0].id;

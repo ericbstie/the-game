@@ -229,6 +229,9 @@ export class LobbyClient {
       case "game/peer-health":
         this.state.world?.applyPeerHealth(msg.id, msg.hp, msg.seq);
         return;
+      case "game/enemy-init":
+        this.state.world?.initEnemies(msg);
+        return;
       case "lobby/player-left":
         this.state.world?.removePeer(msg.id);
         this.setState({ snapshot: applyRoster(this.state.snapshot ?? null, msg) ?? undefined });

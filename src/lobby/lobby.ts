@@ -5,6 +5,7 @@ import {
   type EnemyState,
   freshGuard,
   type PlayerRef,
+  snapshotEnemies,
   spawnEnemyState,
   stepEnemies,
 } from "../game/enemies";
@@ -414,8 +415,10 @@ export class LobbyHub {
     this.broadcast(session, { type: "game/peer-pos", id: player.id, pos, seq }, socketId);
   }
 
-  // Hand one socket the immutable world plus a burst of every player's last-known position,
-  // so a (re)joining client rebuilds the world locally and lands where the squad is.
+  // Hand one socket the immutable world plus a burst that brings it fully current: every player's
+  // last-known position, the live enemy/nest/wave keyframe (world-init is immutable and can't
+  // rebuild a world whose enemies moved/died/spawned), and every player's last HP — including the
+  // reconnecter's own, so their client restores it.
   private sendWorldState(session: SessionRecord, socketId: string): void {
     if (!session.worldInit) return;
     this.transport.send(socketId, { type: "game/world-init", init: session.worldInit });
@@ -424,6 +427,18 @@ export class LobbyHub {
         type: "game/peer-pos",
         id,
         pos: sample.pos,
+        seq: sample.seq,
+      });
+    }
+    if (session.sim) {
+      const snap = snapshotEnemies(session.sim);
+      this.transport.send(socketId, { type: "game/enemy-init", tick: session.tickNo, ...snap });
+    }
+    for (const [id, sample] of session.health) {
+      this.transport.send(socketId, {
+        type: "game/peer-health",
+        id,
+        hp: sample.hp,
         seq: sample.seq,
       });
     }

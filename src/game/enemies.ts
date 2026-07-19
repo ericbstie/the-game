@@ -3,8 +3,10 @@ import type {
   EnemyHit,
   EnemyKind,
   EnemyMove,
+  EnemySnapshot,
   EnemySpawn,
   NestDelta,
+  NestSnapshot,
   PlayerId,
   Vec2,
   WaveDelta,
@@ -238,6 +240,32 @@ export function nestLayout(arena: Arena): Nest[] {
       sector: k,
     };
   });
+}
+
+// Snapshot the live sim for the reconnect keyframe: every current enemy, every nest's state, and
+// the wave clock. Positions are copied so the snapshot never aliases live state.
+export function snapshotEnemies(state: EnemyState): {
+  enemies: EnemySnapshot[];
+  nests: NestSnapshot[];
+  wave: WaveDelta;
+} {
+  return {
+    enemies: [...state.enemies.values()].map((e) => ({
+      id: e.id,
+      kind: e.kind,
+      pos: { ...e.pos },
+      hp: e.hp,
+      sector: e.sector,
+    })),
+    nests: state.nests.map((n) => ({
+      id: n.id,
+      pos: { ...n.pos },
+      hp: n.hp,
+      alive: n.alive,
+      sector: n.sector,
+    })),
+    wave: { index: state.waveIndex, clockMs: state.msUntilWave },
+  };
 }
 
 // Seed the sim from the world: place the nests and arm the wave clock. No enemies yet — the

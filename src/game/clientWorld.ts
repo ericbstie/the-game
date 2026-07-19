@@ -2,9 +2,11 @@ import type {
   Arena,
   Avatar,
   EnemyKind,
+  EnemySnapshot,
   Exit,
   MapDelta,
   MoveInput,
+  NestSnapshot,
   PlayerId,
   RenderedEnemy,
   RenderedNest,
@@ -195,6 +197,31 @@ export class ClientWorld {
         nest.alive = nd.alive;
       }
     }
+  }
+
+  // Rebuild live enemy/nest state from the reconnect keyframe — world-init only carries the
+  // initial static set, so a mid-match (re)joiner needs this to see enemies that moved/died/
+  // spawned and nests that were silenced. Seeds `lastTick` so the first live delta isn't dropped.
+  initEnemies(msg: { tick: number; enemies: EnemySnapshot[]; nests: NestSnapshot[] }): void {
+    this.enemies.clear();
+    for (const e of msg.enemies) {
+      this.enemies.set(e.id, {
+        id: e.id,
+        kind: e.kind,
+        hp: e.hp,
+        pos: { ...e.pos },
+        buffer: [],
+        lastContactAt: Number.NEGATIVE_INFINITY,
+      });
+    }
+    for (const ns of msg.nests) {
+      const nest = this.nests.find((n) => n.id === ns.id);
+      if (nest) {
+        nest.hp = ns.hp;
+        nest.alive = ns.alive;
+      }
+    }
+    this.lastTick = msg.tick;
   }
 
   removePeer(id: PlayerId): void {
