@@ -6,12 +6,17 @@ interface SocketData {
   socketId: string;
 }
 
+// Kept under Cloudflare's ~100s edge idle timeout so Bun's automatic pings
+// (sendPings defaults true) cross a cloudflared quick tunnel before the edge drops
+// an idle lobby socket; a genuinely dead socket is then detected in ~45s (INV-2).
+const DEFAULT_IDLE_TIMEOUT = 45;
+
 export interface ServeLobbyOptions {
   port?: number;
   routes?: Record<string, Bun.HTMLBundle>;
   development?: Bun.Serve.Options<SocketData>["development"];
   graceMs?: number;
-  idleTimeout?: number; // WS idle seconds; sendPings keeps otherwise-idle lobby sockets alive
+  idleTimeout?: number; // WS idle seconds before Bun pings/closes; see DEFAULT_IDLE_TIMEOUT
 }
 
 export interface LobbyServer {
@@ -55,7 +60,7 @@ export function serveLobby(options: ServeLobbyOptions = {}): LobbyServer {
       return new Response("Not found", { status: 404 });
     },
     websocket: {
-      idleTimeout: options.idleTimeout ?? 120,
+      idleTimeout: options.idleTimeout ?? DEFAULT_IDLE_TIMEOUT,
       open(ws) {
         registry.set(ws.data.socketId, ws);
       },
