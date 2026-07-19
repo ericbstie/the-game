@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { LobbyState } from "../lobby/client";
 import type { Arena, MoveInput, Vec2, Weapon } from "../lobby/protocol";
 import { type Camera, computeCamera } from "./camera";
+import { RESPAWN_DELAY_MS } from "./clientWorld";
 import { drawWorld } from "./draw";
 import { aimDir, keyToDirection, movesEqual, NO_MOVE } from "./input";
 import { PLAYER_MAX_HP } from "./world";
@@ -33,6 +34,7 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameSc
   const onAttackRef = useRef(onAttack);
   const onHealthRef = useRef(onHealth);
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
+  const [respawnIn, setRespawnIn] = useState(0); // seconds until respawn, shown while downed
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
   const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
   const aimRef = useRef<{ camera: Camera; self: Vec2 }>({
@@ -121,14 +123,28 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameSc
 
   useEffect(() => {
     let lastHp = PLAYER_MAX_HP;
+    let deadSince: number | null = null;
     const timer = setInterval(() => {
       const world = worldRef.current;
       if (!world) return;
+      const now = Date.now();
+      // Client-run respawn: after the delay, snap back to center at full HP.
+      if (world.isDead()) {
+        deadSince ??= now;
+        const remaining = Math.max(0, RESPAWN_DELAY_MS - (now - deadSince));
+        setRespawnIn(Math.ceil(remaining / 1000));
+        if (remaining === 0) {
+          world.reviveSelf();
+          deadSince = null;
+        }
+      } else {
+        deadSince = null;
+      }
       const nextHp = world.hp();
       if (nextHp !== lastHp) {
         lastHp = nextHp;
         setHp(nextHp); // repaint the HUD (rare — only on a health change)
-        onHealthRef.current(nextHp); // report it; hp <= 0 declares death server-side
+        onHealthRef.current(nextHp); // report it; hp <= 0 declares death, max declares the revive
       }
       // A downed player stops streaming position — peers hold its last pos as a corpse.
       if (!world.isDead()) {
@@ -185,7 +201,9 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameSc
             data-low={hp <= 30}
           />
         </div>
-        <span className="hp-label">{hp > 0 ? `HP ${hp}` : "Downed"}</span>
+        <span className="hp-label">
+          {hp > 0 ? `HP ${hp}` : `Downed — respawning in ${respawnIn}…`}
+        </span>
       </div>
       <p className="hint">
         Move with WASD or the arrow keys. Left-click to swing, right-click to shoot.

@@ -35,6 +35,7 @@ import { PLAYER_MAX_HP, PLAYER_RADIUS, stepPos } from "./world";
 export const RENDER_DELAY_MS = 100; // render peers this far behind real time to smooth the relay
 export const BUFFER_MS = 500; // keep this much peer history; older samples are pruned
 export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their 20 Hz stream
+export const RESPAWN_DELAY_MS = 3000; // dead this long, then the client snaps back to center
 
 interface AvatarRecord {
   id: PlayerId;
@@ -148,6 +149,15 @@ export class ClientWorld {
 
   isDead(): boolean {
     return this.selfHp <= 0;
+  }
+
+  // Respawn the owner: snap back to arena center at full HP. The caller resumes streaming and
+  // reports the new HP. Center is safe (the front line holds far out), so no contact re-triggers.
+  reviveSelf(): void {
+    const self = this.avatars.get(this.selfId);
+    if (!self) return;
+    self.pos = { x: this.arena.width / 2, y: this.arena.height / 2 };
+    this.selfHp = PLAYER_MAX_HP;
   }
 
   // Apply one enemy/combat tick, dropping a stale/out-of-order delta by its monotonic tick.

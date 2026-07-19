@@ -253,6 +253,17 @@ describe("ClientWorld self-health (client-authoritative contact damage)", () => 
     expect(w.hp()).toBe(0); // dead: no further change
   });
 
+  test("reviveSelf snaps the owner back to center at full HP", () => {
+    const w = new ClientWorld(init(), "self");
+    spawnOnSelf(w, { x: 400, y: 300 });
+    for (let t = 1000; t <= 1000 + 25 * 500; t += 500) w.updateHealth(t);
+    expect(w.isDead()).toBe(true);
+    w.reviveSelf();
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
+    expect(w.isDead()).toBe(false);
+    expect(w.selfPos()).toEqual({ x: ARENA.width / 2, y: ARENA.height / 2 });
+  });
+
   test("applyPeerHealth updates a peer's rendered HP, apply-if-newer", () => {
     const w = new ClientWorld(init(), "self");
     const peerHp = () => w.snapshot(0).players.find((p) => p.id === "peer")?.hp;
