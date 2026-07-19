@@ -5,6 +5,22 @@ one giant box to find the escape door and get the whole squad out, fast. Score
 is your escape time. A React app rendered on an HTML5 canvas, built with Bun.
 See [DESIGN.md](DESIGN.md).
 
+## Run
+
+Requires [Bun](https://bun.sh).
+
+```sh
+bun install
+bun dev
+bun test
+bun test --watch
+bun run check
+bun run build
+```
+
+`bun dev` serves the app with hot reload and prints the local URL; `bun serve` runs
+the plain server in `server.ts` instead.
+
 ## Contribute
 
 **Plan (big or unclear work):** `/wayfinder` → `/to-spec` → `/to-tickets`, then build each ticket below.
