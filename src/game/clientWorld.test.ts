@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { WorldInit } from "../lobby/protocol";
-import { ClientWorld, RENDER_DELAY_MS } from "./clientWorld";
+import type { MapDelta, WorldInit } from "../lobby/protocol";
+import { ClientWorld, ENEMY_RENDER_DELAY_MS, RENDER_DELAY_MS } from "./clientWorld";
+import { GRUNT_HP, GRUNT_RADIUS } from "./enemies";
 import { ARENA, PLAYER_RADIUS } from "./world";
 
 const STILL = { up: false, down: false, left: false, right: false };
@@ -115,5 +116,75 @@ describe("ClientWorld peer interpolation", () => {
     const w = new ClientWorld(init(), "self");
     w.removePeer("peer");
     expect(w.snapshot(9999).players.map((p) => p.id)).toEqual(["self"]);
+  });
+});
+
+const enemyIn = (w: ClientWorld, now: number, id: string) =>
+  w.snapshot(now).enemies.find((e) => e.id === id);
+
+describe("ClientWorld enemy stream (applyMapDelta)", () => {
+  test("a spawn creates a render record at its spawn pos, with kind + radius", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP }],
+      },
+      1000,
+    );
+    const e = enemyIn(w, 1000, "e1");
+    expect(e).toMatchObject({ kind: "grunt", hp: GRUNT_HP, radius: GRUNT_RADIUS });
+    expect(e?.pos).toEqual({ x: 900, y: 800 });
+  });
+
+  test("a move buffers position, rendered ENEMY_RENDER_DELAY_MS behind the stream", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [["e1", 100, 100]],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 100, y: 100 }, hp: GRUNT_HP }],
+      },
+      1000,
+    );
+    w.applyMapDelta({ tick: 2, moves: [["e1", 200, 100]] }, 1100);
+    // Render time = now − delay; at now=1100+delay the newest sample (200,100) is shown.
+    expect(enemyIn(w, 1100 + ENEMY_RENDER_DELAY_MS, "e1")?.pos).toEqual({ x: 200, y: 100 });
+    // Halfway between the two arrivals (1050 render time) LERPs to the midpoint.
+    expect(enemyIn(w, 1050 + ENEMY_RENDER_DELAY_MS, "e1")?.pos).toEqual({ x: 150, y: 100 });
+  });
+
+  test("apply-if-newer: a stale or duplicate tick is ignored", () => {
+    const w = new ClientWorld(init(), "self");
+    const spawn: MapDelta = {
+      tick: 5,
+      moves: [["e1", 10, 10]],
+      spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP }],
+    };
+    w.applyMapDelta(spawn, 1000);
+    w.applyMapDelta({ tick: 5, moves: [["e1", 999, 999]] }, 1050); // equal tick — dropped
+    w.applyMapDelta({ tick: 3, moves: [["e1", 888, 888]] }, 1100); // older tick — dropped
+    expect(enemyIn(w, 5000, "e1")?.pos).toEqual({ x: 10, y: 10 });
+  });
+
+  test("a death removes the enemy from the world", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [["e1", 10, 10]],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP }],
+      },
+      1000,
+    );
+    w.applyMapDelta({ tick: 2, moves: [], deaths: ["e1"] }, 1050);
+    expect(w.snapshot(9999).enemies).toEqual([]);
+  });
+
+  test("a move for an unknown id is ignored (spawn must arrive first)", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [["ghost", 10, 10]] }, 1000);
+    expect(w.snapshot(9999).enemies).toEqual([]);
   });
 });

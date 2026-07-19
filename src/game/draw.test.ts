@@ -40,6 +40,7 @@ const world: WorldSnapshot = {
     { id: "m1", pos: { x: 1090, y: 1090 }, radius: 16 },
     { id: "m2", pos: { x: 20_000, y: 20_000 }, radius: 16 }, // far off-screen
   ],
+  enemies: [],
   exit: { x: 0, y: 1100, width: 98, height: 936 },
 };
 
@@ -87,5 +88,19 @@ describe("drawWorld", () => {
     drawWorld(ctx, world, { selfId: "p1", camera, viewport });
     // self ring adds a stroke() beyond the arena wall's strokeRect
     expect(ctx.calls.filter((c) => c.fn === "stroke").length).toBeGreaterThan(0);
+  });
+
+  test("draws on-screen enemies and culls off-screen ones", () => {
+    const ctx = spyCtx();
+    const withEnemies: WorldSnapshot = {
+      ...world,
+      enemies: [
+        { id: "e1", kind: "grunt", pos: { x: 1150, y: 1150 }, radius: 16, hp: 30 }, // on screen
+        { id: "e2", kind: "grunt", pos: { x: 25_000, y: 25_000 }, radius: 16, hp: 30 }, // culled
+      ],
+    };
+    drawWorld(ctx, withEnemies, { camera, viewport });
+    // 2 avatars + m1 + one on-screen enemy = 4 arcs; the far enemy is culled.
+    expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(4);
   });
 });

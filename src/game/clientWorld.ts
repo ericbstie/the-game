@@ -1,14 +1,18 @@
 import type {
   Arena,
   Avatar,
+  EnemyKind,
   Exit,
+  MapDelta,
   Monster,
   MoveInput,
   PlayerId,
+  RenderedEnemy,
   Vec2,
   WorldInit,
   WorldSnapshot,
 } from "../lobby/protocol";
+import { enemyRadius } from "./enemies";
 import { interpolateAt, type PosSample } from "./interpolate";
 import { PLAYER_RADIUS, stepPos } from "./world";
 
@@ -23,6 +27,7 @@ import { PLAYER_RADIUS, stepPos } from "./world";
 
 export const RENDER_DELAY_MS = 100; // render peers this far behind real time to smooth the relay
 export const BUFFER_MS = 500; // keep this much peer history; older samples are pruned
+export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their 20 Hz stream
 
 interface AvatarRecord {
   id: PlayerId;
@@ -33,11 +38,23 @@ interface AvatarRecord {
   lastSeq: number; // highest applied seq; guards apply-if-newer
 }
 
+// A server-owned enemy the client renders. Its position is buffered and interpolated exactly
+// like a peer; kind and hp arrive once via a spawn and update via events.
+interface EnemyRecord {
+  id: string;
+  kind: EnemyKind;
+  hp: number;
+  pos: Vec2; // spawn fallback until the first move sample buffers
+  buffer: PosSample[];
+}
+
 export class ClientWorld {
   readonly arena: Arena;
   private readonly exit: Exit;
   private readonly monsters: Monster[];
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
+  private readonly enemies = new Map<string, EnemyRecord>();
+  private lastTick = -1; // highest applied map-delta tick; guards apply-if-newer
 
   constructor(
     init: WorldInit,
@@ -76,13 +93,37 @@ export class ClientWorld {
       avatar.pos = { x: pos.x, y: pos.y };
       return;
     }
-    avatar.buffer.push({ t: arrivalMs, pos: { x: pos.x, y: pos.y } });
-    const cutoff = arrivalMs - BUFFER_MS;
-    while (avatar.buffer.length > 1 && avatar.buffer[0].t < cutoff) avatar.buffer.shift();
+    this.pushSample(avatar.buffer, pos, arrivalMs);
+  }
+
+  // Apply one enemy/combat tick, dropping a stale/out-of-order delta by its monotonic tick.
+  // Spawns create a render record before their positions flow; moves buffer each enemy's
+  // position for the same delayed interpolation peers use; deaths remove it. Mutates in place —
+  // the render loop reads this every frame, so no React re-render at the ~20 Hz tick rate.
+  applyMapDelta(delta: MapDelta, now: number): void {
+    if (delta.tick <= this.lastTick) return;
+    this.lastTick = delta.tick;
+    for (const s of delta.spawns ?? []) {
+      if (!this.enemies.has(s.id)) {
+        this.enemies.set(s.id, { id: s.id, kind: s.kind, hp: s.hp, pos: { ...s.pos }, buffer: [] });
+      }
+    }
+    for (const [id, x, y] of delta.moves) {
+      const enemy = this.enemies.get(id);
+      if (enemy) this.pushSample(enemy.buffer, { x, y }, now);
+    }
+    for (const id of delta.deaths ?? []) this.enemies.delete(id);
   }
 
   removePeer(id: PlayerId): void {
     this.avatars.delete(id);
+  }
+
+  // Append an arrival-stamped sample and prune history older than the buffer window.
+  private pushSample(buffer: PosSample[], pos: Vec2, t: number): void {
+    buffer.push({ t, pos: { x: pos.x, y: pos.y } });
+    const cutoff = t - BUFFER_MS;
+    while (buffer.length > 1 && buffer[0].t < cutoff) buffer.shift();
   }
 
   selfPos(): Vec2 | null {
@@ -100,6 +141,7 @@ export class ClientWorld {
         .sort((a, b) => a.slot - b.slot)
         .map((a) => this.render(a, renderTime)),
       monsters: this.monsters,
+      enemies: this.renderEnemies(now),
       exit: this.exit,
     };
   }
@@ -107,5 +149,16 @@ export class ClientWorld {
   private render(a: AvatarRecord, renderTime: number): Avatar {
     const pos = a.id === this.selfId ? a.pos : (interpolateAt(a.buffer, renderTime) ?? a.pos);
     return { id: a.id, slot: a.slot, name: a.name, pos: { ...pos }, radius: PLAYER_RADIUS };
+  }
+
+  private renderEnemies(now: number): RenderedEnemy[] {
+    const renderTime = now - ENEMY_RENDER_DELAY_MS;
+    return [...this.enemies.values()].map((e) => ({
+      id: e.id,
+      kind: e.kind,
+      hp: e.hp,
+      radius: enemyRadius(e.kind),
+      pos: interpolateAt(e.buffer, renderTime) ?? { ...e.pos },
+    }));
   }
 }

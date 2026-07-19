@@ -1,4 +1,4 @@
-import type { PlayerId, WorldSnapshot } from "../lobby/protocol";
+import type { EnemyKind, PlayerId, WorldSnapshot } from "../lobby/protocol";
 import { type Camera, isVisible, type Viewport } from "./camera";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
@@ -25,6 +25,9 @@ const LABEL = "#e8e8ee";
 const SELF_RING = "#ffffff";
 const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
 
+// One colour per enemy kind, distinct from the static M2 monster placeholder.
+const ENEMY_COLORS: Record<EnemyKind, string> = { grunt: "#e8643c" };
+
 export function drawWorld(
   ctx: CanvasRenderingContext2D,
   world: WorldSnapshot,
@@ -48,6 +51,12 @@ export function drawWorld(
   ctx.fillStyle = MONSTER;
   for (const m of world.monsters) {
     if (isVisible(m.pos, m.radius, camera, viewport)) fillCircle(ctx, m.pos.x, m.pos.y, m.radius);
+  }
+
+  for (const e of world.enemies) {
+    if (!isVisible(e.pos, e.radius, camera, viewport)) continue;
+    ctx.fillStyle = ENEMY_COLORS[e.kind];
+    fillCircle(ctx, e.pos.x, e.pos.y, e.radius);
   }
 
   for (const a of world.players) {

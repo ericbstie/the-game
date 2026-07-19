@@ -1,3 +1,4 @@
+import { type EnemyState, spawnEnemyState, stepEnemies } from "../game/enemies";
 import { generateWorld } from "../game/world";
 import { generateCode, normalizeCode } from "./code";
 import {
@@ -5,6 +6,7 @@ import {
   type LobbyErrorCode,
   type LobbySnapshot,
   MAX_PLAYERS,
+  type MapDelta,
   NAME_MAX,
   type PlayerId,
   type PlayerToken,
@@ -26,9 +28,11 @@ export interface Transport {
 
 export interface LobbyConfig {
   graceMs?: number; // slot held + greyed this long after a drop; default 45s
+  tickMs?: number; // enemy-sim tick period; default 50ms (~20 Hz). Overridable for fast tests.
 }
 
 const DEFAULT_GRACE_MS = 45_000;
+const DEFAULT_TICK_MS = 50; // ~20 Hz enemy/combat simulation
 const SUPERSEDE_CODE = 4000;
 
 interface PlayerRecord {
@@ -50,6 +54,9 @@ interface SessionRecord {
   graceTimers: Map<PlayerId, ReturnType<typeof setTimeout>>;
   worldInit?: WorldInit; // generated once at start; re-sent verbatim on reconnect
   positions: Map<PlayerId, { pos: Vec2; seq: number }>; // last-known relayed position per player
+  sim?: EnemyState; // server-authoritative enemy simulation, live only in-game
+  simTimer?: ReturnType<typeof setInterval>; // the 20 Hz tick driving `sim`; cleared on teardown
+  tickNo: number; // monotonic map-delta tick counter (apply-if-newer on clients)
 }
 
 // Server-authoritative hub over every Session. Owns the whole
@@ -60,6 +67,7 @@ export class LobbyHub {
   private readonly sessions = new Map<LobbyCode, SessionRecord>();
   private readonly sockets = new Map<string, { code: LobbyCode; playerId: PlayerId }>();
   private readonly graceMs: number;
+  private readonly tickMs: number;
   private disposed = false;
 
   constructor(
@@ -67,6 +75,7 @@ export class LobbyHub {
     config: LobbyConfig = {},
   ) {
     this.graceMs = config.graceMs ?? DEFAULT_GRACE_MS;
+    this.tickMs = config.tickMs ?? DEFAULT_TICK_MS;
   }
 
   handleMessage(socketId: string, raw: string): void {
@@ -125,6 +134,7 @@ export class LobbyHub {
     for (const session of this.sessions.values()) {
       for (const timer of session.graceTimers.values()) clearTimeout(timer);
       session.graceTimers.clear();
+      if (session.simTimer) clearInterval(session.simTimer); // stop the enemy tick
     }
   }
 
@@ -157,6 +167,7 @@ export class LobbyHub {
       players: new Map([[player.id, player]]),
       graceTimers: new Map(),
       positions: new Map(),
+      tickNo: 0,
     };
     this.sessions.set(code, session);
     this.sockets.set(socketId, { code, playerId: player.id });
@@ -300,6 +311,24 @@ export class LobbyHub {
       [...session.players.values()].map((p) => ({ id: p.id, slot: p.slot, name: p.name })),
     );
     this.broadcast(session, { type: "game/world-init", init: session.worldInit });
+
+    // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
+    session.sim = spawnEnemyState(session.worldInit);
+    const timer = setInterval(() => this.tick(session), this.tickMs);
+    timer.unref?.();
+    session.simTimer = timer;
+  }
+
+  // One enemy-sim tick: step the sim against the squad's last-known positions (read-only) and
+  // broadcast what changed. `moves` is always present; spawn/death arrays ride only when non-empty.
+  private tick(session: SessionRecord): void {
+    if (!session.sim) return;
+    const players = [...session.positions].map(([id, sample]) => ({ id, pos: sample.pos }));
+    const { events } = stepEnemies(session.sim, players, [], this.tickMs);
+    const delta: MapDelta = { tick: ++session.tickNo, moves: events.moves };
+    if (events.spawns.length > 0) delta.spawns = events.spawns;
+    if (events.deaths.length > 0) delta.deaths = events.deaths;
+    this.broadcast(session, { type: "game/map-delta", ...delta });
   }
 
   // Relay a client's own position to the rest of the squad, dropping a stale/out-of-order
@@ -373,6 +402,7 @@ export class LobbyHub {
 
     // Empty session (zero connected, none in grace) is destroyed and its code freed.
     if (session.players.size === 0) {
+      if (session.simTimer) clearInterval(session.simTimer); // stop the enemy tick before teardown
       this.sessions.delete(session.code);
       return;
     }

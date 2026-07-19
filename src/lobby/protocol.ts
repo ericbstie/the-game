@@ -105,12 +105,51 @@ export interface WorldInit {
   spawns: Spawn[];
 }
 
+// --- Dynamic enemies & combat (Milestone 3) ---
+// The server owns all enemy state; the client only renders it. Enemy motion, spawns, and
+// deaths stream as `game/map-delta` on the same INV-5 envelope at ~20 Hz.
+
+export type EnemyKind = "grunt";
+
+// A newly-spawned enemy, announced once so the client can create its render record (kind +
+// hp) before per-tick position deltas start flowing for it.
+export interface EnemySpawn {
+  id: string;
+  kind: EnemyKind;
+  pos: Vec2;
+  hp: number;
+}
+
+// One enemy's position this tick: [id, x, y]. Every live enemy appears in every delta's
+// `moves`, so a client that missed a spawn still can't render an unknown id (guarded).
+export type EnemyMove = [id: string, x: number, y: number];
+
+// The per-tick enemy/combat delta: a full `moves` set plus sparse event arrays — only the
+// non-empty ones ride the wire. `tick` is monotonic per session; the client applies-if-newer.
+export interface MapDelta {
+  tick: number;
+  moves: EnemyMove[];
+  spawns?: EnemySpawn[];
+  deaths?: string[];
+}
+
+// A render-model enemy the client assembles each frame (not a wire type). Its position is
+// interpolated a short delay behind the stream, exactly like a peer avatar.
+export interface RenderedEnemy {
+  id: string;
+  kind: EnemyKind;
+  pos: Vec2;
+  radius: number;
+  hp: number;
+}
+
 // The render model the client assembles each frame from world-init + local self-sim +
-// relayed peer positions. Not a wire type — it never crosses the socket.
+// relayed peer positions + the enemy stream. Not a wire type — it never crosses the socket.
 export interface WorldSnapshot {
   arena: Arena;
   players: Avatar[]; // sorted by slot
   monsters: Monster[];
+  enemies: RenderedEnemy[];
   exit: Exit;
 }
 
@@ -178,7 +217,8 @@ export type LobbyError = Envelope<"lobby/error", { code: LobbyErrorCode; message
 // emitted in M2.
 export type GameWorldInit = Envelope<"game/world-init", { init: WorldInit }>;
 export type GamePeerPos = Envelope<"game/peer-pos", { id: PlayerId; pos: Vec2; seq: number }>;
-export type GameMapDelta = Envelope<"game/map-delta">;
+// The dynamic enemy/combat stream (M3): a full-`moves` + sparse-events delta each tick.
+export type GameMapDelta = Envelope<"game/map-delta", MapDelta>;
 
 export type ServerMessage =
   | LobbyCreated

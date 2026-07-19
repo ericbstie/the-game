@@ -207,7 +207,10 @@ export class LobbyClient {
         this.state.world?.applyPeer(msg.id, msg.pos, msg.seq, Date.now());
         return;
       case "game/map-delta":
-        return; // reserved for M3 dynamic-map mutations; never emitted in M2
+        // Mutate the live world in place — the render loop reads it every frame, so no React
+        // re-render at the ~20 Hz tick rate. Arrival time is stamped locally (client clock).
+        this.state.world?.applyMapDelta(msg, Date.now());
+        return;
       case "lobby/player-left":
         this.state.world?.removePeer(msg.id);
         this.setState({ snapshot: applyRoster(this.state.snapshot ?? null, msg) ?? undefined });

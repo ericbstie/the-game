@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { LobbyHub, type Transport } from "./lobby";
+import type { ServerMessage } from "./protocol";
 import type { LobbyServer } from "./server";
 import { expectMessage, makeClient, startServer, type TestClient } from "./testing";
 
@@ -573,5 +575,83 @@ describe("M2R: reconnect rebuilds the world", () => {
       "game/peer-pos",
     );
     expect(burst.pos).toEqual({ x: 321, y: 210 }); // host's last-known position, replayed
+  });
+});
+
+describe("M3: the enemy sim streams over the wire", () => {
+  test("a started match streams game/map-delta to every player, first delta announces the grunt", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    hostClient.send({ type: "game/start" });
+    await hostClient.waitFor((m) => m.type === "game/world-init");
+
+    const hostDelta = expectMessage(
+      await hostClient.waitFor((m) => m.type === "game/map-delta"),
+      "game/map-delta",
+    );
+    const benDelta = expectMessage(
+      await ben.waitFor((m) => m.type === "game/map-delta"),
+      "game/map-delta",
+    );
+    expect(hostDelta.tick).toBe(1); // first tick
+    expect(hostDelta.spawns?.[0]).toMatchObject({ kind: "grunt" }); // the seeded grunt, announced once
+    expect(hostDelta.moves.length).toBe(1);
+    expect(benDelta.tick).toBeGreaterThan(0); // peers receive the same stream
+  });
+});
+
+// The tick's arm/clear lifecycle, driven directly through a capture transport so timer
+// behaviour is asserted deterministically (the WS harness can't observe a cleared interval).
+describe("M3: enemy sim tick lifecycle", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+
+  const deltas = (t: Capture) => t.sent.filter((m) => m.msg.type === "game/map-delta");
+
+  function startedSolo(tickMs: number): { t: Capture; hub: LobbyHub } {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    return { t, hub };
+  }
+
+  test("the tick arms on game/start and streams a monotonic-tick delta each period", async () => {
+    const { t, hub } = startedSolo(10);
+    await sleep(35);
+    hub.dispose();
+    const seen = deltas(t);
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    const ticks = seen.map(
+      (d) => (d.msg as Extract<ServerMessage, { type: "game/map-delta" }>).tick,
+    );
+    expect(ticks[0]).toBe(1);
+    expect(ticks[1]).toBeGreaterThan(ticks[0]);
+  });
+
+  test("dispose() clears the tick — nothing streams after", async () => {
+    const { t, hub } = startedSolo(10);
+    await sleep(25);
+    hub.dispose();
+    const n = deltas(t).length;
+    await sleep(30);
+    expect(deltas(t).length).toBe(n);
+  });
+
+  test("emptying the session clears the tick — nothing streams after everyone leaves", async () => {
+    const { t, hub } = startedSolo(10);
+    await sleep(25);
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/leave" })); // last player out → session destroyed
+    const n = deltas(t).length;
+    await sleep(30);
+    expect(deltas(t).length).toBe(n);
   });
 });
