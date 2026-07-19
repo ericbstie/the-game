@@ -1,8 +1,8 @@
 ---
 name: canvas-sprite-generation
 description: >-
-  Generate 2D sprites that draw straight onto an HTML5 canvas for a single-file
-  browser game. Auto-invoke when creating, drawing, or animating sprites, sprite
+  Generate 2D sprites that draw straight onto an HTML5 canvas for a browser
+  game. Auto-invoke when creating, drawing, or animating sprites, sprite
   sheets, or entity art (player, grunts, elites, nests, miners, walls, turrets,
   mines, clusters, the door) for a canvas game, or when handling pixel-crisp
   rendering, sprite caching, atlases, or color variants. Produces procedural
@@ -11,8 +11,8 @@ description: >-
 
 # 2D Canvas Sprite Generation
 
-This project is a single-file HTML/JS canvas game with no build step and no
-asset pipeline. Generate sprites **in code**: draw each once to an offscreen
+This project is a React + Bun browser game rendered on an HTML5 canvas, with no
+art-asset pipeline. Generate sprites **in code**: draw each once to an offscreen
 canvas, cache it, and blit the cache every frame. No PNGs to load, no network,
 nothing to lose.
 
