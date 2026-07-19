@@ -1,110 +1,85 @@
 import { describe, expect, test } from "bun:test";
-import { ARENA, PLAYER_RADIUS, PLAYER_SPEED, World } from "./world";
+import { ARENA, generateWorld, PLAYER_RADIUS, PLAYER_SPEED, stepPos } from "./world";
 
-const STILL = { up: false, down: false, left: false, right: false };
 const players = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, slot: i + 1, name: `P${i + 1}` }));
 
-describe("World spawn", () => {
-  test("seeds one avatar per player near the arena center", () => {
-    const snap = new World(players(3)).snapshot();
-    expect(snap.players).toHaveLength(3);
-    expect(snap.players.map((p) => p.slot)).toEqual([1, 2, 3]);
-    for (const a of snap.players) {
-      expect(Math.abs(a.pos.x - ARENA.width / 2)).toBeLessThan(120);
-      expect(Math.abs(a.pos.y - ARENA.height / 2)).toBeLessThan(120);
-      expect(a.radius).toBe(PLAYER_RADIUS);
+describe("generateWorld", () => {
+  test("seeds one spawn per player near the arena center, slot-ordered", () => {
+    const init = generateWorld(players(3));
+    expect(init.spawns).toHaveLength(3);
+    expect(init.spawns.map((s) => s.slot)).toEqual([1, 2, 3]);
+    for (const s of init.spawns) {
+      expect(Math.abs(s.pos.x - ARENA.width / 2)).toBeLessThan(120);
+      expect(Math.abs(s.pos.y - ARENA.height / 2)).toBeLessThan(120);
+      expect(s).toMatchObject({ id: expect.any(String), name: expect.any(String) });
     }
   });
 
-  test("places monsters and a wall-flush exit inside the arena; tick starts at 0", () => {
-    const snap = new World(players(1)).snapshot();
-    expect(snap.monsters.length).toBeGreaterThan(0);
-    for (const m of snap.monsters) {
+  test("places monsters and a wall-flush exit inside the arena", () => {
+    const init = generateWorld(players(1));
+    expect(init.monsters.length).toBeGreaterThan(0);
+    for (const m of init.monsters) {
       expect(m.pos.x).toBeGreaterThanOrEqual(0);
       expect(m.pos.x).toBeLessThanOrEqual(ARENA.width);
       expect(m.pos.y).toBeGreaterThanOrEqual(0);
       expect(m.pos.y).toBeLessThanOrEqual(ARENA.height);
     }
-    const e = snap.exit;
+    const e = init.exit;
     const onWall =
       e.x === 0 || e.y === 0 || e.x + e.width === ARENA.width || e.y + e.height === ARENA.height;
     expect(onWall).toBe(true);
-    expect(snap.tick).toBe(0);
   });
 
   test("exit placement is driven by an injectable rng", () => {
-    const a = new World(players(1), { rng: () => 0 }).snapshot().exit;
-    const b = new World(players(1), { rng: () => 0.99 }).snapshot().exit;
+    const a = generateWorld(players(1), { rng: () => 0 }).exit;
+    const b = generateWorld(players(1), { rng: () => 0.99 }).exit;
     expect(a).not.toEqual(b);
   });
 });
 
-describe("World movement", () => {
-  test("integrates held input in the right direction and advances the tick", () => {
-    const w = new World(players(1));
-    const start = w.snapshot().players[0].pos.x;
-    w.setInput("p1", { up: false, down: false, left: false, right: true });
-    w.step(100);
-    const snap = w.snapshot();
-    expect(snap.players[0].pos.x).toBeGreaterThan(start);
-    expect(snap.tick).toBe(1);
+const STILL = { up: false, down: false, left: false, right: false };
+const held = (dir: keyof typeof STILL) => ({ ...STILL, [dir]: true });
+
+describe("stepPos", () => {
+  test("integrates held input in the right direction", () => {
+    const start = { x: 100, y: 100 };
+    const next = stepPos(start, held("right"), 100, ARENA);
+    expect(next.x).toBeGreaterThan(start.x);
+    expect(next.y).toBe(start.y);
   });
 
   test("no input means no movement", () => {
-    const w = new World(players(1));
-    const before = w.snapshot().players[0].pos;
-    w.step(100);
-    expect(w.snapshot().players[0].pos).toEqual(before);
+    const start = { x: 100, y: 100 };
+    expect(stepPos(start, STILL, 100, ARENA)).toEqual(start);
   });
 
   test("speed is frame-rate independent (distance ≤ speed × dt)", () => {
-    const w = new World(players(1));
-    w.setInput("p1", { up: false, down: false, left: false, right: true });
-    const x0 = w.snapshot().players[0].pos.x;
-    w.step(1000);
-    const dx = w.snapshot().players[0].pos.x - x0;
+    const start = { x: 100, y: 100 };
+    const next = stepPos(start, held("right"), 1000, ARENA);
+    const dx = next.x - start.x;
     expect(dx).toBeGreaterThan(0);
     expect(dx).toBeLessThanOrEqual(PLAYER_SPEED + 1e-6);
   });
 
   test("diagonal movement is normalized (no speed boost)", () => {
-    const w = new World(players(1));
-    const p = w.snapshot().players[0].pos;
-    w.setInput("p1", { up: true, down: false, left: false, right: true });
-    w.step(100);
-    const q = w.snapshot().players[0].pos;
-    expect(Math.hypot(q.x - p.x, q.y - p.y)).toBeCloseTo((PLAYER_SPEED * 100) / 1000, 3);
+    const start = { x: 100, y: 100 };
+    const next = stepPos(start, { up: true, down: false, left: false, right: true }, 100, ARENA);
+    expect(Math.hypot(next.x - start.x, next.y - start.y)).toBeCloseTo(
+      (PLAYER_SPEED * 100) / 1000,
+      3,
+    );
   });
 
-  test("clamps avatars inside the arena walls", () => {
-    const w = new World(players(1));
-    w.setInput("p1", { up: false, down: false, left: false, right: true });
-    for (let i = 0; i < 200; i++) w.step(100);
-    expect(w.snapshot().players[0].pos.x).toBeCloseTo(ARENA.width - PLAYER_RADIUS, 3);
-  });
-});
-
-describe("World roster", () => {
-  test("removeAvatar drops the player from the snapshot", () => {
-    const w = new World(players(2));
-    w.removeAvatar("p1");
-    expect(w.snapshot().players.map((p) => p.id)).toEqual(["p2"]);
+  test("clamps the avatar inside the arena walls", () => {
+    let pos = { x: ARENA.width / 2, y: ARENA.height / 2 };
+    for (let i = 0; i < 2000; i++) pos = stepPos(pos, held("right"), 100, ARENA);
+    expect(pos.x).toBeCloseTo(ARENA.width - PLAYER_RADIUS, 3);
   });
 
-  test("addAvatar seats a new player", () => {
-    const w = new World(players(1));
-    w.addAvatar({ id: "p2", slot: 2, name: "P2" });
-    expect(
-      w
-        .snapshot()
-        .players.map((p) => p.id)
-        .sort(),
-    ).toEqual(["p1", "p2"]);
-  });
-
-  test("setInput on an unknown id is a no-op", () => {
-    const w = new World(players(1));
-    expect(() => w.setInput("ghost", STILL)).not.toThrow();
+  test("does not mutate the input position", () => {
+    const start = { x: 100, y: 100 };
+    stepPos(start, held("right"), 100, ARENA);
+    expect(start).toEqual({ x: 100, y: 100 });
   });
 });

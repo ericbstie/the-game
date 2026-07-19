@@ -29,14 +29,14 @@ async function connect(server: LobbyServer): Promise<TestClient> {
 async function host(
   server: LobbyServer,
   name = "Host",
-): Promise<{ client: TestClient; code: string }> {
+): Promise<{ client: TestClient; code: string; id: string }> {
   const client = await connect(server);
   client.send({ type: "lobby/create", name });
   const created = expectMessage(
     await client.waitFor((m) => m.type === "lobby/created"),
     "lobby/created",
   );
-  return { client, code: created.code };
+  return { client, code: created.code, id: created.you.id };
 }
 
 describe("T1: host a lobby", () => {
@@ -419,103 +419,140 @@ describe("T5: grace expiry, takeover, and empty-session teardown", () => {
   });
 });
 
-function spawnGame(tickMs: number, graceMs?: number): LobbyServer {
-  const server = startServer(graceMs === undefined ? { tickMs } : { tickMs, graceMs });
-  servers.push(server);
-  return server;
-}
-
-const slot1X = (world: { players: { slot: number; pos: { x: number } }[] }) =>
-  world.players.find((p) => p.slot === 1)?.pos.x ?? 0;
-
-describe("M2: host starts the match and the world streams", () => {
-  test("host start seeds a world and streams game/state to every player", async () => {
-    const server = spawnGame(20);
+describe("M2R: host starts the match and world-init streams", () => {
+  test("host start sends game/world-init to every player, spawns slot-ordered", async () => {
+    const server = spawn();
     const { client: hostClient, code } = await host(server, "Ana");
     const { client: ben } = await joinLobby(server, code, "Ben");
     await hostClient.waitFor((m) => m.type === "lobby/player-joined");
 
     hostClient.send({ type: "game/start" });
 
-    const hostState = expectMessage(
-      await hostClient.waitFor((m) => m.type === "game/state"),
-      "game/state",
+    const hostInit = expectMessage(
+      await hostClient.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
     );
-    const benState = expectMessage(await ben.waitFor((m) => m.type === "game/state"), "game/state");
-    expect(hostState.world.players).toHaveLength(2);
-    expect(benState.world.players).toHaveLength(2);
-    expect(hostState.world.monsters.length).toBeGreaterThan(0);
+    const benInit = expectMessage(
+      await ben.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    );
+    expect(hostInit.init.spawns).toHaveLength(2);
+    expect(benInit.init.spawns.map((s) => s.slot)).toEqual([1, 2]);
+    expect(hostInit.init.monsters.length).toBeGreaterThan(0);
+    expect(hostInit.init.exit.width).toBeGreaterThan(0);
   });
 
   test("a non-host game/start is ignored; the host can still start", async () => {
-    const server = spawnGame(20);
+    const server = spawn();
     const { client: hostClient, code } = await host(server, "Ana");
     const { client: ben } = await joinLobby(server, code, "Ben");
     await hostClient.waitFor((m) => m.type === "lobby/player-joined");
 
     ben.send({ type: "game/start" }); // Ben is not the host
-    await expect(ben.waitFor((m) => m.type === "game/state", 150)).rejects.toThrow();
+    await expect(ben.waitFor((m) => m.type === "game/world-init", 150)).rejects.toThrow();
 
     hostClient.send({ type: "game/start" });
-    await ben.waitFor((m) => m.type === "game/state");
+    await ben.waitFor((m) => m.type === "game/world-init");
   });
 
-  test("streamed input moves the sender's avatar for everyone", async () => {
-    const server = spawnGame(20);
+  test("no world frames stream on a timer after start (the per-tick sim loop is gone)", async () => {
+    const server = spawn();
     const { client: hostClient, code } = await host(server, "Ana");
     const { client: ben } = await joinLobby(server, code, "Ben");
     await hostClient.waitFor((m) => m.type === "lobby/player-joined");
 
     hostClient.send({ type: "game/start" });
-    const first = expectMessage(await ben.waitFor((m) => m.type === "game/state"), "game/state");
-    const startX = slot1X(first.world);
+    await ben.waitFor((m) => m.type === "game/world-init");
 
-    hostClient.send({
-      type: "game/input",
-      move: { up: false, down: false, left: false, right: true },
-    });
-    const moved = expectMessage(
-      await ben.waitFor((m) => m.type === "game/state" && slot1X(m.world) > startX + 1),
-      "game/state",
-    );
-    expect(slot1X(moved.world)).toBeGreaterThan(startX);
+    // Nothing is broadcast unprompted: no peer-pos, no second world-init on a tick.
+    await expect(
+      ben.waitFor((m) => m.type === "game/peer-pos" || m.type === "game/world-init", 150),
+    ).rejects.toThrow();
   });
 });
 
-describe("M2: mid-match presence", () => {
-  test("a leaver's avatar is removed from the streamed world", async () => {
-    const server = spawnGame(20);
+describe("M2R: the server relays positions", () => {
+  test("a client's game/pos is relayed to the other players as game/peer-pos", async () => {
+    const server = spawn();
+    const { client: hostClient, code, id: hostId } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    hostClient.send({ type: "game/start" });
+    await ben.waitFor((m) => m.type === "game/world-init");
+
+    hostClient.send({ type: "game/pos", pos: { x: 123, y: 456 }, seq: 1 });
+    const relayed = expectMessage(
+      await ben.waitFor((m) => m.type === "game/peer-pos"),
+      "game/peer-pos",
+    );
+    expect(relayed.id).toBe(hostId);
+    expect(relayed.pos).toEqual({ x: 123, y: 456 });
+    expect(relayed.seq).toBe(1);
+  });
+
+  test("the sender does not receive its own position back", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    await joinLobby(server, code, "Ben"); // a peer to relay to; the sender is still excluded
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    hostClient.send({ type: "game/start" });
+    await hostClient.waitFor((m) => m.type === "game/world-init");
+
+    hostClient.send({ type: "game/pos", pos: { x: 1, y: 2 }, seq: 1 });
+    await expect(hostClient.waitFor((m) => m.type === "game/peer-pos", 150)).rejects.toThrow();
+  });
+
+  test("a stale or duplicate seq is dropped, not relayed", async () => {
+    const server = spawn();
     const { client: hostClient, code } = await host(server, "Ana");
     const { client: ben } = await joinLobby(server, code, "Ben");
     await hostClient.waitFor((m) => m.type === "lobby/player-joined");
 
     hostClient.send({ type: "game/start" });
-    await hostClient.waitFor((m) => m.type === "game/state" && m.world.players.length === 2);
+    await ben.waitFor((m) => m.type === "game/world-init");
 
-    ben.send({ type: "lobby/leave" });
-    const after = expectMessage(
-      await hostClient.waitFor((m) => m.type === "game/state" && m.world.players.length === 1),
-      "game/state",
-    );
-    expect(after.world.players.map((p) => p.slot)).toEqual([1]);
+    hostClient.send({ type: "game/pos", pos: { x: 10, y: 0 }, seq: 5 });
+    await ben.waitFor((m) => m.type === "game/peer-pos" && m.seq === 5);
+
+    hostClient.send({ type: "game/pos", pos: { x: 99, y: 0 }, seq: 3 }); // stale
+    hostClient.send({ type: "game/pos", pos: { x: 20, y: 0 }, seq: 6 });
+    await ben.waitFor((m) => m.type === "game/peer-pos" && m.seq === 6);
+
+    // The stale seq-3 frame was never relayed.
+    await expect(
+      ben.waitFor((m) => m.type === "game/peer-pos" && m.seq === 3, 150),
+    ).rejects.toThrow();
   });
 
-  test("a drop holds the avatar during grace; reconnect resumes it in-game", async () => {
-    const server = spawnGame(20); // default (long) grace
+  test("game/pos before the match starts is ignored", async () => {
+    const server = spawn();
     const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    hostClient.send({ type: "game/pos", pos: { x: 1, y: 2 }, seq: 1 }); // still in lobby
+    await expect(ben.waitFor((m) => m.type === "game/peer-pos", 150)).rejects.toThrow();
+  });
+});
+
+describe("M2R: reconnect rebuilds the world", () => {
+  test("reconnect within grace is handed world-init and a peer-pos burst of last-known positions", async () => {
+    const server = spawn(); // default (long) grace
+    const { client: hostClient, code, id: hostId } = await host(server, "Ana");
     const { client: ben, joined } = await joinLobby(server, code, "Ben");
     await hostClient.waitFor((m) => m.type === "lobby/player-joined");
 
     hostClient.send({ type: "game/start" });
-    await hostClient.waitFor((m) => m.type === "game/state" && m.world.players.length === 2);
+    await ben.waitFor((m) => m.type === "game/world-init");
+
+    // The host moves, so the server retains a last-known position to replay on reconnect.
+    hostClient.send({ type: "game/pos", pos: { x: 321, y: 210 }, seq: 1 });
+    await ben.waitFor((m) => m.type === "game/peer-pos" && m.seq === 1);
 
     await ben.close(); // drop mid-match (grace, not an explicit leave)
     await hostClient.waitFor((m) => m.type === "lobby/presence-changed");
-    const held = expectMessage(
-      await hostClient.waitFor((m) => m.type === "game/state" && m.world.players.length === 2),
-      "game/state",
-    );
-    expect(held.world.players).toHaveLength(2); // avatar held, not removed
 
     const reconnected = await connect(server);
     reconnected.send({ type: "lobby/join", code, name: "Ben", token: joined.you.token });
@@ -524,10 +561,17 @@ describe("M2: mid-match presence", () => {
       "lobby/joined",
     );
     expect(rejoined.snapshot.phase).toBe("in-game"); // lands back in the match, not the lobby
-    const back = expectMessage(
-      await reconnected.waitFor((m) => m.type === "game/state"),
-      "game/state",
+
+    const init = expectMessage(
+      await reconnected.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
     );
-    expect(back.world.players.some((p) => p.id === joined.you.id)).toBe(true);
+    expect(init.init.spawns.map((s) => s.id).sort()).toEqual([hostId, joined.you.id].sort());
+
+    const burst = expectMessage(
+      await reconnected.waitFor((m) => m.type === "game/peer-pos" && m.id === hostId),
+      "game/peer-pos",
+    );
+    expect(burst.pos).toEqual({ x: 321, y: 210 }); // host's last-known position, replayed
   });
 });

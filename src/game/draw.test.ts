@@ -40,7 +40,6 @@ const world: WorldSnapshot = {
     { id: "m2", pos: { x: 870, y: 90 }, radius: 16 },
   ],
   exit: { x: 400, y: 0, width: 96, height: 18 },
-  tick: 5,
 };
 
 describe("drawWorld", () => {

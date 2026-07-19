@@ -4,14 +4,16 @@ import type {
   Monster,
   MoveInput,
   PlayerId,
+  Spawn,
   Vec2,
-  WorldSnapshot,
+  WorldInit,
 } from "../lobby/protocol";
 
-// Server-authoritative box world (Milestone 2). A deep, pure module: it holds no
-// timers and no transport — the hub drives it with `step(dtMs)` on a fixed tick and
-// ships `snapshot()` to clients. Determinism (no clock, no ambient randomness) keeps
-// it fully unit-testable; the only entropy, the exit's wall, is an injected `rng`.
+// The box world's shared shape and motion, as pure functions. `generateWorld` builds the
+// immutable world-init the server hands to every client once; `stepPos` integrates a
+// single Avatar one frame. Both are deterministic (no clock, no ambient randomness — the
+// only entropy, the exit's wall, is an injected `rng`) so they unit-test fully and run
+// identically on the server (generation) and the client (per-frame self-sim).
 
 export const ARENA: Arena = { width: 960, height: 600 };
 export const PLAYER_RADIUS = 14;
@@ -29,104 +31,48 @@ export interface SpawnPlayer {
   name: string;
 }
 
-interface AvatarRecord {
-  id: PlayerId;
-  slot: number;
-  name: string;
-  pos: Vec2;
-  input: MoveInput;
-}
-
-const STILL: MoveInput = { up: false, down: false, left: false, right: false };
-
 export interface WorldOptions {
   arena?: Arena;
   rng?: () => number; // defaults to Math.random; injected for deterministic exit placement
 }
 
-export class World {
-  private readonly arena: Arena;
-  private readonly avatars = new Map<PlayerId, AvatarRecord>();
-  private readonly monsters: Monster[];
-  private readonly exit: Exit;
-  private tickCount = 0;
+export function generateWorld(players: SpawnPlayer[], options: WorldOptions = {}): WorldInit {
+  const arena = options.arena ?? ARENA;
+  return {
+    arena,
+    exit: placeExit(arena, options.rng ?? Math.random),
+    monsters: placeMonsters(arena),
+    spawns: players.map((p) => spawn(p, arena)),
+  };
+}
 
-  constructor(players: SpawnPlayer[], options: WorldOptions = {}) {
-    this.arena = options.arena ?? ARENA;
-    for (const p of players) this.avatars.set(p.id, this.spawn(p));
-    this.monsters = placeMonsters(this.arena);
-    this.exit = placeExit(this.arena, options.rng ?? Math.random);
-  }
+// Integrate one Avatar by dtMs from its held input, clamped inside the walls. Pure — it
+// returns a fresh Vec2 and never mutates its argument.
+export function stepPos(pos: Vec2, input: MoveInput, dtMs: number, arena: Arena): Vec2 {
+  let dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+  let dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+  if (dx === 0 && dy === 0) return { x: pos.x, y: pos.y };
+  const len = Math.hypot(dx, dy);
+  dx /= len;
+  dy /= len;
+  const dt = dtMs / 1000;
+  return {
+    x: clamp(pos.x + dx * PLAYER_SPEED * dt, PLAYER_RADIUS, arena.width - PLAYER_RADIUS),
+    y: clamp(pos.y + dy * PLAYER_SPEED * dt, PLAYER_RADIUS, arena.height - PLAYER_RADIUS),
+  };
+}
 
-  addAvatar(player: SpawnPlayer): void {
-    if (!this.avatars.has(player.id)) this.avatars.set(player.id, this.spawn(player));
-  }
-
-  removeAvatar(id: PlayerId): void {
-    this.avatars.delete(id);
-  }
-
-  setInput(id: PlayerId, move: MoveInput): void {
-    const avatar = this.avatars.get(id);
-    if (avatar) avatar.input = move;
-  }
-
-  // Advance the simulation by dtMs: integrate each avatar from its held input and clamp
-  // it inside the walls. Server owns position — the client never asserts its own.
-  step(dtMs: number): void {
-    const dt = dtMs / 1000;
-    for (const a of this.avatars.values()) {
-      let dx = (a.input.right ? 1 : 0) - (a.input.left ? 1 : 0);
-      let dy = (a.input.down ? 1 : 0) - (a.input.up ? 1 : 0);
-      if (dx === 0 && dy === 0) continue;
-      const len = Math.hypot(dx, dy);
-      dx /= len;
-      dy /= len;
-      a.pos.x = clamp(
-        a.pos.x + dx * PLAYER_SPEED * dt,
-        PLAYER_RADIUS,
-        this.arena.width - PLAYER_RADIUS,
-      );
-      a.pos.y = clamp(
-        a.pos.y + dy * PLAYER_SPEED * dt,
-        PLAYER_RADIUS,
-        this.arena.height - PLAYER_RADIUS,
-      );
-    }
-    this.tickCount++;
-  }
-
-  snapshot(): WorldSnapshot {
-    return {
-      arena: this.arena,
-      players: [...this.avatars.values()]
-        .sort((a, b) => a.slot - b.slot)
-        .map((a) => ({
-          id: a.id,
-          slot: a.slot,
-          name: a.name,
-          pos: { ...a.pos },
-          radius: PLAYER_RADIUS,
-        })),
-      monsters: this.monsters.map((m) => ({ ...m, pos: { ...m.pos } })),
-      exit: { ...this.exit },
-      tick: this.tickCount,
-    };
-  }
-
-  private spawn(player: SpawnPlayer): AvatarRecord {
-    const angle = ((player.slot - 1) / 6) * Math.PI * 2;
-    return {
-      id: player.id,
-      slot: player.slot,
-      name: player.name,
-      pos: {
-        x: this.arena.width / 2 + Math.cos(angle) * SPAWN_RING,
-        y: this.arena.height / 2 + Math.sin(angle) * SPAWN_RING,
-      },
-      input: STILL,
-    };
-  }
+function spawn(player: SpawnPlayer, arena: Arena): Spawn {
+  const angle = ((player.slot - 1) / 6) * Math.PI * 2;
+  return {
+    id: player.id,
+    slot: player.slot,
+    name: player.name,
+    pos: {
+      x: arena.width / 2 + Math.cos(angle) * SPAWN_RING,
+      y: arena.height / 2 + Math.sin(angle) * SPAWN_RING,
+    },
+  };
 }
 
 function clamp(value: number, lo: number, hi: number): number {

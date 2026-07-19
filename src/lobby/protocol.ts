@@ -86,16 +86,37 @@ export interface Exit {
   height: number;
 }
 
+// A player's starting placement, streamed once in world-init so every client seeds the
+// same roster of Avatars locally. Radius is a constant, so it is not on the wire.
+export interface Spawn {
+  id: PlayerId;
+  slot: number;
+  name: string;
+  pos: Vec2;
+}
+
+// The immutable shared world the server generates once at match start and re-sends on
+// reconnect: the arena, the placed exit and monsters, and every player's spawn. Avatar
+// motion is not here — it flows continuously as peer positions.
+export interface WorldInit {
+  arena: Arena;
+  exit: Exit;
+  monsters: Monster[];
+  spawns: Spawn[];
+}
+
+// The render model the client assembles each frame from world-init + local self-sim +
+// relayed peer positions. Not a wire type — it never crosses the socket.
 export interface WorldSnapshot {
   arena: Arena;
   players: Avatar[]; // sorted by slot
   monsters: Monster[];
   exit: Exit;
-  tick: number; // monotonic; the client applies-if-newer, like the lobby `rev`
 }
 
-// The movement intent a client streams: which directions are held. The server derives
-// velocity from this so the client never asserts its own position or speed.
+// The movement intent driving the client's own Avatar: which directions are held. The
+// client integrates this locally each frame — it never crosses the wire (the client
+// owns its position; the server only relays the result).
 export interface MoveInput {
   up: boolean;
   down: boolean;
@@ -114,11 +135,13 @@ export type JoinLobby = Envelope<
   { code: LobbyCode; name: string; token?: PlayerToken }
 >;
 export type LeaveLobby = Envelope<"lobby/leave">;
-// World commands (M2). `game/start` is host-only (enforced server-side); `game/input`
-// streams the current movement intent.
+// World commands (M2). `game/start` is host-only (enforced server-side); `game/pos`
+// streams the client's own integrated position (the client owns its coordinates —
+// the server relays them, never re-simulates them). `seq` is monotonic per player so a
+// stale/out-of-order frame is dropped.
 export type StartGame = Envelope<"game/start">;
-export type GameInput = Envelope<"game/input", { move: MoveInput }>;
-export type ClientMessage = CreateLobby | JoinLobby | LeaveLobby | StartGame | GameInput;
+export type GamePos = Envelope<"game/pos", { pos: Vec2; seq: number }>;
+export type ClientMessage = CreateLobby | JoinLobby | LeaveLobby | StartGame | GamePos;
 
 export type LobbyErrorCode = "lobby-not-found" | "lobby-full" | "slot-released" | "invalid";
 
@@ -149,8 +172,13 @@ export type HostChanged = Envelope<"lobby/host-changed", { host: PlayerId; rev: 
 export type Superseded = Envelope<"lobby/superseded">;
 export type LobbyError = Envelope<"lobby/error", { code: LobbyErrorCode; message?: string }>;
 
-// The world stream (M2): a full WorldSnapshot each server tick.
-export type GameState = Envelope<"game/state", { world: WorldSnapshot }>;
+// The world stream (M2). On start (and on reconnect) the server sends `game/world-init`
+// once; thereafter it relays each client's `game/pos` to the others as `game/peer-pos`.
+// `game/map-delta` is reserved for M3 dynamic-map mutations — declared here but never
+// emitted in M2.
+export type GameWorldInit = Envelope<"game/world-init", { init: WorldInit }>;
+export type GamePeerPos = Envelope<"game/peer-pos", { id: PlayerId; pos: Vec2; seq: number }>;
+export type GameMapDelta = Envelope<"game/map-delta">;
 
 export type ServerMessage =
   | LobbyCreated
@@ -161,7 +189,9 @@ export type ServerMessage =
   | HostChanged
   | Superseded
   | LobbyError
-  | GameState;
+  | GameWorldInit
+  | GamePeerPos
+  | GameMapDelta;
 
 // Hand-rolled inbound narrowing (no schema dep, per spec). Untrusted client input is
 // never assumed valid: every field is checked before the message is trusted.
@@ -199,27 +229,27 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       return { type: "lobby/leave" };
     case "game/start":
       return { type: "game/start" };
-    case "game/input": {
-      if (!isMoveInput(msg.move)) return null;
-      const m = msg.move as Record<string, boolean>;
-      return { type: "game/input", move: { up: m.up, down: m.down, left: m.left, right: m.right } };
+    case "game/pos": {
+      const pos = asVec2(msg.pos);
+      if (pos === null || !isFiniteNumber(msg.seq)) return null;
+      return { type: "game/pos", pos, seq: msg.seq };
     }
     default:
       return null;
   }
 }
 
-// A MoveInput must carry exactly the four direction flags, each a real boolean — a
-// client could send anything, so integers/strings/missing keys are rejected outright.
-function isMoveInput(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const m = value as Record<string, unknown>;
-  return (
-    typeof m.up === "boolean" &&
-    typeof m.down === "boolean" &&
-    typeof m.left === "boolean" &&
-    typeof m.right === "boolean"
-  );
+// A streamed position must be a Vec2 of finite numbers — a client could send anything,
+// so NaN/Infinity/strings/missing keys are rejected before the coordinate is trusted.
+function asVec2(value: unknown): Vec2 | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (!isFiniteNumber(v.x) || !isFiniteNumber(v.y)) return null;
+  return { x: v.x, y: v.y };
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 // A name is required and a string; bounds/emptiness are resolved server-side

@@ -16,7 +16,6 @@ export interface ServeLobbyOptions {
   routes?: Record<string, Bun.HTMLBundle>;
   development?: Bun.Serve.Options<SocketData>["development"];
   graceMs?: number;
-  tickMs?: number; // fixed world timestep once a match starts; see LobbyHub
   idleTimeout?: number; // WS idle seconds before Bun pings/closes; see DEFAULT_IDLE_TIMEOUT
 }
 
@@ -41,7 +40,7 @@ export function serveLobby(options: ServeLobbyOptions = {}): LobbyServer {
       registry.get(socketId)?.close(code, reason);
     },
   };
-  const hub = new LobbyHub(transport, { graceMs: options.graceMs, tickMs: options.tickMs });
+  const hub = new LobbyHub(transport, { graceMs: options.graceMs });
 
   const server = Bun.serve<SocketData>({
     port: options.port ?? Number(process.env.PORT ?? 3000),

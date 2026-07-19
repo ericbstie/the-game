@@ -1,32 +1,40 @@
 import { useEffect, useRef } from "react";
 import type { LobbyState } from "../lobby/client";
-import type { MoveInput } from "../lobby/protocol";
+import type { MoveInput, Vec2 } from "../lobby/protocol";
 import { drawWorld } from "./draw";
 import { keyToDirection, movesEqual, NO_MOVE } from "./input";
 import { ARENA } from "./world";
 
+const POS_SEND_MS = 50; // ~20 Hz position stream, independent of the render frame rate
+const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the avatar on resume
+
 interface GameScreenProps {
   state: LobbyState;
   onLeave: () => void;
-  onInput: (move: MoveInput) => void;
+  onPos: (pos: Vec2) => void;
 }
 
-// The in-match screen: a canvas rendering the streamed world, plus keyboard capture.
-// The server owns simulation — this only paints the latest snapshot and reports which
-// keys are held. It repaints when a new frame arrives (state.world changes), so there
-// is no client-side game loop to run.
-export function GameScreen({ state, onLeave, onInput }: GameScreenProps) {
+// The in-match screen. The client owns its own Avatar now: a single render loop integrates
+// it locally each frame from the held keys (zero input lag) and paints the world, while
+// peers move from relayed positions applied to the same live world elsewhere. The owner's
+// position is streamed out at a fixed ~20 Hz. Refs bridge React's render into the loop so a
+// world swapped on reconnect and a changed callback are picked up without restarting it.
+export function GameScreen({ state, onLeave, onPos }: GameScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const heldRef = useRef<MoveInput>(NO_MOVE);
-  const onInputRef = useRef(onInput);
-  onInputRef.current = onInput;
+  const worldRef = useRef(state.world);
+  const selfIdRef = useRef(state.self?.id);
+  const onPosRef = useRef(onPos);
+  worldRef.current = state.world;
+  selfIdRef.current = state.self?.id;
+  onPosRef.current = onPos;
 
+  // Keyboard → held MoveInput. It now drives the local self-sim; nothing is sent per key.
   useEffect(() => {
     const setHeld = (direction: keyof MoveInput, down: boolean) => {
       const next = { ...heldRef.current, [direction]: down };
-      if (movesEqual(next, heldRef.current)) return; // only emit on a real change
+      if (movesEqual(next, heldRef.current)) return; // only react to a real change
       heldRef.current = next;
-      onInputRef.current(next);
     };
     const onKeyDown = (e: KeyboardEvent) => {
       const direction = keyToDirection(e.key);
@@ -48,15 +56,32 @@ export function GameScreen({ state, onLeave, onInput }: GameScreenProps) {
   }, []);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    const world = state.world;
-    if (!canvas || !world) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return; // no 2D backend (e.g. under the test DOM) — nothing to paint
-    drawWorld(ctx, world, { selfId: state.self?.id });
-  }, [state.world, state.self?.id]);
+    let raf = 0;
+    let last = performance.now();
+    const frame = (now: number) => {
+      const dt = Math.min(now - last, MAX_FRAME_MS);
+      last = now;
+      const world = worldRef.current;
+      if (world) {
+        world.stepSelf(dt, heldRef.current);
+        const ctx = canvasRef.current?.getContext("2d");
+        if (ctx) drawWorld(ctx, world.snapshot(), { selfId: selfIdRef.current });
+      }
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
-  const arena = state.world?.arena ?? ARENA;
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const pos = worldRef.current?.selfPos();
+      if (pos) onPosRef.current(pos);
+    }, POS_SEND_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  const arena = state.world?.snapshot().arena ?? ARENA;
 
   return (
     <main className="game">
