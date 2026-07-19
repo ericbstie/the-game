@@ -218,8 +218,18 @@ describe("T5: LobbyClient slot release and takeover", () => {
   });
 });
 
-describe("M2: LobbyClient game flow", () => {
-  test("start() begins the match and the client receives the streamed world", async () => {
+// Poll a synchronous predicate: peer positions mutate the live world in place without a
+// setState, so waitForState (which fires only on store notifications) can't observe them.
+async function poll(pred: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) throw new Error("poll timeout");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+describe("M2R: LobbyClient game flow", () => {
+  test("start() builds the local world with the player seated, phase in-game", async () => {
     const server = spawn();
     const client = newClient({ wsUrl: server.url });
     client.host("Ana");
@@ -227,25 +237,57 @@ describe("M2: LobbyClient game flow", () => {
 
     client.start();
     const inGame = await waitForState(client, (s) => s.world !== undefined);
-    expect(inGame.world?.players).toHaveLength(1);
+    expect(inGame.world?.snapshot(Date.now()).players).toHaveLength(1);
     expect(inGame.snapshot?.phase).toBe("in-game"); // local phase flips into the match
   });
 
-  test("sendInput drives the avatar and the world reflects it", async () => {
+  test("a peer's relayed position moves that peer in the local world", async () => {
     const server = spawn();
-    const client = newClient({ wsUrl: server.url });
-    client.host("Ana");
-    await waitForState(client, (s) => s.status === "lobby");
-    client.start();
-    const before = await waitForState(client, (s) => s.world !== undefined);
-    const startX = before.world?.players[0].pos.x ?? 0;
+    const hostClient = newClient({ wsUrl: server.url });
+    hostClient.host("Ana");
+    const hosted = await waitForState(hostClient, (s) => s.status === "lobby");
 
-    client.sendInput({ up: false, down: false, left: false, right: true });
-    const moved = await waitForState(
-      client,
-      (s) => (s.world?.players[0].pos.x ?? 0) > startX + 1,
-      2000,
-    );
-    expect(moved.world?.players[0].pos.x ?? 0).toBeGreaterThan(startX);
+    // A raw peer joins and drives its own position over the wire.
+    const peer = makeClient(server.url);
+    rawClients.push(peer);
+    await peer.opened;
+    peer.send({ type: "lobby/join", code: hosted.code ?? "", name: "Ben" });
+    const peerJoined = await peer.waitFor((m) => m.type === "lobby/joined");
+    const peerId = (peerJoined as { you: { id: string } }).you.id;
+
+    hostClient.start();
+    await peer.waitFor((m) => m.type === "game/world-init");
+
+    peer.send({ type: "game/pos", pos: { x: 777, y: 333 }, seq: 1 });
+    await poll(() => {
+      const p = hostClient
+        .getState()
+        .world?.snapshot(Date.now())
+        .players.find((a) => a.id === peerId);
+      return p?.pos.x === 777 && p?.pos.y === 333;
+    });
+  });
+
+  test("a peer leaving removes them from the local world", async () => {
+    const server = spawn();
+    const hostClient = newClient({ wsUrl: server.url });
+    hostClient.host("Ana");
+    const hosted = await waitForState(hostClient, (s) => s.status === "lobby");
+
+    const peer = makeClient(server.url);
+    rawClients.push(peer);
+    await peer.opened;
+    peer.send({ type: "lobby/join", code: hosted.code ?? "", name: "Ben" });
+    await peer.waitFor((m) => m.type === "lobby/joined");
+    await waitForState(hostClient, (s) => (s.snapshot?.players.length ?? 0) === 2);
+
+    hostClient.start();
+    await waitForState(hostClient, (s) => s.world !== undefined);
+    await poll(() => hostClient.getState().world?.snapshot(Date.now()).players.length === 2);
+
+    peer.send({ type: "lobby/leave" });
+    await waitForState(hostClient, (s) => (s.snapshot?.players.length ?? 0) === 1);
+    const remaining = hostClient.getState().world?.snapshot(Date.now()).players ?? [];
+    expect(remaining.map((p) => p.id)).toEqual([hosted.self?.id ?? ""]);
   });
 });

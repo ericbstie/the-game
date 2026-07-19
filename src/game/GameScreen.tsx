@@ -1,32 +1,43 @@
 import { useEffect, useRef } from "react";
 import type { LobbyState } from "../lobby/client";
-import type { MoveInput } from "../lobby/protocol";
+import type { Arena, MoveInput, Vec2 } from "../lobby/protocol";
+import { computeCamera } from "./camera";
 import { drawWorld } from "./draw";
 import { keyToDirection, movesEqual, NO_MOVE } from "./input";
-import { ARENA } from "./world";
+
+const POS_SEND_MS = 50; // ~20 Hz position stream, independent of the render frame rate
+const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the avatar on resume
 
 interface GameScreenProps {
   state: LobbyState;
   onLeave: () => void;
-  onInput: (move: MoveInput) => void;
+  onPos: (pos: Vec2) => void;
 }
 
-// The in-match screen: a canvas rendering the streamed world, plus keyboard capture.
-// The server owns simulation — this only paints the latest snapshot and reports which
-// keys are held. It repaints when a new frame arrives (state.world changes), so there
-// is no client-side game loop to run.
-export function GameScreen({ state, onLeave, onInput }: GameScreenProps) {
+// The in-match screen: a fullscreen camera that follows your Avatar through the giant box.
+// A single render loop integrates the owner locally each frame (zero input lag), samples
+// peers render-delay behind from their buffers, clamps the camera at the walls, culls
+// off-screen entities, and paints via a DPR-correct transform (1 world unit = 1 CSS px,
+// crisp on HiDPI). The owner's position streams out at a fixed ~20 Hz. Refs bridge React's
+// render into the loop so a world swapped on reconnect and a changed callback are picked up
+// without restarting it.
+export function GameScreen({ state, onLeave, onPos }: GameScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const heldRef = useRef<MoveInput>(NO_MOVE);
-  const onInputRef = useRef(onInput);
-  onInputRef.current = onInput;
+  const worldRef = useRef(state.world);
+  const selfIdRef = useRef(state.self?.id);
+  const onPosRef = useRef(onPos);
+  const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
+  worldRef.current = state.world;
+  selfIdRef.current = state.self?.id;
+  onPosRef.current = onPos;
 
+  // Keyboard → held MoveInput. It drives the local self-sim; nothing is sent per key.
   useEffect(() => {
     const setHeld = (direction: keyof MoveInput, down: boolean) => {
       const next = { ...heldRef.current, [direction]: down };
-      if (movesEqual(next, heldRef.current)) return; // only emit on a real change
+      if (movesEqual(next, heldRef.current)) return; // only react to a real change
       heldRef.current = next;
-      onInputRef.current(next);
     };
     const onKeyDown = (e: KeyboardEvent) => {
       const direction = keyToDirection(e.key);
@@ -47,16 +58,59 @@ export function GameScreen({ state, onLeave, onInput }: GameScreenProps) {
     };
   }, []);
 
+  // Track the CSS viewport size and size the backing store to device pixels (crisp HiDPI).
+  // ResizeObserver reports content-box changes without a per-frame layout read; the loop
+  // handles a pure DPR change (moving to a different-density monitor) itself.
   useEffect(() => {
     const canvas = canvasRef.current;
-    const world = state.world;
-    if (!canvas || !world) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return; // no 2D backend (e.g. under the test DOM) — nothing to paint
-    drawWorld(ctx, world, { selfId: state.self?.id });
-  }, [state.world, state.self?.id]);
+    if (!canvas) return;
+    const sync = () => sizeBackingStore(canvas, viewRef);
+    sync();
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(sync);
+      ro.observe(canvas);
+      return () => ro.disconnect();
+    }
+    window.addEventListener("resize", sync);
+    return () => window.removeEventListener("resize", sync);
+  }, []);
 
-  const arena = state.world?.arena ?? ARENA;
+  useEffect(() => {
+    let raf = 0;
+    let last = performance.now();
+    const frame = (now: number) => {
+      const dt = Math.min(now - last, MAX_FRAME_MS);
+      last = now;
+      const canvas = canvasRef.current;
+      const world = worldRef.current;
+      if (canvas && world) {
+        const dpr = window.devicePixelRatio || 1;
+        if (dpr !== viewRef.current.dpr) resizeForDpr(canvas, viewRef, dpr);
+        world.stepSelf(dt, heldRef.current);
+        const { w, h } = viewRef.current;
+        const ctx = w > 0 && h > 0 ? canvas.getContext("2d") : null;
+        if (ctx) {
+          const snapshot = world.snapshot(Date.now());
+          const self = selfPos(snapshot.players, selfIdRef.current) ?? center(world.arena);
+          const viewport = { width: w, height: h };
+          const camera = computeCamera(self, viewport, world.arena);
+          ctx.setTransform(dpr, 0, 0, dpr, -camera.x * dpr, -camera.y * dpr);
+          drawWorld(ctx, snapshot, { selfId: selfIdRef.current, camera, viewport });
+        }
+      }
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const pos = worldRef.current?.selfPos();
+      if (pos) onPosRef.current(pos);
+    }, POS_SEND_MS);
+    return () => clearInterval(timer);
+  }, []);
 
   return (
     <main className="game">
@@ -73,14 +127,44 @@ export function GameScreen({ state, onLeave, onInput }: GameScreenProps) {
           Leave
         </button>
       </header>
-      <canvas
-        ref={canvasRef}
-        width={arena.width}
-        height={arena.height}
-        className="arena"
-        aria-label="Game arena"
-      />
+      <canvas ref={canvasRef} className="arena" aria-label="Game arena" />
       <p className="hint">Move with WASD or the arrow keys.</p>
     </main>
   );
+}
+
+function sizeBackingStore(
+  canvas: HTMLCanvasElement,
+  viewRef: { current: { w: number; h: number; dpr: number } },
+): void {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  viewRef.current = { w, h, dpr };
+  applyBackingStore(canvas, w, h, dpr);
+}
+
+function resizeForDpr(
+  canvas: HTMLCanvasElement,
+  viewRef: { current: { w: number; h: number; dpr: number } },
+  dpr: number,
+): void {
+  const { w, h } = viewRef.current;
+  viewRef.current = { w, h, dpr };
+  applyBackingStore(canvas, w, h, dpr);
+}
+
+function applyBackingStore(canvas: HTMLCanvasElement, w: number, h: number, dpr: number): void {
+  const bw = Math.round(w * dpr);
+  const bh = Math.round(h * dpr);
+  if (canvas.width !== bw) canvas.width = bw;
+  if (canvas.height !== bh) canvas.height = bh;
+}
+
+function selfPos(players: { id: string; pos: Vec2 }[], selfId: string | undefined): Vec2 | null {
+  return players.find((p) => p.id === selfId)?.pos ?? null;
+}
+
+function center(arena: Arena): Vec2 {
+  return { x: arena.width / 2, y: arena.height / 2 };
 }

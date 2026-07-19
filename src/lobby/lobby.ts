@@ -1,11 +1,10 @@
-import { World } from "../game/world";
+import { generateWorld } from "../game/world";
 import { generateCode, normalizeCode } from "./code";
 import {
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
   MAX_PLAYERS,
-  type MoveInput,
   NAME_MAX,
   type PlayerId,
   type PlayerToken,
@@ -13,6 +12,8 @@ import {
   type PublicPlayer,
   parseClientMessage,
   type ServerMessage,
+  type Vec2,
+  type WorldInit,
 } from "./protocol";
 
 // The only thing the domain needs from the outside world: address a socket by id to
@@ -25,14 +26,10 @@ export interface Transport {
 
 export interface LobbyConfig {
   graceMs?: number; // slot held + greyed this long after a drop; default 45s
-  tickMs?: number; // fixed simulation timestep once a match is in-game; default ~30Hz
 }
 
 const DEFAULT_GRACE_MS = 45_000;
-const DEFAULT_TICK_MS = 33; // ~30Hz world simulation + broadcast
 const SUPERSEDE_CODE = 4000;
-
-const STILL: MoveInput = { up: false, down: false, left: false, right: false };
 
 interface PlayerRecord {
   id: PlayerId;
@@ -51,8 +48,8 @@ interface SessionRecord {
   rev: number;
   players: Map<PlayerId, PlayerRecord>;
   graceTimers: Map<PlayerId, ReturnType<typeof setTimeout>>;
-  world?: World; // present once the match starts
-  tickTimer?: ReturnType<typeof setInterval>; // drives the world; cleared on teardown
+  worldInit?: WorldInit; // generated once at start; re-sent verbatim on reconnect
+  positions: Map<PlayerId, { pos: Vec2; seq: number }>; // last-known relayed position per player
 }
 
 // Server-authoritative hub over every Session. Owns the whole
@@ -63,7 +60,6 @@ export class LobbyHub {
   private readonly sessions = new Map<LobbyCode, SessionRecord>();
   private readonly sockets = new Map<string, { code: LobbyCode; playerId: PlayerId }>();
   private readonly graceMs: number;
-  private readonly tickMs: number;
   private disposed = false;
 
   constructor(
@@ -71,7 +67,6 @@ export class LobbyHub {
     config: LobbyConfig = {},
   ) {
     this.graceMs = config.graceMs ?? DEFAULT_GRACE_MS;
-    this.tickMs = config.tickMs ?? DEFAULT_TICK_MS;
   }
 
   handleMessage(socketId: string, raw: string): void {
@@ -93,8 +88,8 @@ export class LobbyHub {
       case "game/start":
         this.startGame(socketId);
         return;
-      case "game/input":
-        this.gameInput(socketId, msg.move);
+      case "game/pos":
+        this.gamePos(socketId, msg.pos, msg.seq);
         return;
     }
   }
@@ -110,9 +105,8 @@ export class LobbyHub {
     if (!session || !player || player.socketId !== socketId) return; // stale (superseded) socket
 
     player.socketId = undefined;
-    // Freeze the avatar: without this a player who drops mid-key would drift forever
-    // (the world keeps integrating the last held input) until grace resolves.
-    session.world?.setInput(player.id, STILL);
+    // No avatar to freeze: the client owns its position now, so a dropped player simply
+    // stops streaming and peers hold its last-known position until grace resolves.
     player.presence = { status: "disconnected", graceExpiresAt: Date.now() + this.graceMs };
     this.broadcast(session, {
       type: "lobby/presence-changed",
@@ -131,7 +125,6 @@ export class LobbyHub {
     for (const session of this.sessions.values()) {
       for (const timer of session.graceTimers.values()) clearTimeout(timer);
       session.graceTimers.clear();
-      this.stopTicking(session);
     }
   }
 
@@ -163,6 +156,7 @@ export class LobbyHub {
       rev: 0,
       players: new Map([[player.id, player]]),
       graceTimers: new Map(),
+      positions: new Map(),
     };
     this.sessions.set(code, session);
     this.sockets.set(socketId, { code, playerId: player.id });
@@ -225,8 +219,6 @@ export class LobbyHub {
     };
     session.players.set(player.id, player);
     this.sockets.set(socketId, { code: session.code, playerId: player.id });
-    // A player seated after the match started still needs an avatar to drive.
-    session.world?.addAvatar({ id: player.id, slot: player.slot, name: player.name });
     const rev = ++session.rev;
     this.transport.send(socketId, {
       type: "lobby/joined",
@@ -236,6 +228,9 @@ export class LobbyHub {
       reclaimed: false,
       tookOver: false,
     });
+    // A brand-new joiner mid-match isn't a supported M2 player (the Squad is fixed at
+    // Start), but hand them the world so they at least see it rather than a dead screen.
+    this.sendWorldState(session, socketId);
     this.broadcast(
       session,
       { type: "lobby/player-joined", player: publicOf(player), rev },
@@ -276,6 +271,9 @@ export class LobbyHub {
       reclaimed: true,
       tookOver,
     });
+    // Rebuild the reconnecter's world: the immutable init plus everyone's last-known
+    // position, so their client lands back in the match where the squad actually is.
+    this.sendWorldState(session, socketId);
     if (cameBack) {
       this.broadcast(
         session,
@@ -285,8 +283,9 @@ export class LobbyHub {
     }
   }
 
-  // Host-only: flip the Session into a match, seed the World from the current Squad,
-  // push an immediate first frame so every client transitions at once, then tick.
+  // Host-only: flip the Session into a match, generate the shared world once from the
+  // current Squad, and hand every client its immutable world-init. The server does not
+  // simulate avatars — it becomes a relay; clients own and stream their own positions.
   private startGame(socketId: string): void {
     const bind = this.sockets.get(socketId);
     if (!bind) return;
@@ -297,40 +296,39 @@ export class LobbyHub {
     if (session.phase === "in-game") return; // already started — idempotent
 
     session.phase = "in-game";
-    session.world = new World(
+    session.worldInit = generateWorld(
       [...session.players.values()].map((p) => ({ id: p.id, slot: p.slot, name: p.name })),
     );
-    this.broadcastState(session);
-    const timer = setInterval(() => this.tickSession(session.code), this.tickMs);
-    timer.unref?.();
-    session.tickTimer = timer;
+    this.broadcast(session, { type: "game/world-init", init: session.worldInit });
   }
 
-  private gameInput(socketId: string, move: MoveInput): void {
+  // Relay a client's own position to the rest of the squad, dropping a stale/out-of-order
+  // frame by its per-player seq and retaining the newest as the reconnect source-of-truth.
+  private gamePos(socketId: string, pos: Vec2, seq: number): void {
     const bind = this.sockets.get(socketId);
     if (!bind) return;
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    session.world?.setInput(player.id, move);
+    if (!session.worldInit) return; // positions before the match starts are meaningless
+    const last = session.positions.get(player.id);
+    if (last && seq <= last.seq) return; // stale or duplicate — drop it
+    session.positions.set(player.id, { pos, seq });
+    this.broadcast(session, { type: "game/peer-pos", id: player.id, pos, seq }, socketId);
   }
 
-  private tickSession(code: LobbyCode): void {
-    const session = this.sessions.get(code);
-    if (!session?.world) return;
-    session.world.step(this.tickMs);
-    this.broadcastState(session);
-  }
-
-  private broadcastState(session: SessionRecord): void {
-    if (!session.world) return;
-    this.broadcast(session, { type: "game/state", world: session.world.snapshot() });
-  }
-
-  private stopTicking(session: SessionRecord): void {
-    if (session.tickTimer) {
-      clearInterval(session.tickTimer);
-      session.tickTimer = undefined;
+  // Hand one socket the immutable world plus a burst of every player's last-known position,
+  // so a (re)joining client rebuilds the world locally and lands where the squad is.
+  private sendWorldState(session: SessionRecord, socketId: string): void {
+    if (!session.worldInit) return;
+    this.transport.send(socketId, { type: "game/world-init", init: session.worldInit });
+    for (const [id, sample] of session.positions) {
+      this.transport.send(socketId, {
+        type: "game/peer-pos",
+        id,
+        pos: sample.pos,
+        seq: sample.seq,
+      });
     }
   }
 
@@ -359,7 +357,7 @@ export class LobbyHub {
     reason: "left" | "grace-expired",
   ): void {
     session.players.delete(player.id);
-    session.world?.removeAvatar(player.id);
+    session.positions.delete(player.id);
     const timer = session.graceTimers.get(player.id);
     if (timer) {
       clearTimeout(timer);
@@ -375,7 +373,6 @@ export class LobbyHub {
 
     // Empty session (zero connected, none in grace) is destroyed and its code freed.
     if (session.players.size === 0) {
-      this.stopTicking(session);
       this.sessions.delete(session.code);
       return;
     }

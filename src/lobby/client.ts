@@ -1,14 +1,14 @@
+import { ClientWorld } from "../game/clientWorld";
 import { normalizeCode } from "./code";
 import {
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
-  type MoveInput,
   type PlayerToken,
   PROTOCOL_VERSION,
   type Self,
   type ServerMessage,
-  type WorldSnapshot,
+  type Vec2,
   WS_PATH,
 } from "./protocol";
 import { applyRoster } from "./roster";
@@ -20,7 +20,7 @@ export interface LobbyState {
   code?: LobbyCode;
   self?: Self;
   snapshot?: LobbySnapshot;
-  world?: WorldSnapshot; // present once the match starts; the latest server frame
+  world?: ClientWorld; // the live local world once the match starts; mutated in place
   error?: string;
 }
 
@@ -62,6 +62,7 @@ export class LobbyClient {
   private identity?: { code: LobbyCode; token: PlayerToken; name: string };
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectUntil?: number; // wall-clock deadline for the current reconnect loop
+  private posSeq = 0; // monotonic across the client's whole life, so it survives reconnect
 
   constructor(options: LobbyClientOptions = {}) {
     this.wsUrl = options.wsUrl ?? defaultWsUrl();
@@ -93,9 +94,11 @@ export class LobbyClient {
     this.send({ type: "game/start" });
   }
 
-  // Stream the current movement intent. A no-op while the socket is down (reconnecting).
-  sendInput(move: MoveInput): void {
-    this.send({ type: "game/input", move });
+  // Stream the client's own integrated position. `seq` is monotonic across the client's
+  // life (never reset on reconnect) so the server and peers accept it in order. A no-op
+  // while the socket is down (reconnecting).
+  sendPos(pos: Vec2): void {
+    this.send({ type: "game/pos", pos, seq: ++this.posSeq });
   }
 
   leave(): void {
@@ -186,16 +189,29 @@ export class LobbyClient {
           error: "This lobby was opened on another device.",
         });
         return;
-      case "game/state": {
-        // Full frames each tick; drop an out-of-order one by its monotonic tick. The
-        // first frame also flips the local phase so a reconnecter lands in the match.
-        if (this.state.world && msg.world.tick < this.state.world.tick) return;
+      case "game/world-init": {
+        // Build (or, on reconnect, rebuild) the local world. Flipping the phase here lands
+        // a (re)connecter in the match rather than the lobby roster.
+        if (!this.state.self) return; // no identity yet — cannot own an avatar
+        const world = new ClientWorld(msg.init, this.state.self.id);
         const snapshot = this.state.snapshot
           ? { ...this.state.snapshot, phase: "in-game" as const }
           : this.state.snapshot;
-        this.setState({ world: msg.world, snapshot });
+        this.setState({ world, snapshot });
         return;
       }
+      case "game/peer-pos":
+        // Mutate the live world in place: the render loop reads it every frame, so no
+        // React re-render is wanted at the ~20 Hz relay rate. Stamp arrival time locally —
+        // interpolation runs on the client clock, so no server clock sync is needed.
+        this.state.world?.applyPeer(msg.id, msg.pos, msg.seq, Date.now());
+        return;
+      case "game/map-delta":
+        return; // reserved for M3 dynamic-map mutations; never emitted in M2
+      case "lobby/player-left":
+        this.state.world?.removePeer(msg.id);
+        this.setState({ snapshot: applyRoster(this.state.snapshot ?? null, msg) ?? undefined });
+        return;
       default:
         this.setState({ snapshot: applyRoster(this.state.snapshot ?? null, msg) ?? undefined });
     }

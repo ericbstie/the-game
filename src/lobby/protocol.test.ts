@@ -42,23 +42,42 @@ describe("parseClientMessage", () => {
     expect(parseClientMessage(JSON.stringify(42))).toBeNull();
   });
 
-  test("accepts game/start and game/input", () => {
+  test("accepts game/start and game/pos", () => {
     expect(parseClientMessage(JSON.stringify({ type: "game/start" }))).toEqual({
       type: "game/start",
     });
-    const move = { up: true, down: false, left: false, right: true };
-    expect(parseClientMessage(JSON.stringify({ type: "game/input", move }))).toEqual({
-      type: "game/input",
-      move,
-    });
+    expect(
+      parseClientMessage(JSON.stringify({ type: "game/pos", pos: { x: 12.5, y: -3 }, seq: 7 })),
+    ).toEqual({ type: "game/pos", pos: { x: 12.5, y: -3 }, seq: 7 });
   });
 
-  test("rejects a game/input whose move is not four booleans", () => {
-    expect(parseClientMessage(JSON.stringify({ type: "game/input" }))).toBeNull();
-    expect(parseClientMessage(JSON.stringify({ type: "game/input", move: {} }))).toBeNull();
+  test("game/input is no longer a recognized command", () => {
+    const move = { up: true, down: false, left: false, right: true };
+    expect(parseClientMessage(JSON.stringify({ type: "game/input", move }))).toBeNull();
+  });
+
+  test("rejects a game/pos whose position or seq is not finite numbers", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "game/pos", seq: 1 }))).toBeNull(); // no pos
+    expect(
+      parseClientMessage(JSON.stringify({ type: "game/pos", pos: { x: 1, y: 2 } })),
+    ).toBeNull(); // no seq
+    expect(
+      parseClientMessage(JSON.stringify({ type: "game/pos", pos: { x: 1 }, seq: 1 })),
+    ).toBeNull(); // y missing
+    expect(
+      parseClientMessage(JSON.stringify({ type: "game/pos", pos: { x: "1", y: 2 }, seq: 1 })),
+    ).toBeNull();
+    expect(
+      parseClientMessage(JSON.stringify({ type: "game/pos", pos: { x: 1, y: 2 }, seq: "1" })),
+    ).toBeNull();
     expect(
       parseClientMessage(
-        JSON.stringify({ type: "game/input", move: { up: 1, down: 0, left: 0, right: 0 } }),
+        JSON.stringify({ type: "game/pos", pos: { x: Number.NaN, y: 2 }, seq: 1 }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({ type: "game/pos", pos: { x: 1, y: Number.POSITIVE_INFINITY }, seq: 1 }),
       ),
     ).toBeNull();
   });

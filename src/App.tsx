@@ -17,7 +17,7 @@ export function App({ wsUrl }: { wsUrl?: string } = {}) {
         <GameScreen
           state={state}
           onLeave={() => client.leave()}
-          onInput={(move) => client.sendInput(move)}
+          onPos={(pos) => client.sendPos(pos)}
         />
       );
     }
