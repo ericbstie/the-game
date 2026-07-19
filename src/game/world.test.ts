@@ -16,16 +16,8 @@ describe("generateWorld", () => {
     }
   });
 
-  test("places monsters and a wall-flush exit inside the arena", () => {
-    const init = generateWorld(players(1));
-    expect(init.monsters.length).toBeGreaterThan(0);
-    for (const m of init.monsters) {
-      expect(m.pos.x).toBeGreaterThanOrEqual(0);
-      expect(m.pos.x).toBeLessThanOrEqual(ARENA.width);
-      expect(m.pos.y).toBeGreaterThanOrEqual(0);
-      expect(m.pos.y).toBeLessThanOrEqual(ARENA.height);
-    }
-    const e = init.exit;
+  test("places a wall-flush exit inside the arena", () => {
+    const e = generateWorld(players(1)).exit;
     const onWall =
       e.x === 0 || e.y === 0 || e.x + e.width === ARENA.width || e.y + e.height === ARENA.height;
     expect(onWall).toBe(true);
@@ -44,17 +36,6 @@ describe("generateWorld at the ~2-minute scale", () => {
     expect(ARENA.height).toBe(31_200);
     expect(ARENA.width / PLAYER_SPEED).toBeCloseTo(120, 0); // ~120 s to cross
     expect(ARENA.width / 2 / PLAYER_SPEED).toBeCloseTo(60, 0); // ~60 s center → perimeter
-  });
-
-  test("monsters sit in the outer danger band, away from the safe center", () => {
-    const { monsters, arena } = generateWorld(players(1));
-    const band = 0.08 * Math.min(arena.width, arena.height);
-    const center = { x: arena.width / 2, y: arena.height / 2 };
-    for (const m of monsters) {
-      const nearestWall = Math.min(m.pos.x, arena.width - m.pos.x, m.pos.y, arena.height - m.pos.y);
-      expect(nearestWall).toBeLessThanOrEqual(band + 1e-6); // inside the danger band
-      expect(Math.hypot(m.pos.x - center.x, m.pos.y - center.y)).toBeGreaterThan(band); // not at spawn
-    }
   });
 
   test("the exit is a wall-flush door ~936 u long and ~98 u deep, fully in bounds", () => {

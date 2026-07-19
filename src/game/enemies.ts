@@ -6,6 +6,7 @@ import type {
   EnemySpawn,
   PlayerId,
   Vec2,
+  WaveDelta,
   Weapon,
   WorldInit,
 } from "../lobby/protocol";
@@ -40,11 +41,36 @@ export const RANGED_CADENCE_MS = 180; // ranged fires faster than melee
 // moves ≈52 u in one ~200 ms round-trip at 260 u/s), tight enough to reject teleport-aim.
 export const ATTACK_POS_TOLERANCE = 500;
 
-// Danger-band geometry mirrors world.ts: enemies live in the outer ring near the walls.
-const MONSTER_MARGIN_FRAC = 0.08;
+// Nests — the static spawners ringing the danger band. One per 45° sector.
+export const NEST_COUNT = 8;
+export const SECTORS = 8; // the arena is tiled into eight 45° wedges, one per nest
+export const NEST_HP = 600; // a focused squad silences a nest in ~15–25 s
+export const NEST_RADIUS = 48;
+const SPAWN_JITTER = 300; // grunts spawn within this radius of their nest, so they don't stack
+
+// Waves — the ~30 s escalating drumbeat. Wave w spawns 2+w grunts per still-active nest.
+export const WAVE_PERIOD_MS = 30_000; // first wave at 0:30, then every 30 s
+export const WAVE_TELEGRAPH_MS = 3_000; // nest-pulse prep window before a wave (visuals deferred)
+export const ENEMY_CAP = 240; // hard concurrency governor; a nest holds its remainder at the cap
+
+// Danger-band geometry mirrors world.ts: nests and enemies live in the outer ring near the walls.
+const DANGER_BAND_FRAC = 0.08;
 
 function weaponCadence(weapon: Weapon): number {
   return weapon === "melee" ? MELEE_CADENCE_MS : RANGED_CADENCE_MS;
+}
+
+// A point's bearing from arena center, in degrees normalized to [0, 360).
+export function angleOf(pos: Vec2, arena: Arena): number {
+  const deg = (Math.atan2(pos.y - arena.height / 2, pos.x - arena.width / 2) * 180) / Math.PI;
+  return (deg + 360) % 360;
+}
+
+// Which 45° sector (0..7) a point falls in. Half-open and centered on the nest bearings, so a
+// point on a boundary lands deterministically in the higher sector and `sectorOf(nest_k) === k`.
+export function sectorOf(pos: Vec2, arena: Arena): number {
+  const span = 360 / SECTORS;
+  return Math.floor(((angleOf(pos, arena) + span / 2) % 360) / span);
 }
 
 export function enemyRadius(kind: EnemyKind): number {
@@ -61,14 +87,24 @@ function enemySpeed(kind: EnemyKind): number {
   }
 }
 
-// One live enemy. `target` is the player it is currently chasing (ENGAGED), kept for
-// readability; it is recomputed each tick.
+// One live enemy. `sector` is the 45° wedge it was spawned into (inherited from its nest);
+// `target` is the player it is currently chasing (ENGAGED), recomputed each tick.
 export interface Enemy {
   id: string;
   kind: EnemyKind;
   pos: Vec2;
   hp: number;
+  sector: number;
   target?: PlayerId;
+}
+
+// A spawner nest: static position/sector, dynamic hp/alive. Killing it silences its sector (#44).
+export interface Nest {
+  id: string;
+  pos: Vec2;
+  hp: number;
+  alive: boolean;
+  sector: number;
 }
 
 // A read-only player position the sim chases. The sim never mutates these.
@@ -85,13 +121,15 @@ export interface Attack {
   dir: Vec2;
 }
 
-// What changed this tick, shaped to fill a `game/map-delta` directly: every enemy's position
-// in `moves`, newly-spawned enemies (announced once), damaged enemies' new HP, and killed ids.
+// What changed this tick, shaped to fill a `game/map-delta` directly: every enemy's position in
+// `moves`, enemies spawned this tick, damaged enemies' new HP, killed ids, and — when a wave
+// fires — the wave clock. Nest changes (#44) land here later.
 export interface EnemyEvents {
   moves: EnemyMove[];
   spawns: EnemySpawn[];
   hits: EnemyHit[];
   deaths: string[];
+  wave: WaveDelta | null;
 }
 
 // Per-player attack admission state (server-side). `seq` guards apply-if-newer; the two
@@ -134,19 +172,48 @@ export function admitAttack(
 export interface EnemyState {
   arena: Arena;
   enemies: Map<string, Enemy>;
-  pending: EnemySpawn[]; // added-but-not-yet-announced enemies, drained into `spawns` next step
+  nests: Nest[];
+  waveIndex: number; // waves fired so far (0 before the first)
+  msUntilWave: number; // countdown to the next wave; the first lands at 0:30
   rng: () => number;
   nextId: number;
 }
 
-// Seed the initial enemy set from the world. Tracer: a single grunt out in the danger band
-// (east mid-band), so it visibly chases inward toward the center-spawned squad.
+// The eight nests, one per 45° sector, seated in the danger band. Position is a pure function
+// of the arena — the ray at k·45° projected onto the mid-band square — so the client derives
+// the same layout without it ever riding the wire. Invariant: `sectorOf(nest_k) === k`.
+export function nestLayout(arena: Arena): Nest[] {
+  const cx = arena.width / 2;
+  const cy = arena.height / 2;
+  const half = (Math.min(arena.width, arena.height) / 2) * (1 - DANGER_BAND_FRAC); // mid-band inset
+  const span = (2 * Math.PI) / NEST_COUNT;
+  return Array.from({ length: NEST_COUNT }, (_, k) => {
+    const angle = k * span;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const t = half / Math.max(Math.abs(cos), Math.abs(sin)); // project the ray onto the square
+    return {
+      id: `n${k}`,
+      pos: { x: cx + t * cos, y: cy + t * sin },
+      hp: NEST_HP,
+      alive: true,
+      sector: k,
+    };
+  });
+}
+
+// Seed the sim from the world: place the nests and arm the wave clock. No enemies yet — the
+// first wave spawns them from the nests at 0:30.
 export function spawnEnemyState(world: WorldInit, rng: () => number = Math.random): EnemyState {
-  const { arena } = world;
-  const state: EnemyState = { arena, enemies: new Map(), pending: [], rng, nextId: 1 };
-  const midBand = Math.min(arena.width, arena.height) * (0.5 - MONSTER_MARGIN_FRAC / 2);
-  addEnemy(state, "grunt", { x: arena.width / 2 + midBand, y: arena.height / 2 });
-  return state;
+  return {
+    arena: world.arena,
+    enemies: new Map(),
+    nests: nestLayout(world.arena),
+    waveIndex: 0,
+    msUntilWave: WAVE_PERIOD_MS,
+    rng,
+    nextId: 1,
+  };
 }
 
 // Advance the whole sim one tick. Mutates `state` in place (one state per session, stepped at
@@ -159,9 +226,7 @@ export function stepEnemies(
   attacks: Attack[],
   dtMs: number,
 ): { state: EnemyState; events: EnemyEvents } {
-  const spawns = state.pending;
-  state.pending = [];
-
+  const { spawns, wave } = tickWaves(state, dtMs);
   const { hits, deaths } = resolveAttacks(state, attacks);
 
   const dt = dtMs / 1000;
@@ -169,7 +234,44 @@ export function stepEnemies(
 
   const moves: EnemyMove[] = [];
   for (const enemy of state.enemies.values()) moves.push([enemy.id, enemy.pos.x, enemy.pos.y]);
-  return { state, events: { moves, spawns, hits, deaths } };
+  return { state, events: { moves, spawns, hits, deaths, wave } };
+}
+
+// Advance the wave clock; when it reaches zero, fire the next wave and re-arm it. Real ticks are
+// ~50 ms so at most one wave fires per step; the clock is driven by the injected `dtMs`.
+function tickWaves(
+  state: EnemyState,
+  dtMs: number,
+): { spawns: EnemySpawn[]; wave: WaveDelta | null } {
+  state.msUntilWave -= dtMs;
+  if (state.msUntilWave > 0) return { spawns: [], wave: null };
+  state.msUntilWave += WAVE_PERIOD_MS;
+  const spawns = spawnWave(state);
+  return { spawns, wave: { index: state.waveIndex, clockMs: state.msUntilWave } };
+}
+
+// Every still-active nest emits `2 + w` grunts into its own sector, up to the concurrency cap.
+// A nest that would breach ENEMY_CAP holds its remainder rather than spawning it.
+function spawnWave(state: EnemyState): EnemySpawn[] {
+  state.waveIndex += 1;
+  const perNest = 2 + state.waveIndex; // grunts(w) = 2 + w
+  const spawns: EnemySpawn[] = [];
+  for (const nest of state.nests) {
+    if (!nest.alive) continue;
+    for (let i = 0; i < perNest; i++) {
+      if (state.enemies.size >= ENEMY_CAP) return spawns; // cap governor holds the remainder
+      spawns.push(addEnemy(state, "grunt", jitter(nest.pos, state.rng), nest.sector));
+    }
+  }
+  return spawns;
+}
+
+// A spawn point scattered within SPAWN_JITTER of the nest so a wave doesn't stack on one point.
+function jitter(pos: Vec2, rng: () => number): Vec2 {
+  return {
+    x: pos.x + (rng() * 2 - 1) * SPAWN_JITTER,
+    y: pos.y + (rng() * 2 - 1) * SPAWN_JITTER,
+  };
 }
 
 // Apply every admitted attack to enemy HP — this sim is the sole writer. Damage accumulates
@@ -282,11 +384,11 @@ function nearest(players: PlayerRef[], from: Vec2): PlayerRef | null {
   return best;
 }
 
-function addEnemy(state: EnemyState, kind: EnemyKind, pos: Vec2): Enemy {
+// Add one enemy to the sim and return its spawn announcement (the client needs kind/hp/sector
+// before position deltas flow for it).
+function addEnemy(state: EnemyState, kind: EnemyKind, pos: Vec2, sector: number): EnemySpawn {
   const id = `e${state.nextId++}`;
   const hp = GRUNT_HP;
-  const enemy: Enemy = { id, kind, pos: { ...pos }, hp };
-  state.enemies.set(id, enemy);
-  state.pending.push({ id, kind, pos: { ...pos }, hp });
-  return enemy;
+  state.enemies.set(id, { id, kind, pos: { ...pos }, hp, sector });
+  return { id, kind, pos: { ...pos }, hp, sector };
 }

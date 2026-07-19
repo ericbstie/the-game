@@ -20,12 +20,13 @@ const SLOT_COLORS = ["#4f8cff", "#ff5d5d", "#40c463", "#f2c14e", "#c77dff", "#4d
 const BG = "#0e0e14";
 const WALL = "#2a2a35";
 const EXIT = "#39d353";
-const MONSTER = "#c0392b";
+const NEST = "#8e44ad"; // spawner nests
+const NEST_DEAD = "#3a2d44"; // a silenced (destroyed) nest
 const LABEL = "#e8e8ee";
 const SELF_RING = "#ffffff";
 const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
 
-// One colour per enemy kind, distinct from the static M2 monster placeholder.
+// One colour per enemy kind.
 const ENEMY_COLORS: Record<EnemyKind, string> = { grunt: "#e8643c" };
 
 export function drawWorld(
@@ -48,9 +49,10 @@ export function drawWorld(
   ctx.fillStyle = EXIT;
   ctx.fillRect(world.exit.x, world.exit.y, world.exit.width, world.exit.height);
 
-  ctx.fillStyle = MONSTER;
-  for (const m of world.monsters) {
-    if (isVisible(m.pos, m.radius, camera, viewport)) fillCircle(ctx, m.pos.x, m.pos.y, m.radius);
+  for (const n of world.nests) {
+    if (!isVisible(n.pos, n.radius, camera, viewport)) continue;
+    ctx.fillStyle = n.alive ? NEST : NEST_DEAD;
+    fillCircle(ctx, n.pos.x, n.pos.y, n.radius);
   }
 
   for (const e of world.enemies) {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { MapDelta, WorldInit } from "../lobby/protocol";
 import { ClientWorld, ENEMY_RENDER_DELAY_MS, RENDER_DELAY_MS } from "./clientWorld";
-import { GRUNT_HP, GRUNT_RADIUS } from "./enemies";
+import { GRUNT_HP, GRUNT_RADIUS, NEST_COUNT } from "./enemies";
 import { ARENA, PLAYER_RADIUS } from "./world";
 
 const STILL = { up: false, down: false, left: false, right: false };
@@ -10,7 +10,6 @@ const held = (dir: keyof typeof STILL) => ({ ...STILL, [dir]: true });
 const init = (): WorldInit => ({
   arena: ARENA,
   exit: { x: 0, y: 100, width: 18, height: 96 },
-  monsters: [{ id: "m1", pos: { x: 90, y: 90 }, radius: 16 }],
   spawns: [
     { id: "self", slot: 1, name: "Me", pos: { x: 400, y: 300 } },
     { id: "peer", slot: 2, name: "You", pos: { x: 500, y: 300 } },
@@ -27,9 +26,15 @@ describe("ClientWorld construction", () => {
     const snap = new ClientWorld(init(), "self").snapshot(0);
     expect(snap.players.map((p) => p.id)).toEqual(["self", "peer"]);
     expect(snap.players.every((p) => p.radius === PLAYER_RADIUS)).toBe(true);
-    expect(snap.monsters).toHaveLength(1);
     expect(snap.exit).toEqual({ x: 0, y: 100, width: 18, height: 96 });
     expect(snap.arena).toEqual(ARENA);
+  });
+
+  test("derives the nest layout from the arena (positions never ride the wire)", () => {
+    const snap = new ClientWorld(init(), "self").snapshot(0);
+    expect(snap.nests).toHaveLength(NEST_COUNT);
+    expect(snap.nests.every((n) => n.alive)).toBe(true);
+    expect(snap.nests.map((n) => n.sector).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
 
   test("a peer with no samples yet renders at its spawn", () => {
@@ -129,7 +134,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
       {
         tick: 1,
         moves: [],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP, sector: 0 }],
       },
       1000,
     );
@@ -144,7 +149,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
       {
         tick: 1,
         moves: [["e1", 100, 100]],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 100, y: 100 }, hp: GRUNT_HP }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 100, y: 100 }, hp: GRUNT_HP, sector: 0 }],
       },
       1000,
     );
@@ -160,7 +165,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
     const spawn: MapDelta = {
       tick: 5,
       moves: [["e1", 10, 10]],
-      spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP }],
+      spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP, sector: 0 }],
     };
     w.applyMapDelta(spawn, 1000);
     w.applyMapDelta({ tick: 5, moves: [["e1", 999, 999]] }, 1050); // equal tick — dropped
@@ -174,7 +179,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
       {
         tick: 1,
         moves: [["e1", 10, 10]],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP, sector: 0 }],
       },
       1000,
     );
@@ -188,7 +193,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
       {
         tick: 1,
         moves: [["e1", 10, 10]],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP, sector: 0 }],
       },
       1000,
     );
@@ -200,5 +205,13 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
     const w = new ClientWorld(init(), "self");
     w.applyMapDelta({ tick: 1, moves: [["ghost", 10, 10]] }, 1000);
     expect(w.snapshot(9999).enemies).toEqual([]);
+  });
+
+  test("a nest delta updates the matching nest's hp and alive flag", () => {
+    const w = new ClientWorld(init(), "self");
+    const id = w.snapshot(0).nests[0].id;
+    w.applyMapDelta({ tick: 1, moves: [], nests: [{ id, hp: 0, alive: false }] }, 1000);
+    const nest = w.snapshot(9999).nests.find((n) => n.id === id);
+    expect(nest).toMatchObject({ hp: 0, alive: false });
   });
 });

@@ -71,13 +71,6 @@ export interface Avatar {
   radius: number;
 }
 
-// A placeholder enemy shape (static in M2; combat/behaviour is M3).
-export interface Monster {
-  id: string;
-  pos: Vec2;
-  radius: number;
-}
-
 // The escape door: a rectangle flush on a perimeter wall.
 export interface Exit {
   x: number;
@@ -96,12 +89,11 @@ export interface Spawn {
 }
 
 // The immutable shared world the server generates once at match start and re-sends on
-// reconnect: the arena, the placed exit and monsters, and every player's spawn. Avatar
-// motion is not here — it flows continuously as peer positions.
+// reconnect: the arena, the placed exit, and every player's spawn. Avatar motion is not here
+// (it flows as peer positions), and the enemy/nest layout is derived from the arena.
 export interface WorldInit {
   arena: Arena;
   exit: Exit;
-  monsters: Monster[];
   spawns: Spawn[];
 }
 
@@ -112,12 +104,28 @@ export interface WorldInit {
 export type EnemyKind = "grunt";
 
 // A newly-spawned enemy, announced once so the client can create its render record (kind +
-// hp) before per-tick position deltas start flowing for it.
+// hp) before per-tick position deltas start flowing for it. `sector` is the 45° wedge it was
+// spawned into (0..7), inherited from its nest.
 export interface EnemySpawn {
   id: string;
   kind: EnemyKind;
   pos: Vec2;
   hp: number;
+  sector: number;
+}
+
+// A nest's changed state this tick: its HP and whether it is still alive (spawning). Positions
+// are static and derived from the arena, so they never ride the delta.
+export interface NestDelta {
+  id: string;
+  hp: number;
+  alive: boolean;
+}
+
+// The wave clock's state when a wave fires: the wave index (1-based) and ms until the next.
+export interface WaveDelta {
+  index: number;
+  clockMs: number;
 }
 
 // One enemy's position this tick: [id, x, y]. Every live enemy appears in every delta's
@@ -139,6 +147,8 @@ export interface MapDelta {
   spawns?: EnemySpawn[];
   hits?: EnemyHit[];
   deaths?: string[];
+  nests?: NestDelta[];
+  wave?: WaveDelta;
 }
 
 // A player weapon. Melee is a close cleave wedge; ranged is a hitscan ray (added in #41).
@@ -155,13 +165,24 @@ export interface RenderedEnemy {
   hp: number;
 }
 
+// A render-model nest (not a wire type). Position/sector are static (derived from the arena);
+// hp/alive track the streamed nest state.
+export interface RenderedNest {
+  id: string;
+  pos: Vec2;
+  radius: number;
+  hp: number;
+  alive: boolean;
+  sector: number;
+}
+
 // The render model the client assembles each frame from world-init + local self-sim +
 // relayed peer positions + the enemy stream. Not a wire type — it never crosses the socket.
 export interface WorldSnapshot {
   arena: Arena;
   players: Avatar[]; // sorted by slot
-  monsters: Monster[];
   enemies: RenderedEnemy[];
+  nests: RenderedNest[];
   exit: Exit;
 }
 

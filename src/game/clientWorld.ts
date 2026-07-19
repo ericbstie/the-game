@@ -4,15 +4,15 @@ import type {
   EnemyKind,
   Exit,
   MapDelta,
-  Monster,
   MoveInput,
   PlayerId,
   RenderedEnemy,
+  RenderedNest,
   Vec2,
   WorldInit,
   WorldSnapshot,
 } from "../lobby/protocol";
-import { enemyRadius } from "./enemies";
+import { enemyRadius, NEST_RADIUS, type Nest, nestLayout } from "./enemies";
 import { interpolateAt, type PosSample } from "./interpolate";
 import { PLAYER_RADIUS, stepPos } from "./world";
 
@@ -51,7 +51,7 @@ interface EnemyRecord {
 export class ClientWorld {
   readonly arena: Arena;
   private readonly exit: Exit;
-  private readonly monsters: Monster[];
+  private readonly nests: Nest[]; // static layout derived from the arena; hp/alive track the stream
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
   private readonly enemies = new Map<string, EnemyRecord>();
   private lastTick = -1; // highest applied map-delta tick; guards apply-if-newer
@@ -62,7 +62,7 @@ export class ClientWorld {
   ) {
     this.arena = init.arena;
     this.exit = init.exit;
-    this.monsters = init.monsters;
+    this.nests = nestLayout(init.arena);
     for (const s of init.spawns) {
       this.avatars.set(s.id, {
         id: s.id,
@@ -117,6 +117,13 @@ export class ClientWorld {
       if (enemy) enemy.hp = hit.hp;
     }
     for (const id of delta.deaths ?? []) this.enemies.delete(id);
+    for (const nd of delta.nests ?? []) {
+      const nest = this.nests.find((n) => n.id === nd.id);
+      if (nest) {
+        nest.hp = nd.hp;
+        nest.alive = nd.alive;
+      }
+    }
   }
 
   removePeer(id: PlayerId): void {
@@ -144,8 +151,8 @@ export class ClientWorld {
       players: [...this.avatars.values()]
         .sort((a, b) => a.slot - b.slot)
         .map((a) => this.render(a, renderTime)),
-      monsters: this.monsters,
       enemies: this.renderEnemies(now),
+      nests: this.nests.map(renderNest),
       exit: this.exit,
     };
   }
@@ -165,4 +172,15 @@ export class ClientWorld {
       pos: interpolateAt(e.buffer, renderTime) ?? { ...e.pos },
     }));
   }
+}
+
+function renderNest(n: Nest): RenderedNest {
+  return {
+    id: n.id,
+    pos: { ...n.pos },
+    radius: NEST_RADIUS,
+    hp: n.hp,
+    alive: n.alive,
+    sector: n.sector,
+  };
 }

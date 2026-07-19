@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { GRUNT_HP, MELEE_DAMAGE } from "../game/enemies";
 import { LobbyHub, type Transport } from "./lobby";
 import type { ServerMessage } from "./protocol";
 import type { LobbyServer } from "./server";
@@ -441,7 +440,6 @@ describe("M2R: host starts the match and world-init streams", () => {
     );
     expect(hostInit.init.spawns).toHaveLength(2);
     expect(benInit.init.spawns.map((s) => s.slot)).toEqual([1, 2]);
-    expect(hostInit.init.monsters.length).toBeGreaterThan(0);
     expect(hostInit.init.exit.width).toBeGreaterThan(0);
   });
 
@@ -580,7 +578,7 @@ describe("M2R: reconnect rebuilds the world", () => {
 });
 
 describe("M3: the enemy sim streams over the wire", () => {
-  test("a started match streams game/map-delta to every player, first delta announces the grunt", async () => {
+  test("a started match streams game/map-delta to every player with a monotonic tick", async () => {
     const server = spawn();
     const { client: hostClient, code } = await host(server, "Ana");
     const { client: ben } = await joinLobby(server, code, "Ben");
@@ -597,9 +595,8 @@ describe("M3: the enemy sim streams over the wire", () => {
       await ben.waitFor((m) => m.type === "game/map-delta"),
       "game/map-delta",
     );
-    expect(hostDelta.tick).toBe(1); // first tick
-    expect(hostDelta.spawns?.[0]).toMatchObject({ kind: "grunt" }); // the seeded grunt, announced once
-    expect(hostDelta.moves.length).toBe(1);
+    expect(hostDelta.tick).toBe(1); // first tick; enemies arrive only when the first wave fires
+    expect(Array.isArray(hostDelta.moves)).toBe(true);
     expect(benDelta.tick).toBeGreaterThan(0); // peers receive the same stream
   });
 });
@@ -656,31 +653,41 @@ describe("M3: enemy sim tick lifecycle", () => {
     expect(deltas(t).length).toBe(n);
   });
 
-  test("a validated melee near an enemy applies damage and streams the hit", async () => {
+  test("a wave spawns grunts and a validated melee on one streams its hit", async () => {
     const t = new Capture();
-    const hub = new LobbyHub(t, { tickMs: 10 });
+    const hub = new LobbyHub(t, { tickMs: 10, firstWaveMs: 5 }); // fire the first wave almost at once
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
-    // Stand next to the seeded grunt (east mid-band ≈ 29952,15600) and swing east.
-    hub.handleMessage(
-      "s1",
-      JSON.stringify({ type: "game/pos", pos: { x: 29900, y: 15600 }, seq: 1 }),
-    );
+    await sleep(30);
+
+    // Grab a grunt the first wave spawned, straight off the stream.
+    const target = deltas(t)
+      .flatMap((d) => (d.msg as Extract<ServerMessage, { type: "game/map-delta" }>).spawns ?? [])
+      .at(0);
+    expect(target?.kind).toBe("grunt");
+    if (!target) throw new Error("no spawn");
+
+    // Stand on it (so the server's range-check passes) and swing.
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: target.pos, seq: 1 }));
     hub.handleMessage(
       "s1",
       JSON.stringify({
         type: "game/attack",
         weapon: "melee",
-        pos: { x: 29900, y: 15600 },
+        pos: target.pos,
         dir: { x: 1, y: 0 },
         seq: 1,
       }),
     );
-    await sleep(40);
+    await sleep(30);
     hub.dispose();
-    const hit = deltas(t)
+
+    const struck = deltas(t)
       .map((d) => d.msg as Extract<ServerMessage, { type: "game/map-delta" }>)
-      .find((d) => d.hits && d.hits.length > 0);
-    expect(hit?.hits).toEqual([{ id: "e1", hp: GRUNT_HP - MELEE_DAMAGE }]);
+      .some(
+        (d) =>
+          (d.hits ?? []).some((h) => h.id === target.id) || (d.deaths ?? []).includes(target.id),
+      );
+    expect(struck).toBe(true);
   });
 });

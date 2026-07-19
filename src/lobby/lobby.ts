@@ -38,6 +38,7 @@ export interface Transport {
 export interface LobbyConfig {
   graceMs?: number; // slot held + greyed this long after a drop; default 45s
   tickMs?: number; // enemy-sim tick period; default 50ms (~20 Hz). Overridable for fast tests.
+  firstWaveMs?: number; // override the initial wave countdown (default: the sim's 30s). Test knob.
 }
 
 const DEFAULT_GRACE_MS = 45_000;
@@ -79,6 +80,7 @@ export class LobbyHub {
   private readonly sockets = new Map<string, { code: LobbyCode; playerId: PlayerId }>();
   private readonly graceMs: number;
   private readonly tickMs: number;
+  private readonly firstWaveMs?: number;
   private disposed = false;
 
   constructor(
@@ -87,6 +89,7 @@ export class LobbyHub {
   ) {
     this.graceMs = config.graceMs ?? DEFAULT_GRACE_MS;
     this.tickMs = config.tickMs ?? DEFAULT_TICK_MS;
+    this.firstWaveMs = config.firstWaveMs;
   }
 
   handleMessage(socketId: string, raw: string): void {
@@ -330,6 +333,7 @@ export class LobbyHub {
 
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
     session.sim = spawnEnemyState(session.worldInit);
+    if (this.firstWaveMs !== undefined) session.sim.msUntilWave = this.firstWaveMs;
     const timer = setInterval(() => this.tick(session), this.tickMs);
     timer.unref?.();
     session.simTimer = timer;
@@ -348,6 +352,7 @@ export class LobbyHub {
     if (events.spawns.length > 0) delta.spawns = events.spawns;
     if (events.hits.length > 0) delta.hits = events.hits;
     if (events.deaths.length > 0) delta.deaths = events.deaths;
+    if (events.wave) delta.wave = events.wave;
     this.broadcast(session, { type: "game/map-delta", ...delta });
   }
 
