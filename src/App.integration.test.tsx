@@ -12,6 +12,7 @@ afterEach(() => {
   cleanup();
   server?.stop();
   server = undefined;
+  localStorage.clear(); // the real client persists a token; clear the shared store
 });
 
 test("clicking Host opens the WS and renders the Squad roster with a shareable code", async () => {

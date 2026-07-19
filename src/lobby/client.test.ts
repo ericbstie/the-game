@@ -1,18 +1,22 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { LobbyClient, type LobbyClientOptions } from "./client";
 import type { LobbyServer } from "./server";
-import { makeClient, startServer, waitForState } from "./testing";
+import { makeClient, startServer, type TestClient, waitForState } from "./testing";
 
 const servers: LobbyServer[] = [];
 const clientList: LobbyClient[] = [];
+const rawClients: TestClient[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   // Dispose clients (stops reconnect loops) before stopping servers, or a stale
   // reconnect attempt to a downed server would surface in a later test.
   for (const c of clientList) c.dispose();
   clientList.length = 0;
+  await Promise.all(rawClients.map((c) => c.close().catch(() => {})));
+  rawClients.length = 0;
   for (const s of servers) s.stop();
   servers.length = 0;
+  localStorage.clear(); // clients persist tokens; clear the shared happy-dom store
 });
 
 function spawn(graceMs?: number): LobbyServer {
@@ -183,6 +187,7 @@ describe("T5: LobbyClient slot release and takeover", () => {
 
     // A second socket presents this client's still-active token -> takeover.
     const other = makeClient(server.url);
+    rawClients.push(other); // tracked so teardown closes it even if an assertion throws
     await other.opened;
     other.send({
       type: "lobby/join",
@@ -193,7 +198,6 @@ describe("T5: LobbyClient slot release and takeover", () => {
 
     const back = await waitForState(client, (s) => s.status === "menu" && s.error !== undefined);
     expect(back.error).toMatch(/another device/i);
-    await other.close();
   });
 
   test("reconnect gives up and returns to the menu once the retry window elapses", async () => {

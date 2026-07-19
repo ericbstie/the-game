@@ -21,11 +21,13 @@ describe("generateCode", () => {
     }
   });
 
-  test("regenerates on collision until the code is free", () => {
-    const taken = new Set<string>();
-    const first = generateCode(() => false);
-    taken.add(first);
-    const second = generateCode((c) => taken.has(c));
-    expect(second).not.toBe(first);
+  test("regenerates until isInUse reports the code free", () => {
+    // Report the first 3 candidates as in-use so the loop is forced to run; the 4th
+    // must be accepted. (A random-difference check would pass even if isInUse were
+    // ignored, given the ~1M code space.)
+    let calls = 0;
+    const code = generateCode(() => calls++ < 3);
+    expect(calls).toBe(4); // 3 rejected + 1 accepted
+    expect(code).toHaveLength(4);
   });
 });

@@ -347,22 +347,20 @@ describe("T5: grace expiry, takeover, and empty-session teardown", () => {
 
   test("an explicit leave that empties the session frees the code for reuse", async () => {
     const server = spawn();
-    const { client: hostClient, code } = await host(server, "Solo");
-    hostClient.send({ type: "lobby/leave" });
-    await sleep(20); // let the leave settle
-
-    const rejoin = await connect(server);
-    rejoin.send({ type: "lobby/join", code, name: "Latecomer" });
-    const err = expectMessage(await rejoin.waitFor((m) => m.type === "lobby/error"), "lobby/error");
+    const { client, code } = await host(server, "Solo");
+    // Leave then rejoin on the SAME socket: same-socket message ordering guarantees the
+    // leave (which empties + destroys the session) is processed first — no sleep/race.
+    client.send({ type: "lobby/leave" });
+    client.send({ type: "lobby/join", code, name: "Latecomer" });
+    const err = expectMessage(await client.waitFor((m) => m.type === "lobby/error"), "lobby/error");
     expect(err.code).toBe("lobby-not-found"); // session destroyed, code freed
   });
 
   test("grace expiry of the last player destroys the empty session", async () => {
-    const server = spawn(40);
-    const { code } = await host(server, "Solo");
-    // Drop the only player and wait out the grace window.
-    await clients[clients.length - 1].close();
-    await sleep(120);
+    const server = spawn(25); // short grace; the wait below clears it by a wide margin
+    const { client, code } = await host(server, "Solo");
+    await client.close(); // drop the only player; its grace will expire
+    await sleep(300);
 
     const rejoin = await connect(server);
     rejoin.send({ type: "lobby/join", code, name: "Latecomer" });
@@ -409,5 +407,14 @@ describe("T5: grace expiry, takeover, and empty-session teardown", () => {
     // Host goes to Charlie (slot 3, connected), not Ben (slot 2, greyed).
     expect(hostChanged.host).toBe(charlieJoined.you.id);
     expect(hostChanged.host).not.toBe(benJoined.you.id);
+  });
+
+  test("a second identity command on an already-bound socket is rejected as invalid", async () => {
+    const server = spawn();
+    const { client } = await host(server, "Ana"); // socket now owns the host player
+    // The same socket attempts to join another lobby — must be rejected, not rebound.
+    client.send({ type: "lobby/join", code: "ZZZZ", name: "Ghost" });
+    const err = expectMessage(await client.waitFor((m) => m.type === "lobby/error"), "lobby/error");
+    expect(err.code).toBe("invalid");
   });
 });

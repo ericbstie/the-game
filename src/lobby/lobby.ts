@@ -160,6 +160,13 @@ export class LobbyHub {
     rawName: string,
     token: PlayerToken | undefined,
   ): void {
+    // One socket carries one identity for its lifetime. A second create/join on an
+    // already-bound socket is a protocol violation — rejecting it prevents rebinding
+    // the socket to a new player and orphaning the first (a permanent slot leak).
+    if (this.sockets.has(socketId)) {
+      this.error(socketId, "invalid");
+      return;
+    }
     const session = this.sessions.get(normalizeCode(rawCode));
     if (!session) {
       this.error(socketId, "lobby-not-found");
@@ -219,9 +226,12 @@ export class LobbyHub {
   private reclaim(socketId: string, session: SessionRecord, player: PlayerRecord): void {
     let tookOver = false;
     if (player.socketId !== undefined && player.socketId !== socketId) {
-      this.transport.send(player.socketId, { type: "lobby/superseded" });
-      this.transport.close(player.socketId, SUPERSEDE_CODE, "superseded");
-      this.sockets.delete(player.socketId);
+      // Unbind the old socket BEFORE closing it, so its close callback (whether Bun
+      // delivers it sync or async) finds no binding and can't arm a phantom grace.
+      const superseded = player.socketId;
+      this.sockets.delete(superseded);
+      this.transport.send(superseded, { type: "lobby/superseded" });
+      this.transport.close(superseded, SUPERSEDE_CODE, "superseded");
       tookOver = true;
     }
     const timer = session.graceTimers.get(player.id);
