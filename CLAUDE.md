@@ -18,6 +18,19 @@ Semantic commit messages (Conventional Commits) must be followed — `type: subj
 them automatically: `feat` bumps the minor, `fix`/`perf` the patch, and a `!` or
 `BREAKING CHANGE:` footer the major (see `.github/workflows/release.yml`).
 
+## Issue tracking
+
+All work lives under a single umbrella issue: **[TRACKING] Breakout Box — Multiplayer
+Milestones** ([#3](https://github.com/ericbstie/the-game/issues/3)). **Every issue
+created in this repo must be a sub-issue of the TRACKING issue** — milestone
+breakdowns, feature tickets, and bugs alike. Nothing is created as a top-level issue.
+
+Work advances one milestone at a time, in order. Each `/wayfinder` → `/implement`
+loop targets only the next open milestone and goes no further. Before advancing to
+the next milestone, close **all** issues for the current milestone and **refine every
+remaining milestone** to reflect how the scope changed while implementing the current
+one.
+
 ## Skills — use these when relevant
 
 This repo ships engineering skills in `.claude/skills/`. Two of them are
