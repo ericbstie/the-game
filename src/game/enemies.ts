@@ -28,7 +28,12 @@ export const MELEE_RANGE = 70; // reach of the swing, measured origin → enemy 
 export const MELEE_ARC = 120; // total wedge angle in degrees; half of this each side of `dir`
 export const MELEE_DAMAGE = 3;
 export const MELEE_CADENCE_MS = 400; // server-enforced min gap between melee swings (anti-nuke)
-export const RANGED_CADENCE_MS = 180; // ranged fires faster; resolution lands in #41
+
+// Ranged — a hitscan ray (no projectile entity, no per-tick wire state). Reach + DPS.
+export const RANGED_RANGE = 700; // how far the ray reaches from the origin
+export const RANGED_HALFWIDTH = 24; // the ray's half-thickness; an enemy within it is on-line
+export const RANGED_DAMAGE = 1;
+export const RANGED_CADENCE_MS = 180; // ranged fires faster than melee
 
 // The server's loose anti-teleport-aim tolerance: a reported swing origin this far from the
 // player's last relayed position is rejected. Generous enough to survive relay lag (a player
@@ -175,9 +180,11 @@ function resolveAttacks(
 ): { hits: EnemyHit[]; deaths: string[] } {
   const damaged = new Set<string>();
   for (const attack of attacks) {
-    if (attack.weapon !== "melee") continue; // ranged resolution lands in #41
-    for (const enemy of meleeTargets(state, attack)) {
-      enemy.hp -= MELEE_DAMAGE;
+    const struck =
+      attack.weapon === "melee" ? meleeTargets(state, attack) : rangedTargets(state, attack);
+    const damage = attack.weapon === "melee" ? MELEE_DAMAGE : RANGED_DAMAGE;
+    for (const enemy of struck) {
+      enemy.hp -= damage;
       damaged.add(enemy.id);
     }
   }
@@ -220,6 +227,32 @@ function meleeTargets(state: EnemyState, attack: Attack): Enemy[] {
 
 function clampUnit(value: number): number {
   return Math.max(-1, Math.min(1, value));
+}
+
+// The single nearest enemy struck by a hitscan ray from the origin along `dir`: within range
+// along the ray and inside its half-width (plus the enemy's radius). Unlike melee's cleave,
+// ranged hits only the first enemy the ray reaches. A degenerate zero-length aim hits nothing.
+function rangedTargets(state: EnemyState, attack: Attack): Enemy[] {
+  const dirLen = Math.hypot(attack.dir.x, attack.dir.y);
+  if (dirLen === 0) return [];
+  const ux = attack.dir.x / dirLen;
+  const uy = attack.dir.y / dirLen;
+  let nearest: Enemy | null = null;
+  let nearestT = Number.POSITIVE_INFINITY;
+  for (const enemy of state.enemies.values()) {
+    if (enemy.hp <= 0) continue;
+    const rx = enemy.pos.x - attack.pos.x;
+    const ry = enemy.pos.y - attack.pos.y;
+    const along = rx * ux + ry * uy; // distance along the ray to the enemy's closest point
+    if (along < 0 || along > RANGED_RANGE) continue; // behind the shooter or out of reach
+    const perp = Math.hypot(rx - along * ux, ry - along * uy);
+    if (perp > RANGED_HALFWIDTH + enemyRadius(enemy.kind)) continue; // off the ray line
+    if (along < nearestT) {
+      nearestT = along;
+      nearest = enemy;
+    }
+  }
+  return nearest ? [nearest] : [];
 }
 
 // ENGAGED: step straight toward the nearest player, never overshooting it. With no players

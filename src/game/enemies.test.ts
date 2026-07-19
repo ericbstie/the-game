@@ -8,9 +8,13 @@ import {
   type EnemyState,
   freshGuard,
   GRUNT_HP,
+  GRUNT_RADIUS,
   GRUNT_SPEED,
   MELEE_CADENCE_MS,
   MELEE_DAMAGE,
+  RANGED_DAMAGE,
+  RANGED_HALFWIDTH,
+  RANGED_RANGE,
   spawnEnemyState,
   stepEnemies,
 } from "./enemies";
@@ -144,12 +148,35 @@ describe("stepEnemies melee resolution (cleave wedge)", () => {
     expect(state.enemies.has("e1")).toBe(false);
     expect(events.moves).toEqual([]);
   });
+});
 
-  test("a ranged report is ignored by melee resolution (until #41)", () => {
-    const state = stateWith([grunt("e1", { x: 100, y: 100 })]);
-    const events = step(state, [{ weapon: "ranged", pos: { x: 50, y: 100 }, dir: { x: 1, y: 0 } }]);
+const ranged = (pos: Vec2, dir: Vec2): Attack => ({ weapon: "ranged", pos, dir });
+
+describe("stepEnemies ranged resolution (hitscan ray)", () => {
+  test("hits the nearest enemy along the ray, not the ones behind it", () => {
+    const state = stateWith([grunt("far", { x: 400, y: 100 }), grunt("near", { x: 200, y: 100 })]);
+    const events = step(state, [ranged({ x: 100, y: 100 }, { x: 1, y: 0 })]);
+    expect(events.hits).toEqual([{ id: "near", hp: GRUNT_HP - RANGED_DAMAGE }]);
+    expect(state.enemies.get("far")?.hp).toBe(GRUNT_HP); // only one target, no cleave
+  });
+
+  test("misses an enemy off the ray line (beyond the half-width)", () => {
+    const offLine = { x: 300, y: 100 + RANGED_HALFWIDTH + GRUNT_RADIUS + 1 };
+    const state = stateWith([grunt("e1", offLine)]);
+    const events = step(state, [ranged({ x: 100, y: 100 }, { x: 1, y: 0 })]);
     expect(events.hits).toEqual([]);
-    expect(state.enemies.get("e1")?.hp).toBe(GRUNT_HP);
+  });
+
+  test("misses an enemy beyond the ray's range", () => {
+    const state = stateWith([grunt("e1", { x: 100 + RANGED_RANGE + 50, y: 100 })]);
+    const events = step(state, [ranged({ x: 100, y: 100 }, { x: 1, y: 0 })]);
+    expect(events.hits).toEqual([]);
+  });
+
+  test("does not hit an enemy behind the shooter", () => {
+    const state = stateWith([grunt("e1", { x: 50, y: 100 })]);
+    const events = step(state, [ranged({ x: 100, y: 100 }, { x: 1, y: 0 })]); // aiming +x, enemy at −x
+    expect(events.hits).toEqual([]);
   });
 });
 

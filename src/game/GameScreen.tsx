@@ -131,7 +131,9 @@ export function GameScreen({ state, onLeave, onPos, onAttack }: GameScreenProps)
   };
   const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     trackPointer(e);
-    if (e.button === 0) fire("melee"); // left-click swings; ranged binds in #41
+    if (e.button === 0)
+      fire("melee"); // left-click swings
+    else if (e.button === 2) fire("ranged"); // right-click shoots
   };
 
   return (
@@ -155,8 +157,11 @@ export function GameScreen({ state, onLeave, onPos, onAttack }: GameScreenProps)
         aria-label="Game arena"
         onMouseMove={trackPointer}
         onMouseDown={onMouseDown}
+        onContextMenu={(e) => e.preventDefault()}
       />
-      <p className="hint">Move with WASD or the arrow keys. Left-click to swing.</p>
+      <p className="hint">
+        Move with WASD or the arrow keys. Left-click to swing, right-click to shoot.
+      </p>
     </main>
   );
 }
