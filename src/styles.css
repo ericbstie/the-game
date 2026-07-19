@@ -152,20 +152,37 @@ button:disabled {
   background: #2f9e44;
 }
 
+/* The match is fullscreen: the camera-follow canvas fills the viewport and the minimal
+   chrome (code, reconnect banner, Leave, movement hint) overlays it. No minimap / HUD. */
 .game {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  align-items: center;
-  padding: 1rem;
-  width: min(96vw, 1000px);
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  padding: 0;
+}
+
+.arena {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  background: #0e0e14;
+  touch-action: none;
 }
 
 .game-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 1rem;
-  width: 100%;
+  padding: 0.75rem 1rem;
+  background: linear-gradient(#0b0b0fcc, #0b0b0f00);
 }
 
 .game-header .code {
@@ -174,18 +191,14 @@ button:disabled {
   font-size: 0.9rem;
 }
 
-.arena {
-  width: 100%;
-  height: auto;
-  max-width: 100%;
-  border: 1px solid #22222c;
-  border-radius: 0.5rem;
-  background: #0e0e14;
-  image-rendering: pixelated;
-  touch-action: none;
-}
-
-.hint {
-  color: #6a6a78;
+.game .hint {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  text-align: center;
+  color: #9a9aa8;
   font-size: 0.85rem;
+  pointer-events: none;
 }

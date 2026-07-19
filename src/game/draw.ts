@@ -1,10 +1,16 @@
 import type { PlayerId, WorldSnapshot } from "../lobby/protocol";
+import { type Camera, isVisible, type Viewport } from "./camera";
 
-// Pure canvas rendering: turn a WorldSnapshot into 2D draw calls. No React, no DOM
-// lookups, no state — so it renders identically in the browser and under a spy context
-// in tests. M2 is basic shapes only; sprites are Milestone 5.
+// Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
+// caller pre-translates the context to the camera (so 1 world unit = 1 CSS px), so this
+// draws in world space and never sees the camera transform. Off-screen entities are culled
+// and the clear/fill is bounded to the viewport, keeping cost independent of world size. No
+// React, no DOM, no state — it renders identically in the browser and under a spy context.
+// M2 is basic shapes only; sprites are Milestone 5.
 
 export interface DrawOptions {
+  camera: Camera;
+  viewport: Viewport;
   selfId?: PlayerId; // ringed so you can find yourself
 }
 
@@ -17,17 +23,20 @@ const EXIT = "#39d353";
 const MONSTER = "#c0392b";
 const LABEL = "#e8e8ee";
 const SELF_RING = "#ffffff";
+const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
 
 export function drawWorld(
   ctx: CanvasRenderingContext2D,
   world: WorldSnapshot,
-  options: DrawOptions = {},
+  options: DrawOptions,
 ): void {
   const { arena } = world;
+  const { camera, viewport } = options;
 
-  ctx.clearRect(0, 0, arena.width, arena.height);
+  // Clear and repaint only the visible slice of the world, not the whole 31,200² arena.
+  ctx.clearRect(camera.x, camera.y, viewport.width, viewport.height);
   ctx.fillStyle = BG;
-  ctx.fillRect(0, 0, arena.width, arena.height);
+  ctx.fillRect(camera.x, camera.y, viewport.width, viewport.height);
 
   ctx.strokeStyle = WALL;
   ctx.lineWidth = 4;
@@ -37,9 +46,12 @@ export function drawWorld(
   ctx.fillRect(world.exit.x, world.exit.y, world.exit.width, world.exit.height);
 
   ctx.fillStyle = MONSTER;
-  for (const m of world.monsters) fillCircle(ctx, m.pos.x, m.pos.y, m.radius);
+  for (const m of world.monsters) {
+    if (isVisible(m.pos, m.radius, camera, viewport)) fillCircle(ctx, m.pos.x, m.pos.y, m.radius);
+  }
 
   for (const a of world.players) {
+    if (!isVisible(a.pos, a.radius, camera, viewport, LABEL_PAD)) continue;
     ctx.fillStyle = SLOT_COLORS[(a.slot - 1) % SLOT_COLORS.length];
     fillCircle(ctx, a.pos.x, a.pos.y, a.radius);
     if (a.id === options.selfId) {
