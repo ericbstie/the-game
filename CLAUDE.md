@@ -9,11 +9,12 @@ This repo ships engineering skills in `.claude/skills/`. Two of them are
 **auto-invoked and must be applied whenever they are relevant**, not only when
 asked:
 
-- **`ponytail`** (and its `/ponytail-*` commands) — before writing or generating
-  any code, adding a dependency, or introducing an abstraction, climb the
-  ponytail decision ladder and write the least code that fully solves the
-  problem. This saves tokens and prevents over-engineering. It never overrides
-  correctness, validation, error handling, security, or accessibility.
+- **`yagni`** — before writing or generating any code, adding a dependency, or
+  introducing an abstraction, climb the decision tree (does this need to exist?
+  → reuse? → stdlib? → native platform feature? → installed dep? → one line?)
+  and write the least code that fully solves the problem. This prevents
+  over-engineering. It never overrides correctness, validation, error handling,
+  security, or accessibility.
 - **`canvas-sprite-generation`** — whenever creating, drawing, or animating
   sprites or entity art (player, grunts, elites, nests, miners, walls, turrets,
   mines, clusters, the door), or handling pixel-crisp rendering, sprite caching,

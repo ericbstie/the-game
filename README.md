@@ -11,7 +11,7 @@ New feature? Invoke skills in this order:
 1. `research` — verify anything unknown against real sources.
 2. `domain-modeling` — name new concepts in the game's language.
 3. `codebase-design` — set the module seam and interface.
-4. `ponytail` — least code that fully solves it *(always on)*.
+4. `yagni` — decision tree before implementing; least code that solves it *(auto)*.
 5. `tdd` — build it red → green → refactor.
 6. `canvas-sprite-generation` — for any sprite or canvas art *(auto)*.
 7. `two-axis-review` — review on Standards + Spec.

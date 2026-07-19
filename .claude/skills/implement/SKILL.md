@@ -19,7 +19,7 @@ engineering disciplines; it doesn't replace them.
 2. **Design the seam** (`codebase-design`). Decide the module boundary and interface before touching implementation.
 3. **Model the words** (`domain-modeling`). Name new concepts in the domain's language now, so the code is born with the right names.
 4. **Build test-first** (`tdd`). Red → green → refactor, one behavior at a time, committing at each green.
-5. **Stay lazy** (`ponytail`). At every step take the lowest rung of the ladder that fully solves the slice — least code, no speculative abstractions.
+5. **Stay minimal** (`yagni`). At every step take the lowest rung of the decision tree that fully solves the slice — least code, no speculative abstractions.
 6. **Review** (`two-axis-review`). Check the change on both Standards and Spec before calling it done.
 7. **Verify it runs.** Exercise the actual behavior (`/verify`), not just the tests, before handing back.
 

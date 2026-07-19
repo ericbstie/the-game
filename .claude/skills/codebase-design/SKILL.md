@@ -22,7 +22,7 @@ capable than its interface is wide.
 
 - Design the interface for the common case; push special cases and configuration inside. Callers should get correct behavior with no options in the 90% path.
 - Hide information. A leaked implementation detail (a data format, a lock, an ordering requirement) becomes everyone's problem and can't be changed later.
-- A general-purpose interface that happens to cover today's need beats one shaped to a single caller — but don't invent generality you can't yet name (see the ponytail ladder).
+- A general-purpose interface that happens to cover today's need beats one shaped to a single caller — but don't invent generality you can't yet name (see `yagni`).
 
 ## Seams
 

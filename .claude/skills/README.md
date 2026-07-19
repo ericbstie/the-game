@@ -20,17 +20,11 @@ name (they set `disable-model-invocation: true`).
 | `resolving-merge-conflicts` | auto | Resolve conflicts hunk-by-hunk for intent. |
 | `implement` | /implement | Orchestrator: chains the above from a spec. |
 
-## Ponytail — write less code, save tokens
-*Inspired by [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail).*
+## Least code
 
 | Skill | Invoke | Purpose |
 | --- | --- | --- |
-| `ponytail` | auto | The decision ladder; least code that solves it. |
-| `ponytail-audit` | /ponytail-audit | Scan code/diff for over-engineering to cut. |
-| `ponytail-debt` | /ponytail-debt | Record un-cuttable excess with blockers. |
-| `ponytail-gain` | /ponytail-gain | Measure lines/deps/tokens saved. |
-| `ponytail-help` | /ponytail-help | Quick reference for the ponytail family. |
-| `ponytail-review` | /ponytail-review | Review a diff through the lazy-senior lens. |
+| `yagni` | auto | Decision tree + YAGNI before implementing; least code that solves it. |
 
 ## Always-on communication
 
