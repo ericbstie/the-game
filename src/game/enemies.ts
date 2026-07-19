@@ -20,9 +20,24 @@ import type {
 // This module is the sole writer of enemy HP/position. It reads player positions read-only
 // and never re-simulates the client-owned avatars (the M2 authority split holds).
 
+// Grunt — weak and numerous, out-runnable (kite to safety). Elite — an occasional focus-fire
+// sponge, nearly un-outrunnable (must be fought).
 export const GRUNT_HP = 30;
-export const GRUNT_SPEED = 182; // world units/second (0.7× player) — out-runnable, kite to safety
+export const GRUNT_SPEED = 182; // world units/second (0.7× player)
 export const GRUNT_RADIUS = 16;
+export const ELITE_HP = 200;
+export const ELITE_SPEED = 234; // 0.9× player — nearly un-outrunnable
+export const ELITE_RADIUS = 24;
+
+interface EnemyStats {
+  hp: number;
+  speed: number;
+  radius: number;
+}
+const STATS: Record<EnemyKind, EnemyStats> = {
+  grunt: { hp: GRUNT_HP, speed: GRUNT_SPEED, radius: GRUNT_RADIUS },
+  elite: { hp: ELITE_HP, speed: ELITE_SPEED, radius: ELITE_RADIUS },
+};
 
 // Player weapons (M3 minimal model). Melee is a cleave wedge; ranged (#41) is a hitscan ray.
 export const MELEE_RANGE = 70; // reach of the swing, measured origin → enemy edge
@@ -40,6 +55,10 @@ export const RANGED_CADENCE_MS = 180; // ranged fires faster than melee
 // player's last relayed position is rejected. Generous enough to survive relay lag (a player
 // moves ≈52 u in one ~200 ms round-trip at 260 u/s), tight enough to reject teleport-aim.
 export const ATTACK_POS_TOLERANCE = 500;
+
+// AI: a peel-off aggro radius and the front-line hold edge (the danger/safe boundary).
+export const AGGRO_RADIUS = 1_800; // a player this close pulls the nearest enemies off the line
+const HOLD_EDGE_FRAC = 0.5 - 0.08; // band inner edge = 13,104 u from center at 31,200
 
 // Nests — the static spawners ringing the danger band. One per 45° sector.
 export const NEST_COUNT = 8;
@@ -74,17 +93,11 @@ export function sectorOf(pos: Vec2, arena: Arena): number {
 }
 
 export function enemyRadius(kind: EnemyKind): number {
-  switch (kind) {
-    case "grunt":
-      return GRUNT_RADIUS;
-  }
+  return STATS[kind].radius;
 }
 
 function enemySpeed(kind: EnemyKind): number {
-  switch (kind) {
-    case "grunt":
-      return GRUNT_SPEED;
-  }
+  return STATS[kind].speed;
 }
 
 // One live enemy. `sector` is the 45° wedge it was spawned into (inherited from its nest);
@@ -230,7 +243,9 @@ export function stepEnemies(
   const { hits, deaths } = resolveAttacks(state, attacks);
 
   const dt = dtMs / 1000;
-  for (const enemy of state.enemies.values()) chase(enemy, players, dt);
+  const center = { x: state.arena.width / 2, y: state.arena.height / 2 };
+  const holdEdge = Math.min(state.arena.width, state.arena.height) * HOLD_EDGE_FRAC;
+  for (const enemy of state.enemies.values()) stepEnemy(enemy, players, center, holdEdge, dt);
 
   const moves: EnemyMove[] = [];
   for (const enemy of state.enemies.values()) moves.push([enemy.id, enemy.pos.x, enemy.pos.y]);
@@ -250,19 +265,24 @@ function tickWaves(
   return { spawns, wave: { index: state.waveIndex, clockMs: state.msUntilWave } };
 }
 
-// Every still-active nest emits `2 + w` grunts into its own sector, up to the concurrency cap.
-// A nest that would breach ENEMY_CAP holds its remainder rather than spawning it.
+// Every still-active nest emits `2 + w` grunts into its own sector, plus `max(0, w−2)` elites
+// spread across distinct nests (none before wave 3), all up to the concurrency cap. A nest that
+// would breach ENEMY_CAP holds its remainder rather than spawning it.
 function spawnWave(state: EnemyState): EnemySpawn[] {
   state.waveIndex += 1;
-  const perNest = 2 + state.waveIndex; // grunts(w) = 2 + w
+  const w = state.waveIndex;
+  const active = state.nests.filter((n) => n.alive);
   const spawns: EnemySpawn[] = [];
-  for (const nest of state.nests) {
-    if (!nest.alive) continue;
-    for (let i = 0; i < perNest; i++) {
-      if (state.enemies.size >= ENEMY_CAP) return spawns; // cap governor holds the remainder
-      spawns.push(addEnemy(state, "grunt", jitter(nest.pos, state.rng), nest.sector));
-    }
+  const emit = (kind: EnemyKind, nest: Nest): boolean => {
+    if (state.enemies.size >= ENEMY_CAP) return false; // cap governor holds the remainder
+    spawns.push(addEnemy(state, kind, jitter(nest.pos, state.rng), nest.sector));
+    return true;
+  };
+  for (const nest of active) {
+    for (let i = 0; i < 2 + w; i++) if (!emit("grunt", nest)) return spawns; // grunts(w) = 2 + w
   }
+  const elites = Math.max(0, w - 2); // elites(w), none before wave 3
+  for (let i = 0; i < elites && i < active.length; i++) emit("elite", active[i]);
   return spawns;
 }
 
@@ -357,21 +377,43 @@ function rangedTargets(state: EnemyState, attack: Attack): Enemy[] {
   return nearest ? [nearest] : [];
 }
 
-// ENGAGED: step straight toward the nearest player, never overshooting it. With no players
-// there is nothing to chase, so the enemy holds (MARCH/HOLD arrive in #43).
-function chase(enemy: Enemy, players: PlayerRef[], dt: number): void {
-  const target = nearest(players, enemy.pos);
-  enemy.target = target?.id;
-  if (!target) return;
-  const dx = target.pos.x - enemy.pos.x;
-  const dy = target.pos.y - enemy.pos.y;
-  const len = Math.hypot(dx, dy);
-  if (len === 0) return;
-  const travel = Math.min(enemySpeed(enemy.kind) * dt, len);
-  enemy.pos = { x: enemy.pos.x + (dx / len) * travel, y: enemy.pos.y + (dy / len) * travel };
+// One enemy's pure geometric step — one of three states:
+//   ENGAGED — a player within AGGRO_RADIUS → chase the nearest, never overshooting it.
+//   MARCH   — un-aggroed and still outside the hold edge → advance toward center, stopping
+//             exactly at the edge (so it never floods the safe center).
+//   HOLD    — un-aggroed and at/inside the hold edge → stop. A wave forms a front line here.
+function stepEnemy(
+  enemy: Enemy,
+  players: PlayerRef[],
+  center: Vec2,
+  holdEdge: number,
+  dt: number,
+): void {
+  const speed = enemySpeed(enemy.kind) * dt;
+  const target = nearestWithin(players, enemy.pos, AGGRO_RADIUS);
+  if (target) {
+    enemy.target = target.id;
+    stepToward(enemy, target.pos, speed); // ENGAGED
+    return;
+  }
+  enemy.target = undefined;
+  const distFromCenter = Math.hypot(center.x - enemy.pos.x, center.y - enemy.pos.y);
+  if (distFromCenter <= holdEdge) return; // HOLD
+  stepToward(enemy, center, Math.min(speed, distFromCenter - holdEdge)); // MARCH, capped at the edge
 }
 
-function nearest(players: PlayerRef[], from: Vec2): PlayerRef | null {
+// Move the enemy toward `to` by up to `maxTravel`, never past it.
+function stepToward(enemy: Enemy, to: Vec2, maxTravel: number): void {
+  const dx = to.x - enemy.pos.x;
+  const dy = to.y - enemy.pos.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0 || maxTravel <= 0) return;
+  const t = Math.min(maxTravel, len);
+  enemy.pos = { x: enemy.pos.x + (dx / len) * t, y: enemy.pos.y + (dy / len) * t };
+}
+
+// The nearest player, but only if within `radius` — otherwise the enemy is un-aggroed.
+function nearestWithin(players: PlayerRef[], from: Vec2, radius: number): PlayerRef | null {
   let best: PlayerRef | null = null;
   let bestDist = Number.POSITIVE_INFINITY;
   for (const p of players) {
@@ -381,14 +423,14 @@ function nearest(players: PlayerRef[], from: Vec2): PlayerRef | null {
       best = p;
     }
   }
-  return best;
+  return best && bestDist <= radius ? best : null;
 }
 
 // Add one enemy to the sim and return its spawn announcement (the client needs kind/hp/sector
 // before position deltas flow for it).
 function addEnemy(state: EnemyState, kind: EnemyKind, pos: Vec2, sector: number): EnemySpawn {
   const id = `e${state.nextId++}`;
-  const hp = GRUNT_HP;
+  const hp = STATS[kind].hp;
   state.enemies.set(id, { id, kind, pos: { ...pos }, hp, sector });
   return { id, kind, pos: { ...pos }, hp, sector };
 }

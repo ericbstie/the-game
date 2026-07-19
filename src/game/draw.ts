@@ -26,8 +26,8 @@ const LABEL = "#e8e8ee";
 const SELF_RING = "#ffffff";
 const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
 
-// One colour per enemy kind.
-const ENEMY_COLORS: Record<EnemyKind, string> = { grunt: "#e8643c" };
+// One colour per enemy kind; the elite reads darker and, with its larger radius, distinct.
+const ENEMY_COLORS: Record<EnemyKind, string> = { grunt: "#e8643c", elite: "#a01f1f" };
 
 export function drawWorld(
   ctx: CanvasRenderingContext2D,

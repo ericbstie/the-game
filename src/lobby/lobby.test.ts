@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { ARENA } from "../game/world";
 import { LobbyHub, type Transport } from "./lobby";
 import type { ServerMessage } from "./protocol";
 import type { LobbyServer } from "./server";
@@ -667,7 +668,11 @@ describe("M3: enemy sim tick lifecycle", () => {
     expect(target?.kind).toBe("grunt");
     if (!target) throw new Error("no spawn");
 
-    // Stand on it (so the server's range-check passes) and swing.
+    // Stand on it (so the server's range-check passes) and swing toward center — where an
+    // un-aggroed grunt marches, so the wedge covers it wherever it drifted.
+    const dx = ARENA.width / 2 - target.pos.x;
+    const dy = ARENA.height / 2 - target.pos.y;
+    const len = Math.hypot(dx, dy);
     hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: target.pos, seq: 1 }));
     hub.handleMessage(
       "s1",
@@ -675,7 +680,7 @@ describe("M3: enemy sim tick lifecycle", () => {
         type: "game/attack",
         weapon: "melee",
         pos: target.pos,
-        dir: { x: 1, y: 0 },
+        dir: { x: dx / len, y: dy / len },
         seq: 1,
       }),
     );

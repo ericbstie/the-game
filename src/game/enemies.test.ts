@@ -5,6 +5,7 @@ import {
   type Attack,
   admitAttack,
   angleOf,
+  ELITE_HP,
   ENEMY_CAP,
   type Enemy,
   type EnemyState,
@@ -158,52 +159,84 @@ describe("waves (the ~30 s escalating drumbeat)", () => {
     for (let i = 0; i < 12; i++) stepEnemies(s, [], [], WAVE_PERIOD_MS);
     expect(s.enemies.size).toBe(ENEMY_CAP); // reached and held, never breached
   });
+
+  test("elites appear from wave 3: counts are 0/0/1/2/3 for waves 1–5", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    const eliteCounts: number[] = [];
+    for (let w = 1; w <= 5; w++) {
+      const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS).events.spawns;
+      eliteCounts.push(spawns.filter((sp) => sp.kind === "elite").length);
+    }
+    expect(eliteCounts).toEqual([0, 0, 1, 2, 3]);
+  });
+
+  test("an elite spawns at ELITE_HP", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    let wave3: ReturnType<typeof stepEnemies>["events"] | undefined;
+    for (let w = 1; w <= 3; w++) wave3 = stepEnemies(s, [], [], WAVE_PERIOD_MS).events;
+    expect(wave3?.spawns.find((sp) => sp.kind === "elite")?.hp).toBe(ELITE_HP);
+  });
 });
 
-describe("stepEnemies chase (ENGAGED: toward the nearest player)", () => {
-  const east = { x: C.x + HALF, y: C.y };
+const HOLD_EDGE = Math.min(ARENA.width, ARENA.height) * (0.5 - 0.08); // 13,104 u from center
 
-  test("a grunt advances toward the nearest player, capped by GRUNT_SPEED×dt", () => {
-    const s = stateWith([grunt("e1", { ...east })]);
-    const before = { ...only(s).pos };
-    stepEnemies(s, player({ ...C }), [], 100);
-    const after = only(s).pos;
-    expect(Math.hypot(after.x - C.x, after.y - C.y)).toBeLessThan(
-      Math.hypot(before.x - C.x, before.y - C.y),
-    );
-    const d = Math.hypot(after.x - before.x, after.y - before.y);
-    expect(d).toBeGreaterThan(0);
-    expect(d).toBeLessThanOrEqual((GRUNT_SPEED * 100) / 1000 + 1e-6);
+describe("stepEnemies AI (ENGAGED / MARCH / HOLD)", () => {
+  test("ENGAGED: a player within AGGRO_RADIUS pulls the nearest enemy into a chase", () => {
+    const near = { x: C.x + 1000, y: C.y };
+    const s = stateWith([grunt("e1", { ...near })]);
+    const prey = { x: near.x + 500, y: near.y }; // 500 < AGGRO_RADIUS
+    stepEnemies(s, [{ id: "p1", pos: prey }], [], 100);
+    expect(only(s).pos.x).toBeGreaterThan(near.x); // moved toward the player
+    expect(only(s).target).toBe("p1");
+    const d = only(s).pos.x - near.x;
+    expect(d).toBeLessThanOrEqual((GRUNT_SPEED * 100) / 1000 + 1e-6); // capped by speed
   });
 
-  test("emits every enemy in `moves` each tick", () => {
-    const s = stateWith([grunt("e1", { ...east })]);
-    const { events } = stepEnemies(s, player({ ...C }), [], 100);
-    expect(events.moves).toEqual([["e1", only(s).pos.x, only(s).pos.y]]);
+  test("MARCH: an un-aggroed enemy advances toward center and parks on the hold edge", () => {
+    const s = stateWith([grunt("e1", { x: C.x + HALF, y: C.y })]); // in the band, past the edge
+    for (let i = 0; i < 2000; i++) stepEnemies(s, [], [], 100); // no players anywhere
+    const dist = Math.hypot(only(s).pos.x - C.x, only(s).pos.y - C.y);
+    expect(dist).toBeCloseTo(HOLD_EDGE, 0); // parked on the front line…
+    expect(dist).toBeGreaterThanOrEqual(HOLD_EDGE - 1e-6); // …never crossing into the safe center
   });
 
-  test("with no players the grunt holds position", () => {
-    const s = stateWith([grunt("e1", { ...east })]);
-    const before = { ...only(s).pos };
+  test("HOLD: an un-aggroed enemy at the hold edge stays put", () => {
+    const onEdge = { x: C.x + HOLD_EDGE, y: C.y };
+    const s = stateWith([grunt("e1", { ...onEdge })]);
     stepEnemies(s, [], [], 100);
-    expect(only(s).pos).toEqual(before);
+    expect(only(s).pos).toEqual(onEdge);
+    expect(only(s).target).toBeUndefined();
   });
 
-  test("motion is frame-rate independent (2×dt ≈ 2× the distance)", () => {
-    const a = stateWith([grunt("e1", { ...east })]);
-    const b = stateWith([grunt("e1", { ...east })]);
-    stepEnemies(a, player({ ...C }), [], 100);
-    stepEnemies(b, player({ ...C }), [], 200);
-    const da = east.x - only(a).pos.x;
-    const db = east.x - only(b).pos.x;
-    expect(db).toBeCloseTo(2 * da, 3);
+  test("peels to chase when a player enters aggro, reverts to holding when they retreat", () => {
+    const onEdge = { x: C.x + HOLD_EDGE, y: C.y };
+    const s = stateWith([grunt("e1", { ...onEdge })]);
+    stepEnemies(s, [{ id: "p1", pos: { x: onEdge.x + 500, y: onEdge.y } }], [], 100); // within aggro
+    expect(only(s).target).toBe("p1");
+    expect(only(s).pos.x).toBeGreaterThan(onEdge.x); // peeled outward toward the player
+
+    const peeledOut = Math.hypot(only(s).pos.x - C.x, only(s).pos.y - C.y);
+    stepEnemies(s, [{ id: "p1", pos: { ...C } }], [], 100); // player retreats far beyond aggro
+    expect(only(s).target).toBeUndefined(); // un-aggroed again
+    expect(Math.hypot(only(s).pos.x - C.x, only(s).pos.y - C.y)).toBeLessThan(peeledOut); // marching back
+  });
+
+  test("motion is frame-rate independent while ENGAGED (2×dt ≈ 2× the distance)", () => {
+    const start = { x: C.x + 1000, y: C.y };
+    const prey = { x: start.x + 500, y: start.y };
+    const a = stateWith([grunt("e1", { ...start })]);
+    const b = stateWith([grunt("e1", { ...start })]);
+    stepEnemies(a, [{ id: "p1", pos: prey }], [], 100);
+    stepEnemies(b, [{ id: "p1", pos: prey }], [], 200);
+    expect(only(b).pos.x - start.x).toBeCloseTo(2 * (only(a).pos.x - start.x), 3);
   });
 
   test("does not mutate the players input", () => {
-    const s = stateWith([grunt("e1", { ...east })]);
-    const players = player({ ...C });
+    const s = stateWith([grunt("e1", { x: C.x + 1000, y: C.y })]);
+    const players = player({ x: C.x + 1200, y: C.y });
+    const snapshot = player({ x: C.x + 1200, y: C.y });
     stepEnemies(s, players, [], 100);
-    expect(players).toEqual(player({ ...C }));
+    expect(players).toEqual(snapshot);
   });
 });
 

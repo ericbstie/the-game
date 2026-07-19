@@ -101,7 +101,7 @@ export interface WorldInit {
 // The server owns all enemy state; the client only renders it. Enemy motion, spawns, and
 // deaths stream as `game/map-delta` on the same INV-5 envelope at ~20 Hz.
 
-export type EnemyKind = "grunt";
+export type EnemyKind = "grunt" | "elite";
 
 // A newly-spawned enemy, announced once so the client can create its render record (kind +
 // hp) before per-tick position deltas start flowing for it. `sector` is the 45° wedge it was
