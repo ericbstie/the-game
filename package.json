@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun ./index.html",
+    "dev": "bun --hot server.ts",
     "serve": "bun server.ts",
     "build": "bun build ./index.html --outdir=dist --minify",
     "compile": "bun build ./server.ts --compile --minify --outfile dist/breakout-box-server",
