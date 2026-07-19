@@ -41,4 +41,25 @@ describe("parseClientMessage", () => {
     ).toBeNull();
     expect(parseClientMessage(JSON.stringify(42))).toBeNull();
   });
+
+  test("accepts game/start and game/input", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "game/start" }))).toEqual({
+      type: "game/start",
+    });
+    const move = { up: true, down: false, left: false, right: true };
+    expect(parseClientMessage(JSON.stringify({ type: "game/input", move }))).toEqual({
+      type: "game/input",
+      move,
+    });
+  });
+
+  test("rejects a game/input whose move is not four booleans", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "game/input" }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "game/input", move: {} }))).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({ type: "game/input", move: { up: 1, down: 0, left: 0, right: 0 } }),
+      ),
+    ).toBeNull();
+  });
 });

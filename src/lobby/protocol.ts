@@ -49,6 +49,60 @@ export interface LobbySnapshot {
   rev: number;
 }
 
+// World wire types (Milestone 2). The server owns all of these; the client only
+// renders them. They ride the same envelope as the lobby events so world streaming
+// is an additive extension, not a second protocol.
+export interface Vec2 {
+  x: number;
+  y: number;
+}
+
+export interface Arena {
+  width: number;
+  height: number;
+}
+
+// A player's in-world circle, keyed by the stable PlayerId so it survives reconnect.
+export interface Avatar {
+  id: PlayerId;
+  slot: number;
+  name: string;
+  pos: Vec2;
+  radius: number;
+}
+
+// A placeholder enemy shape (static in M2; combat/behaviour is M3).
+export interface Monster {
+  id: string;
+  pos: Vec2;
+  radius: number;
+}
+
+// The escape door: a rectangle flush on a perimeter wall.
+export interface Exit {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface WorldSnapshot {
+  arena: Arena;
+  players: Avatar[]; // sorted by slot
+  monsters: Monster[];
+  exit: Exit;
+  tick: number; // monotonic; the client applies-if-newer, like the lobby `rev`
+}
+
+// The movement intent a client streams: which directions are held. The server derives
+// velocity from this so the client never asserts its own position or speed.
+export interface MoveInput {
+  up: boolean;
+  down: boolean;
+  left: boolean;
+  right: boolean;
+}
+
 type Envelope<T extends string, P extends object = Record<never, never>> = { type: T } & P;
 
 // Client -> server commands. The first command on a fresh socket establishes
@@ -60,7 +114,11 @@ export type JoinLobby = Envelope<
   { code: LobbyCode; name: string; token?: PlayerToken }
 >;
 export type LeaveLobby = Envelope<"lobby/leave">;
-export type ClientMessage = CreateLobby | JoinLobby | LeaveLobby;
+// World commands (M2). `game/start` is host-only (enforced server-side); `game/input`
+// streams the current movement intent.
+export type StartGame = Envelope<"game/start">;
+export type GameInput = Envelope<"game/input", { move: MoveInput }>;
+export type ClientMessage = CreateLobby | JoinLobby | LeaveLobby | StartGame | GameInput;
 
 export type LobbyErrorCode = "lobby-not-found" | "lobby-full" | "slot-released" | "invalid";
 
@@ -91,6 +149,9 @@ export type HostChanged = Envelope<"lobby/host-changed", { host: PlayerId; rev: 
 export type Superseded = Envelope<"lobby/superseded">;
 export type LobbyError = Envelope<"lobby/error", { code: LobbyErrorCode; message?: string }>;
 
+// The world stream (M2): a full WorldSnapshot each server tick.
+export type GameState = Envelope<"game/state", { world: WorldSnapshot }>;
+
 export type ServerMessage =
   | LobbyCreated
   | LobbyJoined
@@ -99,7 +160,8 @@ export type ServerMessage =
   | PlayerLeft
   | HostChanged
   | Superseded
-  | LobbyError;
+  | LobbyError
+  | GameState;
 
 // Hand-rolled inbound narrowing (no schema dep, per spec). Untrusted client input is
 // never assumed valid: every field is checked before the message is trusted.
@@ -135,9 +197,29 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     }
     case "lobby/leave":
       return { type: "lobby/leave" };
+    case "game/start":
+      return { type: "game/start" };
+    case "game/input": {
+      if (!isMoveInput(msg.move)) return null;
+      const m = msg.move as Record<string, boolean>;
+      return { type: "game/input", move: { up: m.up, down: m.down, left: m.left, right: m.right } };
+    }
     default:
       return null;
   }
+}
+
+// A MoveInput must carry exactly the four direction flags, each a real boolean — a
+// client could send anything, so integers/strings/missing keys are rejected outright.
+function isMoveInput(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const m = value as Record<string, unknown>;
+  return (
+    typeof m.up === "boolean" &&
+    typeof m.down === "boolean" &&
+    typeof m.left === "boolean" &&
+    typeof m.right === "boolean"
+  );
 }
 
 // A name is required and a string; bounds/emptiness are resolved server-side
