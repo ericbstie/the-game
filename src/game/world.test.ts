@@ -38,6 +38,42 @@ describe("generateWorld", () => {
   });
 });
 
+describe("generateWorld at the ~2-minute scale", () => {
+  test("the arena is the big square; speed reads as ~2 minutes edge-to-edge", () => {
+    expect(ARENA.width).toBe(31_200);
+    expect(ARENA.height).toBe(31_200);
+    expect(ARENA.width / PLAYER_SPEED).toBeCloseTo(120, 0); // ~120 s to cross
+    expect(ARENA.width / 2 / PLAYER_SPEED).toBeCloseTo(60, 0); // ~60 s center → perimeter
+  });
+
+  test("monsters sit in the outer danger band, away from the safe center", () => {
+    const { monsters, arena } = generateWorld(players(1));
+    const band = 0.08 * Math.min(arena.width, arena.height);
+    const center = { x: arena.width / 2, y: arena.height / 2 };
+    for (const m of monsters) {
+      const nearestWall = Math.min(m.pos.x, arena.width - m.pos.x, m.pos.y, arena.height - m.pos.y);
+      expect(nearestWall).toBeLessThanOrEqual(band + 1e-6); // inside the danger band
+      expect(Math.hypot(m.pos.x - center.x, m.pos.y - center.y)).toBeGreaterThan(band); // not at spawn
+    }
+  });
+
+  test("the exit is a wall-flush door ~936 u long and ~98 u deep, fully in bounds", () => {
+    const { exit, arena } = generateWorld(players(1), { rng: () => 0.5 });
+    expect(Math.max(exit.width, exit.height)).toBeCloseTo(0.03 * arena.width, 6); // 936 long
+    expect(Math.min(exit.width, exit.height)).toBeCloseTo(98, 6); // 3.5× player diameter deep
+    const onWall =
+      exit.x === 0 ||
+      exit.y === 0 ||
+      exit.x + exit.width === arena.width ||
+      exit.y + exit.height === arena.height;
+    expect(onWall).toBe(true);
+    expect(exit.x).toBeGreaterThanOrEqual(0);
+    expect(exit.y).toBeGreaterThanOrEqual(0);
+    expect(exit.x + exit.width).toBeLessThanOrEqual(arena.width);
+    expect(exit.y + exit.height).toBeLessThanOrEqual(arena.height);
+  });
+});
+
 const STILL = { up: false, down: false, left: false, right: false };
 const held = (dir: keyof typeof STILL) => ({ ...STILL, [dir]: true });
 

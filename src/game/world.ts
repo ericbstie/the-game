@@ -15,15 +15,21 @@ import type {
 // only entropy, the exit's wall, is an injected `rng`) so they unit-test fully and run
 // identically on the server (generation) and the client (per-frame self-sim).
 
-export const ARENA: Arena = { width: 960, height: 600 };
+// One giant box: ~2 minutes to walk end-to-end at PLAYER_SPEED (≈120 s edge-to-edge,
+// ≈60 s center → perimeter). You spawn dead center and push outward toward the danger.
+export const ARENA: Arena = { width: 31_200, height: 31_200 };
 export const PLAYER_RADIUS = 14;
 export const PLAYER_SPEED = 260; // world units / second
 export const MONSTER_RADIUS = 16;
 
+// Avatar-scale constants are absolute — they track player/door size, not arena size.
 const SPAWN_RING = 44; // avatars fan out this far from center so they don't stack
-const MONSTER_MARGIN = 90; // monsters ring the interior near the walls (danger at the edge)
-const EXIT_LONG = 96;
-const EXIT_THICK = 18;
+const EXIT_THICK = 98; // door depth ≈ 3.5× player diameter, readable against the huge wall
+
+// Arena-geometry constants are fractions of the arena, so the danger band and the door
+// length scale with the box instead of vanishing in it.
+const MONSTER_MARGIN_FRAC = 0.08; // danger-band depth ≈ 2,496 u at 31,200
+const EXIT_LONG_FRAC = 0.03; // door length along its wall ≈ 936 u at 31,200
 
 export interface SpawnPlayer {
   id: PlayerId;
@@ -82,7 +88,7 @@ function clamp(value: number, lo: number, hi: number): number {
 // A ring of static placeholder enemies near the walls. Dynamic behaviour is M3.
 function placeMonsters(arena: Arena): Monster[] {
   const { width: w, height: h } = arena;
-  const m = MONSTER_MARGIN;
+  const m = MONSTER_MARGIN_FRAC * Math.min(w, h);
   const spots: Vec2[] = [
     { x: m, y: m },
     { x: w / 2, y: m * 0.7 },
@@ -102,14 +108,11 @@ function placeExit(arena: Arena, rng: () => number): Exit {
   const wall = Math.floor(rng() * 4) % 4; // 0 top, 1 right, 2 bottom, 3 left
   const along = rng();
   if (wall === 0 || wall === 2) {
-    const x = EXIT_THICK + along * (arena.width - 2 * EXIT_THICK - EXIT_LONG);
-    return {
-      x,
-      y: wall === 0 ? 0 : arena.height - EXIT_THICK,
-      width: EXIT_LONG,
-      height: EXIT_THICK,
-    };
+    const long = EXIT_LONG_FRAC * arena.width;
+    const x = EXIT_THICK + along * (arena.width - 2 * EXIT_THICK - long);
+    return { x, y: wall === 0 ? 0 : arena.height - EXIT_THICK, width: long, height: EXIT_THICK };
   }
-  const y = EXIT_THICK + along * (arena.height - 2 * EXIT_THICK - EXIT_LONG);
-  return { x: wall === 1 ? arena.width - EXIT_THICK : 0, y, width: EXIT_THICK, height: EXIT_LONG };
+  const long = EXIT_LONG_FRAC * arena.height;
+  const y = EXIT_THICK + along * (arena.height - 2 * EXIT_THICK - long);
+  return { x: wall === 1 ? arena.width - EXIT_THICK : 0, y, width: EXIT_THICK, height: long };
 }
