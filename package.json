@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "bun ./index.html",
+    "serve": "bun server.ts",
     "build": "bun build ./index.html --outdir=dist --minify",
+    "compile": "bun build ./server.ts --compile --minify --outfile dist/breakout-box-server",
     "test": "bun test",
     "lint": "biome lint .",
     "format": "biome format --write .",

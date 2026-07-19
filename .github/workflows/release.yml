@@ -7,8 +7,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
   group: release
@@ -42,7 +40,7 @@ jobs:
         id: version
         run: bun run scripts/next-version.ts
 
-      - name: Bump, tag, and publish release
+      - name: Bump and tag
         if: steps.version.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,23 +52,21 @@ jobs:
           git commit -am "chore(release): v$next [skip ci]"
           git tag "v$next"
           git push origin HEAD:main --follow-tags
-          gh release create "v$next" --title "v$next" --generate-notes
 
-      - name: Build
-        run: bun run build
+      - name: Compile standalone server executable
+        if: steps.version.outputs.released == 'true'
+        run: |
+          next="${{ steps.version.outputs.next }}"
+          bun run compile
+          tar -czf "dist/breakout-box-server-v$next-linux-x64.tar.gz" -C dist breakout-box-server
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-
-  deploy:
-    needs: release
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4
+      - name: Publish release with executable
+        if: steps.version.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          next="${{ steps.version.outputs.next }}"
+          gh release create "v$next" \
+            --title "v$next" \
+            --generate-notes \
+            "dist/breakout-box-server-v$next-linux-x64.tar.gz"

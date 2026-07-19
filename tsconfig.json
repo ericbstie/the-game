@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "types": ["bun", "react", "react-dom"]
   },
-  "include": ["src", "scripts", "test"]
+  "include": ["src", "scripts", "test", "server.ts"]
 }
