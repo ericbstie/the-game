@@ -3,10 +3,12 @@ import {
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
+  type MoveInput,
   type PlayerToken,
   PROTOCOL_VERSION,
   type Self,
   type ServerMessage,
+  type WorldSnapshot,
   WS_PATH,
 } from "./protocol";
 import { applyRoster } from "./roster";
@@ -18,6 +20,7 @@ export interface LobbyState {
   code?: LobbyCode;
   self?: Self;
   snapshot?: LobbySnapshot;
+  world?: WorldSnapshot; // present once the match starts; the latest server frame
   error?: string;
 }
 
@@ -85,6 +88,16 @@ export class LobbyClient {
     this.connect();
   }
 
+  // Host-only in practice (the server rejects a non-host); begins the match.
+  start(): void {
+    this.send({ type: "game/start" });
+  }
+
+  // Stream the current movement intent. A no-op while the socket is down (reconnecting).
+  sendInput(move: MoveInput): void {
+    this.send({ type: "game/input", move });
+  }
+
   leave(): void {
     this.clearReconnect();
     const ws = this.ws;
@@ -96,6 +109,7 @@ export class LobbyClient {
       code: undefined,
       self: undefined,
       snapshot: undefined,
+      world: undefined,
       error: undefined,
     });
   }
@@ -163,8 +177,25 @@ export class LobbyClient {
         this.clearReconnect();
         this.teardown();
         this.forgetIdentity();
-        this.setState({ status: "menu", error: "This lobby was opened on another device." });
+        this.setState({
+          status: "menu",
+          code: undefined,
+          self: undefined,
+          snapshot: undefined,
+          world: undefined,
+          error: "This lobby was opened on another device.",
+        });
         return;
+      case "game/state": {
+        // Full frames each tick; drop an out-of-order one by its monotonic tick. The
+        // first frame also flips the local phase so a reconnecter lands in the match.
+        if (this.state.world && msg.world.tick < this.state.world.tick) return;
+        const snapshot = this.state.snapshot
+          ? { ...this.state.snapshot, phase: "in-game" as const }
+          : this.state.snapshot;
+        this.setState({ world: msg.world, snapshot });
+        return;
+      }
       default:
         this.setState({ snapshot: applyRoster(this.state.snapshot ?? null, msg) ?? undefined });
     }
@@ -180,6 +211,7 @@ export class LobbyClient {
         code: undefined,
         self: undefined,
         snapshot: undefined,
+        world: undefined,
         error: ERROR_TEXT[code],
       });
     } else {

@@ -217,3 +217,35 @@ describe("T5: LobbyClient slot release and takeover", () => {
     expect(gaveUp.error).toMatch(/lost connection/i);
   });
 });
+
+describe("M2: LobbyClient game flow", () => {
+  test("start() begins the match and the client receives the streamed world", async () => {
+    const server = spawn();
+    const client = newClient({ wsUrl: server.url });
+    client.host("Ana");
+    await waitForState(client, (s) => s.status === "lobby");
+
+    client.start();
+    const inGame = await waitForState(client, (s) => s.world !== undefined);
+    expect(inGame.world?.players).toHaveLength(1);
+    expect(inGame.snapshot?.phase).toBe("in-game"); // local phase flips into the match
+  });
+
+  test("sendInput drives the avatar and the world reflects it", async () => {
+    const server = spawn();
+    const client = newClient({ wsUrl: server.url });
+    client.host("Ana");
+    await waitForState(client, (s) => s.status === "lobby");
+    client.start();
+    const before = await waitForState(client, (s) => s.world !== undefined);
+    const startX = before.world?.players[0].pos.x ?? 0;
+
+    client.sendInput({ up: false, down: false, left: false, right: true });
+    const moved = await waitForState(
+      client,
+      (s) => (s.world?.players[0].pos.x ?? 0) > startX + 1,
+      2000,
+    );
+    expect(moved.world?.players[0].pos.x ?? 0).toBeGreaterThan(startX);
+  });
+});
