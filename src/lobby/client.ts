@@ -202,8 +202,9 @@ export class LobbyClient {
       }
       case "game/peer-pos":
         // Mutate the live world in place: the render loop reads it every frame, so no
-        // React re-render is wanted at the ~20 Hz relay rate.
-        this.state.world?.applyPeer(msg.id, msg.pos, msg.seq);
+        // React re-render is wanted at the ~20 Hz relay rate. Stamp arrival time locally —
+        // interpolation runs on the client clock, so no server clock sync is needed.
+        this.state.world?.applyPeer(msg.id, msg.pos, msg.seq, Date.now());
         return;
       case "game/map-delta":
         return; // reserved for M3 dynamic-map mutations; never emitted in M2

@@ -65,7 +65,7 @@ export function GameScreen({ state, onLeave, onPos }: GameScreenProps) {
       if (world) {
         world.stepSelf(dt, heldRef.current);
         const ctx = canvasRef.current?.getContext("2d");
-        if (ctx) drawWorld(ctx, world.snapshot(), { selfId: selfIdRef.current });
+        if (ctx) drawWorld(ctx, world.snapshot(Date.now()), { selfId: selfIdRef.current });
       }
       raf = requestAnimationFrame(frame);
     };
@@ -81,7 +81,7 @@ export function GameScreen({ state, onLeave, onPos }: GameScreenProps) {
     return () => clearInterval(timer);
   }, []);
 
-  const arena = state.world?.snapshot().arena ?? ARENA;
+  const arena = state.world?.arena ?? ARENA;
 
   return (
     <main className="game">

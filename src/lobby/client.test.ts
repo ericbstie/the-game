@@ -237,7 +237,7 @@ describe("M2R: LobbyClient game flow", () => {
 
     client.start();
     const inGame = await waitForState(client, (s) => s.world !== undefined);
-    expect(inGame.world?.snapshot().players).toHaveLength(1);
+    expect(inGame.world?.snapshot(Date.now()).players).toHaveLength(1);
     expect(inGame.snapshot?.phase).toBe("in-game"); // local phase flips into the match
   });
 
@@ -262,7 +262,7 @@ describe("M2R: LobbyClient game flow", () => {
     await poll(() => {
       const p = hostClient
         .getState()
-        .world?.snapshot()
+        .world?.snapshot(Date.now())
         .players.find((a) => a.id === peerId);
       return p?.pos.x === 777 && p?.pos.y === 333;
     });
@@ -283,11 +283,11 @@ describe("M2R: LobbyClient game flow", () => {
 
     hostClient.start();
     await waitForState(hostClient, (s) => s.world !== undefined);
-    await poll(() => hostClient.getState().world?.snapshot().players.length === 2);
+    await poll(() => hostClient.getState().world?.snapshot(Date.now()).players.length === 2);
 
     peer.send({ type: "lobby/leave" });
     await waitForState(hostClient, (s) => (s.snapshot?.players.length ?? 0) === 1);
-    const remaining = hostClient.getState().world?.snapshot().players ?? [];
+    const remaining = hostClient.getState().world?.snapshot(Date.now()).players ?? [];
     expect(remaining.map((p) => p.id)).toEqual([hosted.self?.id ?? ""]);
   });
 });
