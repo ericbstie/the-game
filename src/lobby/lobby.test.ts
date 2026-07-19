@@ -230,3 +230,66 @@ describe("T3: live roster", () => {
     expect(hostChanged.host).toBe(benJoined.you.id); // Ben is now the lowest occupied slot
   });
 });
+
+// Seat a joiner and return the client plus its private lobby/joined payload.
+async function joinLobby(server: LobbyServer, code: string, name: string) {
+  const client = await connect(server);
+  client.send({ type: "lobby/join", code, name });
+  const joined = expectMessage(
+    await client.waitFor((m) => m.type === "lobby/joined"),
+    "lobby/joined",
+  );
+  return { client, joined };
+}
+
+describe("T4: disconnect greys the slot; reconnect reclaims it", () => {
+  test("a dropped socket greys the player for others and holds the slot", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben, joined } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    await ben.close(); // simulate a dropped socket (no explicit leave)
+
+    const presence = expectMessage(
+      await hostClient.waitFor((m) => m.type === "lobby/presence-changed"),
+      "lobby/presence-changed",
+    );
+    expect(presence.id).toBe(joined.you.id);
+    expect(presence.presence.status).toBe("disconnected");
+
+    // Ben's slot 2 is held during grace: a fresh joiner takes slot 3, not 2.
+    const { joined: charlie } = await joinLobby(server, code, "Charlie");
+    expect(charlie.you.slot).toBe(3);
+  });
+
+  test("reconnecting within grace with the token reclaims the same slot and resyncs", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben, joined } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    await ben.close();
+    await hostClient.waitFor((m) => m.type === "lobby/presence-changed");
+
+    // A fresh socket re-presents the persisted token.
+    const reconnected = await connect(server);
+    reconnected.send({ type: "lobby/join", code, name: "Ben", token: joined.you.token });
+    const rejoined = expectMessage(
+      await reconnected.waitFor((m) => m.type === "lobby/joined"),
+      "lobby/joined",
+    );
+    expect(rejoined.reclaimed).toBe(true);
+    expect(rejoined.you.id).toBe(joined.you.id); // same identity
+    expect(rejoined.you.slot).toBe(2); // same slot
+    expect(rejoined.snapshot.players).toHaveLength(2); // resynced roster
+
+    const backOnline = expectMessage(
+      await hostClient.waitFor(
+        (m) => m.type === "lobby/presence-changed" && m.id === joined.you.id,
+      ),
+      "lobby/presence-changed",
+    );
+    expect(backOnline.presence.status).toBe("connected");
+  });
+});
