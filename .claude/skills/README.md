@@ -32,6 +32,12 @@ name (they set `disable-model-invocation: true`).
 | `ponytail-help` | /ponytail-help | Quick reference for the ponytail family. |
 | `ponytail-review` | /ponytail-review | Review a diff through the lazy-senior lens. |
 
+## Always-on communication
+
+| Skill | Invoke | Purpose |
+| --- | --- | --- |
+| `signal-only` | auto | Self-documenting code and terse, high-signal prose on every turn. |
+
 ## Project-specific
 
 | Skill | Invoke | Purpose |

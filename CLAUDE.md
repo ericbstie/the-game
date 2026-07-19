@@ -20,6 +20,10 @@ asked:
   atlases, or color variants, use this skill. Generate sprites procedurally in
   code (baked to offscreen canvases); this project has no asset pipeline.
 
+A third skill, **`signal-only`**, is effectively always-on: on every turn,
+write self-documenting code (comments only for *why*, never to restate the
+code) and high-signal prose (lead with the answer; cut filler and hedging).
+
 The remaining skills (`tdd`, `codebase-design`, `diagnosing-bugs`,
 `domain-modeling`, `two-axis-review`, `research`, `prototype`,
 `resolving-merge-conflicts`, and the `/implement` orchestrator) apply in their
