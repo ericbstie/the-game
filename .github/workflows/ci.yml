@@ -114,13 +114,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           next="${{ needs.version.outputs.next }}"
+          tag="v$next"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           npm pkg set version="$next"
-          git commit -am "chore(release): v$next [skip ci]"
-          git tag "v$next"
-          git push origin HEAD:main --follow-tags
-          gh release create "v$next" \
-            --title "v$next" \
-            --generate-notes \
-            binaries/*
+          if git diff --quiet -- package.json; then
+            echo "package.json already at $next"
+          else
+            git commit -am "chore(release): $tag [skip ci]"
+            git push origin HEAD:main
+          fi
+
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            git tag -a "$tag" -m "$tag"
+            git push origin "$tag"
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" binaries/* --clobber
+          else
+            gh release create "$tag" --title "$tag" --generate-notes binaries/*
+          fi
