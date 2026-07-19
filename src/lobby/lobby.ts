@@ -396,8 +396,15 @@ export class LobbyHub {
     if (!session.sim) return; // health before the match starts is meaningless
     const last = session.health.get(player.id);
     if (last && seq <= last.seq) return; // stale or duplicate — drop it
-    session.health.set(player.id, { hp, seq });
-    this.broadcast(session, { type: "game/peer-health", id: player.id, hp, seq }, socketId);
+    // HP is client-authoritative, but clamp the untrusted value so a stray report can't poison
+    // aggro-gating (livePlayers) or a peer's rendered HP bar.
+    const clamped = Math.max(0, Math.min(PLAYER_MAX_HP, hp));
+    session.health.set(player.id, { hp: clamped, seq });
+    this.broadcast(
+      session,
+      { type: "game/peer-health", id: player.id, hp: clamped, seq },
+      socketId,
+    );
   }
 
   // Relay a client's own position to the rest of the squad, dropping a stale/out-of-order

@@ -101,7 +101,7 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameSc
       if (canvas && world) {
         const dpr = window.devicePixelRatio || 1;
         if (dpr !== viewRef.current.dpr) resizeForDpr(canvas, viewRef, dpr);
-        world.stepSelf(dt, heldRef.current);
+        if (!world.isDead()) world.stepSelf(dt, heldRef.current); // a corpse holds still until respawn
         world.updateHealth(Date.now()); // judge contact damage at the owner's true position
         const { w, h } = viewRef.current;
         const ctx = w > 0 && h > 0 ? canvas.getContext("2d") : null;

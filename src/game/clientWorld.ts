@@ -69,12 +69,17 @@ export class ClientWorld {
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
   private readonly enemies = new Map<string, EnemyRecord>();
   private lastTick = -1; // highest applied map-delta tick; guards apply-if-newer
-  private selfHp = PLAYER_MAX_HP; // client-authoritative: the owner judges its own contact damage
+  private selfHp: number; // client-authoritative: the owner judges its own contact damage
 
+  // `initialHp` carries the owner's HP across a reconnect rebuild (a fresh world defaults to full).
+  // Without it, a mid-match reconnect would reset to full and the report loop could relay that heal
+  // before the server's peer-health burst reseeds the real value.
   constructor(
     init: WorldInit,
     private readonly selfId: PlayerId,
+    initialHp: number = PLAYER_MAX_HP,
   ) {
+    this.selfHp = initialHp;
     this.arena = init.arena;
     this.exit = init.exit;
     this.nests = nestLayout(init.arena);

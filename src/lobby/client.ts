@@ -206,9 +206,10 @@ export class LobbyClient {
         return;
       case "game/world-init": {
         // Build (or, on reconnect, rebuild) the local world. Flipping the phase here lands
-        // a (re)connecter in the match rather than the lobby roster.
+        // a (re)connecter in the match rather than the lobby roster. Carry the owner's HP across
+        // a reconnect rebuild so it isn't reset to full before the peer-health burst reseeds it.
         if (!this.state.self) return; // no identity yet — cannot own an avatar
-        const world = new ClientWorld(msg.init, this.state.self.id);
+        const world = new ClientWorld(msg.init, this.state.self.id, this.state.world?.hp());
         const snapshot = this.state.snapshot
           ? { ...this.state.snapshot, phase: "in-game" as const }
           : this.state.snapshot;

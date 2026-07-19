@@ -296,4 +296,12 @@ describe("ClientWorld self-health (client-authoritative contact damage)", () => 
     w.applyPeerHealth("self", 55, 1);
     expect(w.hp()).toBe(55);
   });
+
+  test("a reconnect rebuild carries the owner's HP instead of resetting to full", () => {
+    // Carrying the prior HP closes the window where the report loop could relay a false heal
+    // before the peer-health burst reseeds the value.
+    const rebuilt = new ClientWorld(init(), "self", 40);
+    expect(rebuilt.hp()).toBe(40);
+    expect(new ClientWorld(init(), "self").hp()).toBe(PLAYER_MAX_HP); // fresh match defaults to full
+  });
 });
