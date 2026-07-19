@@ -66,7 +66,7 @@ Score is your escape time.
 
 ## Scope & tech
 
-- **Platform:** single-file browser (HTML/JS canvas). Medium scope.
+- **Platform:** browser — React on an HTML5 canvas, built and tested with Bun. Medium scope.
 - **Build order:** local/hotseat prototype first → online netcode (host-authoritative, 2–6 players) after.
 
 ## Open questions / TODO

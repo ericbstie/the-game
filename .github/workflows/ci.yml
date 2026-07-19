@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Format
+        run: bunx biome format .
+
+      - name: Test
+        run: bun test
+
+      - name: Build
+        run: bun run compile
+
+  version:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.version.outputs.released }}
+      next: ${{ steps.version.outputs.next }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Compute next version
+        id: version
+        run: bun run scripts/next-version.ts
+
+  build-binaries:
+    needs: version
+    if: needs.version.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { triple: bun-linux-x64, name: linux-x64 }
+          - { triple: bun-linux-arm64, name: linux-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Compile ${{ matrix.target.name }}
+        run: |
+          bun build ./server.ts --compile --minify \
+            --target ${{ matrix.target.triple }} \
+            --outfile "breakout-box-server-v${{ needs.version.outputs.next }}-${{ matrix.target.name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target.name }}
+          path: breakout-box-server-v${{ needs.version.outputs.next }}-${{ matrix.target.name }}
+          if-no-files-found: error
+
+  release:
+    needs: [version, build-binaries]
+    if: needs.version.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Bump, tag, and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          next="${{ needs.version.outputs.next }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          npm pkg set version="$next"
+          git commit -am "chore(release): v$next [skip ci]"
+          git tag "v$next"
+          git push origin HEAD:main --follow-tags
+          gh release create "v$next" \
+            --title "v$next" \
+            --generate-notes \
+            binaries/*

@@ -2,7 +2,8 @@
 
 Co-op arena survival for the browser — 2–6 friends push out from the center of
 one giant box to find the escape door and get the whole squad out, fast. Score
-is your escape time. Single-file HTML/JS canvas. See [DESIGN.md](DESIGN.md).
+is your escape time. A React app rendered on an HTML5 canvas, built with Bun.
+See [DESIGN.md](DESIGN.md).
 
 ## Contribute
 
