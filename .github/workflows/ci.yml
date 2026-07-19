@@ -67,8 +67,6 @@ jobs:
         target:
           - { triple: bun-linux-x64, name: linux-x64 }
           - { triple: bun-linux-arm64, name: linux-arm64 }
-          - { triple: bun-linux-x64-musl, name: linux-x64-musl }
-          - { triple: bun-linux-arm64-musl, name: linux-arm64-musl }
     steps:
       - uses: actions/checkout@v4
 
