@@ -1,15 +1,29 @@
+import { GameScreen } from "./game/GameScreen";
 import { LobbyScreen } from "./lobby/LobbyScreen";
 import { Menu } from "./lobby/Menu";
 import { useLobby } from "./lobby/useLobby";
 
-// Milestone 1 is DOM-only: the app is the menu and the lobby. The canvas game world
-// arrives in Milestone 2. `wsUrl` is injectable so tests can point at a harness server;
-// in the browser it defaults to the page's own origin.
+// Three screens off one lobby store: the menu, the lobby waiting room, and the in-match
+// canvas. Which one shows is derived from the session — seated + in-game phase (or a
+// live world frame) means the match; seated + lobby phase means the waiting room.
+// `wsUrl` is injectable so tests can point at a harness server.
 export function App({ wsUrl }: { wsUrl?: string } = {}) {
   const { state, client } = useLobby(wsUrl ? { wsUrl } : undefined);
 
-  if (state.status === "lobby" || state.status === "reconnecting") {
-    return <LobbyScreen state={state} onLeave={() => client.leave()} />;
+  const seated = state.status === "lobby" || state.status === "reconnecting";
+  if (seated) {
+    if (state.snapshot?.phase === "in-game" || state.world) {
+      return (
+        <GameScreen
+          state={state}
+          onLeave={() => client.leave()}
+          onInput={(move) => client.sendInput(move)}
+        />
+      );
+    }
+    return (
+      <LobbyScreen state={state} onLeave={() => client.leave()} onStart={() => client.start()} />
+    );
   }
   return (
     <Menu

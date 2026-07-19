@@ -4,15 +4,18 @@ import type { PublicPlayer } from "./protocol";
 interface LobbyScreenProps {
   state: LobbyState;
   onLeave: () => void;
+  onStart: () => void;
 }
 
 // The lobby screen: shareable code plus the Squad roster. Every seat 1..maxPlayers is
 // shown; occupied seats mark the host and you, and grey out during a disconnect grace.
-export function LobbyScreen({ state, onLeave }: LobbyScreenProps) {
+// Only the host sees Start — it drops the whole Squad into the match.
+export function LobbyScreen({ state, onLeave, onStart }: LobbyScreenProps) {
   const snapshot = state.snapshot;
   if (!snapshot) return null;
   const seats = Array.from({ length: snapshot.maxPlayers }, (_, i) => i + 1);
   const bySlot = new Map(snapshot.players.map((p) => [p.slot, p]));
+  const isHost = snapshot.host === state.self?.id;
 
   return (
     <main className="lobby">
@@ -46,9 +49,16 @@ export function LobbyScreen({ state, onLeave }: LobbyScreenProps) {
           );
         })}
       </ul>
-      <button type="button" onClick={onLeave}>
-        Leave
-      </button>
+      <div className="lobby-actions">
+        {isHost && (
+          <button type="button" className="start" onClick={onStart}>
+            Start game
+          </button>
+        )}
+        <button type="button" onClick={onLeave}>
+          Leave
+        </button>
+      </div>
     </main>
   );
 }

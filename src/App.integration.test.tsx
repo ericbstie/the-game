@@ -29,3 +29,18 @@ test("clicking Host opens the WS and renders the Squad roster with a shareable c
   const code = screen.getByText(/share code/i).querySelector("strong")?.textContent ?? "";
   expect(code).toHaveLength(4);
 });
+
+test("the host can Start the match and lands in the canvas game screen", async () => {
+  server = startServer();
+  render(<App wsUrl={server.url} />);
+
+  fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "Ana" } });
+  fireEvent.click(screen.getByRole("button", { name: /host a lobby/i }));
+  await waitFor(() => expect(screen.getByRole("button", { name: /start/i })).not.toBeNull());
+
+  fireEvent.click(screen.getByRole("button", { name: /start/i }));
+
+  // Once the first game/state arrives, the roster is replaced by the arena canvas.
+  await waitFor(() => expect(screen.getByLabelText(/game arena/i)).not.toBeNull());
+  expect(screen.getByText(/WASD/i)).not.toBeNull();
+});
