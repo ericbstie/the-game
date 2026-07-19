@@ -3,6 +3,13 @@
 Co-op arena survival game for the browser. Single-file HTML/JS canvas, no build
 step. See [DESIGN.md](DESIGN.md) for the full design.
 
+## Commits
+
+Semantic commit messages (Conventional Commits) must be followed — `type: subject`
+(`feat:`, `fix:`, `perf:`, `chore:`, `docs:`, …). Release versions are derived from
+them automatically: `feat` bumps the minor, `fix`/`perf` the patch, and a `!` or
+`BREAKING CHANGE:` footer the major (see `.github/workflows/release.yml`).
+
 ## Skills — use these when relevant
 
 This repo ships engineering skills in `.claude/skills/`. Two of them are
