@@ -124,14 +124,26 @@ export interface EnemySpawn {
 // `moves`, so a client that missed a spawn still can't render an unknown id (guarded).
 export type EnemyMove = [id: string, x: number, y: number];
 
+// An enemy's HP after taking damage this tick. The client updates its stored hp; deaths
+// (hp reached 0) ride the separate `deaths` array instead.
+export interface EnemyHit {
+  id: string;
+  hp: number;
+}
+
 // The per-tick enemy/combat delta: a full `moves` set plus sparse event arrays — only the
 // non-empty ones ride the wire. `tick` is monotonic per session; the client applies-if-newer.
 export interface MapDelta {
   tick: number;
   moves: EnemyMove[];
   spawns?: EnemySpawn[];
+  hits?: EnemyHit[];
   deaths?: string[];
 }
+
+// A player weapon. Melee is a close cleave wedge; ranged is a hitscan ray (added in #41).
+// Every player has both in M3's minimal model.
+export type Weapon = "melee" | "ranged";
 
 // A render-model enemy the client assembles each frame (not a wire type). Its position is
 // interpolated a short delay behind the stream, exactly like a peer avatar.
@@ -180,7 +192,14 @@ export type LeaveLobby = Envelope<"lobby/leave">;
 // stale/out-of-order frame is dropped.
 export type StartGame = Envelope<"game/start">;
 export type GamePos = Envelope<"game/pos", { pos: Vec2; seq: number }>;
-export type ClientMessage = CreateLobby | JoinLobby | LeaveLobby | StartGame | GamePos;
+// A reported player attack (M3): the client swings/fires and reports it; the server validates
+// (cadence + loose range + seq) and applies the damage — enemy HP is never client-writable.
+// `pos` is the swing origin (the player's own position); `dir` is a unit aim vector.
+export type GameAttack = Envelope<
+  "game/attack",
+  { weapon: Weapon; pos: Vec2; dir: Vec2; seq: number }
+>;
+export type ClientMessage = CreateLobby | JoinLobby | LeaveLobby | StartGame | GamePos | GameAttack;
 
 export type LobbyErrorCode = "lobby-not-found" | "lobby-full" | "slot-released" | "invalid";
 
@@ -274,9 +293,21 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       if (pos === null || !isFiniteNumber(msg.seq)) return null;
       return { type: "game/pos", pos, seq: msg.seq };
     }
+    case "game/attack": {
+      const pos = asVec2(msg.pos);
+      const dir = asVec2(msg.dir);
+      if (pos === null || dir === null || !isWeapon(msg.weapon) || !isFiniteNumber(msg.seq)) {
+        return null;
+      }
+      return { type: "game/attack", weapon: msg.weapon, pos, dir, seq: msg.seq };
+    }
     default:
       return null;
   }
+}
+
+function isWeapon(value: unknown): value is Weapon {
+  return value === "melee" || value === "ranged";
 }
 
 // A streamed position must be a Vec2 of finite numbers — a client could send anything,

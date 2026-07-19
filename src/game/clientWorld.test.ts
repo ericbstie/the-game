@@ -168,6 +168,20 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
     expect(enemyIn(w, 5000, "e1")?.pos).toEqual({ x: 10, y: 10 });
   });
 
+  test("a hit updates the enemy's stored hp", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [["e1", 10, 10]],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP }],
+      },
+      1000,
+    );
+    w.applyMapDelta({ tick: 2, moves: [["e1", 10, 10]], hits: [{ id: "e1", hp: 12 }] }, 1050);
+    expect(enemyIn(w, 5000, "e1")?.hp).toBe(12);
+  });
+
   test("a death removes the enemy from the world", () => {
     const w = new ClientWorld(init(), "self");
     w.applyMapDelta(

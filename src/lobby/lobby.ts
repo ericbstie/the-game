@@ -1,4 +1,12 @@
-import { type EnemyState, spawnEnemyState, stepEnemies } from "../game/enemies";
+import {
+  type Attack,
+  type AttackGuard,
+  admitAttack,
+  type EnemyState,
+  freshGuard,
+  spawnEnemyState,
+  stepEnemies,
+} from "../game/enemies";
 import { generateWorld } from "../game/world";
 import { generateCode, normalizeCode } from "./code";
 import {
@@ -15,6 +23,7 @@ import {
   parseClientMessage,
   type ServerMessage,
   type Vec2,
+  type Weapon,
   type WorldInit,
 } from "./protocol";
 
@@ -57,6 +66,8 @@ interface SessionRecord {
   sim?: EnemyState; // server-authoritative enemy simulation, live only in-game
   simTimer?: ReturnType<typeof setInterval>; // the 20 Hz tick driving `sim`; cleared on teardown
   tickNo: number; // monotonic map-delta tick counter (apply-if-newer on clients)
+  attackGuards: Map<PlayerId, AttackGuard>; // per-player cadence/seq admission state
+  pendingAttacks: Attack[]; // admitted attacks awaiting the next tick's resolution
 }
 
 // Server-authoritative hub over every Session. Owns the whole
@@ -99,6 +110,9 @@ export class LobbyHub {
         return;
       case "game/pos":
         this.gamePos(socketId, msg.pos, msg.seq);
+        return;
+      case "game/attack":
+        this.gameAttack(socketId, msg.weapon, msg.pos, msg.dir, msg.seq);
         return;
     }
   }
@@ -168,6 +182,8 @@ export class LobbyHub {
       graceTimers: new Map(),
       positions: new Map(),
       tickNo: 0,
+      attackGuards: new Map(),
+      pendingAttacks: [],
     };
     this.sessions.set(code, session);
     this.sockets.set(socketId, { code, playerId: player.id });
@@ -319,16 +335,40 @@ export class LobbyHub {
     session.simTimer = timer;
   }
 
-  // One enemy-sim tick: step the sim against the squad's last-known positions (read-only) and
-  // broadcast what changed. `moves` is always present; spawn/death arrays ride only when non-empty.
+  // One enemy-sim tick: resolve the admitted attacks queued since the last tick and step the
+  // sim against the squad's last-known positions (read-only), then broadcast what changed.
+  // `moves` is always present; spawn/hit/death arrays ride only when non-empty.
   private tick(session: SessionRecord): void {
     if (!session.sim) return;
     const players = [...session.positions].map(([id, sample]) => ({ id, pos: sample.pos }));
-    const { events } = stepEnemies(session.sim, players, [], this.tickMs);
+    const attacks = session.pendingAttacks;
+    session.pendingAttacks = [];
+    const { events } = stepEnemies(session.sim, players, attacks, this.tickMs);
     const delta: MapDelta = { tick: ++session.tickNo, moves: events.moves };
     if (events.spawns.length > 0) delta.spawns = events.spawns;
+    if (events.hits.length > 0) delta.hits = events.hits;
     if (events.deaths.length > 0) delta.deaths = events.deaths;
     this.broadcast(session, { type: "game/map-delta", ...delta });
+  }
+
+  // A reported attack: admit it (cadence + loose range + seq, all server-side) and queue the
+  // valid ones for the next tick. The client never writes enemy HP — the sim resolves it.
+  private gameAttack(socketId: string, weapon: Weapon, pos: Vec2, dir: Vec2, seq: number): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (!session.sim) return; // no combat before the match starts
+    let guard = session.attackGuards.get(player.id);
+    if (!guard) {
+      guard = freshGuard();
+      session.attackGuards.set(player.id, guard);
+    }
+    const lastPos = session.positions.get(player.id)?.pos ?? null;
+    if (admitAttack(guard, { weapon, pos, seq }, lastPos, Date.now())) {
+      session.pendingAttacks.push({ weapon, pos, dir });
+    }
   }
 
   // Relay a client's own position to the rest of the squad, dropping a stale/out-of-order
@@ -387,6 +427,7 @@ export class LobbyHub {
   ): void {
     session.players.delete(player.id);
     session.positions.delete(player.id);
+    session.attackGuards.delete(player.id);
     const timer = session.graceTimers.get(player.id);
     if (timer) {
       clearTimeout(timer);

@@ -1,6 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import type { WorldInit } from "../lobby/protocol";
-import { type EnemyState, GRUNT_HP, GRUNT_SPEED, spawnEnemyState, stepEnemies } from "./enemies";
+import type { Vec2, Weapon, WorldInit } from "../lobby/protocol";
+import {
+  ATTACK_POS_TOLERANCE,
+  type Attack,
+  admitAttack,
+  type Enemy,
+  type EnemyState,
+  freshGuard,
+  GRUNT_HP,
+  GRUNT_SPEED,
+  MELEE_CADENCE_MS,
+  MELEE_DAMAGE,
+  spawnEnemyState,
+  stepEnemies,
+} from "./enemies";
 import { ARENA } from "./world";
 
 const C = { x: ARENA.width / 2, y: ARENA.height / 2 };
@@ -81,5 +94,116 @@ describe("stepEnemies (tracer: ENGAGED chase-nearest-player)", () => {
     const players = center();
     stepEnemies(state, players, [], 100);
     expect(players).toEqual(center());
+  });
+});
+
+const grunt = (id: string, pos: Vec2, hp = GRUNT_HP): Enemy => ({ id, kind: "grunt", pos, hp });
+const stateWith = (enemies: Enemy[]): EnemyState => ({
+  arena: ARENA,
+  enemies: new Map(enemies.map((e) => [e.id, e])),
+  pending: [],
+  rng: () => 0,
+  nextId: enemies.length + 1,
+});
+const melee = (pos: Vec2, dir: Vec2): Attack => ({ weapon: "melee", pos, dir });
+const step = (state: EnemyState, attacks: Attack[]) => stepEnemies(state, [], attacks, 0).events;
+
+describe("stepEnemies melee resolution (cleave wedge)", () => {
+  test("a swing damages an enemy within reach and inside the arc", () => {
+    const state = stateWith([grunt("e1", { x: 100, y: 100 })]);
+    const events = step(state, [melee({ x: 50, y: 100 }, { x: 1, y: 0 })]);
+    expect(events.hits).toEqual([{ id: "e1", hp: GRUNT_HP - MELEE_DAMAGE }]);
+    expect(state.enemies.get("e1")?.hp).toBe(GRUNT_HP - MELEE_DAMAGE);
+  });
+
+  test("an enemy beyond reach is not hit", () => {
+    const state = stateWith([grunt("e1", { x: 300, y: 100 })]);
+    const events = step(state, [melee({ x: 50, y: 100 }, { x: 1, y: 0 })]);
+    expect(events.hits).toEqual([]);
+    expect(state.enemies.get("e1")?.hp).toBe(GRUNT_HP);
+  });
+
+  test("an enemy behind the swing (outside the arc) is not hit", () => {
+    const state = stateWith([grunt("e1", { x: 100, y: 100 })]);
+    const events = step(state, [melee({ x: 50, y: 100 }, { x: -1, y: 0 })]); // aiming away
+    expect(events.hits).toEqual([]);
+    expect(state.enemies.get("e1")?.hp).toBe(GRUNT_HP);
+  });
+
+  test("cleaves every enemy in the wedge", () => {
+    const state = stateWith([grunt("e1", { x: 100, y: 90 }), grunt("e2", { x: 100, y: 110 })]);
+    const events = step(state, [melee({ x: 50, y: 100 }, { x: 1, y: 0 })]);
+    expect(events.hits.map((h) => h.id).sort()).toEqual(["e1", "e2"]);
+  });
+
+  test("a lethal hit kills the enemy: reported in deaths, removed, absent from moves", () => {
+    const state = stateWith([grunt("e1", { x: 100, y: 100 }, MELEE_DAMAGE)]);
+    const events = step(state, [melee({ x: 50, y: 100 }, { x: 1, y: 0 })]);
+    expect(events.deaths).toEqual(["e1"]);
+    expect(events.hits).toEqual([]);
+    expect(state.enemies.has("e1")).toBe(false);
+    expect(events.moves).toEqual([]);
+  });
+
+  test("a ranged report is ignored by melee resolution (until #41)", () => {
+    const state = stateWith([grunt("e1", { x: 100, y: 100 })]);
+    const events = step(state, [{ weapon: "ranged", pos: { x: 50, y: 100 }, dir: { x: 1, y: 0 } }]);
+    expect(events.hits).toEqual([]);
+    expect(state.enemies.get("e1")?.hp).toBe(GRUNT_HP);
+  });
+});
+
+describe("admitAttack (server-side attack admission)", () => {
+  const report = (seq: number, weapon: Weapon = "melee", pos: Vec2 = { x: 0, y: 0 }) => ({
+    weapon,
+    pos,
+    seq,
+  });
+
+  test("accepts a fresh in-cadence attack and records its seq + timestamp", () => {
+    const g = freshGuard();
+    expect(admitAttack(g, report(1), null, 1000)).toBe(true);
+    expect(g.seq).toBe(1);
+    expect(g.meleeAt).toBe(1000);
+  });
+
+  test("drops a stale or duplicate seq", () => {
+    const g = freshGuard();
+    admitAttack(g, report(5), null, 1000);
+    expect(admitAttack(g, report(5), null, 5000)).toBe(false); // equal seq
+    expect(admitAttack(g, report(3), null, 9000)).toBe(false); // older seq
+  });
+
+  test("rate-limits a too-soon second swing, then allows once the cadence elapses", () => {
+    const g = freshGuard();
+    admitAttack(g, report(1), null, 1000);
+    expect(admitAttack(g, report(2), null, 1000 + MELEE_CADENCE_MS - 1)).toBe(false);
+    expect(admitAttack(g, report(3), null, 1000 + MELEE_CADENCE_MS)).toBe(true);
+  });
+
+  test("rejects a teleport-far origin, accepts one within tolerance", () => {
+    const last = { x: 0, y: 0 };
+    expect(
+      admitAttack(
+        freshGuard(),
+        report(1, "melee", { x: ATTACK_POS_TOLERANCE + 1, y: 0 }),
+        last,
+        1000,
+      ),
+    ).toBe(false);
+    expect(
+      admitAttack(
+        freshGuard(),
+        report(1, "melee", { x: ATTACK_POS_TOLERANCE - 1, y: 0 }),
+        last,
+        1000,
+      ),
+    ).toBe(true);
+  });
+
+  test("melee and ranged cadences are tracked independently", () => {
+    const g = freshGuard();
+    expect(admitAttack(g, report(1, "melee"), null, 1000)).toBe(true);
+    expect(admitAttack(g, report(2, "ranged"), null, 1000)).toBe(true); // not blocked by the melee gap
   });
 });

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { GRUNT_HP, MELEE_DAMAGE } from "../game/enemies";
 import { LobbyHub, type Transport } from "./lobby";
 import type { ServerMessage } from "./protocol";
 import type { LobbyServer } from "./server";
@@ -653,5 +654,33 @@ describe("M3: enemy sim tick lifecycle", () => {
     const n = deltas(t).length;
     await sleep(30);
     expect(deltas(t).length).toBe(n);
+  });
+
+  test("a validated melee near an enemy applies damage and streams the hit", async () => {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: 10 });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    // Stand next to the seeded grunt (east mid-band ≈ 29952,15600) and swing east.
+    hub.handleMessage(
+      "s1",
+      JSON.stringify({ type: "game/pos", pos: { x: 29900, y: 15600 }, seq: 1 }),
+    );
+    hub.handleMessage(
+      "s1",
+      JSON.stringify({
+        type: "game/attack",
+        weapon: "melee",
+        pos: { x: 29900, y: 15600 },
+        dir: { x: 1, y: 0 },
+        seq: 1,
+      }),
+    );
+    await sleep(40);
+    hub.dispose();
+    const hit = deltas(t)
+      .map((d) => d.msg as Extract<ServerMessage, { type: "game/map-delta" }>)
+      .find((d) => d.hits && d.hits.length > 0);
+    expect(hit?.hits).toEqual([{ id: "e1", hp: GRUNT_HP - MELEE_DAMAGE }]);
   });
 });

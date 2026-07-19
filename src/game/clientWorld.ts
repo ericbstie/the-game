@@ -112,6 +112,10 @@ export class ClientWorld {
       const enemy = this.enemies.get(id);
       if (enemy) this.pushSample(enemy.buffer, { x, y }, now);
     }
+    for (const hit of delta.hits ?? []) {
+      const enemy = this.enemies.get(hit.id);
+      if (enemy) enemy.hp = hit.hp;
+    }
     for (const id of delta.deaths ?? []) this.enemies.delete(id);
   }
 

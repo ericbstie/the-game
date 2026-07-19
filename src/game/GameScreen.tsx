@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import type { LobbyState } from "../lobby/client";
-import type { Arena, MoveInput, Vec2 } from "../lobby/protocol";
-import { computeCamera } from "./camera";
+import type { Arena, MoveInput, Vec2, Weapon } from "../lobby/protocol";
+import { type Camera, computeCamera } from "./camera";
 import { drawWorld } from "./draw";
-import { keyToDirection, movesEqual, NO_MOVE } from "./input";
+import { aimDir, keyToDirection, movesEqual, NO_MOVE } from "./input";
 
 const POS_SEND_MS = 50; // ~20 Hz position stream, independent of the render frame rate
 const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the avatar on resume
@@ -12,6 +12,7 @@ interface GameScreenProps {
   state: LobbyState;
   onLeave: () => void;
   onPos: (pos: Vec2) => void;
+  onAttack: (weapon: Weapon, pos: Vec2, dir: Vec2) => void;
 }
 
 // The in-match screen: a fullscreen camera that follows your Avatar through the giant box.
@@ -21,16 +22,23 @@ interface GameScreenProps {
 // crisp on HiDPI). The owner's position streams out at a fixed ~20 Hz. Refs bridge React's
 // render into the loop so a world swapped on reconnect and a changed callback are picked up
 // without restarting it.
-export function GameScreen({ state, onLeave, onPos }: GameScreenProps) {
+export function GameScreen({ state, onLeave, onPos, onAttack }: GameScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const heldRef = useRef<MoveInput>(NO_MOVE);
   const worldRef = useRef(state.world);
   const selfIdRef = useRef(state.self?.id);
   const onPosRef = useRef(onPos);
+  const onAttackRef = useRef(onAttack);
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
+  const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
+  const aimRef = useRef<{ camera: Camera; self: Vec2 }>({
+    camera: { x: 0, y: 0 },
+    self: { x: 0, y: 0 },
+  }); // the render loop's latest camera + self world pos, so a click aims from the true origin
   worldRef.current = state.world;
   selfIdRef.current = state.self?.id;
   onPosRef.current = onPos;
+  onAttackRef.current = onAttack;
 
   // Keyboard → held MoveInput. It drives the local self-sim; nothing is sent per key.
   useEffect(() => {
@@ -94,6 +102,7 @@ export function GameScreen({ state, onLeave, onPos }: GameScreenProps) {
           const self = selfPos(snapshot.players, selfIdRef.current) ?? center(world.arena);
           const viewport = { width: w, height: h };
           const camera = computeCamera(self, viewport, world.arena);
+          aimRef.current = { camera, self }; // feed the attack handlers the live origin + camera
           ctx.setTransform(dpr, 0, 0, dpr, -camera.x * dpr, -camera.y * dpr);
           drawWorld(ctx, snapshot, { selfId: selfIdRef.current, camera, viewport });
         }
@@ -112,6 +121,19 @@ export function GameScreen({ state, onLeave, onPos }: GameScreenProps) {
     return () => clearInterval(timer);
   }, []);
 
+  const trackPointer = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    pointerRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+  const fire = (weapon: Weapon) => {
+    const { camera, self } = aimRef.current;
+    onAttackRef.current(weapon, { ...self }, aimDir(pointerRef.current, self, camera));
+  };
+  const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    trackPointer(e);
+    if (e.button === 0) fire("melee"); // left-click swings; ranged binds in #41
+  };
+
   return (
     <main className="game">
       <header className="game-header">
@@ -127,8 +149,14 @@ export function GameScreen({ state, onLeave, onPos }: GameScreenProps) {
           Leave
         </button>
       </header>
-      <canvas ref={canvasRef} className="arena" aria-label="Game arena" />
-      <p className="hint">Move with WASD or the arrow keys.</p>
+      <canvas
+        ref={canvasRef}
+        className="arena"
+        aria-label="Game arena"
+        onMouseMove={trackPointer}
+        onMouseDown={onMouseDown}
+      />
+      <p className="hint">Move with WASD or the arrow keys. Left-click to swing.</p>
     </main>
   );
 }

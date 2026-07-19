@@ -9,6 +9,7 @@ import {
   type Self,
   type ServerMessage,
   type Vec2,
+  type Weapon,
   WS_PATH,
 } from "./protocol";
 import { applyRoster } from "./roster";
@@ -63,6 +64,7 @@ export class LobbyClient {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectUntil?: number; // wall-clock deadline for the current reconnect loop
   private posSeq = 0; // monotonic across the client's whole life, so it survives reconnect
+  private attackSeq = 0; // monotonic attack sequence, independent of posSeq
 
   constructor(options: LobbyClientOptions = {}) {
     this.wsUrl = options.wsUrl ?? defaultWsUrl();
@@ -99,6 +101,12 @@ export class LobbyClient {
   // while the socket is down (reconnecting).
   sendPos(pos: Vec2): void {
     this.send({ type: "game/pos", pos, seq: ++this.posSeq });
+  }
+
+  // Report a swing/shot. The server validates (cadence/range/seq) and applies the damage —
+  // the client never writes enemy HP. `seq` is monotonic, like sendPos.
+  sendAttack(weapon: Weapon, pos: Vec2, dir: Vec2): void {
+    this.send({ type: "game/attack", weapon, pos, dir, seq: ++this.attackSeq });
   }
 
   leave(): void {
