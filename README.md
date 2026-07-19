@@ -18,8 +18,11 @@ bun run check
 bun run build
 ```
 
-`bun dev` serves the app with hot reload and prints the local URL; `bun serve` runs
-the plain server in `server.ts` instead.
+Both `bun dev` (hot reload) and `bun serve` run the unified server in `server.ts` — one
+process, one origin, serving the React app and the same-origin lobby WebSocket. `bun run
+compile` builds the standalone server binary.
+
+To demo a lobby across two networks, see [docs/cross-network-demo.md](docs/cross-network-demo.md).
 
 ## Contribute
 
