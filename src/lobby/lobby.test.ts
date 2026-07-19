@@ -293,3 +293,102 @@ describe("T4: disconnect greys the slot; reconnect reclaims it", () => {
     expect(backOnline.presence.status).toBe("connected");
   });
 });
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+describe("T5: grace expiry, takeover, and empty-session teardown", () => {
+  test("when grace elapses the player becomes gone and the slot is released", async () => {
+    const server = spawn(40); // short grace
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben, joined } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    await ben.close();
+    const left = expectMessage(
+      await hostClient.waitFor((m) => m.type === "lobby/player-left"),
+      "lobby/player-left",
+    );
+    expect(left.id).toBe(joined.you.id);
+    expect(left.reason).toBe("grace-expired");
+
+    // Slot 2 is now free: a new joiner takes it.
+    const { joined: charlie } = await joinLobby(server, code, "Charlie");
+    expect(charlie.you.slot).toBe(2);
+  });
+
+  test("a stale token after the slot was released is rejected with slot-released", async () => {
+    const server = spawn(40);
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben, joined } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    await ben.close();
+    await hostClient.waitFor((m) => m.type === "lobby/player-left"); // grace expired
+
+    const stale = await connect(server);
+    stale.send({ type: "lobby/join", code, name: "Ben", token: joined.you.token });
+    const err = expectMessage(await stale.waitFor((m) => m.type === "lobby/error"), "lobby/error");
+    expect(err.code).toBe("slot-released");
+  });
+
+  test("host-gone-by-grace reassigns the host like an explicit leave", async () => {
+    const server = spawn(40);
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben, joined } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    await hostClient.close(); // the host drops and never returns
+    const hostChanged = expectMessage(
+      await ben.waitFor((m) => m.type === "lobby/host-changed"),
+      "lobby/host-changed",
+    );
+    expect(hostChanged.host).toBe(joined.you.id); // Ben, the lowest occupied slot
+  });
+
+  test("an explicit leave that empties the session frees the code for reuse", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Solo");
+    hostClient.send({ type: "lobby/leave" });
+    await sleep(20); // let the leave settle
+
+    const rejoin = await connect(server);
+    rejoin.send({ type: "lobby/join", code, name: "Latecomer" });
+    const err = expectMessage(await rejoin.waitFor((m) => m.type === "lobby/error"), "lobby/error");
+    expect(err.code).toBe("lobby-not-found"); // session destroyed, code freed
+  });
+
+  test("grace expiry of the last player destroys the empty session", async () => {
+    const server = spawn(40);
+    const { code } = await host(server, "Solo");
+    // Drop the only player and wait out the grace window.
+    await clients[clients.length - 1].close();
+    await sleep(120);
+
+    const rejoin = await connect(server);
+    rejoin.send({ type: "lobby/join", code, name: "Latecomer" });
+    const err = expectMessage(await rejoin.waitFor((m) => m.type === "lobby/error"), "lobby/error");
+    expect(err.code).toBe("lobby-not-found");
+  });
+
+  test("a second live connection with an active token takes over; the old is superseded", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben, joined } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    // A new socket presents Ben's still-active token.
+    const takeover = await connect(server);
+    takeover.send({ type: "lobby/join", code, name: "Ben", token: joined.you.token });
+
+    const superseded = await ben.waitFor((m) => m.type === "lobby/superseded");
+    expect(superseded.type).toBe("lobby/superseded");
+
+    const rejoined = expectMessage(
+      await takeover.waitFor((m) => m.type === "lobby/joined"),
+      "lobby/joined",
+    );
+    expect(rejoined.tookOver).toBe(true);
+    expect(rejoined.you.slot).toBe(2);
+    expect(rejoined.you.id).toBe(joined.you.id);
+  });
+});

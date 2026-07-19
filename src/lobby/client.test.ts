@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { LobbyClient, type LobbyClientOptions } from "./client";
 import type { LobbyServer } from "./server";
-import { startServer, waitForState } from "./testing";
+import { makeClient, startServer, waitForState } from "./testing";
 
 const servers: LobbyServer[] = [];
 const clientList: LobbyClient[] = [];
@@ -15,8 +15,8 @@ afterEach(() => {
   servers.length = 0;
 });
 
-function spawn(): LobbyServer {
-  const server = startServer();
+function spawn(graceMs?: number): LobbyServer {
+  const server = startServer(graceMs === undefined ? {} : { graceMs });
   servers.push(server);
   return server;
 }
@@ -153,5 +153,46 @@ describe("T4: LobbyClient reconnect", () => {
       3000,
     );
     expect(recovered.snapshot?.players).toHaveLength(2);
+  });
+});
+
+describe("T5: LobbyClient slot release and takeover", () => {
+  test("a reconnect after the slot was released lands in the returned-to-menu state", async () => {
+    // Grace (30ms) is shorter than the joiner's retry (120ms), so the slot is
+    // released before the client re-presents its token.
+    const server = spawn(30);
+    const hostClient = newClient({ wsUrl: server.url }); // keeps the session alive
+    hostClient.host("Ana");
+    const hosted = await waitForState(hostClient, (s) => s.status === "lobby");
+
+    const joiner = newClient({ wsUrl: server.url, retryMs: 120 });
+    joiner.join(hosted.code ?? "", "Ben");
+    await waitForState(joiner, (s) => s.status === "lobby");
+
+    dropSocket(joiner);
+    const released = await waitForState(joiner, (s) => s.status === "released", 2000);
+    expect(released.error).toMatch(/released/i);
+    expect(released.snapshot).toBeUndefined(); // returned to menu
+  });
+
+  test("being taken over by another device returns to the menu", async () => {
+    const server = spawn();
+    const client = newClient({ wsUrl: server.url });
+    client.host("Ana");
+    const state = await waitForState(client, (s) => s.status === "lobby");
+
+    // A second socket presents this client's still-active token -> takeover.
+    const other = makeClient(server.url);
+    await other.opened;
+    other.send({
+      type: "lobby/join",
+      code: state.code ?? "",
+      name: "Ana",
+      token: state.self?.token,
+    });
+
+    const back = await waitForState(client, (s) => s.status === "menu" && s.error !== undefined);
+    expect(back.error).toMatch(/another device/i);
+    await other.close();
   });
 });
