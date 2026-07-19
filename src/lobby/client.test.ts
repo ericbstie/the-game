@@ -158,14 +158,14 @@ describe("T4: LobbyClient reconnect", () => {
 
 describe("T5: LobbyClient slot release and takeover", () => {
   test("a reconnect after the slot was released lands in the returned-to-menu state", async () => {
-    // Grace (30ms) is shorter than the joiner's retry (120ms), so the slot is
+    // Grace (30ms) is shorter than the joiner's retry (200ms), so the slot is
     // released before the client re-presents its token.
     const server = spawn(30);
     const hostClient = newClient({ wsUrl: server.url }); // keeps the session alive
     hostClient.host("Ana");
     const hosted = await waitForState(hostClient, (s) => s.status === "lobby");
 
-    const joiner = newClient({ wsUrl: server.url, retryMs: 120 });
+    const joiner = newClient({ wsUrl: server.url, retryMs: 200 });
     joiner.join(hosted.code ?? "", "Ben");
     await waitForState(joiner, (s) => s.status === "lobby");
 
@@ -194,5 +194,22 @@ describe("T5: LobbyClient slot release and takeover", () => {
     const back = await waitForState(client, (s) => s.status === "menu" && s.error !== undefined);
     expect(back.error).toMatch(/another device/i);
     await other.close();
+  });
+
+  test("reconnect gives up and returns to the menu once the retry window elapses", async () => {
+    const server = spawn();
+    // Window (10ms) shorter than the retry (60ms): the first retry sees the window
+    // elapsed and gives up rather than looping forever against an unreachable server.
+    const client = newClient({ wsUrl: server.url, retryMs: 60, reconnectWindowMs: 10 });
+    client.host("Ana");
+    await waitForState(client, (s) => s.status === "lobby");
+
+    dropSocket(client);
+    const gaveUp = await waitForState(
+      client,
+      (s) => s.status === "menu" && s.error !== undefined,
+      2000,
+    );
+    expect(gaveUp.error).toMatch(/lost connection/i);
   });
 });

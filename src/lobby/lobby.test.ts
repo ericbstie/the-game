@@ -391,4 +391,23 @@ describe("T5: grace expiry, takeover, and empty-session teardown", () => {
     expect(rejoined.you.slot).toBe(2);
     expect(rejoined.you.id).toBe(joined.you.id);
   });
+
+  test("host reassignment prefers a connected player over a greyed one", async () => {
+    const server = spawn(); // long default grace so Ben stays greyed during the test
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben, joined: benJoined } = await joinLobby(server, code, "Ben");
+    const { client: charlie, joined: charlieJoined } = await joinLobby(server, code, "Charlie");
+
+    await ben.close(); // Ben (slot 2) becomes disconnected-in-grace
+    await charlie.waitFor((m) => m.type === "lobby/presence-changed");
+
+    hostClient.send({ type: "lobby/leave" }); // host leaves -> reassignment
+    const hostChanged = expectMessage(
+      await charlie.waitFor((m) => m.type === "lobby/host-changed"),
+      "lobby/host-changed",
+    );
+    // Host goes to Charlie (slot 3, connected), not Ben (slot 2, greyed).
+    expect(hostChanged.host).toBe(charlieJoined.you.id);
+    expect(hostChanged.host).not.toBe(benJoined.you.id);
+  });
 });

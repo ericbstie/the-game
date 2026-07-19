@@ -24,9 +24,13 @@ export interface LobbyState {
 export interface LobbyClientOptions {
   wsUrl?: string; // base `/ws` URL; defaults to the page's same origin
   retryMs?: number; // reconnect cadence while a dropped socket is within its grace window
+  reconnectWindowMs?: number; // total time to keep retrying before giving up (server unreachable)
 }
 
 const DEFAULT_RETRY_MS = 2000;
+// Bounds the retry loop when the server is unreachable (no slot-released ever arrives).
+// Longer than the server's 45s grace so a recoverable drop always resolves first.
+const DEFAULT_RECONNECT_WINDOW_MS = 60_000;
 
 const ERROR_TEXT: Record<LobbyErrorCode, string> = {
   "lobby-not-found": "Lobby not found — check the code and try again.",
@@ -49,14 +53,17 @@ export class LobbyClient {
   private readonly listeners = new Set<() => void>();
   private readonly wsUrl: string;
   private readonly retryMs: number;
+  private readonly reconnectWindowMs: number;
   private ws?: WebSocket;
   private intent?: Intent;
   private identity?: { code: LobbyCode; token: PlayerToken; name: string };
   private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private reconnectUntil?: number; // wall-clock deadline for the current reconnect loop
 
   constructor(options: LobbyClientOptions = {}) {
     this.wsUrl = options.wsUrl ?? defaultWsUrl();
     this.retryMs = options.retryMs ?? DEFAULT_RETRY_MS;
+    this.reconnectWindowMs = options.reconnectWindowMs ?? DEFAULT_RECONNECT_WINDOW_MS;
   }
 
   getState = (): LobbyState => this.state;
@@ -105,9 +112,15 @@ export class LobbyClient {
     const ws = new WebSocket(`${this.wsUrl}?v=${PROTOCOL_VERSION}`);
     this.ws = ws;
     ws.addEventListener("open", () => this.onOpen());
-    ws.addEventListener("message", (ev) =>
-      this.onMessage(JSON.parse(String((ev as MessageEvent).data))),
-    );
+    ws.addEventListener("message", (ev) => {
+      let msg: ServerMessage;
+      try {
+        msg = JSON.parse(String((ev as MessageEvent).data));
+      } catch {
+        return; // ignore a malformed frame rather than throw in the listener
+      }
+      this.onMessage(msg);
+    });
     ws.addEventListener("close", () => this.onDisconnect(ws));
     ws.addEventListener("error", () => this.onDisconnect(ws));
   }
@@ -132,6 +145,7 @@ export class LobbyClient {
       case "lobby/joined":
         this.identity = { code: msg.code, token: msg.you.token, name: this.intent?.name ?? "" };
         persistToken(msg.code, msg.you.token);
+        this.reconnectUntil = undefined;
         this.clearReconnect();
         this.setState({
           status: "lobby",
@@ -179,7 +193,10 @@ export class LobbyClient {
     if (ws !== this.ws) return;
     this.ws = undefined;
     if (this.identity) {
-      if (this.state.status !== "reconnecting") this.setState({ status: "reconnecting" });
+      if (this.state.status !== "reconnecting") {
+        this.reconnectUntil = Date.now() + this.reconnectWindowMs;
+        this.setState({ status: "reconnecting" });
+      }
       this.scheduleReconnect();
     } else {
       this.setState({ status: "menu", error: "Could not reach the server." });
@@ -197,6 +214,15 @@ export class LobbyClient {
 
   private reconnectNow(): void {
     if (!this.identity) return;
+    // Give up once the retry window elapses — a reachable server would have sent a
+    // reclaim or slot-released by now, so this only fires when the server is gone.
+    if (this.reconnectUntil !== undefined && Date.now() > this.reconnectUntil) {
+      this.reconnectUntil = undefined;
+      this.teardown();
+      this.forgetIdentity();
+      this.setState({ status: "menu", error: "Lost connection to the lobby." });
+      return;
+    }
     this.intent = {
       kind: "join",
       code: this.identity.code,

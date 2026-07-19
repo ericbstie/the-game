@@ -298,7 +298,7 @@ export class LobbyHub {
     }
 
     if (session.host === player.id) {
-      session.host = this.lowestSlotPlayer(session).id;
+      session.host = this.nextHost(session).id;
       this.broadcast(session, {
         type: "lobby/host-changed",
         host: session.host,
@@ -313,8 +313,13 @@ export class LobbyHub {
     return null;
   }
 
-  private lowestSlotPlayer(session: SessionRecord): PlayerRecord {
-    return [...session.players.values()].reduce((lowest, p) => (p.slot < lowest.slot ? p : lowest));
+  // The lowest occupied slot, preferring a connected player so the host badge does not
+  // land on a greyed (in-grace) seat; falls back to the lowest slot if all are in grace.
+  private nextHost(session: SessionRecord): PlayerRecord {
+    const players = [...session.players.values()];
+    const connected = players.filter((p) => p.presence.status === "connected");
+    const pool = connected.length > 0 ? connected : players;
+    return pool.reduce((lowest, p) => (p.slot < lowest.slot ? p : lowest));
   }
 
   private broadcast(session: SessionRecord, msg: ServerMessage, exceptSocketId?: string): void {
