@@ -9,6 +9,7 @@ import {
   type Self,
   type ServerMessage,
   type Vec2,
+  type Weapon,
   WS_PATH,
 } from "./protocol";
 import { applyRoster } from "./roster";
@@ -63,6 +64,8 @@ export class LobbyClient {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectUntil?: number; // wall-clock deadline for the current reconnect loop
   private posSeq = 0; // monotonic across the client's whole life, so it survives reconnect
+  private attackSeq = 0; // monotonic attack sequence, independent of posSeq
+  private healthSeq = 0; // monotonic health sequence, independent of the others
 
   constructor(options: LobbyClientOptions = {}) {
     this.wsUrl = options.wsUrl ?? defaultWsUrl();
@@ -99,6 +102,18 @@ export class LobbyClient {
   // while the socket is down (reconnecting).
   sendPos(pos: Vec2): void {
     this.send({ type: "game/pos", pos, seq: ++this.posSeq });
+  }
+
+  // Report a swing/shot. The server validates (cadence/range/seq) and applies the damage —
+  // the client never writes enemy HP. `seq` is monotonic, like sendPos.
+  sendAttack(weapon: Weapon, pos: Vec2, dir: Vec2): void {
+    this.send({ type: "game/attack", weapon, pos, dir, seq: ++this.attackSeq });
+  }
+
+  // Report the client's own HP (it owns it). `hp <= 0` declares death. The server stores and
+  // relays it; it never computes health. `seq` is monotonic, like sendPos.
+  sendHealth(hp: number): void {
+    this.send({ type: "game/health", hp, seq: ++this.healthSeq });
   }
 
   leave(): void {
@@ -191,9 +206,10 @@ export class LobbyClient {
         return;
       case "game/world-init": {
         // Build (or, on reconnect, rebuild) the local world. Flipping the phase here lands
-        // a (re)connecter in the match rather than the lobby roster.
+        // a (re)connecter in the match rather than the lobby roster. Carry the owner's HP across
+        // a reconnect rebuild so it isn't reset to full before the peer-health burst reseeds it.
         if (!this.state.self) return; // no identity yet — cannot own an avatar
-        const world = new ClientWorld(msg.init, this.state.self.id);
+        const world = new ClientWorld(msg.init, this.state.self.id, this.state.world?.hp());
         const snapshot = this.state.snapshot
           ? { ...this.state.snapshot, phase: "in-game" as const }
           : this.state.snapshot;
@@ -207,7 +223,16 @@ export class LobbyClient {
         this.state.world?.applyPeer(msg.id, msg.pos, msg.seq, Date.now());
         return;
       case "game/map-delta":
-        return; // reserved for M3 dynamic-map mutations; never emitted in M2
+        // Mutate the live world in place — the render loop reads it every frame, so no React
+        // re-render at the ~20 Hz tick rate. Arrival time is stamped locally (client clock).
+        this.state.world?.applyMapDelta(msg, Date.now());
+        return;
+      case "game/peer-health":
+        this.state.world?.applyPeerHealth(msg.id, msg.hp, msg.seq);
+        return;
+      case "game/enemy-init":
+        this.state.world?.initEnemies(msg);
+        return;
       case "lobby/player-left":
         this.state.world?.removePeer(msg.id);
         this.setState({ snapshot: applyRoster(this.state.snapshot ?? null, msg) ?? undefined });

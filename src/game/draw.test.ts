@@ -33,18 +33,19 @@ function spyCtx() {
 const world: WorldSnapshot = {
   arena: { width: 31_200, height: 31_200 },
   players: [
-    { id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14 },
-    { id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14 },
+    { id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 100 },
+    { id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14, hp: 100 },
   ],
-  monsters: [
-    { id: "m1", pos: { x: 1090, y: 1090 }, radius: 16 },
-    { id: "m2", pos: { x: 20_000, y: 20_000 }, radius: 16 }, // far off-screen
+  enemies: [],
+  nests: [
+    { id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, hp: 600, alive: true, sector: 0 },
+    { id: "n2", pos: { x: 20_000, y: 20_000 }, radius: 48, hp: 600, alive: true, sector: 1 }, // off-screen
   ],
   exit: { x: 0, y: 1100, width: 98, height: 936 },
 };
 
 const viewport: Viewport = { width: 800, height: 600 };
-const camera: Camera = { x: 1000, y: 1000 }; // shows the two avatars + m1, not m2
+const camera: Camera = { x: 1000, y: 1000 }; // shows the two avatars + n1, not n2
 
 describe("drawWorld", () => {
   test("clears and fills only the viewport region, not the whole arena", () => {
@@ -69,7 +70,7 @@ describe("drawWorld", () => {
   test("culls entities outside the viewport", () => {
     const ctx = spyCtx();
     drawWorld(ctx, world, { camera, viewport });
-    // Both avatars + m1 are on screen; m2 (20,000, 20,000) is culled.
+    // Both avatars + n1 are on screen; n2 (20,000, 20,000) is culled.
     const arcs = ctx.calls.filter((c) => c.fn === "arc").length;
     expect(arcs).toBe(3);
   });
@@ -87,5 +88,42 @@ describe("drawWorld", () => {
     drawWorld(ctx, world, { selfId: "p1", camera, viewport });
     // self ring adds a stroke() beyond the arena wall's strokeRect
     expect(ctx.calls.filter((c) => c.fn === "stroke").length).toBeGreaterThan(0);
+  });
+
+  test("draws on-screen enemies and culls off-screen ones", () => {
+    const ctx = spyCtx();
+    const withEnemies: WorldSnapshot = {
+      ...world,
+      enemies: [
+        { id: "e1", kind: "grunt", pos: { x: 1150, y: 1150 }, radius: 16, hp: 30 }, // on screen
+        { id: "e2", kind: "grunt", pos: { x: 25_000, y: 25_000 }, radius: 16, hp: 30 }, // culled
+      ],
+    };
+    drawWorld(ctx, withEnemies, { camera, viewport });
+    // 2 avatars + n1 + one on-screen enemy = 4 arcs; the far enemy is culled.
+    expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(4);
+  });
+
+  test("a downed (0 HP) self avatar still draws but drops its self-ring (corpse)", () => {
+    const ctx = spyCtx();
+    const withCorpse: WorldSnapshot = {
+      ...world,
+      players: [{ id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 0 }],
+      nests: [],
+    };
+    drawWorld(ctx, withCorpse, { selfId: "p1", camera, viewport });
+    expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(1); // the corpse circle is drawn
+    expect(ctx.calls.filter((c) => c.fn === "stroke").length).toBe(0); // but no self-ring stroke()
+  });
+
+  test("draws a silenced (dead) nest in its dimmed colour", () => {
+    const ctx = spyCtx();
+    const withDeadNest: WorldSnapshot = {
+      ...world,
+      nests: [{ id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, hp: 0, alive: false, sector: 0 }],
+    };
+    drawWorld(ctx, withDeadNest, { camera, viewport });
+    // The dead nest still draws (one arc) — the colour change is what reads as "silenced".
+    expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(3); // 2 avatars + the dead nest
   });
 });

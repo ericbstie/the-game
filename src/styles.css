@@ -202,3 +202,39 @@ button:disabled {
   font-size: 0.85rem;
   pointer-events: none;
 }
+
+.hud {
+  position: absolute;
+  bottom: 1rem;
+  left: 1rem;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.hud .hp-bar {
+  width: 180px;
+  height: 14px;
+  border: 1px solid #2a2a35;
+  border-radius: 7px;
+  background: #14141c;
+  overflow: hidden;
+}
+
+.hud .hp-fill {
+  height: 100%;
+  background: #40c463;
+  transition: width 120ms linear;
+}
+
+.hud .hp-fill[data-low="true"] {
+  background: #ff5d5d;
+}
+
+.hud .hp-label {
+  color: #e8e8ee;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}

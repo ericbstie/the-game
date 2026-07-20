@@ -1,4 +1,4 @@
-import type { PlayerId, WorldSnapshot } from "../lobby/protocol";
+import type { EnemyKind, PlayerId, WorldSnapshot } from "../lobby/protocol";
 import { type Camera, isVisible, type Viewport } from "./camera";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
@@ -20,10 +20,15 @@ const SLOT_COLORS = ["#4f8cff", "#ff5d5d", "#40c463", "#f2c14e", "#c77dff", "#4d
 const BG = "#0e0e14";
 const WALL = "#2a2a35";
 const EXIT = "#39d353";
-const MONSTER = "#c0392b";
+const NEST = "#8e44ad"; // spawner nests
+const NEST_DEAD = "#3a2d44"; // a silenced (destroyed) nest
 const LABEL = "#e8e8ee";
 const SELF_RING = "#ffffff";
+const CORPSE_ALPHA = 0.35; // a downed player fades to this
 const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
+
+// One colour per enemy kind; the elite reads darker and, with its larger radius, distinct.
+const ENEMY_COLORS: Record<EnemyKind, string> = { grunt: "#e8643c", elite: "#a01f1f" };
 
 export function drawWorld(
   ctx: CanvasRenderingContext2D,
@@ -45,16 +50,25 @@ export function drawWorld(
   ctx.fillStyle = EXIT;
   ctx.fillRect(world.exit.x, world.exit.y, world.exit.width, world.exit.height);
 
-  ctx.fillStyle = MONSTER;
-  for (const m of world.monsters) {
-    if (isVisible(m.pos, m.radius, camera, viewport)) fillCircle(ctx, m.pos.x, m.pos.y, m.radius);
+  for (const n of world.nests) {
+    if (!isVisible(n.pos, n.radius, camera, viewport)) continue;
+    ctx.fillStyle = n.alive ? NEST : NEST_DEAD;
+    fillCircle(ctx, n.pos.x, n.pos.y, n.radius);
+  }
+
+  for (const e of world.enemies) {
+    if (!isVisible(e.pos, e.radius, camera, viewport)) continue;
+    ctx.fillStyle = ENEMY_COLORS[e.kind];
+    fillCircle(ctx, e.pos.x, e.pos.y, e.radius);
   }
 
   for (const a of world.players) {
     if (!isVisible(a.pos, a.radius, camera, viewport, LABEL_PAD)) continue;
+    const dead = a.hp <= 0;
+    ctx.globalAlpha = dead ? CORPSE_ALPHA : 1; // a downed player reads as a faded corpse
     ctx.fillStyle = SLOT_COLORS[(a.slot - 1) % SLOT_COLORS.length];
     fillCircle(ctx, a.pos.x, a.pos.y, a.radius);
-    if (a.id === options.selfId) {
+    if (a.id === options.selfId && !dead) {
       ctx.strokeStyle = SELF_RING;
       ctx.lineWidth = 2.5;
       strokeCircle(ctx, a.pos.x, a.pos.y, a.radius + 3);
@@ -63,6 +77,7 @@ export function drawWorld(
     ctx.font = "12px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(a.name, a.pos.x, a.pos.y - a.radius - 5);
+    ctx.globalAlpha = 1;
   }
 }
 

@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { NEST_COUNT } from "../game/enemies";
+import { ARENA } from "../game/world";
+import { LobbyHub, livePlayers, type Transport } from "./lobby";
+import type { ServerMessage } from "./protocol";
 import type { LobbyServer } from "./server";
 import { expectMessage, makeClient, startServer, type TestClient } from "./testing";
 
@@ -438,7 +442,6 @@ describe("M2R: host starts the match and world-init streams", () => {
     );
     expect(hostInit.init.spawns).toHaveLength(2);
     expect(benInit.init.spawns.map((s) => s.slot)).toEqual([1, 2]);
-    expect(hostInit.init.monsters.length).toBeGreaterThan(0);
     expect(hostInit.init.exit.width).toBeGreaterThan(0);
   });
 
@@ -573,5 +576,204 @@ describe("M2R: reconnect rebuilds the world", () => {
       "game/peer-pos",
     );
     expect(burst.pos).toEqual({ x: 321, y: 210 }); // host's last-known position, replayed
+  });
+});
+
+describe("M3: player health relay and aggro-gating", () => {
+  test("game/health is relayed to peers as game/peer-health; a stale seq is dropped", async () => {
+    const server = spawn();
+    const { client: hostClient, code, id: hostId } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+    hostClient.send({ type: "game/start" });
+    await ben.waitFor((m) => m.type === "game/world-init");
+
+    hostClient.send({ type: "game/health", hp: 42, seq: 1 });
+    const relayed = expectMessage(
+      await ben.waitFor((m) => m.type === "game/peer-health"),
+      "game/peer-health",
+    );
+    expect(relayed.id).toBe(hostId);
+    expect(relayed.hp).toBe(42);
+
+    hostClient.send({ type: "game/health", hp: 99, seq: 1 }); // stale (equal seq)
+    hostClient.send({ type: "game/health", hp: 7, seq: 2 });
+    await ben.waitFor((m) => m.type === "game/peer-health" && m.hp === 7);
+    await expect(
+      ben.waitFor((m) => m.type === "game/peer-health" && m.hp === 99, 150),
+    ).rejects.toThrow();
+  });
+
+  test("livePlayers drops the dead from aggro; unknown/alive HP stays in", () => {
+    const positions = new Map([
+      ["a", { pos: { x: 1, y: 1 }, seq: 1 }],
+      ["b", { pos: { x: 2, y: 2 }, seq: 1 }],
+      ["c", { pos: { x: 3, y: 3 }, seq: 1 }],
+    ]);
+    const health = new Map([
+      ["b", { hp: 0, seq: 1 }], // dead → excluded
+      ["c", { hp: 50, seq: 1 }], // alive → included
+      // "a" never reported → defaults to alive → included
+    ]);
+    expect(
+      livePlayers(positions, health)
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual(["a", "c"]);
+  });
+});
+
+describe("M3: reconnect rebuilds live combat state", () => {
+  test("a reconnecter gets the live enemy/nest/wave keyframe and their own HP restored", async () => {
+    const server = startServer({ tickMs: 10, firstWaveMs: 5 }); // spawn a wave almost at once
+    servers.push(server);
+    const host = await connect(server);
+    host.send({ type: "lobby/create", name: "Ana" });
+    const created = expectMessage(
+      await host.waitFor((m) => m.type === "lobby/created"),
+      "lobby/created",
+    );
+    host.send({ type: "game/start" });
+    await host.waitFor((m) => m.type === "game/world-init");
+    await host.waitFor((m) => m.type === "game/map-delta" && (m.spawns?.length ?? 0) > 0); // wave fired
+    host.send({ type: "game/health", hp: 40, seq: 1 });
+    await host.close(); // drop mid-match; the slot is held by grace
+
+    const back = await connect(server);
+    back.send({ type: "lobby/join", code: created.code, name: "Ana", token: created.you.token });
+    await back.waitFor((m) => m.type === "lobby/joined");
+
+    const keyframe = expectMessage(
+      await back.waitFor((m) => m.type === "game/enemy-init"),
+      "game/enemy-init",
+    );
+    expect(keyframe.enemies.length).toBeGreaterThan(0); // live enemies, not the (empty) initial set
+    expect(keyframe.nests).toHaveLength(NEST_COUNT);
+    expect(keyframe.wave.index).toBeGreaterThanOrEqual(1); // the wave that fired
+
+    const ownHp = expectMessage(
+      await back.waitFor((m) => m.type === "game/peer-health" && m.hp === 40),
+      "game/peer-health",
+    );
+    expect(ownHp.id).toBe(created.you.id); // their own last HP, restored
+  });
+});
+
+describe("M3: the enemy sim streams over the wire", () => {
+  test("a started match streams game/map-delta to every player with a monotonic tick", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    hostClient.send({ type: "game/start" });
+    await hostClient.waitFor((m) => m.type === "game/world-init");
+
+    const hostDelta = expectMessage(
+      await hostClient.waitFor((m) => m.type === "game/map-delta"),
+      "game/map-delta",
+    );
+    const benDelta = expectMessage(
+      await ben.waitFor((m) => m.type === "game/map-delta"),
+      "game/map-delta",
+    );
+    expect(hostDelta.tick).toBe(1); // first tick; enemies arrive only when the first wave fires
+    expect(Array.isArray(hostDelta.moves)).toBe(true);
+    expect(benDelta.tick).toBeGreaterThan(0); // peers receive the same stream
+  });
+});
+
+// The tick's arm/clear lifecycle, driven directly through a capture transport so timer
+// behaviour is asserted deterministically (the WS harness can't observe a cleared interval).
+describe("M3: enemy sim tick lifecycle", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+
+  const deltas = (t: Capture) => t.sent.filter((m) => m.msg.type === "game/map-delta");
+
+  function startedSolo(tickMs: number): { t: Capture; hub: LobbyHub } {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    return { t, hub };
+  }
+
+  test("the tick arms on game/start and streams a monotonic-tick delta each period", async () => {
+    const { t, hub } = startedSolo(10);
+    await sleep(35);
+    hub.dispose();
+    const seen = deltas(t);
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    const ticks = seen.map(
+      (d) => (d.msg as Extract<ServerMessage, { type: "game/map-delta" }>).tick,
+    );
+    expect(ticks[0]).toBe(1);
+    expect(ticks[1]).toBeGreaterThan(ticks[0]);
+  });
+
+  test("dispose() clears the tick — nothing streams after", async () => {
+    const { t, hub } = startedSolo(10);
+    await sleep(25);
+    hub.dispose();
+    const n = deltas(t).length;
+    await sleep(30);
+    expect(deltas(t).length).toBe(n);
+  });
+
+  test("emptying the session clears the tick — nothing streams after everyone leaves", async () => {
+    const { t, hub } = startedSolo(10);
+    await sleep(25);
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/leave" })); // last player out → session destroyed
+    const n = deltas(t).length;
+    await sleep(30);
+    expect(deltas(t).length).toBe(n);
+  });
+
+  test("a wave spawns grunts and a validated melee on one streams its hit", async () => {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: 10, firstWaveMs: 5 }); // fire the first wave almost at once
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    await sleep(30);
+
+    // Grab a grunt the first wave spawned, straight off the stream.
+    const target = deltas(t)
+      .flatMap((d) => (d.msg as Extract<ServerMessage, { type: "game/map-delta" }>).spawns ?? [])
+      .at(0);
+    expect(target?.kind).toBe("grunt");
+    if (!target) throw new Error("no spawn");
+
+    // Stand on it (so the server's range-check passes) and swing toward center — where an
+    // un-aggroed grunt marches, so the wedge covers it wherever it drifted.
+    const dx = ARENA.width / 2 - target.pos.x;
+    const dy = ARENA.height / 2 - target.pos.y;
+    const len = Math.hypot(dx, dy);
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: target.pos, seq: 1 }));
+    hub.handleMessage(
+      "s1",
+      JSON.stringify({
+        type: "game/attack",
+        weapon: "melee",
+        pos: target.pos,
+        dir: { x: dx / len, y: dy / len },
+        seq: 1,
+      }),
+    );
+    await sleep(30);
+    hub.dispose();
+
+    const struck = deltas(t)
+      .map((d) => d.msg as Extract<ServerMessage, { type: "game/map-delta" }>)
+      .some(
+        (d) =>
+          (d.hits ?? []).some((h) => h.id === target.id) || (d.deaths ?? []).includes(target.id),
+      );
+    expect(struck).toBe(true);
   });
 });

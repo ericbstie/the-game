@@ -1,13 +1,4 @@
-import type {
-  Arena,
-  Exit,
-  Monster,
-  MoveInput,
-  PlayerId,
-  Spawn,
-  Vec2,
-  WorldInit,
-} from "../lobby/protocol";
+import type { Arena, Exit, MoveInput, PlayerId, Spawn, Vec2, WorldInit } from "../lobby/protocol";
 
 // The box world's shared shape and motion, as pure functions. `generateWorld` builds the
 // immutable world-init the server hands to every client once; `stepPos` integrates a
@@ -20,15 +11,13 @@ import type {
 export const ARENA: Arena = { width: 31_200, height: 31_200 };
 export const PLAYER_RADIUS = 14;
 export const PLAYER_SPEED = 260; // world units / second
-export const MONSTER_RADIUS = 16;
+export const PLAYER_MAX_HP = 100; // client-authoritative; the client judges its own contact damage
 
 // Avatar-scale constants are absolute — they track player/door size, not arena size.
 const SPAWN_RING = 44; // avatars fan out this far from center so they don't stack
 const EXIT_THICK = 98; // door depth ≈ 3.5× player diameter, readable against the huge wall
 
-// Arena-geometry constants are fractions of the arena, so the danger band and the door
-// length scale with the box instead of vanishing in it.
-const MONSTER_MARGIN_FRAC = 0.08; // danger-band depth ≈ 2,496 u at 31,200
+// The door length is a fraction of the arena, so it scales with the box instead of vanishing.
 const EXIT_LONG_FRAC = 0.03; // door length along its wall ≈ 936 u at 31,200
 
 export interface SpawnPlayer {
@@ -47,7 +36,6 @@ export function generateWorld(players: SpawnPlayer[], options: WorldOptions = {}
   return {
     arena,
     exit: placeExit(arena, options.rng ?? Math.random),
-    monsters: placeMonsters(arena),
     spawns: players.map((p) => spawn(p, arena)),
   };
 }
@@ -83,23 +71,6 @@ function spawn(player: SpawnPlayer, arena: Arena): Spawn {
 
 function clamp(value: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, value));
-}
-
-// A ring of static placeholder enemies near the walls. Dynamic behaviour is M3.
-function placeMonsters(arena: Arena): Monster[] {
-  const { width: w, height: h } = arena;
-  const m = MONSTER_MARGIN_FRAC * Math.min(w, h);
-  const spots: Vec2[] = [
-    { x: m, y: m },
-    { x: w / 2, y: m * 0.7 },
-    { x: w - m, y: m },
-    { x: w - m * 0.7, y: h / 2 },
-    { x: w - m, y: h - m },
-    { x: w / 2, y: h - m * 0.7 },
-    { x: m, y: h - m },
-    { x: m * 0.7, y: h / 2 },
-  ];
-  return spots.map((pos, i) => ({ id: `m${i + 1}`, pos, radius: MONSTER_RADIUS }));
 }
 
 // The escape door: a rectangle flush on one perimeter wall, its wall and offset chosen
