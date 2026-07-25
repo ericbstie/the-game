@@ -7,8 +7,10 @@ import type {
   EnemySpawn,
   NestDelta,
   NestSnapshot,
+  PeerShot,
   PlayerId,
   StructureHit,
+  TurretAim,
   Vec2,
   WaveDelta,
   WorldInit,
@@ -165,10 +167,12 @@ export interface PlayerRef {
 }
 
 // A server-validated shot the sim resolves against enemy HP. `pos` is the shot origin,
-// `dir` a unit aim vector. The hub admits it (cadence/range/seq) before it reaches the sim.
+// `dir` a unit aim vector, `by` the player the sim attributes the resulting line to. The hub
+// admits it (cadence/range/seq) before it reaches the sim.
 export interface Attack {
   pos: Vec2;
   dir: Vec2;
+  by: PlayerId;
 }
 
 // What changed this tick, shaped to fill a `game/map-delta` directly: every enemy's position in
@@ -184,6 +188,9 @@ export interface EnemyEvents {
   // Structures chewed on this tick, and the ids of any that fell. Sparse, mirroring hits/deaths.
   structHits: StructureHit[];
   removals: string[];
+  // What was depicted this tick: turrets whose aim changed, and the squad's shots as resolved.
+  aims: TurretAim[];
+  shots: PeerShot[];
 }
 
 // Per-player attack admission state (server-side). `seq` guards apply-if-newer; `lastAt`
@@ -309,8 +316,10 @@ export function stepEnemies(
   // tick reports once. The sim stays the sole writer of enemy and nest HP either way.
   const enemiesHit = new Set<string>();
   const nestsHit = new Set<string>();
-  applyAttacks(state, attacks, enemiesHit, nestsHit);
-  stepTurrets(state, build, dtMs, enemiesHit, nestsHit);
+  const shots: PeerShot[] = [];
+  const aims: TurretAim[] = [];
+  applyAttacks(state, attacks, enemiesHit, nestsHit, shots);
+  stepTurrets(state, build, dtMs, enemiesHit, nestsHit, aims);
   const { hits, deaths, nests } = reapDamage(state, enemiesHit, nestsHit);
 
   const context: StepContext = {
@@ -327,7 +336,7 @@ export function stepEnemies(
   for (const enemy of state.enemies.values()) moves.push([enemy.id, enemy.pos.x, enemy.pos.y]);
   return {
     state,
-    events: { moves, spawns, hits, deaths, nests, wave, ...reapStructures(context) },
+    events: { moves, spawns, hits, deaths, nests, wave, aims, shots, ...reapStructures(context) },
   };
 }
 
@@ -410,21 +419,31 @@ function jitter(pos: Vec2, rng: () => number): Vec2 {
 
 // Apply every admitted shot to enemy and nest HP — this sim is the sole writer. A shot strikes
 // the single nearest target (enemy or nest) along its ray.
+//
+// The `PeerShot` that depicts the shot is emitted here, beside the HP it wrote, rather than when
+// the hub admitted the report. That is what makes the authority invariant structural instead of a
+// rule to remember: a refused attack never reaches `pendingAttacks`, never reaches this loop, and
+// so has no path to the wire.
 function applyAttacks(
   state: EnemyState,
   attacks: Attack[],
   enemiesHit: Set<string>,
   nestsHit: Set<string>,
+  shots: PeerShot[],
 ): void {
   for (const attack of attacks) {
     const hit = nearestRayHit(state, attack);
+    const shot: PeerShot = { id: attack.by, dir: attack.dir };
     if (hit?.enemy) {
       hit.enemy.hp -= RANGED_DAMAGE;
       enemiesHit.add(hit.enemy.id);
+      shot.hit = hit.enemy.id;
     } else if (hit?.nest) {
       hit.nest.hp -= RANGED_DAMAGE;
       nestsHit.add(hit.nest.id);
+      shot.hit = hit.nest.id;
     }
+    shots.push(shot);
   }
 }
 
@@ -435,12 +454,19 @@ function applyAttacks(
 // lowest-HP or elite priority. Hitscan straight through walls and structures: turrets need no
 // line of sight and no firing lane, so there is deliberately no ray-vs-structure test here.
 // Nests are legitimate targets, so a forward turret line sieges one unattended.
+//
+// What the client draws is streamed from here as a transition: each turret's `(targetId, powered)`
+// pair is snapshotted before it moves and diffed once the power budget has settled. The line then
+// exists exactly while this function's own firing precondition holds — it is written by the same
+// pass that applies `TURRET_DAMAGE`, so it cannot outlive the damage by more than one tick.
+// Nothing is remembered between ticks: every client gets the same delta, every tick.
 function stepTurrets(
   state: EnemyState,
   build: BuildState | null,
   dtMs: number,
   enemiesHit: Set<string>,
   nestsHit: Set<string>,
+  aims: TurretAim[],
 ): void {
   if (!build) return;
   const turrets = [...build.structures.values()].filter((s) => s.turret !== undefined);
@@ -448,6 +474,7 @@ function stepTurrets(
     build.power.consumption = 0;
     return;
   }
+  const before = new Map(turrets.map((t) => [t.id, aimKey(t.turret as TurretRuntime)]));
 
   // Every standing turret draws idle, simply for existing. That is committed before anything
   // gets to activate, which is what makes over-building starve the grid rather than break it.
@@ -484,6 +511,9 @@ function stepTurrets(
 
   for (const turret of turrets) {
     const runtime = turret.turret as TurretRuntime;
+    if (aimKey(runtime) !== before.get(turret.id)) {
+      aims.push([turret.id, runtime.targetId, runtime.powered ? 1 : 0]);
+    }
     const target = engaged.get(turret.id);
     if (!runtime.powered || !target || runtime.cooldownMs > 0) continue;
     runtime.cooldownMs = TURRET_CADENCE_MS;
@@ -495,6 +525,13 @@ function stepTurrets(
       nestsHit.add(target.nest.id);
     }
   }
+}
+
+// A turret's aim collapsed to one comparable value, so the diff is an equality test rather than
+// two. Only `targetId` and `powered` are in it: the cooldown never rides the wire — the client
+// generates its own pulse train from `TURRET_CADENCE_MS`.
+function aimKey(runtime: TurretRuntime): string {
+  return `${runtime.targetId}|${runtime.powered}`;
 }
 
 type TurretTarget = { enemy?: Enemy; nest?: Nest };

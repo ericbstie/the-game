@@ -210,6 +210,25 @@ export interface Power {
   consumption: number;
 }
 
+// A turret's aim, streamed as a transition rather than per shot: it rides a delta only on the
+// tick a turret acquires a target, loses one, or wins/loses its activation slot. `target` is the
+// enemy or nest id it is holding (null = nothing in range); `powered` is whether it won an energy
+// slot. A turret holding a target with no power is the one that draws the lightning — `powered`
+// alone cannot say it, because an idle turret is unpowered too. Measured at 30 engaged turrets
+// this costs 0.9% of a delta, against 2.3% for streaming every shot (#74).
+export type TurretAim = [id: string, target: string | null, powered: 0 | 1];
+
+// A squadmate's resolved shot, emitted by the sim on the tick it applied the damage — never at
+// admission time, so a refused attack has no path here. `dir` is the admitted unit aim vector;
+// `hit` is the enemy or nest the server actually damaged, absent when the ray hit nothing (a miss
+// still draws, out to full range). The origin is deliberately not on the wire: the client draws
+// from its own rendered position for that peer, already within a player-diameter of the truth.
+export interface PeerShot {
+  id: PlayerId;
+  dir: Vec2;
+  hit?: string;
+}
+
 // The per-tick enemy/combat delta: a full `moves` set plus sparse event arrays — only the
 // non-empty ones ride the wire. `tick` is monotonic per session; the client applies-if-newer.
 export interface MapDelta {
@@ -227,6 +246,8 @@ export interface MapDelta {
   structHits?: StructureHit[];
   removals?: string[];
   power?: Power;
+  aims?: TurretAim[];
+  shots?: PeerShot[];
 }
 
 // A render-model enemy the client assembles each frame (not a wire type). Its position is
@@ -260,7 +281,16 @@ export interface WorldSnapshot {
   nests: RenderedNest[];
   exit: Exit;
   ore: Map<number, OreKind>;
-  structures: { id: string; kind: BuildableKind; tile: Tile; hp: number }[];
+  // A turret's streamed aim rides along so the render layer can draw its line and its
+  // unpowered lightning. Spelled out rather than importing `TurretRuntime`: `build.ts` already
+  // imports this module, so naming its type here would close a cycle.
+  structures: {
+    id: string;
+    kind: BuildableKind;
+    tile: Tile;
+    hp: number;
+    turret?: { powered: boolean; targetId: string | null };
+  }[];
 }
 
 // The movement intent driving the client's own Avatar: which directions are held. The
@@ -373,9 +403,12 @@ export type GameEnemyInit = Envelope<
 // The match is over (M4). `elapsedMs` since `game/start` is the score — there is no leaderboard
 // and nothing is persisted; the match reports its time and that is the milestone.
 export type GameMatchEnd = Envelope<"game/match-end", { outcome: MatchOutcome; elapsedMs: number }>;
+// `aims` carries only the engaged turrets: transitions are sparse relative to how long a target
+// is held, so without it a turret sieging a nest could stay lineless on a reconnecter's screen
+// indefinitely. It references live enemy ids, which is why `game/enemy-init` must be sent first.
 export type GameBuildInit = Envelope<
   "game/build-init",
-  { tick: number; bank: Bank; power: Power; structures: StructureSpawn[] }
+  { tick: number; bank: Bank; power: Power; structures: StructureSpawn[]; aims: TurretAim[] }
 >;
 
 export type ServerMessage =

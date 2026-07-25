@@ -14,6 +14,7 @@ import {
   type MineGuard,
   type OreGrid,
   placeStructure,
+  snapshotAims,
   snapshotStructures,
   stepBuild,
 } from "../game/build";
@@ -439,6 +440,8 @@ export class LobbyHub {
     if (events.deaths.length > 0) delta.deaths = events.deaths;
     if (events.nests.length > 0) delta.nests = events.nests;
     if (events.structHits.length > 0) delta.structHits = events.structHits;
+    if (events.aims.length > 0) delta.aims = events.aims;
+    if (events.shots.length > 0) delta.shots = events.shots;
     const removals = [...events.removals, ...session.pendingRemovals];
     session.pendingRemovals = [];
     if (removals.length > 0) delta.removals = removals;
@@ -503,8 +506,10 @@ export class LobbyHub {
       session.attackGuards.set(player.id, guard);
     }
     const lastPos = session.positions.get(player.id)?.pos ?? null;
+    // Nothing is broadcast here. The line that depicts this shot is emitted a tick later by the
+    // sim, beside the HP it writes — so a refused attack has no path to the wire at all (#74 §4).
     if (admitAttack(guard, { pos, seq }, lastPos, Date.now())) {
-      session.pendingAttacks.push({ pos, dir });
+      session.pendingAttacks.push({ pos, dir, by: player.id });
     }
   }
 
@@ -646,12 +651,15 @@ export class LobbyHub {
     if (session.build) {
       // The economy keyframe. Ore is derived from the seed, so only the bank and the placed
       // buildings need rebuilding — bounded by what the squad owns, not by how long it has played.
+      // It must stay after `game/enemy-init`: its aims name enemies, so those ids have to be known
+      // by the time it lands.
       this.transport.send(socketId, {
         type: "game/build-init",
         tick: session.tickNo,
         bank: { metal: Math.floor(session.build.bank.metal) },
         power: { ...session.build.power },
         structures: snapshotStructures(session.build),
+        aims: snapshotAims(session.build),
       });
     }
     for (const [id, sample] of session.health) {

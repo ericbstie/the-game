@@ -6,6 +6,7 @@ import type {
   Power,
   StructureSpawn,
   Tile,
+  TurretAim,
   Vec2,
 } from "../lobby/protocol";
 import { DANGER_BAND_FRAC } from "./world";
@@ -620,4 +621,18 @@ export function snapshotStructures(build: BuildState): StructureSpawn[] {
     tile: { ...s.tile },
     hp: s.hp,
   }));
+}
+
+// The engaged turrets' aims, for the same keyframe. Aim transitions are sparse relative to how
+// long a target is held, so a reconnecter who missed one would otherwise see a turret siege a nest
+// with no line at all. An idle turret is deliberately absent: rebuilding a structure already mints
+// it un-aimed and unpowered, so carrying one would say nothing.
+export function snapshotAims(build: BuildState): TurretAim[] {
+  const aims: TurretAim[] = [];
+  for (const s of build.structures.values()) {
+    if (s.turret && s.turret.targetId !== null) {
+      aims.push([s.id, s.turret.targetId, s.turret.powered ? 1 : 0]);
+    }
+  }
+  return aims;
 }
