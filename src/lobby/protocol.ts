@@ -79,6 +79,8 @@ export interface Avatar {
   pos: Vec2;
   radius: number;
   hp: number;
+  facing: number; // 0 = E, 1 = SE … 7 = NE — derived from the position stream, never on the wire
+  frame: number; // walk cycle; 0 is the stance frame a stopped character parks on
 }
 
 // The escape door: a rectangle flush on a perimeter wall.
@@ -237,6 +239,8 @@ export interface RenderedEnemy {
   pos: Vec2;
   radius: number;
   hp: number;
+  facing: number; // 0 = E, 1 = SE … 7 = NE — derived from the position stream, never on the wire
+  frame: number; // walk cycle; 0 is the stance frame a stopped character parks on
 }
 
 // A render-model nest (not a wire type). Position/sector are static (derived from the arena);

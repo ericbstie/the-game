@@ -15,6 +15,7 @@ import {
   RESPAWN_DELAY_MS,
 } from "./clientWorld";
 import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, NEST_COUNT } from "./enemies";
+import { SEED_FACING } from "./facing";
 import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
 
 const STILL = { up: false, down: false, left: false, right: false };
@@ -425,5 +426,94 @@ describe("M4-T10: dying costs 20 seconds", () => {
     const walkBackMs = ((ARENA.width / 2) * 1000) / PLAYER_SPEED;
     expect(RESPAWN_DELAY_MS).toBeLessThan(walkBackMs);
     expect(RESPAWN_DELAY_MS).toBeGreaterThan(walkBackMs / 5);
+  });
+});
+
+describe("M5-I4: facing and the walk cycle ride the snapshot, never the wire", () => {
+  const FRAME_MS = 16;
+
+  // Drive `frames` render frames of the owner holding `dir`, sampling the snapshot each frame
+  // exactly as the render loop does — the facing EMA only advances inside `snapshot`.
+  function run(w: ClientWorld, dir: keyof typeof STILL, frames: number, t0 = 0): number {
+    let now = t0;
+    for (let i = 0; i < frames; i++) {
+      now = t0 + (i + 1) * FRAME_MS;
+      w.stepSelf(FRAME_MS, held(dir), now);
+      w.snapshot(now);
+    }
+    return now;
+  }
+
+  const selfFacing = (w: ClientWorld, now: number) =>
+    w.snapshot(now).players.find((p) => p.id === "self")?.facing;
+
+  test("the owner's facing is derived from its position, not from its MoveInput", () => {
+    const w = new ClientWorld(init(), "self");
+    const now = run(w, "left", 60);
+    expect(selfFacing(w, now + FRAME_MS)).toBe(4); // West
+  });
+
+  test("an owner pressed into a wall holds its last facing instead of turning to the input", () => {
+    // Input-derivation would read East here 100% of the time while every other screen showed
+    // the last real travel direction. One rule for self and peers keeps the two agreeing.
+    const w = new ClientWorld(init(), "self");
+    const walked = run(w, "up", 60);
+    const stopped = w.selfPos() as Vec2;
+    const tile = tileOf({ x: stopped.x + PLAYER_RADIUS + 10, y: stopped.y - TILE });
+    w.applyMapDelta(
+      { tick: 1, moves: [], builds: [{ id: "w1", kind: "wall", tile, hp: 200 }] },
+      walked,
+    );
+    const blocked = run(w, "right", 240, walked);
+    expect(selfFacing(w, blocked + FRAME_MS)).toBe(6); // North
+  });
+
+  test("a peer's facing comes from its buffered stream", () => {
+    const w = new ClientWorld(init(), "self");
+    for (let i = 1; i <= 20; i++) {
+      w.applyPeer("peer", { x: 500, y: 300 + i * 10 }, i, i * 50);
+      w.snapshot(showAt(i * 50));
+    }
+    expect(w.snapshot(showAt(1000)).players.find((p) => p.id === "peer")?.facing).toBe(2); // South
+  });
+
+  test("an enemy that stops holds its last facing instead of snapping East", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP, sector: 0 }],
+      },
+      0,
+    );
+    let tick = 2;
+    const show = (streamedAt: number) => streamedAt + ENEMY_RENDER_DELAY_MS;
+    for (let i = 1; i <= 20; i++) {
+      w.applyMapDelta({ tick: tick++, moves: [["e1", 900 - i * 9, 800]] }, i * 50);
+      w.snapshot(show(i * 50));
+    }
+    expect(enemyIn(w, show(1000), "e1")?.facing).toBe(4); // West
+    // Now HOLD: the server keeps streaming the same position, so the delta is exactly zero
+    // and `Math.atan2(0, 0)` would read East.
+    for (let i = 21; i <= 120; i++) {
+      w.applyMapDelta({ tick: tick++, moves: [["e1", 720, 800]] }, i * 50);
+      w.snapshot(show(i * 50));
+    }
+    expect(enemyIn(w, show(6000), "e1")?.facing).toBe(4);
+  });
+
+  test("an enemy that has never moved renders the seed facing on the stance frame", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP, sector: 0 }],
+      },
+      0,
+    );
+    for (let i = 1; i <= 60; i++) w.snapshot(i * 50);
+    expect(enemyIn(w, 3050, "e1")).toMatchObject({ facing: SEED_FACING, frame: 0 });
   });
 });
