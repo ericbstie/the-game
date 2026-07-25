@@ -109,7 +109,6 @@ const SPAWN_JITTER = 300; // grunts spawn within this radius of their nest, so t
 
 // Waves — the ~30 s escalating drumbeat. Wave w spawns 2+w grunts per still-active nest.
 export const WAVE_PERIOD_MS = 30_000; // first wave at 0:30, then every 30 s
-export const WAVE_TELEGRAPH_MS = 3_000; // nest-pulse prep window before a wave (visuals deferred)
 export const ENEMY_CAP = 240; // hard concurrency governor; a nest holds its remainder at the cap
 
 // A point's bearing from arena center, in degrees normalized to [0, 360).
