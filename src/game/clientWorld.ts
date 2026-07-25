@@ -34,7 +34,7 @@ import {
   nestLayout,
 } from "./enemies";
 import { interpolateAt, type PosSample } from "./interpolate";
-import { PLAYER_MAX_HP, PLAYER_RADIUS, stepPos } from "./world";
+import { type Body, PLAYER_MAX_HP, PLAYER_RADIUS, pushOutOfBodies, stepPos } from "./world";
 
 // The client's local view of the shared world (Milestone 2 refinement). Built once from
 // `game/world-init`, then driven two ways:
@@ -112,14 +112,32 @@ export class ClientWorld {
     }
   }
 
-  // Advance only the owner's Avatar — peers never move from local input. Structures clamp the
-  // avatar exactly as the arena walls do; `slidePos` resolves the axes separately, so you slide
-  // along a wall instead of sticking to it and a corner is never a hard trap.
-  stepSelf(dtMs: number, input: MoveInput): void {
+  // Advance only the owner's Avatar — peers never move from local input. Three stages, in order:
+  // integrate the held input, clamp against structures (`slidePos` resolves the axes separately,
+  // so you slide along a wall instead of sticking and a corner is never a hard trap), then get
+  // shoved out of any enemy you pressed into.
+  //
+  // Enemy collision resolves here, on the owner's avatar against the *rendered* enemy stream —
+  // the same client-authoritative stance M3 takes for contact damage ("if it touched me on my
+  // screen, it hit me"), so the server needs no player-blocking step. Peers are deliberately
+  // excluded: they render ~100 ms behind, so blocking against them would be contested.
+  stepSelf(dtMs: number, input: MoveInput, now: number): void {
     const self = this.avatars.get(this.selfId);
     if (!self) return;
     const stepped = stepPos(self.pos, input, dtMs, this.arena);
-    self.pos = slidePos(this.build, self.pos, stepped, PLAYER_RADIUS);
+    const slid = slidePos(this.build, self.pos, stepped, PLAYER_RADIUS);
+    const pushed = pushOutOfBodies(slid, PLAYER_RADIUS, this.enemyBodies(now), this.arena);
+    // Re-clamp: a shove must not push you through a wall you were standing against.
+    self.pos = slidePos(this.build, slid, pushed, PLAYER_RADIUS);
+  }
+
+  // Every enemy as the owner currently sees it — the interpolated stream, not the raw samples.
+  private enemyBodies(now: number): Body[] {
+    const renderTime = now - ENEMY_RENDER_DELAY_MS;
+    return [...this.enemies.values()].map((e) => ({
+      pos: interpolateAt(e.buffer, renderTime) ?? e.pos,
+      radius: enemyRadius(e.kind),
+    }));
   }
 
   // Apply a relayed position, dropping a stale/duplicate frame by its per-peer seq. The

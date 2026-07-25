@@ -58,7 +58,7 @@ describe("ClientWorld construction", () => {
 describe("ClientWorld self-sim (instant, never buffered)", () => {
   test("stepSelf integrates only the self avatar; peers hold still", () => {
     const w = new ClientWorld(init(), "self");
-    w.stepSelf(100, held("right"));
+    w.stepSelf(100, held("right"), 0);
     const snap = w.snapshot(0);
     expect(snap.players.find((p) => p.id === "self")?.pos.x).toBeGreaterThan(400);
     expect(snap.players.find((p) => p.id === "peer")?.pos).toEqual({ x: 500, y: 300 });
@@ -66,7 +66,7 @@ describe("ClientWorld self-sim (instant, never buffered)", () => {
 
   test("the self avatar is unaffected by the render delay", () => {
     const w = new ClientWorld(init(), "self");
-    w.stepSelf(100, held("right"));
+    w.stepSelf(100, held("right"), 0);
     const x = w.selfPos()?.x ?? 0;
     // Whatever `now` we sample, self is the live local position — no interpolation.
     expect(w.snapshot(0).players.find((p) => p.id === "self")?.pos.x).toBe(x);
@@ -334,7 +334,7 @@ describe("M4-T4: a wall clamps your own avatar", () => {
 
   test("running into a wall stops you outside it", () => {
     const { world, wall } = walledWorld();
-    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right"));
+    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right"), 0);
     const self = world.snapshot(0).players.find((p) => p.id === "self");
     expect(self?.pos.x).toBeLessThan(tileOrigin(wall.tile).x);
     expect(structureBlocking(world.build, self?.pos as Vec2, PLAYER_RADIUS)).toBeNull();
@@ -342,19 +342,64 @@ describe("M4-T4: a wall clamps your own avatar", () => {
 
   test("you slide along the wall instead of sticking to it", () => {
     const { world } = walledWorld();
-    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right")); // press into it
+    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right"), 0); // press into it
     const stuck = world.snapshot(0).players.find((p) => p.id === "self")?.pos as Vec2;
-    world.stepSelf(100, { ...STILL, right: true, down: true }); // still pressing, now also down
+    world.stepSelf(100, { ...STILL, right: true, down: true }, 0); // still pressing, now also down
     const slid = world.snapshot(0).players.find((p) => p.id === "self")?.pos as Vec2;
     expect(slid.y).toBeGreaterThan(stuck.y);
   });
 
   test("a demolished wall stops clamping immediately", () => {
     const { world, wall } = walledWorld();
-    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right"));
+    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right"), 0);
     world.applyMapDelta({ tick: 2, moves: [], removals: [wall.id] }, 0);
-    for (let i = 0; i < 10; i++) world.stepSelf(100, held("right"));
+    for (let i = 0; i < 10; i++) world.stepSelf(100, held("right"), 0);
     const self = world.snapshot(0).players.find((p) => p.id === "self");
     expect(self?.pos.x).toBeGreaterThan(tileOrigin(wall.tile).x);
+  });
+});
+
+describe("M4-T6: you cannot walk through an enemy", () => {
+  // Spawn a grunt at `pos` and stream it one move, so it has a rendered position to collide with.
+  function withGrunt(pos: Vec2) {
+    const world = new ClientWorld(init(), "self");
+    world.applyMapDelta(
+      {
+        tick: 1,
+        moves: [["e1", pos.x, pos.y]],
+        spawns: [{ id: "e1", kind: "grunt", pos, hp: GRUNT_HP, sector: 0 }],
+      },
+      0,
+    );
+    return world;
+  }
+  const selfOf = (w: ClientWorld) => w.selfPos() as Vec2;
+
+  test("walking into a grunt pushes you back out instead of through it", () => {
+    const grunt = { x: 460, y: 300 }; // due east of the owner's spawn at (400, 300)
+    const world = withGrunt(grunt);
+    for (let i = 0; i < 30; i++) world.stepSelf(100, held("right"), 0);
+    const self = selfOf(world);
+    expect(Math.hypot(self.x - grunt.x, self.y - grunt.y)).toBeGreaterThanOrEqual(
+      PLAYER_RADIUS + GRUNT_RADIUS - 1e-6,
+    );
+    expect(self.x).toBeLessThan(grunt.x); // never made it past
+  });
+
+  test("peers are not solid — squadmates pass through each other", () => {
+    const world = new ClientWorld(init(), "self");
+    world.applyPeer("peer", { x: 460, y: 300 }, 1, 0); // a peer right in the way
+    for (let i = 0; i < 30; i++) world.stepSelf(100, held("right"), 0);
+    expect(selfOf(world).x).toBeGreaterThan(460); // walked straight through
+  });
+
+  test("with no enemies at all, motion is exactly the plain integration", () => {
+    const plain = new ClientWorld(init(), "self");
+    const withEnemy = withGrunt({ x: 20_000, y: 20_000 }); // far away
+    for (let i = 0; i < 10; i++) {
+      plain.stepSelf(100, held("right"), 0);
+      withEnemy.stepSelf(100, held("right"), 0);
+    }
+    expect(selfOf(withEnemy)).toEqual(selfOf(plain));
   });
 });

@@ -64,6 +64,41 @@ export function stepPos(pos: Vec2, input: MoveInput, dtMs: number, arena: Arena)
   };
 }
 
+// A circle the avatar cannot stand inside — an enemy, as the owner's client renders it.
+export interface Body {
+  pos: Vec2;
+  radius: number;
+}
+
+// Push the avatar clear of every body it overlaps, accumulating one displacement per body.
+//
+// Soft-push, not a hard stop: pressing into a grunt slows you and shoves you back out rather
+// than blocking the move outright. Accumulating is what prevents a hard trap — surrounded on
+// three sides, the three pushes sum to a vector pointing out the fourth.
+export function pushOutOfBodies(pos: Vec2, radius: number, bodies: Body[], arena: Arena): Vec2 {
+  let { x, y } = pos;
+  for (const body of bodies) {
+    const dx = x - body.pos.x;
+    const dy = y - body.pos.y;
+    const dist = Math.hypot(dx, dy);
+    const apart = radius + body.radius;
+    if (dist >= apart) continue;
+    // Dead-centre overlap has no direction to push along; break the tie deterministically so
+    // two clients never disagree about which way you popped out.
+    if (dist === 0) {
+      x += apart;
+      continue;
+    }
+    const push = apart - dist;
+    x += (dx / dist) * push;
+    y += (dy / dist) * push;
+  }
+  return {
+    x: clamp(x, PLAYER_RADIUS, arena.width - PLAYER_RADIUS),
+    y: clamp(y, PLAYER_RADIUS, arena.height - PLAYER_RADIUS),
+  };
+}
+
 function spawn(player: SpawnPlayer, arena: Arena): Spawn {
   const angle = ((player.slot - 1) / 6) * Math.PI * 2;
   return {
