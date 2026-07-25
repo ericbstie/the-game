@@ -16,29 +16,31 @@ art-asset pipeline. Generate sprites **in code**: draw each once to an offscreen
 canvas, cache it, and blit the cache every frame. No PNGs to load, no network,
 nothing to lose.
 
-## Core pattern — bake once, blit many
+Every sprite goes through the loop in [`docs/sprite-loop.md`](../../../docs/sprite-loop.md) —
+write it, render a review sheet, have a subagent look at the sheet. Read that first.
+
+## Core pattern — bake once at device scale, blit many
 
 Drawing vector paths every frame is slow. Draw each sprite once to an offscreen
-canvas and reuse it:
+canvas and reuse it — **at `size × dpr`**, for the reason in *HiDPI* below:
 
 ```js
-function makeSprite(w, h, draw) {
+function makeSprite(w, h, dpr, draw) {
   const c = document.createElement('canvas');
-  c.width = w; c.height = h;
+  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
   const g = c.getContext('2d');
+  g.scale(dpr, dpr);      // draw in logical units, rasterise at device resolution
   draw(g, w, h);
-  return c; // a canvas is a valid drawImage() source
+  return c;               // a canvas is a valid drawImage() source
 }
 
-const grunt = makeSprite(16, 16, (g) => {
-  g.fillStyle = '#c0392b';
-  g.beginPath(); g.arc(8, 8, 6, 0, Math.PI * 2); g.fill();
+const grunt = makeSprite(16, 16, devicePixelRatio, (g, w, h) => {
   g.fillStyle = '#000';
-  g.fillRect(5, 6, 2, 2); g.fillRect(9, 6, 2, 2); // eyes
+  g.beginPath(); g.arc(w / 2, h / 2, w / 2 - 2, 0, Math.PI * 2); g.fill();
 });
 
-// each frame:
-ctx.drawImage(grunt, x - 8, y - 8);
+// each frame — blit into a 16-CSS-px box, whatever resolution it was baked at:
+ctx.drawImage(grunt, Math.round(x - 8), Math.round(y - 8), 16, 16);
 ```
 
 ## Pixel art from a string grid
@@ -47,9 +49,9 @@ For readable, editable pixel sprites, define art as rows of characters mapped to
 a palette. Easy to tweak, diff-friendly, no tooling.
 
 ```js
-function pixelSprite(rows, palette, scale = 1) {
+function pixelSprite(rows, palette, scale = 1, dpr = devicePixelRatio) {
   const h = rows.length, w = rows[0].length;
-  return makeSprite(w * scale, h * scale, (g) => {
+  return makeSprite(w * scale, h * scale, dpr, (g) => {
     for (let y = 0; y < h; y++)
       for (let x = 0; x < w; x++) {
         const col = palette[rows[y][x]];
@@ -69,22 +71,49 @@ const door = pixelSprite([
 ], { '#': '#8d6e63', '.': '#5d4037', 'o': '#ffd54f' }, 4);
 ```
 
+## HiDPI — two scalings, and the bake is the one people miss
+
+Scaling the **backing store** is necessary and not sufficient. There are two:
+
+1. **The backing store.** Size the canvas to `cssSize × devicePixelRatio` and keep the CSS size
+   fixed, so game coordinates don't move.
+2. **The bake.** The render loop then paints through `ctx.setTransform(dpr, 0, 0, dpr, …)`, so a
+   sprite baked at its *logical* size is **upscaled by that transform** before it reaches the
+   screen. At the sizes this game ships — a 28 px player, a 32 px grunt — that is the difference
+   between hard black ink and a smudge: measured, ~70% of a 28 px contour baked at 1× comes out
+   grey, against 44% baked at device scale.
+
+So **bake at `size × dpr` and blit into a `size`-CSS-px box**, as in the pattern above. The sprite
+cache is keyed by dpr as well as by kind, facing and frame, and re-bakes when dpr changes — which
+the render loop already detects.
+
+**Do not try to "fix" the grey.** Thresholding to hard black shatters the curves; per-pixel
+`putImageData` goes visibly polygonal; `getContext('2d', { antialias: false })` is silently ignored
+and the Chromium canvas-AA flags are no-ops. Anti-aliasing is not the problem — resolution is.
+Details and measurements: [`docs/sprite-loop.md`](../../../docs/sprite-loop.md).
+
 ## Crisp rendering (set once)
 
-- Turn off smoothing so scaled pixel art stays sharp, not blurry: `ctx.imageSmoothingEnabled = false;` — set it again after any context reset.
 - Draw sprites at integer pixel positions (`Math.round(x)`); sub-pixel blits reintroduce blur.
-- For HiDPI, scale the backing store by `devicePixelRatio` and keep the CSS size fixed, so sprites stay sharp on retina without changing game coordinates.
+- **Axis-aligned fills on integer edges carry no anti-aliasing at all** — walls, elevation faces and
+  the build ghost stay hard-edged for free, with no trickery.
+- `ctx.imageSmoothingEnabled = false` is for **magnifying** an already-baked sprite, such as the
+  review sheet's artefact panel, where it makes real pixels visible. It is *not* a fix for a soft
+  bake — on an under-resolved sprite it produces jagged instead of soft. Set it again after any
+  context reset.
 
 ## Rotation and flips — cache the variants too
 
-Rotating inside `drawImage` every frame costs. If a sprite faces only 8
-directions, bake all 8:
+Rotating inside `drawImage` every frame costs. Bake the variants instead. Note that `src` is
+already at device resolution, so the rotation bakes at `dpr` 1 — and that a **character's** 8
+facings are *drawn*, not rotated: a figure seen from behind is not a rotation of one seen from the
+front. Rotation is for parts that really do turn, like a turret barrel.
 
 ```js
 function bakeRotations(src, steps = 8) {
-  const s = Math.ceil(Math.max(src.width, src.height) * 1.5);
+  const s = Math.ceil(Math.max(src.width, src.height) * 1.5); // device px: src is already baked
   return Array.from({ length: steps }, (_, i) =>
-    makeSprite(s, s, (g) => {
+    makeSprite(s, s, 1, (g) => {
       g.translate(s / 2, s / 2);
       g.rotate((i / steps) * Math.PI * 2);
       g.drawImage(src, -src.width / 2, -src.height / 2);
