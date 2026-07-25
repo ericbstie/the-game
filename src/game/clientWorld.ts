@@ -49,7 +49,9 @@ import { type Body, PLAYER_MAX_HP, PLAYER_RADIUS, pushOutOfBodies, stepPos } fro
 export const RENDER_DELAY_MS = 100; // render peers this far behind real time to smooth the relay
 export const BUFFER_MS = 500; // keep this much peer history; older samples are pruned
 export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their 20 Hz stream
-export const RESPAWN_DELAY_MS = 3000; // dead this long, then the client snaps back to center
+// Dead this long, then the client snaps back to center. With a stopwatch for a score and a base
+// to defend, the long walk back from centre is the penalty — at 3 s (M3) dying was free.
+export const RESPAWN_DELAY_MS = 20_000;
 
 interface AvatarRecord {
   id: PlayerId;

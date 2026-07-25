@@ -8,9 +8,14 @@ import {
   tileOf,
   tileOrigin,
 } from "./build";
-import { ClientWorld, ENEMY_RENDER_DELAY_MS, RENDER_DELAY_MS } from "./clientWorld";
+import {
+  ClientWorld,
+  ENEMY_RENDER_DELAY_MS,
+  RENDER_DELAY_MS,
+  RESPAWN_DELAY_MS,
+} from "./clientWorld";
 import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, NEST_COUNT } from "./enemies";
-import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS } from "./world";
+import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
 
 const STILL = { up: false, down: false, left: false, right: false };
 const held = (dir: keyof typeof STILL) => ({ ...STILL, [dir]: true });
@@ -401,5 +406,24 @@ describe("M4-T6: you cannot walk through an enemy", () => {
       withEnemy.stepSelf(100, held("right"), 0);
     }
     expect(selfOf(withEnemy)).toEqual(selfOf(plain));
+  });
+});
+
+describe("M4-T10: dying costs 20 seconds", () => {
+  test("the respawn delay is 20 s — long enough that death is a real time penalty", () => {
+    expect(RESPAWN_DELAY_MS).toBe(20_000);
+  });
+
+  test("the downed countdown reads in whole seconds from 20", () => {
+    // The HUD shows `ceil(remaining / 1000)`, so the first tick after death reads "20".
+    expect(Math.ceil(RESPAWN_DELAY_MS / 1000)).toBe(20);
+  });
+
+  test("the walk back from centre is the real cost — the timer alone is a fraction of it", () => {
+    // Centre to the danger band is ~60 s at PLAYER_SPEED. The countdown is the down payment;
+    // the walk is the rest, which is what makes dying expensive without wiping the squad.
+    const walkBackMs = ((ARENA.width / 2) * 1000) / PLAYER_SPEED;
+    expect(RESPAWN_DELAY_MS).toBeLessThan(walkBackMs);
+    expect(RESPAWN_DELAY_MS).toBeGreaterThan(walkBackMs / 5);
   });
 });
