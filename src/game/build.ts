@@ -214,13 +214,14 @@ function withinReach(target: Vec2, from: Vec2, reach: number): boolean {
   return Math.hypot(target.x - from.x, target.y - from.y) <= reach;
 }
 
-// Right-click is one verb: holding it harvests whatever is under the cursor. This resolves
-// which. Metal ore hand-mines; bare ground and power ore yield nothing. A structure will resolve
-// ahead of the ore beneath it once demolish lands — a miner sits on metal ore by definition, so
-// resolving ore first would make it undemolishable.
-export type HarvestTarget = { kind: "mine"; tile: Tile } | null;
+// Right-click is one verb: holding it harvests whatever is under the cursor. This resolves which.
+// A structure always wins over the ore beneath it — a miner sits on metal ore by definition, so
+// resolving ore first would make it undemolishable. Bare ground and power ore yield nothing.
+export type HarvestTarget = { kind: "mine"; tile: Tile } | { kind: "demolish"; id: string } | null;
 
-export function resolveHarvest(tile: Tile, ore: OreGrid): HarvestTarget {
+export function resolveHarvest(tile: Tile, ore: OreGrid, build: BuildState | null): HarvestTarget {
+  const id = build?.occupancy.get(tileKey(tile));
+  if (id !== undefined) return { kind: "demolish", id };
   return oreAt(ore, tile) === "metal" ? { kind: "mine", tile } : null;
 }
 
@@ -478,6 +479,54 @@ function circleTouchesTile(pos: Vec2, radius: number, tx: number, ty: number): b
   const nearestX = Math.max(tx * TILE, Math.min(pos.x, (tx + 1) * TILE));
   const nearestY = Math.max(ty * TILE, Math.min(pos.y, (ty + 1) * TILE));
   return Math.hypot(pos.x - nearestX, pos.y - nearestY) < radius;
+}
+
+// --- Demolish ------------------------------------------------------------------------------
+// The only way to undo anything in M4: it is how you repair (there is none — you demolish and
+// rebuild), how you dig yourself out after walling yourself in, how you reopen a door you sealed,
+// and how you recover from over-building past the power ceiling.
+
+export const DEMOLISH_REFUND = 0.2;
+export const DEMOLISH_CADENCE_MS = 100;
+// Holding is what makes demolish safe: a stray right-click while running over your own wall must
+// not delete it. The client withholds the request until the button has been down this long.
+export const DEMOLISH_HOLD_MS = 350;
+
+export interface DemolishGuard {
+  seq: number;
+  lastAt: number;
+}
+
+export function freshDemolishGuard(): DemolishGuard {
+  return { seq: -1, lastAt: Number.NEGATIVE_INFINITY };
+}
+
+// Decide whether to accept a reported demolish, mutating `guard` as a side effect. There is no
+// ownership check: structures are communal state like the bank, so any player may demolish any
+// structure. Returns the structure so the caller can refund and remove it.
+export function admitDemolish(
+  guard: DemolishGuard,
+  report: { id: string; seq: number },
+  lastPos: Vec2 | null,
+  build: BuildState,
+  now: number,
+): Structure | null {
+  if (report.seq <= guard.seq) return null; // stale or duplicate
+  guard.seq = report.seq;
+  if (now - guard.lastAt < DEMOLISH_CADENCE_MS) return null; // too soon
+  const structure = build.structures.get(report.id);
+  if (!structure) return null; // already gone — a duplicate refunds nothing rather than erroring
+  if (lastPos && !withinReach(structureCenter(structure), lastPos, INTERACT_REACH)) return null;
+  guard.lastAt = now;
+  return structure;
+}
+
+// Remove a structure and credit the refund. Rounded down, so a cheap building can refund nothing.
+export function demolishStructure(build: BuildState, structure: Structure): number {
+  const refund = Math.floor((BUILDABLES[structure.kind]?.cost ?? 0) * DEMOLISH_REFUND);
+  removeStructure(build, structure.id);
+  build.bank.metal += refund;
+  return refund;
 }
 
 // Every structure, shaped for the reconnect keyframe. Tiles are copied so the snapshot never

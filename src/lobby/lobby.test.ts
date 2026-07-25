@@ -1005,3 +1005,98 @@ describe("M4-T2: placing a miner", () => {
     expect(keyframe.structures[0]).toMatchObject({ kind: "miner", tile, hp: 200 });
   });
 });
+
+describe("M4-T5: demolish returns 20% of the metal", () => {
+  const MINER = BUILDABLES.miner as { cost: number };
+
+  function nearestMetal(oreSeed: number): Tile {
+    const ore = generateOre(ARENA, oreSeed);
+    let best: Tile | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const [key, kind] of ore) {
+      if (kind !== "metal") continue;
+      const t = { tx: Math.floor(key / 65_536), ty: key % 65_536 };
+      const c = tileCenter(t);
+      const d = Math.hypot(c.x - ARENA.width / 2, c.y - ARENA.height / 2);
+      if (d < bestDist) {
+        bestDist = d;
+        best = t;
+      }
+    }
+    if (!best) throw new Error("the generated grid holds no metal ore");
+    return best;
+  }
+
+  test("any player can demolish a structure another placed; it vanishes for everyone", async () => {
+    const server = startServer({ startingMetal: MINER.cost });
+    servers.push(server);
+    const { client: ana, code } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await ana.waitFor((m) => m.type === "lobby/player-joined");
+    ana.send({ type: "game/start" });
+    const init = expectMessage(
+      await ana.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+
+    const tile = nearestMetal(init.oreSeed);
+    ana.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
+    ana.send({ type: "game/build", kind: "miner", tile, seq: 1 });
+    const spawned = expectMessage(
+      await ana.waitFor((m) => m.type === "game/map-delta" && (m.builds?.length ?? 0) > 0),
+      "game/map-delta",
+    );
+    const id = spawned.builds?.[0]?.id as string;
+    await ben.waitFor((m) => m.type === "game/map-delta" && (m.builds?.length ?? 0) > 0);
+
+    // Ben demolishes what Ana built — structures are communal, so there is no ownership check.
+    ben.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
+    ben.send({ type: "game/demolish", id, seq: 1 });
+
+    const removed = (m: ServerMessage) =>
+      m.type === "game/map-delta" && (m.removals ?? []).includes(id);
+    expect(expectMessage(await ana.waitFor(removed), "game/map-delta").removals).toContain(id);
+    expect(expectMessage(await ben.waitFor(removed), "game/map-delta").removals).toContain(id);
+  });
+
+  test("the refund lands in the shared bank", async () => {
+    const server = startServer({ startingMetal: MINER.cost });
+    servers.push(server);
+    const { client: ana } = await host(server, "Ana");
+    ana.send({ type: "game/start" });
+    const init = expectMessage(
+      await ana.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+
+    const tile = nearestMetal(init.oreSeed);
+    ana.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
+    ana.send({ type: "game/build", kind: "miner", tile, seq: 1 });
+    const spawned = expectMessage(
+      await ana.waitFor((m) => m.type === "game/map-delta" && (m.builds?.length ?? 0) > 0),
+      "game/map-delta",
+    );
+    // Placing spent the whole bank; only the refund can bring it back above zero this fast.
+    ana.send({ type: "game/demolish", id: spawned.builds?.[0]?.id as string, seq: 1 });
+    const refunded = expectMessage(
+      await ana.waitFor((m) => m.type === "game/map-delta" && (m.bank?.metal ?? 0) > 0),
+      "game/map-delta",
+    );
+    expect(refunded.bank?.metal).toBe(Math.floor(MINER.cost * 0.2));
+  });
+
+  test("demolishing a structure that is already gone changes nothing", async () => {
+    const server = startServer({ startingMetal: MINER.cost });
+    servers.push(server);
+    const { client: ana } = await host(server, "Ana");
+    ana.send({ type: "game/start" });
+    await ana.waitFor((m) => m.type === "game/world-init");
+
+    ana.send({ type: "game/demolish", id: "b999", seq: 1 });
+    const seen: ServerMessage[] = [];
+    for (let i = 0; i < 4; i++) seen.push(await ana.waitFor((m) => m.type === "game/map-delta"));
+    expect(
+      seen.every((m) => m.type === "game/map-delta" && m.removals === undefined && !m.bank),
+    ).toBe(true);
+  });
+});

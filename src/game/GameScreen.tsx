@@ -4,6 +4,7 @@ import type { Arena, BuildableKind, MoveInput, Tile, Vec2 } from "../lobby/proto
 import {
   BUILD_SLOTS,
   BUILDABLES,
+  DEMOLISH_HOLD_MS,
   MINE_CADENCE_MS,
   placementError,
   resolveHarvest,
@@ -26,6 +27,7 @@ interface GameScreenProps {
   onHealth: (hp: number) => void;
   onMine: (tile: Tile) => void;
   onBuild: (kind: BuildableKind, tile: Tile) => void;
+  onDemolish: (id: string) => void;
 }
 
 // The in-match screen: a fullscreen camera that follows your Avatar through the giant box.
@@ -43,6 +45,7 @@ export function GameScreen({
   onHealth,
   onMine,
   onBuild,
+  onDemolish,
 }: GameScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const heldRef = useRef<MoveInput>(NO_MOVE);
@@ -53,7 +56,10 @@ export function GameScreen({
   const onHealthRef = useRef(onHealth);
   const onMineRef = useRef(onMine);
   const onBuildRef = useRef(onBuild);
-  const harvestingRef = useRef(false); // right-click held: harvest whatever is under the cursor
+  const onDemolishRef = useRef(onDemolish);
+  // When right-click went down, or null if it is up. A timestamp rather than a flag because
+  // demolish only fires once the button has been held a while.
+  const harvestingRef = useRef<number | null>(null);
   const [selected, setSelected] = useState<BuildableKind | null>(null);
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
@@ -72,6 +78,7 @@ export function GameScreen({
   onHealthRef.current = onHealth;
   onMineRef.current = onMine;
   onBuildRef.current = onBuild;
+  onDemolishRef.current = onDemolish;
   selectedRef.current = selected;
 
   // Keyboard → held MoveInput, plus the build bar's 1–4 and Escape. Nothing is sent per key.
@@ -205,26 +212,30 @@ export function GameScreen({
     return () => clearInterval(timer);
   }, []);
 
-  // Held right-click streams a harvest request for the tile under the cursor at a fixed cadence.
-  // The server decides what that tile is worth — the client only ever asks.
+  // Held right-click streams a harvest request for whatever is under the cursor at a fixed
+  // cadence. The server decides what that is worth — the client only ever asks.
   useEffect(() => {
     const timer = setInterval(() => {
       const world = worldRef.current;
-      if (!harvestingRef.current || !world || world.isDead()) return;
-      const target = resolveHarvest(
-        cursorTile(pointerRef.current, aimRef.current.camera),
-        world.ore,
-      );
+      const heldSince = harvestingRef.current;
+      if (heldSince === null || !world || world.isDead()) return;
+      const tile = cursorTile(pointerRef.current, aimRef.current.camera);
+      const target = resolveHarvest(tile, world.ore, world.build);
       if (target?.kind === "mine") onMineRef.current(target.tile);
+      // Demolish waits out a hold: a stray right-click while running over your own wall must not
+      // delete it. Mining needs no such guard — a single mine tick is harmless.
+      else if (target?.kind === "demolish" && Date.now() - heldSince >= DEMOLISH_HOLD_MS) {
+        onDemolishRef.current(target.id);
+      }
     }, MINE_CADENCE_MS);
     return () => clearInterval(timer);
   }, []);
 
   // A right-click released outside the canvas (or with the tab hidden) must still stop the hold,
-  // or mining would continue with a stale cursor.
+  // or harvesting would continue with a stale cursor.
   useEffect(() => {
     const stop = () => {
-      harvestingRef.current = false;
+      harvestingRef.current = null;
     };
     window.addEventListener("mouseup", stop);
     window.addEventListener("blur", stop);
@@ -248,7 +259,7 @@ export function GameScreen({
       if (kind) onBuildRef.current(kind, cursorTile(pointerRef.current, camera));
       else onAttackRef.current({ ...self }, aimDir(pointerRef.current, self, camera));
     } else if (e.button === 2) {
-      harvestingRef.current = true; // right-click harvests for as long as it is held
+      harvestingRef.current = Date.now(); // right-click harvests for as long as it is held
     }
   };
 
@@ -307,8 +318,9 @@ export function GameScreen({
         ))}
       </div>
       <p className="hint">
-        Move with WASD or the arrow keys. Left-click to shoot, hold right-click on metal ore to
-        mine. Press 1–4 to pick a buildable and left-click to place it; Escape cancels.
+        Move with WASD or the arrow keys. Left-click to shoot. Hold right-click to mine metal ore —
+        or to demolish a structure for some of its metal back. Press 1–4 to pick a buildable and
+        left-click to place it; Escape cancels.
       </p>
     </main>
   );

@@ -69,6 +69,7 @@ export class LobbyClient {
   private healthSeq = 0; // monotonic health sequence, independent of the others
   private mineSeq = 0; // monotonic hand-mine sequence, independent of the others
   private buildSeq = 0; // monotonic placement sequence, independent of the others
+  private demolishSeq = 0; // monotonic demolish sequence, independent of the others
 
   constructor(options: LobbyClientOptions = {}) {
     this.wsUrl = options.wsUrl ?? defaultWsUrl();
@@ -123,6 +124,12 @@ export class LobbyClient {
   // the structure's id — the client never writes either. `seq` is monotonic, like sendPos.
   sendBuild(kind: BuildableKind, tile: Tile): void {
     this.send({ type: "game/build", kind, tile, seq: ++this.buildSeq });
+  }
+
+  // Ask to demolish a structure. Any player may demolish any structure; the server credits the
+  // refund. `seq` is monotonic, like sendPos.
+  sendDemolish(id: string): void {
+    this.send({ type: "game/demolish", id, seq: ++this.demolishSeq });
   }
 
   // Report the client's own HP (it owns it). `hp <= 0` declares death. The server stores and

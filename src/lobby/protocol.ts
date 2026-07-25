@@ -287,6 +287,9 @@ export type GameMine = Envelope<"game/mine", { tile: Tile; seq: number }>;
 // Placement (M4): the client asks for a buildable at a tile. The server re-runs the same
 // placement rule the ghost used, debits the bank itself, and mints the structure's id.
 export type GameBuild = Envelope<"game/build", { kind: BuildableKind; tile: Tile; seq: number }>;
+// Demolish (M4): held right-click over a structure. Fully communal — no ownership check — and
+// it reuses the `removals` and `bank` deltas rather than adding wire shapes of its own.
+export type GameDemolish = Envelope<"game/demolish", { id: string; seq: number }>;
 export type ClientMessage =
   | CreateLobby
   | JoinLobby
@@ -296,7 +299,8 @@ export type ClientMessage =
   | GameAttack
   | GameHealth
   | GameMine
-  | GameBuild;
+  | GameBuild
+  | GameDemolish;
 
 export type LobbyErrorCode = "lobby-not-found" | "lobby-full" | "slot-released" | "invalid";
 
@@ -430,6 +434,10 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       const tile = asTile(msg.tile);
       if (tile === null || !isBuildableKind(msg.kind) || !isFiniteNumber(msg.seq)) return null;
       return { type: "game/build", kind: msg.kind, tile, seq: msg.seq };
+    }
+    case "game/demolish": {
+      if (typeof msg.id !== "string" || !isFiniteNumber(msg.seq)) return null;
+      return { type: "game/demolish", id: msg.id, seq: msg.seq };
     }
     default:
       return null;

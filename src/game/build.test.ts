@@ -2,15 +2,20 @@ import { describe, expect, test } from "bun:test";
 import type { Tile } from "../lobby/protocol";
 import {
   admitBuild,
+  admitDemolish,
   admitMine,
   BUILD_CADENCE_MS,
   BUILD_SLOTS,
   BUILDABLES,
   type BuildableSpec,
+  DEMOLISH_CADENCE_MS,
+  DEMOLISH_HOLD_MS,
+  demolishStructure,
   footprintCenter,
   footprintTiles,
   freshBuildGuard,
   freshBuildState,
+  freshDemolishGuard,
   freshMineGuard,
   generateOre,
   HAND_MINE_RATE,
@@ -23,10 +28,12 @@ import {
   placeStructure,
   pushOutOfSolids,
   removeStructure,
+  resolveHarvest,
   slidePos,
   solidAt,
   stepBuild,
   structureBlocking,
+  structureCenter,
   TILE,
   tileKey,
   tileOf,
@@ -526,5 +533,99 @@ describe("solidity — the one occupancy test both sides read", () => {
     expect(slidePos(build, { x: 400, y: 400 }, to, RADIUS)).toEqual(to);
     expect(structureBlocking(build, to, RADIUS)).toBeNull();
     expect(structureBlocking(null, to, RADIUS)).toBeNull();
+  });
+});
+
+describe("demolish", () => {
+  const ore = generateOre(ARENA, SEED);
+  const MINER = BUILDABLES.miner as BuildableSpec;
+  const WALL = BUILDABLES.wall as BuildableSpec;
+  const metalTile = (() => {
+    for (const [key, kind] of ore) if (kind === "metal") return untileKey(key);
+    throw new Error("no metal ore");
+  })();
+  const funded = () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 1_000;
+    return build;
+  };
+
+  test("the tile resolver picks the structure over the ore under it", () => {
+    const build = funded();
+    const miner = placeStructure(build, "miner", metalTile, MINER);
+    // Ore-first would make a miner undemolishable, since one sits on metal ore by definition.
+    expect(resolveHarvest(metalTile, ore, build)).toEqual({ kind: "demolish", id: miner.id });
+    removeStructure(build, miner.id);
+    expect(resolveHarvest(metalTile, ore, build)).toEqual({ kind: "mine", tile: metalTile });
+  });
+
+  test("bare ground under the cursor resolves to nothing at all", () => {
+    expect(resolveHarvest({ tx: 0, ty: 0 }, ore, funded())).toBeNull();
+  });
+
+  test("the refund is exactly floor(cost × 20%)", () => {
+    const build = funded();
+    const miner = placeStructure(build, "miner", metalTile, MINER); // 1000 − 50
+    expect(demolishStructure(build, miner)).toBe(Math.floor(MINER.cost * 0.2));
+    expect(build.bank.metal).toBe(1_000 - MINER.cost + Math.floor(MINER.cost * 0.2));
+  });
+
+  test("a cheap building can refund nothing — the rounding is down", () => {
+    const build = funded();
+    const wall = placeStructure(build, "wall", { tx: 500, ty: 500 }, WALL); // cost 10 → 2
+    expect(demolishStructure(build, wall)).toBe(2);
+  });
+
+  test("the tiles free immediately, so a rebuild on the footprint is legal at once", () => {
+    const build = funded();
+    const miner = placeStructure(build, "miner", metalTile, MINER);
+    expect(placementError("miner", metalTile, ore, build, null)).toBe("blocked");
+    demolishStructure(build, miner);
+    expect(placementError("miner", metalTile, ore, build, null)).toBeNull();
+    expect(build.occupancy.size).toBe(0);
+  });
+
+  test("admitDemolish accepts any player, not just whoever placed it", () => {
+    const build = funded();
+    const miner = placeStructure(build, "miner", metalTile, MINER);
+    const stranger = freshDemolishGuard(); // a guard that has never seen this structure
+    const at = structureCenter(miner);
+    expect(admitDemolish(stranger, { id: miner.id, seq: 1 }, at, build, 1_000)).toBe(miner);
+  });
+
+  test("a duplicate demolish neither double-refunds nor errors", () => {
+    const build = funded();
+    const miner = placeStructure(build, "miner", metalTile, MINER);
+    const guard = freshDemolishGuard();
+    const at = structureCenter(miner);
+    const first = admitDemolish(guard, { id: miner.id, seq: 1 }, at, build, 1_000);
+    demolishStructure(build, first as NonNullable<typeof first>);
+    const banked = build.bank.metal;
+    expect(admitDemolish(guard, { id: miner.id, seq: 2 }, at, build, 2_000)).toBeNull();
+    expect(build.bank.metal).toBe(banked);
+  });
+
+  test("rejects a stale seq, a too-soon repeat, and an out-of-reach structure", () => {
+    const build = funded();
+    const a = placeStructure(build, "miner", metalTile, MINER);
+    const b = placeStructure(build, "wall", { tx: 500, ty: 500 }, WALL);
+    const guard = freshDemolishGuard();
+    admitDemolish(guard, { id: a.id, seq: 5 }, structureCenter(a), build, 1_000);
+    expect(admitDemolish(guard, { id: a.id, seq: 5 }, structureCenter(a), build, 9_000)).toBeNull();
+    expect(
+      admitDemolish(
+        guard,
+        { id: b.id, seq: 6 },
+        structureCenter(b),
+        build,
+        1_000 + DEMOLISH_CADENCE_MS - 1,
+      ),
+    ).toBeNull();
+    const far = { x: structureCenter(a).x + INTERACT_REACH + 1, y: structureCenter(a).y };
+    expect(admitDemolish(freshDemolishGuard(), { id: a.id, seq: 1 }, far, build, 1_000)).toBeNull();
+  });
+
+  test("a single click cannot destroy anything — demolish is a hold", () => {
+    expect(DEMOLISH_HOLD_MS).toBeGreaterThan(MINE_CADENCE_MS);
   });
 });

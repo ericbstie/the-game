@@ -1,10 +1,14 @@
 import {
   admitBuild,
+  admitDemolish,
   admitMine,
   type BuildGuard,
   type BuildState,
+  type DemolishGuard,
+  demolishStructure,
   freshBuildGuard,
   freshBuildState,
+  freshDemolishGuard,
   freshMineGuard,
   generateOre,
   type MineGuard,
@@ -96,6 +100,8 @@ interface SessionRecord {
   pendingBuilds: StructureSpawn[]; // placements admitted since the last tick, awaiting broadcast
   mineGuards: Map<PlayerId, MineGuard>; // per-player hand-mine cadence/seq/accrual state
   buildGuards: Map<PlayerId, BuildGuard>; // per-player placement cadence/seq state
+  demolishGuards: Map<PlayerId, DemolishGuard>; // per-player demolish cadence/seq state
+  pendingRemovals: string[]; // demolished ids awaiting broadcast, merged with the sim's own
 }
 
 // Server-authoritative hub over every Session. Owns the whole
@@ -154,6 +160,9 @@ export class LobbyHub {
         return;
       case "game/build":
         this.gameBuild(socketId, msg.kind, msg.tile, msg.seq);
+        return;
+      case "game/demolish":
+        this.gameDemolish(socketId, msg.id, msg.seq);
         return;
     }
   }
@@ -230,6 +239,8 @@ export class LobbyHub {
       pendingBuilds: [],
       mineGuards: new Map(),
       buildGuards: new Map(),
+      demolishGuards: new Map(),
+      pendingRemovals: [],
     };
     this.sessions.set(code, session);
     this.sockets.set(socketId, { code, playerId: player.id });
@@ -410,7 +421,9 @@ export class LobbyHub {
     if (events.deaths.length > 0) delta.deaths = events.deaths;
     if (events.nests.length > 0) delta.nests = events.nests;
     if (events.structHits.length > 0) delta.structHits = events.structHits;
-    if (events.removals.length > 0) delta.removals = events.removals;
+    const removals = [...events.removals, ...session.pendingRemovals];
+    session.pendingRemovals = [];
+    if (removals.length > 0) delta.removals = removals;
     if (events.wave) delta.wave = events.wave;
     if (session.build) {
       stepBuild(session.build, this.tickMs); // miners trickle into the bank
@@ -498,6 +511,27 @@ export class LobbyHub {
       tile: placed.tile,
       hp: placed.hp,
     });
+  }
+
+  // A reported demolish. Communal by design — no ownership check — and the refund is credited
+  // here, so the client never writes the bank.
+  private gameDemolish(socketId: string, id: string, seq: number): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (!session.build) return; // nothing to demolish before the match starts
+    let guard = session.demolishGuards.get(player.id);
+    if (!guard) {
+      guard = freshDemolishGuard();
+      session.demolishGuards.set(player.id, guard);
+    }
+    const lastPos = session.positions.get(player.id)?.pos ?? null;
+    const structure = admitDemolish(guard, { id, seq }, lastPos, session.build, Date.now());
+    if (!structure) return;
+    demolishStructure(session.build, structure);
+    session.pendingRemovals.push(structure.id);
   }
 
   // Store and relay a client's reported HP (it owns its health; the server never computes it),
@@ -607,6 +641,7 @@ export class LobbyHub {
     session.attackGuards.delete(player.id);
     session.mineGuards.delete(player.id);
     session.buildGuards.delete(player.id);
+    session.demolishGuards.delete(player.id);
     const timer = session.graceTimers.get(player.id);
     if (timer) {
       clearTimeout(timer);

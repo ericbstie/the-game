@@ -22,6 +22,7 @@ export function App({ wsUrl }: { wsUrl?: string } = {}) {
           onHealth={(hp) => client.sendHealth(hp)}
           onMine={(tile) => client.sendMine(tile)}
           onBuild={(kind, tile) => client.sendBuild(kind, tile)}
+          onDemolish={(id) => client.sendDemolish(id)}
         />
       );
     }
