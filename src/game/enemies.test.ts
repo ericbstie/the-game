@@ -1,6 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { Vec2, WorldInit } from "../lobby/protocol";
 import {
+  BUILDABLES,
+  type BuildableSpec,
+  type BuildState,
+  freshBuildState,
+  placeStructure,
+  removeStructure,
+  structureCenter,
+  TILE,
+  tileOf,
+} from "./build";
+import {
   ATTACK_POS_TOLERANCE,
   type Attack,
   admitAttack,
@@ -9,6 +20,8 @@ import {
   ENEMY_CAP,
   type Enemy,
   type EnemyState,
+  enemyContactCadenceMs,
+  enemyContactDamage,
   freshGuard,
   GRUNT_HP,
   GRUNT_RADIUS,
@@ -45,6 +58,7 @@ const grunt = (id: string, pos: Vec2, hp = GRUNT_HP, sector = 0): Enemy => ({
   pos,
   hp,
   sector,
+  biteMs: 0,
 });
 const stateWith = (enemies: Enemy[]): EnemyState => ({
   arena: ARENA,
@@ -187,7 +201,7 @@ describe("stepEnemies AI (ENGAGED / MARCH / HOLD)", () => {
     const prey = { x: near.x + 500, y: near.y }; // 500 < AGGRO_RADIUS
     stepEnemies(s, [{ id: "p1", pos: prey }], [], 100);
     expect(only(s).pos.x).toBeGreaterThan(near.x); // moved toward the player
-    expect(only(s).target).toBe("p1");
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
     const d = only(s).pos.x - near.x;
     expect(d).toBeLessThanOrEqual((GRUNT_SPEED * 100) / 1000 + 1e-6); // capped by speed
   });
@@ -212,7 +226,7 @@ describe("stepEnemies AI (ENGAGED / MARCH / HOLD)", () => {
     const onEdge = { x: C.x + HOLD_EDGE, y: C.y };
     const s = stateWith([grunt("e1", { ...onEdge })]);
     stepEnemies(s, [{ id: "p1", pos: { x: onEdge.x + 500, y: onEdge.y } }], [], 100); // within aggro
-    expect(only(s).target).toBe("p1");
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
     expect(only(s).pos.x).toBeGreaterThan(onEdge.x); // peeled outward toward the player
 
     const peeledOut = Math.hypot(only(s).pos.x - C.x, only(s).pos.y - C.y);
@@ -352,5 +366,121 @@ describe("admitAttack (server-side attack admission)", () => {
     const near = report(1, { x: ATTACK_POS_TOLERANCE - 1, y: 0 });
     expect(admitAttack(freshGuard(), far, last, 1000)).toBe(false);
     expect(admitAttack(freshGuard(), near, last, 1000)).toBe(true);
+  });
+});
+
+describe("M4-T3: enemies leave the front line to chew on your structures", () => {
+  const MINER = BUILDABLES.miner as BuildableSpec;
+  // A build state holding one miner whose footprint centre sits at `pos`.
+  const withMiner = (pos: Vec2) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 10_000;
+    const tile = tileOf({ x: pos.x - TILE, y: pos.y - TILE }); // centre the 2×2 on `pos`
+    return { build, miner: placeStructure(build, "miner", tile, MINER) };
+  };
+  const stepWith = (s: EnemyState, players: Vec2[], build: BuildState, dtMs = 100) =>
+    stepEnemies(
+      s,
+      players.map((pos, i) => ({ id: `p${i + 1}`, pos })),
+      [],
+      dtMs,
+      build,
+    ).events;
+
+  test("with no player in range, an enemy locks the miner and closes on it", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 1_000, y: minerAt.y })]);
+
+    stepWith(s, [], build);
+    expect(only(s).target).toEqual({ kind: "structure", id: miner.id });
+    expect(only(s).pos.x).toBeLessThan(minerAt.x + 1_000); // closing in
+  });
+
+  test("a player in range always outranks a structure", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 100, y: minerAt.y })]);
+
+    stepWith(s, [], build); // locks the miner first…
+    expect(only(s).target?.kind).toBe("structure");
+    stepWith(s, [{ x: minerAt.x + 400, y: minerAt.y }], build); // …then a player walks in
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
+  });
+
+  test("an enemy locked on a player ignores a closer teammate and a closer miner", () => {
+    const start = { x: C.x + 5_000, y: C.y };
+    const { build } = withMiner({ x: start.x + 60, y: start.y }); // a miner right on top of it
+    const s = stateWith([grunt("e1", { ...start })]);
+    const chased = { x: start.x + 1_500, y: start.y };
+
+    stepWith(s, [chased], build);
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
+    // p2 is far closer, and so is the miner — lock and commit means neither steals the chase.
+    stepWith(s, [chased, { x: start.x + 100, y: start.y }], build);
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
+  });
+
+  test("a locked structure is dropped only when it dies or leaves range", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 500, y: minerAt.y })]);
+    stepWith(s, [], build);
+    expect(only(s).target).toEqual({ kind: "structure", id: miner.id });
+
+    removeStructure(build, miner.id); // demolished out from under it
+    stepWith(s, [], build);
+    expect(only(s).target).toBeUndefined();
+  });
+
+  test("an undefended miner is chewed down and removed exactly once", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 200, y: minerAt.y })]);
+
+    let hitTotal = 0;
+    let removals: string[] = [];
+    for (let i = 0; i < 600 && removals.length === 0; i++) {
+      const events = stepWith(s, [], build);
+      hitTotal += events.structHits.length;
+      removals = events.removals;
+    }
+    expect(removals).toEqual([miner.id]);
+    // Every bite but the lethal one reports as a hit; the last reports as a removal.
+    expect(hitTotal).toBe(Math.ceil(MINER.hp / enemyContactDamage("grunt")) - 1);
+    expect(build.structures.has(miner.id)).toBe(false);
+    expect(build.occupancy.size).toBe(0); // its tiles freed
+  });
+
+  test("damage lands on the enemy's own contact cadence, not once per tick", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    // Stand the grunt just inside contact range of the miner's true (tile-snapped) centre.
+    const centre = structureCenter(miner);
+    const s = stateWith([grunt("e1", { x: centre.x + GRUNT_RADIUS + TILE, y: centre.y })]);
+    const cadence = enemyContactCadenceMs("grunt");
+
+    stepWith(s, [], build, 0); // first bite: the cooldown starts at zero
+    expect(build.structures.get(miner.id)?.hp).toBe(MINER.hp - enemyContactDamage("grunt"));
+    stepWith(s, [], build, cadence - 1); // still cooling down
+    expect(build.structures.get(miner.id)?.hp).toBe(MINER.hp - enemyContactDamage("grunt"));
+    stepWith(s, [], build, 1); // cadence elapsed
+    expect(build.structures.get(miner.id)?.hp).toBe(MINER.hp - 2 * enemyContactDamage("grunt"));
+  });
+
+  test("an enemy out of reach of its target does not damage it", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 1_500, y: minerAt.y })]);
+    expect(stepWith(s, [], build, 0).structHits).toEqual([]);
+    expect(build.structures.get(miner.id)?.hp).toBe(MINER.hp);
+  });
+
+  test("with no build state at all the sim behaves exactly as it did in M3", () => {
+    const s = stateWith([grunt("e1", { x: C.x + HOLD_EDGE, y: C.y })]);
+    const events = stepEnemies(s, [], [], 100).events;
+    expect(events.structHits).toEqual([]);
+    expect(events.removals).toEqual([]);
+    expect(only(s).target).toBeUndefined();
   });
 });

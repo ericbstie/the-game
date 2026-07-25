@@ -397,12 +397,20 @@ export class LobbyHub {
     const players = livePlayers(session.positions, session.health); // dead players drop from aggro
     const attacks = session.pendingAttacks;
     session.pendingAttacks = [];
-    const { events } = stepEnemies(session.sim, players, attacks, this.tickMs);
+    const { events } = stepEnemies(
+      session.sim,
+      players,
+      attacks,
+      this.tickMs,
+      session.build ?? null,
+    );
     const delta: MapDelta = { tick: ++session.tickNo, moves: events.moves };
     if (events.spawns.length > 0) delta.spawns = events.spawns;
     if (events.hits.length > 0) delta.hits = events.hits;
     if (events.deaths.length > 0) delta.deaths = events.deaths;
     if (events.nests.length > 0) delta.nests = events.nests;
+    if (events.structHits.length > 0) delta.structHits = events.structHits;
+    if (events.removals.length > 0) delta.removals = events.removals;
     if (events.wave) delta.wave = events.wave;
     if (session.build) {
       stepBuild(session.build, this.tickMs); // miners trickle into the bank

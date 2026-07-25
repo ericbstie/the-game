@@ -283,6 +283,16 @@ export function footprintCenter(tile: Tile, footprint: number): Vec2 {
   return { x: tile.tx * TILE + half, y: tile.ty * TILE + half };
 }
 
+export function structureCenter(s: Structure): Vec2 {
+  return footprintCenter(s.tile, BUILDABLES[s.kind]?.footprint ?? 1);
+}
+
+// A structure's half-extent, treated as a circle for the sim's range and contact tests. Close
+// enough for a square footprint, and it keeps every distance check one `hypot`.
+export function structureRadius(s: Structure): number {
+  return ((BUILDABLES[s.kind]?.footprint ?? 1) * TILE) / 2;
+}
+
 // Why a placement is refused, or null if it is legal. The ghost colours itself from this and
 // server-side admission gates on it, so the two can never disagree about what is placeable.
 export type PlacementError =

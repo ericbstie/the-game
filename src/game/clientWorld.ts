@@ -220,6 +220,11 @@ export class ClientWorld {
     for (const b of delta.builds ?? []) {
       if (!this.build.structures.has(b.id)) insertStructure(this.build, { ...b });
     }
+    for (const h of delta.structHits ?? []) {
+      const structure = this.build.structures.get(h.id);
+      if (structure) structure.hp = h.hp;
+    }
+    for (const id of delta.removals ?? []) removeStructure(this.build, id);
   }
 
   // Rebuild the economy from the reconnect keyframe: the bank and every building the squad has

@@ -8,11 +8,19 @@ import type {
   NestDelta,
   NestSnapshot,
   PlayerId,
+  StructureHit,
   Vec2,
   WaveDelta,
   WorldInit,
 } from "../lobby/protocol";
-import { DANGER_BAND_FRAC } from "./world";
+import {
+  type BuildState,
+  removeStructure,
+  type Structure,
+  structureCenter,
+  structureRadius,
+} from "./build";
+import { DANGER_BAND_FRAC, PLAYER_RADIUS } from "./world";
 
 // The box world's dynamic side (Milestone 3): a pure, server-authoritative enemy simulation.
 // `spawnEnemyState` seeds the initial enemies from the immutable world-init; `stepEnemies`
@@ -114,15 +122,22 @@ function enemySpeed(kind: EnemyKind): number {
   return STATS[kind].speed;
 }
 
+// What an enemy has locked on to. Players and structures share the same aggro radius, but a
+// player always outranks a structure — the squad is the threat, the base is the consolation.
+export type EnemyTarget = { kind: "player"; id: PlayerId } | { kind: "structure"; id: string };
+
 // One live enemy. `sector` is the 45° wedge it was spawned into (inherited from its nest);
-// `target` is the player it is currently chasing (ENGAGED), recomputed each tick.
+// `target` is what it is currently chasing (ENGAGED), held until that target dies or leaves
+// range. `biteMs` counts down to its next bite on a structure — driven by the injected `dtMs`,
+// never a clock, so the sim stays deterministic.
 export interface Enemy {
   id: string;
   kind: EnemyKind;
   pos: Vec2;
   hp: number;
   sector: number;
-  target?: PlayerId;
+  biteMs: number;
+  target?: EnemyTarget;
 }
 
 // A spawner nest: static position/sector, dynamic hp/alive. Killing it silences its sector (#44).
@@ -157,6 +172,9 @@ export interface EnemyEvents {
   deaths: string[];
   nests: NestDelta[];
   wave: WaveDelta | null;
+  // Structures chewed on this tick, and the ids of any that fell. Sparse, mirroring hits/deaths.
+  structHits: StructureHit[];
+  removals: string[];
 }
 
 // Per-player attack admission state (server-side). `seq` guards apply-if-newer; `lastAt`
@@ -268,25 +286,65 @@ export function spawnEnemyState(world: WorldInit, rng: () => number = Math.rando
 
 // Advance the whole sim one tick. Mutates `state` in place (one state per session, stepped at
 // 20 Hz) and returns the same reference plus the events to broadcast. Deterministic in
-// (state, players, attacks, dtMs). Attacks resolve first (so a killed enemy neither moves nor
-// appears in `moves` this tick), then survivors chase.
+// (state, players, attacks, build, dtMs). Attacks resolve first (so a killed enemy neither moves
+// nor appears in `moves` this tick), then survivors chase and chew.
 export function stepEnemies(
   state: EnemyState,
   players: PlayerRef[],
   attacks: Attack[],
   dtMs: number,
+  build: BuildState | null = null,
 ): { state: EnemyState; events: EnemyEvents } {
   const { spawns, wave } = tickWaves(state, dtMs);
   const { hits, deaths, nests } = resolveAttacks(state, attacks);
 
-  const dt = dtMs / 1000;
-  const center = { x: state.arena.width / 2, y: state.arena.height / 2 };
-  const holdEdge = Math.min(state.arena.width, state.arena.height) * HOLD_EDGE_FRAC;
-  for (const enemy of state.enemies.values()) stepEnemy(enemy, players, center, holdEdge, dt);
+  const context: StepContext = {
+    players,
+    build,
+    center: { x: state.arena.width / 2, y: state.arena.height / 2 },
+    holdEdge: Math.min(state.arena.width, state.arena.height) * HOLD_EDGE_FRAC,
+    dtMs,
+    damaged: new Set<string>(),
+  };
+  for (const enemy of state.enemies.values()) stepEnemy(enemy, context);
 
   const moves: EnemyMove[] = [];
   for (const enemy of state.enemies.values()) moves.push([enemy.id, enemy.pos.x, enemy.pos.y]);
-  return { state, events: { moves, spawns, hits, deaths, nests, wave } };
+  return {
+    state,
+    events: { moves, spawns, hits, deaths, nests, wave, ...reapStructures(context) },
+  };
+}
+
+// Everything one enemy's step reads, plus the structures it chewed on. Bundled so `stepEnemy`
+// keeps a single parameter as targeting grows.
+interface StepContext {
+  players: PlayerRef[];
+  build: BuildState | null;
+  center: Vec2;
+  holdEdge: number;
+  dtMs: number;
+  damaged: Set<string>; // structure ids bitten this tick, resolved into hits/removals at the end
+}
+
+// Turn this tick's structure damage into wire events. A structure at 0 HP is simply removed —
+// nothing explodes, and there is no repair (demolish and rebuild is the only restoration).
+function reapStructures(context: StepContext): { structHits: StructureHit[]; removals: string[] } {
+  const structHits: StructureHit[] = [];
+  const removals: string[] = [];
+  const build = context.build;
+  if (!build) return { structHits, removals };
+  for (const id of context.damaged) {
+    const structure = build.structures.get(id);
+    if (!structure) continue;
+    if (structure.hp <= 0) {
+      removeStructure(build, id);
+      removals.push(id);
+    } else {
+      structHits.push({ id, hp: structure.hp });
+    }
+  }
+  return { structHits, removals };
 }
 
 // Advance the wave clock; when it reaches zero, fire the next wave and re-arm it. Real ticks are
@@ -409,28 +467,111 @@ function nearestRayHit(state: EnemyState, attack: Attack): { enemy?: Enemy; nest
 }
 
 // One enemy's pure geometric step — one of three states:
-//   ENGAGED — a player within AGGRO_RADIUS → chase the nearest, never overshooting it.
+//   ENGAGED — a player or structure within AGGRO_RADIUS → chase it, never overshooting; chew on
+//             it once in contact.
 //   MARCH   — un-aggroed and still outside the hold edge → advance toward center, stopping
 //             exactly at the edge (so it never floods the safe center).
 //   HOLD    — un-aggroed and at/inside the hold edge → stop. A wave forms a front line here.
-function stepEnemy(
-  enemy: Enemy,
-  players: PlayerRef[],
-  center: Vec2,
-  holdEdge: number,
-  dt: number,
-): void {
-  const speed = enemySpeed(enemy.kind) * dt;
-  const target = nearestWithin(players, enemy.pos, AGGRO_RADIUS);
-  if (target) {
-    enemy.target = target.id;
-    stepToward(enemy, target.pos, speed); // ENGAGED
+function stepEnemy(enemy: Enemy, context: StepContext): void {
+  enemy.biteMs = Math.max(0, enemy.biteMs - context.dtMs);
+  const speed = enemySpeed(enemy.kind) * (context.dtMs / 1000);
+  const engaged = acquire(enemy, context);
+  if (engaged) {
+    stepToward(enemy, engaged.pos, speed); // ENGAGED
+    if (engaged.structure) bite(enemy, engaged, context);
     return;
   }
-  enemy.target = undefined;
+  const { center, holdEdge } = context;
   const distFromCenter = Math.hypot(center.x - enemy.pos.x, center.y - enemy.pos.y);
   if (distFromCenter <= holdEdge) return; // HOLD
   stepToward(enemy, center, Math.min(speed, distFromCenter - holdEdge)); // MARCH, capped at the edge
+}
+
+interface Engagement {
+  pos: Vec2;
+  radius: number;
+  structure?: Structure;
+}
+
+// Decide what this enemy is chasing, and set `enemy.target` to match.
+//
+// Lock and commit: a held target is kept until it dies or leaves AGGRO_RADIUS — an enemy chasing
+// you will not swap to a closer teammate. The one override is priority: a player in range always
+// beats a structure, so walking into a wave pulls it off your miner.
+function acquire(enemy: Enemy, context: StepContext): Engagement | null {
+  const held = resolveTarget(enemy.target, enemy.pos, context);
+  if (held && enemy.target?.kind === "player") return held;
+
+  const player = nearestWithin(context.players, enemy.pos, AGGRO_RADIUS);
+  if (player) {
+    enemy.target = { kind: "player", id: player.id };
+    return { pos: player.pos, radius: PLAYER_RADIUS };
+  }
+  if (held) return held; // still locked on its structure; no player has shown up to outrank it
+
+  const structure = nearestStructureWithin(context.build, enemy.pos, AGGRO_RADIUS);
+  if (structure) {
+    enemy.target = { kind: "structure", id: structure.id };
+    return { pos: structureCenter(structure), radius: structureRadius(structure), structure };
+  }
+  enemy.target = undefined;
+  return null;
+}
+
+// Where a held target is now, or null if it has died, disconnected, or left the aggro radius —
+// the only two things that break a lock.
+function resolveTarget(
+  target: EnemyTarget | undefined,
+  from: Vec2,
+  context: StepContext,
+): Engagement | null {
+  if (!target) return null;
+  const engagement = (): Engagement | null => {
+    if (target.kind === "player") {
+      const player = context.players.find((p) => p.id === target.id);
+      return player ? { pos: player.pos, radius: PLAYER_RADIUS } : null;
+    }
+    const structure = context.build?.structures.get(target.id);
+    if (!structure) return null;
+    return { pos: structureCenter(structure), radius: structureRadius(structure), structure };
+  };
+  const held = engagement();
+  if (!held) return null;
+  const dist = Math.hypot(held.pos.x - from.x, held.pos.y - from.y);
+  return dist <= AGGRO_RADIUS ? held : null;
+}
+
+// Chew on the structure in front of this enemy, on its own per-kind contact cadence. The sim is
+// the sole writer of structure HP, exactly as it is for enemy and nest HP.
+function bite(enemy: Enemy, engaged: Engagement, context: StepContext): void {
+  const structure = engaged.structure;
+  if (!structure || enemy.biteMs > 0) return;
+  const reach = enemyRadius(enemy.kind) + engaged.radius;
+  if (Math.hypot(engaged.pos.x - enemy.pos.x, engaged.pos.y - enemy.pos.y) > reach) return;
+  structure.hp -= enemyContactDamage(enemy.kind);
+  enemy.biteMs = enemyContactCadenceMs(enemy.kind);
+  context.damaged.add(structure.id);
+}
+
+// The nearest structure within `radius`, or null. An enemy diverts to any structure it detects —
+// this is not limited to ones standing in its path.
+function nearestStructureWithin(
+  build: BuildState | null,
+  from: Vec2,
+  radius: number,
+): Structure | null {
+  if (!build) return null;
+  let best: Structure | null = null;
+  let bestDist = radius;
+  for (const s of build.structures.values()) {
+    const c = structureCenter(s);
+    const d = Math.hypot(c.x - from.x, c.y - from.y);
+    if (d <= bestDist) {
+      bestDist = d;
+      best = s;
+    }
+  }
+  return best;
 }
 
 // Move the enemy toward `to` by up to `maxTravel`, never past it.
@@ -462,6 +603,6 @@ function nearestWithin(players: PlayerRef[], from: Vec2, radius: number): Player
 function addEnemy(state: EnemyState, kind: EnemyKind, pos: Vec2, sector: number): EnemySpawn {
   const id = `e${state.nextId++}`;
   const hp = STATS[kind].hp;
-  state.enemies.set(id, { id, kind, pos: { ...pos }, hp, sector });
+  state.enemies.set(id, { id, kind, pos: { ...pos }, hp, sector, biteMs: 0 });
   return { id, kind, pos: { ...pos }, hp, sector };
 }

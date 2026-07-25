@@ -182,6 +182,12 @@ export interface EnemyHit {
   hp: number;
 }
 
+// A structure's HP after taking damage this tick. Destroyed structures ride `removals` instead.
+export interface StructureHit {
+  id: string;
+  hp: number;
+}
+
 // The squad's shared Metal stockpile. Server-owned and never client-writable; it rides a delta
 // only on the ticks it actually changed.
 export interface Bank {
@@ -200,8 +206,10 @@ export interface MapDelta {
   wave?: WaveDelta;
   bank?: Bank;
   // Buildings are near-static next to enemy motion, so they ride as sparse events rather than a
-  // full per-tick set like `moves`.
+  // full per-tick set like `moves`. `removals` covers a structure destroyed or demolished.
   builds?: StructureSpawn[];
+  structHits?: StructureHit[];
+  removals?: string[];
 }
 
 // A render-model enemy the client assembles each frame (not a wire type). Its position is
