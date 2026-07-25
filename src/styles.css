@@ -311,3 +311,44 @@ button:disabled {
   color: #6d6d7c;
   font-variant-numeric: tabular-nums;
 }
+
+/* The end screen replaces the match entirely: the run is over, so the box goes away and the
+   time is the only thing left to look at. */
+.end {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(90vw, 26rem);
+  padding: 2rem;
+  text-align: center;
+}
+
+.end h1 {
+  font-size: 2.25rem;
+}
+
+.end-detail {
+  color: #9a9aa8;
+}
+
+.end-time {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.end-time-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #6a6a78;
+}
+
+.end-time strong {
+  font-size: 3rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #39d353;
+}

@@ -64,6 +64,17 @@ export function stepPos(pos: Vec2, input: MoveInput, dtMs: number, arena: Arena)
   };
 }
 
+// Is an avatar standing in the escape door? Measured on its centre, which is generous enough at
+// a 98 × 936 door that "I'm clearly in it" and "the check passes" never disagree.
+export function insideExit(pos: Vec2, exit: Exit): boolean {
+  return (
+    pos.x >= exit.x &&
+    pos.x <= exit.x + exit.width &&
+    pos.y >= exit.y &&
+    pos.y <= exit.y + exit.height
+  );
+}
+
 // A circle the avatar cannot stand inside — an enemy, as the owner's client renders it.
 export interface Body {
   pos: Vec2;

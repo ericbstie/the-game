@@ -5,6 +5,7 @@ import {
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
+  type MatchOutcome,
   type PlayerToken,
   PROTOCOL_VERSION,
   type Self,
@@ -23,6 +24,7 @@ export interface LobbyState {
   self?: Self;
   snapshot?: LobbySnapshot;
   world?: ClientWorld; // the live local world once the match starts; mutated in place
+  matchEnd?: { outcome: MatchOutcome; elapsedMs: number }; // set once the match is over
   error?: string;
 }
 
@@ -150,6 +152,7 @@ export class LobbyClient {
       self: undefined,
       snapshot: undefined,
       world: undefined,
+      matchEnd: undefined,
       error: undefined,
     });
   }
@@ -223,6 +226,7 @@ export class LobbyClient {
           self: undefined,
           snapshot: undefined,
           world: undefined,
+          matchEnd: undefined,
           error: "This lobby was opened on another device.",
         });
         return;
@@ -257,6 +261,15 @@ export class LobbyClient {
         return;
       case "game/build-init":
         this.state.world?.initBuild(msg);
+        return;
+      case "game/match-end":
+        // The run is over. The world stays put behind the end screen; nothing is persisted.
+        this.setState({
+          matchEnd: { outcome: msg.outcome, elapsedMs: msg.elapsedMs },
+          snapshot: this.state.snapshot
+            ? { ...this.state.snapshot, phase: msg.outcome }
+            : this.state.snapshot,
+        });
         return;
       case "lobby/player-left":
         this.state.world?.removePeer(msg.id);

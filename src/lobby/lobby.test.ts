@@ -1100,3 +1100,138 @@ describe("M4-T5: demolish returns 20% of the metal", () => {
     ).toBe(true);
   });
 });
+
+// The escape and its teardown, driven through a capture transport so the simultaneity check and
+// the cleared interval can both be asserted deterministically.
+describe("M4-T11: the whole squad in the door ends the match with a time", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+
+  const TICK = 5;
+  const endsFor = (t: Capture, socketId: string) =>
+    t.sent.filter((m) => m.socketId === socketId && m.msg.type === "game/match-end");
+
+  // A started match with `count` seated players, plus a handle on each one's id and socket.
+  function match(count: number): { t: Capture; hub: LobbyHub; ids: string[]; sockets: string[] } {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: TICK });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "P1" }));
+    const created = t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+    const ids = [created.you.id];
+    const sockets = ["s1"];
+    for (let i = 2; i <= count; i++) {
+      const socketId = `s${i}`;
+      hub.handleMessage(
+        socketId,
+        JSON.stringify({ type: "lobby/join", code: created.code, name: `P${i}` }),
+      );
+      const joined = t.sent.find((m) => m.socketId === socketId && m.msg.type === "lobby/joined")
+        ?.msg as Extract<ServerMessage, { type: "lobby/joined" }>;
+      ids.push(joined.you.id);
+      sockets.push(socketId);
+    }
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    return { t, hub, ids, sockets };
+  }
+
+  const worldOf = (t: Capture) =>
+    (
+      t.sent.find((m) => m.msg.type === "game/world-init")?.msg as
+        | Extract<ServerMessage, { type: "game/world-init" }>
+        | undefined
+    )?.init;
+
+  // The centre of the door, wherever this session happened to place it.
+  const doorCentre = (t: Capture) => {
+    const exit = worldOf(t)?.exit as { x: number; y: number; width: number; height: number };
+    return { x: exit.x + exit.width / 2, y: exit.y + exit.height / 2 };
+  };
+  const walkTo = (hub: LobbyHub, socketId: string, pos: { x: number; y: number }, seq = 1) =>
+    hub.handleMessage(socketId, JSON.stringify({ type: "game/pos", pos, seq }));
+  const settle = () => new Promise((r) => setTimeout(r, TICK * 4));
+
+  test("a partial squad in the door does not trigger the escape", async () => {
+    const { t, hub, sockets } = match(2);
+    walkTo(hub, sockets[0], doorCentre(t));
+    walkTo(hub, sockets[1], { x: ARENA.width / 2, y: ARENA.height / 2 }); // still at spawn
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+    hub.dispose();
+  });
+
+  test("everyone in at once triggers exactly one match-end, for every client", async () => {
+    const { t, hub, sockets } = match(2);
+    const door = doorCentre(t);
+    walkTo(hub, sockets[0], door);
+    walkTo(hub, sockets[1], { x: door.x + 10, y: door.y });
+    await settle();
+
+    for (const socketId of sockets) {
+      const ends = endsFor(t, socketId);
+      expect(ends).toHaveLength(1); // exactly one, however many ticks elapsed
+      const end = ends[0].msg as Extract<ServerMessage, { type: "game/match-end" }>;
+      expect(end.outcome).toBe("escaped");
+      expect(end.elapsedMs).toBeGreaterThanOrEqual(0);
+    }
+    hub.dispose();
+  });
+
+  test("a dead player standing in the door does not count — they must respawn and walk back", async () => {
+    const { t, hub, sockets } = match(2);
+    const door = doorCentre(t);
+    walkTo(hub, sockets[0], door);
+    walkTo(hub, sockets[1], { x: door.x + 10, y: door.y });
+    hub.handleMessage(sockets[1], JSON.stringify({ type: "game/health", hp: 0, seq: 1 }));
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+
+    hub.handleMessage(sockets[1], JSON.stringify({ type: "game/health", hp: 100, seq: 2 }));
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(1); // back on their feet in the door
+    hub.dispose();
+  });
+
+  test("an in-grace player does not block the escape", async () => {
+    const { t, hub, sockets } = match(2);
+    const door = doorCentre(t);
+    walkTo(hub, sockets[0], door);
+    walkTo(hub, sockets[1], { x: ARENA.width / 2, y: ARENA.height / 2 }); // nowhere near it
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+
+    hub.handleClose(sockets[1]); // their socket drops; the slot is held in grace
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(1);
+    hub.dispose();
+  });
+
+  test("the sim timer is cleared, so no delta rides after the match ends", async () => {
+    const { t, hub, sockets } = match(1);
+    walkTo(hub, sockets[0], doorCentre(t));
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(1);
+
+    const after = t.sent.length;
+    await new Promise((r) => setTimeout(r, TICK * 10));
+    expect(t.sent.length).toBe(after); // nothing more; the interval really is gone
+    hub.dispose();
+  });
+
+  test("the escape is a simultaneity check, not a per-player check-in", async () => {
+    const { t, hub, sockets } = match(2);
+    const door = doorCentre(t);
+    const centre = { x: ARENA.width / 2, y: ARENA.height / 2 };
+    walkTo(hub, sockets[0], door, 1); // P1 arrives…
+    await settle();
+    walkTo(hub, sockets[0], centre, 2); // …and wanders back out
+    walkTo(hub, sockets[1], door, 1); // P2 arrives only now
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0); // they were never both in at once
+    hub.dispose();
+  });
+});

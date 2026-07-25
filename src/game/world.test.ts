@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   ARENA,
   generateWorld,
+  insideExit,
   PLAYER_RADIUS,
   PLAYER_SPEED,
   pushOutOfBodies,
@@ -162,5 +163,31 @@ describe("pushOutOfBodies (M4-T6: player↔enemy soft-push)", () => {
     const at = { x: 1_000, y: 1_000 };
     pushOutOfBodies(at, R, [body(1_005, 1_000)], ARENA);
     expect(at).toEqual({ x: 1_000, y: 1_000 });
+  });
+});
+
+describe("insideExit (M4-T11: standing in the door)", () => {
+  const exit = { x: 100, y: 200, width: 936, height: 98 };
+
+  test("a point inside the door rect is in", () => {
+    expect(insideExit({ x: 500, y: 250 }, exit)).toBe(true);
+  });
+
+  test("the rect's own corners and edges count as in", () => {
+    expect(insideExit({ x: 100, y: 200 }, exit)).toBe(true);
+    expect(insideExit({ x: 1036, y: 298 }, exit)).toBe(true);
+  });
+
+  test("a point just outside on any side is out", () => {
+    expect(insideExit({ x: 99, y: 250 }, exit)).toBe(false);
+    expect(insideExit({ x: 1037, y: 250 }, exit)).toBe(false);
+    expect(insideExit({ x: 500, y: 199 }, exit)).toBe(false);
+    expect(insideExit({ x: 500, y: 299 }, exit)).toBe(false);
+  });
+
+  test("the door a real world generates is somewhere a player can actually stand", () => {
+    const { exit: placed } = generateWorld(players(1), { rng: () => 0.5 });
+    const centre = { x: placed.x + placed.width / 2, y: placed.y + placed.height / 2 };
+    expect(insideExit(centre, placed)).toBe(true);
   });
 });

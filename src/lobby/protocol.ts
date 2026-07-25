@@ -40,9 +40,16 @@ export interface Self {
   slot: number;
 }
 
+// How a match finished. `escaped` is the win — the whole squad in the door at once.
+export type MatchOutcome = "escaped";
+
+// A Session's lifecycle. It ends in an outcome rather than returning to the lobby: the match
+// reports its time and that is the run.
+export type Phase = "lobby" | "in-game" | MatchOutcome;
+
 export interface LobbySnapshot {
   code: LobbyCode;
-  phase: "lobby" | "in-game";
+  phase: Phase;
   maxPlayers: number;
   host: PlayerId;
   players: PublicPlayer[]; // sorted by slot
@@ -362,6 +369,9 @@ export type GameEnemyInit = Envelope<
 // The economy keyframe (M4): the live shared bank and every placed building, so a (re)joiner
 // rebuilds the base as it actually stands. Ore is derived from `WorldInit.oreSeed`, so it is
 // deliberately absent — this stays bounded by what the squad owns rather than by match length.
+// The match is over (M4). `elapsedMs` since `game/start` is the score — there is no leaderboard
+// and nothing is persisted; the match reports its time and that is the milestone.
+export type GameMatchEnd = Envelope<"game/match-end", { outcome: MatchOutcome; elapsedMs: number }>;
 export type GameBuildInit = Envelope<
   "game/build-init",
   { tick: number; bank: Bank; power: Power; structures: StructureSpawn[] }
@@ -381,7 +391,8 @@ export type ServerMessage =
   | GameMapDelta
   | GamePeerHealth
   | GameEnemyInit
-  | GameBuildInit;
+  | GameBuildInit
+  | GameMatchEnd;
 
 // Hand-rolled inbound narrowing (no schema dep, per spec). Untrusted client input is
 // never assumed valid: every field is checked before the message is trusted.

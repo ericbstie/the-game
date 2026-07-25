@@ -28,16 +28,19 @@ import {
   spawnEnemyState,
   stepEnemies,
 } from "../game/enemies";
-import { generateWorld, PLAYER_MAX_HP } from "../game/world";
+import { generateWorld, insideExit, PLAYER_MAX_HP } from "../game/world";
 import { generateCode, normalizeCode } from "./code";
 import {
   type BuildableKind,
+  type Exit,
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
   MAX_PLAYERS,
   type MapDelta,
+  type MatchOutcome,
   NAME_MAX,
+  type Phase,
   type PlayerId,
   type PlayerToken,
   type Power,
@@ -82,7 +85,7 @@ interface PlayerRecord {
 interface SessionRecord {
   code: LobbyCode;
   maxPlayers: number;
-  phase: "lobby" | "in-game";
+  phase: Phase;
   host: PlayerId;
   rev: number;
   players: Map<PlayerId, PlayerRecord>;
@@ -104,6 +107,7 @@ interface SessionRecord {
   buildGuards: Map<PlayerId, BuildGuard>; // per-player placement cadence/seq state
   demolishGuards: Map<PlayerId, DemolishGuard>; // per-player demolish cadence/seq state
   pendingRemovals: string[]; // demolished ids awaiting broadcast, merged with the sim's own
+  startedAt?: number; // wall clock at game/start; elapsed time from it is the match's score
 }
 
 // Server-authoritative hub over every Session. Owns the whole
@@ -380,9 +384,10 @@ export class LobbyHub {
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
     if (session.host !== player.id) return; // only the host starts the match
-    if (session.phase === "in-game") return; // already started — idempotent
+    if (session.phase !== "lobby") return; // already started, or already over
 
     session.phase = "in-game";
+    session.startedAt = Date.now(); // the stopwatch: elapsed time from here is the score
     session.worldInit = generateWorld(
       [...session.players.values()].map((p) => ({ id: p.id, slot: p.slot, name: p.name })),
     );
@@ -451,6 +456,26 @@ export class LobbyHub {
       session.pendingBuilds = [];
     }
     this.broadcast(session, { type: "game/map-delta", ...delta });
+
+    if (session.worldInit && squadEscaped(session, session.worldInit.exit)) {
+      this.endMatch(session, "escaped");
+    }
+  }
+
+  // End the match once and tear the tick down. The phase guard is what makes it exactly once:
+  // the escape predicate is evaluated every tick, and the tick that fires it is the last one.
+  private endMatch(session: SessionRecord, outcome: MatchOutcome): void {
+    if (session.phase !== "in-game") return;
+    session.phase = outcome;
+    if (session.simTimer) {
+      clearInterval(session.simTimer);
+      session.simTimer = undefined;
+    }
+    this.broadcast(session, {
+      type: "game/match-end",
+      outcome,
+      elapsedMs: Date.now() - (session.startedAt ?? Date.now()),
+    });
   }
 
   // A reported attack: admit it (cadence + loose range + seq, all server-side) and queue the
@@ -708,6 +733,22 @@ export class LobbyHub {
   private error(socketId: string, code: LobbyErrorCode): void {
     this.transport.send(socketId, { type: "lobby/error", code });
   }
+}
+
+// Has the whole squad escaped? A simultaneity check, not a per-player check-in: every connected
+// player must be alive AND standing in the door in this same instant.
+//
+// A downed player blocks it — they have to respawn and walk back, which is what "no one left
+// behind" means. A disconnected (in-grace) player does not block: the squad cannot be held
+// hostage by someone else's dropped socket.
+function squadEscaped(session: SessionRecord, exit: Exit): boolean {
+  const connected = [...session.players.values()].filter((p) => p.presence.status === "connected");
+  if (connected.length === 0) return false; // an empty box escapes nothing
+  return connected.every((p) => {
+    if ((session.health.get(p.id)?.hp ?? PLAYER_MAX_HP) <= 0) return false;
+    const pos = session.positions.get(p.id)?.pos;
+    return pos !== undefined && insideExit(pos, exit);
+  });
 }
 
 // The players fed to the enemy sim: everyone with a known position, minus the dead. A player who
