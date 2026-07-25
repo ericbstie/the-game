@@ -1,9 +1,17 @@
 import {
+  admitBuild,
   admitMine,
+  type BuildGuard,
+  type BuildState,
+  freshBuildGuard,
+  freshBuildState,
   freshMineGuard,
   generateOre,
   type MineGuard,
   type OreGrid,
+  placeStructure,
+  snapshotStructures,
+  stepBuild,
 } from "../game/build";
 import {
   type Attack,
@@ -19,7 +27,7 @@ import {
 import { generateWorld, PLAYER_MAX_HP } from "../game/world";
 import { generateCode, normalizeCode } from "./code";
 import {
-  type Bank,
+  type BuildableKind,
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
@@ -32,6 +40,7 @@ import {
   type PublicPlayer,
   parseClientMessage,
   type ServerMessage,
+  type StructureSpawn,
   type Tile,
   type Vec2,
   type WorldInit,
@@ -49,6 +58,7 @@ export interface LobbyConfig {
   graceMs?: number; // slot held + greyed this long after a drop; default 45s
   tickMs?: number; // enemy-sim tick period; default 50ms (~20 Hz). Overridable for fast tests.
   firstWaveMs?: number; // override the initial wave countdown (default: the sim's 30s). Test knob.
+  startingMetal?: number; // seed the shared bank at match start (default 0). Test knob.
 }
 
 const DEFAULT_GRACE_MS = 45_000;
@@ -81,9 +91,11 @@ interface SessionRecord {
   attackGuards: Map<PlayerId, AttackGuard>; // per-player cadence/seq admission state
   pendingAttacks: Attack[]; // admitted attacks awaiting the next tick's resolution
   ore?: OreGrid; // derived from worldInit.oreSeed at start; identical to every client's copy
-  bank: Bank; // the squad's shared Metal stockpile — written only here, never by a client
-  bankDirty: boolean; // the bank changed since the last delta, so the next one carries it
+  build?: BuildState; // the squad's economy — bank and buildings, written only by this hub
+  sentMetal: number; // the last whole-Metal figure broadcast; the bank rides only when it moves
+  pendingBuilds: StructureSpawn[]; // placements admitted since the last tick, awaiting broadcast
   mineGuards: Map<PlayerId, MineGuard>; // per-player hand-mine cadence/seq/accrual state
+  buildGuards: Map<PlayerId, BuildGuard>; // per-player placement cadence/seq state
 }
 
 // Server-authoritative hub over every Session. Owns the whole
@@ -96,6 +108,7 @@ export class LobbyHub {
   private readonly graceMs: number;
   private readonly tickMs: number;
   private readonly firstWaveMs?: number;
+  private readonly startingMetal: number;
   private disposed = false;
 
   constructor(
@@ -105,6 +118,7 @@ export class LobbyHub {
     this.graceMs = config.graceMs ?? DEFAULT_GRACE_MS;
     this.tickMs = config.tickMs ?? DEFAULT_TICK_MS;
     this.firstWaveMs = config.firstWaveMs;
+    this.startingMetal = config.startingMetal ?? 0;
   }
 
   handleMessage(socketId: string, raw: string): void {
@@ -137,6 +151,9 @@ export class LobbyHub {
         return;
       case "game/mine":
         this.gameMine(socketId, msg.tile, msg.seq);
+        return;
+      case "game/build":
+        this.gameBuild(socketId, msg.kind, msg.tile, msg.seq);
         return;
     }
   }
@@ -209,9 +226,10 @@ export class LobbyHub {
       tickNo: 0,
       attackGuards: new Map(),
       pendingAttacks: [],
-      bank: { metal: 0 },
-      bankDirty: false,
+      sentMetal: 0,
+      pendingBuilds: [],
       mineGuards: new Map(),
+      buildGuards: new Map(),
     };
     this.sessions.set(code, session);
     this.sockets.set(socketId, { code, playerId: player.id });
@@ -359,6 +377,9 @@ export class LobbyHub {
     // The ore never rides the wire — the server expands the same seed every client does, so
     // its admission checks read a grid byte-identical to the one under the player's cursor.
     session.ore = generateOre(session.worldInit.arena, session.worldInit.oreSeed);
+    session.build = freshBuildState(session.worldInit.arena);
+    session.build.bank.metal = this.startingMetal;
+    session.sentMetal = this.startingMetal;
 
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
     session.sim = spawnEnemyState(session.worldInit);
@@ -383,10 +404,19 @@ export class LobbyHub {
     if (events.deaths.length > 0) delta.deaths = events.deaths;
     if (events.nests.length > 0) delta.nests = events.nests;
     if (events.wave) delta.wave = events.wave;
-    // The bank is near-static next to enemy motion, so it rides only the ticks it changed on.
-    if (session.bankDirty) {
-      delta.bank = { metal: session.bank.metal };
-      session.bankDirty = false;
+    if (session.build) {
+      stepBuild(session.build, this.tickMs); // miners trickle into the bank
+      // The bank accrues fractionally but is spent and shown in whole Metal, so it rides only
+      // when the whole figure actually moves — a sparse event, not a per-tick field.
+      const metal = Math.floor(session.build.bank.metal);
+      if (metal !== session.sentMetal) {
+        session.sentMetal = metal;
+        delta.bank = { metal };
+      }
+    }
+    if (session.pendingBuilds.length > 0) {
+      delta.builds = session.pendingBuilds;
+      session.pendingBuilds = [];
     }
     this.broadcast(session, { type: "game/map-delta", ...delta });
   }
@@ -419,18 +449,47 @@ export class LobbyHub {
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    if (!session.ore) return; // no economy before the match starts
+    if (!session.ore || !session.build) return; // no economy before the match starts
     let guard = session.mineGuards.get(player.id);
     if (!guard) {
       guard = freshMineGuard();
       session.mineGuards.set(player.id, guard);
     }
     const lastPos = session.positions.get(player.id)?.pos ?? null;
-    const granted = admitMine(guard, { tile, seq }, lastPos, session.ore, Date.now());
-    if (granted > 0) {
-      session.bank.metal += granted;
-      session.bankDirty = true;
+    session.build.bank.metal += admitMine(guard, { tile, seq }, lastPos, session.ore, Date.now());
+  }
+
+  // A reported placement: re-run the same rule the client's ghost used, then debit the bank and
+  // mint the structure here. The client proposes; the server places.
+  private gameBuild(socketId: string, kind: BuildableKind, tile: Tile, seq: number): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (!session.ore || !session.build) return; // no building before the match starts
+    let guard = session.buildGuards.get(player.id);
+    if (!guard) {
+      guard = freshBuildGuard();
+      session.buildGuards.set(player.id, guard);
     }
+    const lastPos = session.positions.get(player.id)?.pos ?? null;
+    const spec = admitBuild(
+      guard,
+      { kind, tile, seq },
+      lastPos,
+      session.ore,
+      session.build,
+      Date.now(),
+    );
+    if (!spec) return;
+    const placed = placeStructure(session.build, kind, tile, spec);
+    session.pendingBuilds.push({
+      id: placed.id,
+      kind: placed.kind,
+      tile: placed.tile,
+      hp: placed.hp,
+    });
   }
 
   // Store and relay a client's reported HP (it owns its health; the server never computes it),
@@ -489,12 +548,15 @@ export class LobbyHub {
     if (session.sim) {
       const snap = snapshotEnemies(session.sim);
       this.transport.send(socketId, { type: "game/enemy-init", tick: session.tickNo, ...snap });
-      // The economy keyframe. Ore is derived from the seed, so only the bank needs rebuilding —
-      // which keeps this bounded by what the squad owns, not by how long the match has run.
+    }
+    if (session.build) {
+      // The economy keyframe. Ore is derived from the seed, so only the bank and the placed
+      // buildings need rebuilding — bounded by what the squad owns, not by how long it has played.
       this.transport.send(socketId, {
         type: "game/build-init",
         tick: session.tickNo,
-        bank: { metal: session.bank.metal },
+        bank: { metal: Math.floor(session.build.bank.metal) },
+        structures: snapshotStructures(session.build),
       });
     }
     for (const [id, sample] of session.health) {
@@ -536,6 +598,7 @@ export class LobbyHub {
     session.health.delete(player.id);
     session.attackGuards.delete(player.id);
     session.mineGuards.delete(player.id);
+    session.buildGuards.delete(player.id);
     const timer = session.graceTimers.get(player.id);
     if (timer) {
       clearTimeout(timer);

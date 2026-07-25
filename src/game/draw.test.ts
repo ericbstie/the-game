@@ -43,6 +43,7 @@ const world: WorldSnapshot = {
   ],
   exit: { x: 0, y: 1100, width: 98, height: 936 },
   ore: new Map(),
+  structures: [],
 };
 
 const viewport: Viewport = { width: 800, height: 600 };

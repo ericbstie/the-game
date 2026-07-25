@@ -1,5 +1,12 @@
-import type { EnemyKind, OreKind, PlayerId, WorldSnapshot } from "../lobby/protocol";
-import { oreAt, TILE, tileOf } from "./build";
+import type {
+  BuildableKind,
+  EnemyKind,
+  OreKind,
+  PlayerId,
+  Tile,
+  WorldSnapshot,
+} from "../lobby/protocol";
+import { BUILDABLES, footprintCenter, oreAt, TILE, tileOf } from "./build";
 import { type Camera, isVisible, type Viewport } from "./camera";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
@@ -9,10 +16,19 @@ import { type Camera, isVisible, type Viewport } from "./camera";
 // React, no DOM, no state — it renders identically in the browser and under a spy context.
 // M2 is basic shapes only; sprites are Milestone 5.
 
+// The tile-snapped preview under the cursor while a buildable is selected. `valid` drives the
+// colour, so the player learns a placement is refused before spending the click.
+export interface BuildGhost {
+  kind: BuildableKind;
+  tile: Tile;
+  valid: boolean;
+}
+
 export interface DrawOptions {
   camera: Camera;
   viewport: Viewport;
   selfId?: PlayerId; // ringed so you can find yourself
+  ghost?: BuildGhost;
 }
 
 // One stable colour per slot (1..6), so a player keeps their colour across the match.
@@ -34,6 +50,19 @@ const ENEMY_COLORS: Record<EnemyKind, string> = { grunt: "#e8643c", elite: "#a01
 // Ore reads as ground texture, not as an entity: muted enough to sit under everything drawn on
 // top of it, distinct enough to spot a patch while running past.
 const ORE_COLORS: Record<OreKind, string> = { metal: "#5b6472", power: "#3f7d8c" };
+
+// M4 ships basic shapes; sprites are M5. Each buildable gets a flat fill and a lighter edge so a
+// footprint reads as a placed object rather than as more ground.
+const BUILD_COLORS: Record<BuildableKind, string> = {
+  miner: "#c9973f",
+  wall: "#6b7280",
+  turret: "#4f8cff",
+  generator: "#3fbfa0",
+};
+const BUILD_EDGE = "#1a1a22";
+const GHOST_OK = "#39d353";
+const GHOST_BAD = "#ff5d5d";
+const GHOST_ALPHA = 0.45;
 
 export function drawWorld(
   ctx: CanvasRenderingContext2D,
@@ -63,6 +92,21 @@ export function drawWorld(
     fillCircle(ctx, n.pos.x, n.pos.y, n.radius);
   }
 
+  // Structures sit under the enemies chewing on them and over the ore they stand on.
+  for (const s of world.structures) {
+    const spec = BUILDABLES[s.kind];
+    if (!spec) continue;
+    const side = spec.footprint * TILE;
+    if (!isVisible(footprintCenter(s.tile, spec.footprint), side / 2, camera, viewport)) continue;
+    const x = s.tile.tx * TILE;
+    const y = s.tile.ty * TILE;
+    ctx.fillStyle = BUILD_COLORS[s.kind];
+    ctx.fillRect(x, y, side, side);
+    ctx.strokeStyle = BUILD_EDGE;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 1, y + 1, side - 2, side - 2);
+  }
+
   for (const e of world.enemies) {
     if (!isVisible(e.pos, e.radius, camera, viewport)) continue;
     ctx.fillStyle = ENEMY_COLORS[e.kind];
@@ -85,6 +129,20 @@ export function drawWorld(
     ctx.textAlign = "center";
     ctx.fillText(a.name, a.pos.x, a.pos.y - a.radius - 5);
     ctx.globalAlpha = 1;
+  }
+
+  // The ghost paints last so it reads on top of whatever it would replace.
+  const ghost = options.ghost;
+  const ghostSpec = ghost && BUILDABLES[ghost.kind];
+  if (ghost && ghostSpec) {
+    const side = ghostSpec.footprint * TILE;
+    ctx.globalAlpha = GHOST_ALPHA;
+    ctx.fillStyle = ghost.valid ? GHOST_OK : GHOST_BAD;
+    ctx.fillRect(ghost.tile.tx * TILE, ghost.tile.ty * TILE, side, side);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = ghost.valid ? GHOST_OK : GHOST_BAD;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(ghost.tile.tx * TILE, ghost.tile.ty * TILE, side, side);
   }
 }
 

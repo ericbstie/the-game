@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import type { LobbyState } from "../lobby/client";
-import type { Arena, MoveInput, Tile, Vec2 } from "../lobby/protocol";
-import { MINE_CADENCE_MS, resolveHarvest, tileOf } from "./build";
+import type { Arena, BuildableKind, MoveInput, Tile, Vec2 } from "../lobby/protocol";
+import {
+  BUILD_SLOTS,
+  BUILDABLES,
+  MINE_CADENCE_MS,
+  placementError,
+  resolveHarvest,
+  tileOf,
+} from "./build";
 import { type Camera, computeCamera } from "./camera";
 import { RESPAWN_DELAY_MS } from "./clientWorld";
-import { drawWorld } from "./draw";
-import { aimDir, keyToDirection, movesEqual, NO_MOVE } from "./input";
+import { type BuildGhost, drawWorld } from "./draw";
+import { aimDir, keyToBuildSlot, keyToDirection, movesEqual, NO_MOVE } from "./input";
 import { PLAYER_MAX_HP } from "./world";
 
 const POS_SEND_MS = 50; // ~20 Hz position stream, independent of the render frame rate
@@ -18,6 +25,7 @@ interface GameScreenProps {
   onAttack: (pos: Vec2, dir: Vec2) => void;
   onHealth: (hp: number) => void;
   onMine: (tile: Tile) => void;
+  onBuild: (kind: BuildableKind, tile: Tile) => void;
 }
 
 // The in-match screen: a fullscreen camera that follows your Avatar through the giant box.
@@ -27,7 +35,15 @@ interface GameScreenProps {
 // crisp on HiDPI). The owner's position streams out at a fixed ~20 Hz. Refs bridge React's
 // render into the loop so a world swapped on reconnect and a changed callback are picked up
 // without restarting it.
-export function GameScreen({ state, onLeave, onPos, onAttack, onHealth, onMine }: GameScreenProps) {
+export function GameScreen({
+  state,
+  onLeave,
+  onPos,
+  onAttack,
+  onHealth,
+  onMine,
+  onBuild,
+}: GameScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const heldRef = useRef<MoveInput>(NO_MOVE);
   const worldRef = useRef(state.world);
@@ -36,7 +52,10 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth, onMine }
   const onAttackRef = useRef(onAttack);
   const onHealthRef = useRef(onHealth);
   const onMineRef = useRef(onMine);
+  const onBuildRef = useRef(onBuild);
   const harvestingRef = useRef(false); // right-click held: harvest whatever is under the cursor
+  const [selected, setSelected] = useState<BuildableKind | null>(null);
+  const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
   const [metal, setMetal] = useState(0); // the shared bank, mirrored into React for the HUD
   const [respawnIn, setRespawnIn] = useState(0); // seconds until respawn, shown while downed
@@ -52,8 +71,10 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth, onMine }
   onAttackRef.current = onAttack;
   onHealthRef.current = onHealth;
   onMineRef.current = onMine;
+  onBuildRef.current = onBuild;
+  selectedRef.current = selected;
 
-  // Keyboard → held MoveInput. It drives the local self-sim; nothing is sent per key.
+  // Keyboard → held MoveInput, plus the build bar's 1–4 and Escape. Nothing is sent per key.
   useEffect(() => {
     const setHeld = (direction: keyof MoveInput, down: boolean) => {
       const next = { ...heldRef.current, [direction]: down };
@@ -61,6 +82,11 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth, onMine }
       heldRef.current = next;
     };
     const onKeyDown = (e: KeyboardEvent) => {
+      const slot = keyToBuildSlot(e.key, BUILD_SLOTS.length);
+      if (slot !== null) {
+        setSelected(slot === "cancel" ? null : BUILD_SLOTS[slot]);
+        return;
+      }
       const direction = keyToDirection(e.key);
       if (!direction) return;
       e.preventDefault(); // arrow keys otherwise scroll the page
@@ -118,7 +144,24 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth, onMine }
           const camera = computeCamera(self, viewport, world.arena);
           aimRef.current = { camera, self }; // feed the attack handlers the live origin + camera
           ctx.setTransform(dpr, 0, 0, dpr, -camera.x * dpr, -camera.y * dpr);
-          drawWorld(ctx, snapshot, { selfId: selfIdRef.current, camera, viewport });
+          const kind = selectedRef.current;
+          const ghost: BuildGhost | undefined = kind
+            ? {
+                kind,
+                tile: cursorTile(pointerRef.current, camera),
+                // The ghost runs the very rule the server will: same registry, same ore, same
+                // mirrored build state — so green never turns into a rejected placement.
+                valid:
+                  placementError(
+                    kind,
+                    cursorTile(pointerRef.current, camera),
+                    world.ore,
+                    world.build,
+                    self,
+                  ) === null,
+              }
+            : undefined;
+          drawWorld(ctx, snapshot, { selfId: selfIdRef.current, camera, viewport, ghost });
         }
       }
       raf = requestAnimationFrame(frame);
@@ -199,7 +242,11 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth, onMine }
     trackPointer(e);
     if (e.button === 0) {
       const { camera, self } = aimRef.current;
-      onAttackRef.current({ ...self }, aimDir(pointerRef.current, self, camera)); // left-click shoots
+      const kind = selectedRef.current;
+      // Left-click is one button with two jobs: place the selected buildable, or shoot when
+      // nothing is selected.
+      if (kind) onBuildRef.current(kind, cursorTile(pointerRef.current, camera));
+      else onAttackRef.current({ ...self }, aimDir(pointerRef.current, self, camera));
     } else if (e.button === 2) {
       harvestingRef.current = true; // right-click harvests for as long as it is held
     }
@@ -243,9 +290,25 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth, onMine }
       <div className="banks" role="status" aria-label="Resources">
         <span className="bank metal">Metal {metal}</span>
       </div>
+      <div className="build-bar" role="toolbar" aria-label="Buildables">
+        {BUILD_SLOTS.map((kind, i) => (
+          <button
+            key={kind}
+            type="button"
+            className="build-slot"
+            aria-pressed={selected === kind}
+            // A kind with no registry entry has not shipped: the slot shows, but is not usable.
+            disabled={!BUILDABLES[kind]}
+            onClick={() => setSelected(selected === kind ? null : kind)}
+          >
+            <span className="build-key">{i + 1}</span>
+            <span className="build-name">{kind}</span>
+          </button>
+        ))}
+      </div>
       <p className="hint">
         Move with WASD or the arrow keys. Left-click to shoot, hold right-click on metal ore to
-        mine.
+        mine. Press 1–4 to pick a buildable and left-click to place it; Escape cancels.
       </p>
     </main>
   );

@@ -263,3 +263,47 @@ button:disabled {
 .banks .metal {
   color: #b9c2d0;
 }
+
+/* The build bar sits bottom-centre, between the health bar and the banks. It is the only
+   overlay that takes clicks — everything else in the HUD is read-only. */
+.build-bar {
+  position: absolute;
+  bottom: 2.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  gap: 0.4rem;
+}
+
+.build-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  width: 5.5rem;
+  padding: 0.35rem 0.25rem;
+  border: 1px solid #2a2a35;
+  border-radius: 6px;
+  background: #14141ce6;
+  color: #9a9aa8;
+  font-size: 0.7rem;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+
+.build-slot:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.build-slot[aria-pressed="true"] {
+  border-color: #4f8cff;
+  color: #e8e8ee;
+  background: #1c2436;
+}
+
+.build-slot .build-key {
+  color: #6d6d7c;
+  font-variant-numeric: tabular-nums;
+}

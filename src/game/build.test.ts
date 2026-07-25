@@ -1,14 +1,28 @@
 import { describe, expect, test } from "bun:test";
 import type { Tile } from "../lobby/protocol";
 import {
+  admitBuild,
   admitMine,
+  BUILD_CADENCE_MS,
+  BUILD_SLOTS,
+  BUILDABLES,
+  type BuildableSpec,
+  footprintCenter,
+  footprintTiles,
+  freshBuildGuard,
+  freshBuildState,
   freshMineGuard,
   generateOre,
   HAND_MINE_RATE,
+  INTERACT_REACH,
   MINE_CADENCE_MS,
-  MINE_REACH,
   MINE_WINDOW_MAX_MS,
+  MINER_TRICKLE,
   oreAt,
+  placementError,
+  placeStructure,
+  removeStructure,
+  stepBuild,
   TILE,
   tileKey,
   tileOf,
@@ -161,7 +175,7 @@ describe("admitMine", () => {
 
   test("rejects a tile beyond the server's loose reach", () => {
     const guard = freshMineGuard();
-    const far = { x: tileOrigin(metal).x + MINE_REACH + 100, y: tileOrigin(metal).y };
+    const far = { x: tileOrigin(metal).x + INTERACT_REACH + 100, y: tileOrigin(metal).y };
     expect(admitMine(guard, { tile: metal, seq: 1 }, far, grid, 1_000)).toBe(0);
   });
 
@@ -198,5 +212,232 @@ describe("admitMine", () => {
     admitMine(guard, { tile: metal, seq: 1 }, atTile(metal), grid, 1_000);
     const afterPause = admitMine(guard, { tile: metal, seq: 2 }, atTile(metal), grid, 60_000);
     expect(afterPause).toBeCloseTo((MINE_WINDOW_MAX_MS / 1000) * HAND_MINE_RATE, 6);
+  });
+});
+
+describe("the buildable registry", () => {
+  test("the bar has four slots in a fixed order, so 1–4 always mean the same thing", () => {
+    expect(BUILD_SLOTS).toEqual(["miner", "wall", "turret", "generator"]);
+  });
+
+  test("the miner is a 2×2 that only sits on metal ore", () => {
+    expect(BUILDABLES.miner).toEqual({ footprint: 2, cost: 50, hp: 200, requires: "metal" });
+  });
+
+  test("footprintTiles covers exactly the square from the top-left tile", () => {
+    expect(footprintTiles({ tx: 3, ty: 4 }, 2)).toEqual([
+      { tx: 3, ty: 4 },
+      { tx: 4, ty: 4 },
+      { tx: 3, ty: 5 },
+      { tx: 4, ty: 5 },
+    ]);
+    expect(footprintTiles({ tx: 0, ty: 0 }, 5)).toHaveLength(25);
+  });
+});
+
+describe("placementError — the one rule the ghost and the server both read", () => {
+  const ore = generateOre(ARENA, SEED);
+  const metalTile = (() => {
+    for (const [key, kind] of ore) if (kind === "metal") return untileKey(key);
+    throw new Error("no metal ore");
+  })();
+  const powerTile = (() => {
+    for (const [key, kind] of ore) if (kind === "power") return untileKey(key);
+    throw new Error("no power ore");
+  })();
+  const bare = { tx: 0, ty: 0 };
+  const rich = (metal: number) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = metal;
+    return build;
+  };
+  const near = (tile: Tile) => footprintCenter(tile, 2);
+
+  test("a funded miner on metal ore within reach is placeable", () => {
+    expect(placementError("miner", metalTile, ore, rich(50), near(metalTile))).toBeNull();
+  });
+
+  test("an empty bank blocks it", () => {
+    expect(placementError("miner", metalTile, ore, rich(49), near(metalTile))).toBe("unaffordable");
+  });
+
+  test("bare ground and power ore both fail the miner's ore requirement", () => {
+    expect(placementError("miner", bare, ore, rich(50), near(bare))).toBe("wrong-ore");
+    expect(placementError("miner", powerTile, ore, rich(50), near(powerTile))).toBe("wrong-ore");
+  });
+
+  test("any one tile under the footprint being metal ore is enough", () => {
+    // Anchor the 2×2 up-left of a metal tile: only its bottom-right corner is on the ore.
+    const straddle = { tx: metalTile.tx - 1, ty: metalTile.ty - 1 };
+    expect(placementError("miner", straddle, ore, rich(50), near(straddle))).toBeNull();
+  });
+
+  test("an occupied footprint is blocked, and freeing it makes the same tile legal again", () => {
+    const build = rich(500);
+    const placed = placeStructure(build, "miner", metalTile, BUILDABLES.miner as BuildableSpec);
+    expect(placementError("miner", metalTile, ore, build, near(metalTile))).toBe("blocked");
+    // Overlapping by one corner still collides — occupancy is per tile, not per anchor.
+    const overlap = { tx: metalTile.tx + 1, ty: metalTile.ty + 1 };
+    expect(placementError("miner", overlap, ore, build, near(overlap))).toBe("blocked");
+    removeStructure(build, placed.id);
+    expect(placementError("miner", metalTile, ore, build, near(metalTile))).toBeNull();
+  });
+
+  test("a footprint hanging off the arena edge is refused", () => {
+    const maxTile = ARENA.width / TILE - 1;
+    const edge = { tx: maxTile, ty: maxTile }; // a 2×2 anchored here runs one tile past the wall
+    expect(placementError("miner", edge, ore, rich(50), near(edge))).toBe("out-of-bounds");
+  });
+
+  test("a tile beyond the loose reach is refused", () => {
+    const far = { x: footprintCenter(metalTile, 2).x + INTERACT_REACH + 1, y: 0 };
+    expect(placementError("miner", metalTile, ore, rich(50), far)).toBe("out-of-reach");
+  });
+
+  test("an unshipped buildable never places, so its bar slot is inert", () => {
+    expect(placementError("wall", bare, ore, rich(10_000), near(bare))).toBe("unknown-buildable");
+  });
+});
+
+describe("placing and stepping structures", () => {
+  const ore = generateOre(ARENA, SEED);
+  const metalTile = (() => {
+    for (const [key, kind] of ore) if (kind === "metal") return untileKey(key);
+    throw new Error("no metal ore");
+  })();
+  const spec = BUILDABLES.miner as BuildableSpec;
+
+  test("placing debits the bank exactly once and seeds the structure at full HP", () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 130;
+    const miner = placeStructure(build, "miner", metalTile, spec);
+    expect(build.bank.metal).toBe(80);
+    expect(miner.hp).toBe(spec.hp);
+    expect(build.structures.size).toBe(1);
+    expect(build.occupancy.size).toBe(4); // a 2×2 claims four tiles
+  });
+
+  test("a miner trickles Metal into the bank across ticks, and two miners trickle twice as fast", () => {
+    const one = freshBuildState(ARENA);
+    one.bank.metal = 50;
+    placeStructure(one, "miner", metalTile, spec);
+    for (let i = 0; i < 20; i++) stepBuild(one, 50); // one second at 20 Hz
+    expect(one.bank.metal).toBeCloseTo(MINER_TRICKLE, 6);
+
+    const two = freshBuildState(ARENA);
+    two.bank.metal = 100;
+    placeStructure(two, "miner", metalTile, spec);
+    placeStructure(two, "miner", { tx: metalTile.tx + 2, ty: metalTile.ty }, spec);
+    for (let i = 0; i < 20; i++) stepBuild(two, 50);
+    expect(two.bank.metal).toBeCloseTo(2 * MINER_TRICKLE, 6);
+  });
+
+  test("an empty grid banks nothing", () => {
+    const build = freshBuildState(ARENA);
+    stepBuild(build, 1_000);
+    expect(build.bank.metal).toBe(0);
+  });
+
+  test("a destroyed miner stops trickling", () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 50;
+    const miner = placeStructure(build, "miner", metalTile, spec);
+    removeStructure(build, miner.id);
+    stepBuild(build, 1_000);
+    expect(build.bank.metal).toBe(0);
+  });
+});
+
+describe("admitBuild", () => {
+  const ore = generateOre(ARENA, SEED);
+  const metalTile = (() => {
+    for (const [key, kind] of ore) if (kind === "metal") return untileKey(key);
+    throw new Error("no metal ore");
+  })();
+  const funded = () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 1_000;
+    return build;
+  };
+  const from = footprintCenter(metalTile, 2);
+
+  test("admits a legal placement and returns its spec", () => {
+    const guard = freshBuildGuard();
+    const spec = admitBuild(
+      guard,
+      { kind: "miner", tile: metalTile, seq: 1 },
+      from,
+      ore,
+      funded(),
+      0,
+    );
+    expect(spec).toEqual(BUILDABLES.miner as BuildableSpec);
+  });
+
+  test("drops a stale or duplicate seq", () => {
+    const guard = freshBuildGuard();
+    const build = funded();
+    admitBuild(guard, { kind: "miner", tile: metalTile, seq: 5 }, from, ore, build, 0);
+    const replay = admitBuild(
+      guard,
+      { kind: "miner", tile: metalTile, seq: 5 },
+      from,
+      ore,
+      build,
+      10_000,
+    );
+    expect(replay).toBeNull();
+  });
+
+  test("rate-limits a too-soon second placement", () => {
+    const guard = freshBuildGuard();
+    const build = funded();
+    admitBuild(guard, { kind: "miner", tile: metalTile, seq: 1 }, from, ore, build, 1_000);
+    const soon = { tx: metalTile.tx + 5, ty: metalTile.ty };
+    expect(
+      admitBuild(
+        guard,
+        { kind: "miner", tile: soon, seq: 2 },
+        footprintCenter(soon, 2),
+        ore,
+        build,
+        1_000 + BUILD_CADENCE_MS - 1,
+      ),
+    ).toBeNull();
+  });
+
+  test("refuses unaffordable, wrong-ore and out-of-reach placements", () => {
+    const broke = freshBuildState(ARENA);
+    expect(
+      admitBuild(
+        freshBuildGuard(),
+        { kind: "miner", tile: metalTile, seq: 1 },
+        from,
+        ore,
+        broke,
+        0,
+      ),
+    ).toBeNull();
+    const bare = { tx: 0, ty: 0 };
+    expect(
+      admitBuild(
+        freshBuildGuard(),
+        { kind: "miner", tile: bare, seq: 1 },
+        footprintCenter(bare, 2),
+        ore,
+        funded(),
+        0,
+      ),
+    ).toBeNull();
+    expect(
+      admitBuild(
+        freshBuildGuard(),
+        { kind: "miner", tile: metalTile, seq: 1 },
+        { x: from.x + INTERACT_REACH + 1, y: from.y },
+        ore,
+        funded(),
+        0,
+      ),
+    ).toBeNull();
   });
 });

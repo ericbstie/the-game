@@ -11,11 +11,19 @@ import type {
   PlayerId,
   RenderedEnemy,
   RenderedNest,
+  StructureSpawn,
   Vec2,
   WorldInit,
   WorldSnapshot,
 } from "../lobby/protocol";
-import { generateOre, type OreGrid } from "./build";
+import {
+  type BuildState,
+  freshBuildState,
+  generateOre,
+  insertStructure,
+  type OreGrid,
+  removeStructure,
+} from "./build";
 import {
   enemyContactCadenceMs,
   enemyContactDamage,
@@ -71,9 +79,9 @@ export class ClientWorld {
   private readonly nests: Nest[]; // static layout derived from the arena; hp/alive track the stream
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
   private readonly enemies = new Map<string, EnemyRecord>();
+  readonly build: BuildState; // server-owned; mirrored here so the ghost tests placement locally
   private lastTick = -1; // highest applied map-delta tick; guards apply-if-newer
   private selfHp: number; // client-authoritative: the owner judges its own contact damage
-  private readonly bank: Bank = { metal: 0 }; // server-owned; mirrored here for the HUD
 
   // `initialHp` carries the owner's HP across a reconnect rebuild (a fresh world defaults to full).
   // Without it, a mid-match reconnect would reset to full and the report loop could relay that heal
@@ -88,6 +96,7 @@ export class ClientWorld {
     this.exit = init.exit;
     this.nests = nestLayout(init.arena);
     this.ore = generateOre(init.arena, init.oreSeed);
+    this.build = freshBuildState(init.arena);
     for (const s of init.spawns) {
       this.avatars.set(s.id, {
         id: s.id,
@@ -207,19 +216,23 @@ export class ClientWorld {
         nest.alive = nd.alive;
       }
     }
-    if (delta.bank) this.bank.metal = delta.bank.metal;
+    if (delta.bank) this.build.bank.metal = delta.bank.metal;
+    for (const b of delta.builds ?? []) {
+      if (!this.build.structures.has(b.id)) insertStructure(this.build, { ...b });
+    }
   }
 
-  // Rebuild the economy from the reconnect keyframe. The ore grid needs nothing — it was derived
-  // from the seed when this world was built.
-  initBuild(msg: { bank: Bank }): void {
-    this.bank.metal = msg.bank.metal;
+  // Rebuild the economy from the reconnect keyframe: the bank and every building the squad has
+  // standing. The ore grid needs nothing — it was derived from the seed when this world was built.
+  initBuild(msg: { bank: Bank; structures: StructureSpawn[] }): void {
+    for (const id of [...this.build.structures.keys()]) removeStructure(this.build, id);
+    for (const s of msg.structures) insertStructure(this.build, { ...s });
+    this.build.bank.metal = msg.bank.metal;
   }
 
-  // Whole Metal only: the bank accrues fractionally (a hand-mine tick, a miner's trickle), but a
-  // fraction of a metal buys nothing and reads as noise on the HUD.
+  // The shared Metal readout. The server sends whole Metal, so this needs no rounding of its own.
   metal(): number {
-    return Math.floor(this.bank.metal);
+    return this.build.bank.metal;
   }
 
   // Rebuild live enemy/nest state from the reconnect keyframe — world-init only carries the
@@ -276,6 +289,7 @@ export class ClientWorld {
       nests: this.nests.map(renderNest),
       exit: this.exit,
       ore: this.ore,
+      structures: [...this.build.structures.values()],
     };
   }
 

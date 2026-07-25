@@ -26,6 +26,9 @@ export interface TestClient {
   opened: Promise<void>;
   send(msg: ClientMessage): void;
   waitFor(pred: (m: ServerMessage) => boolean, timeoutMs?: number): Promise<ServerMessage>;
+  // Non-destructive: has a matching message already arrived? Unlike `waitFor` this never blocks
+  // and never consumes, so a poll loop can test a condition without eating the stream.
+  peek(pred: (m: ServerMessage) => boolean): ServerMessage | null;
   close(): Promise<void>;
 }
 
@@ -70,7 +73,9 @@ export function makeClient(url: string): TestClient {
       ws.close();
     });
 
-  return { ws, opened, send: (msg) => ws.send(JSON.stringify(msg)), waitFor, close };
+  const peek = (pred: (m: ServerMessage) => boolean) => buffer.find(pred) ?? null;
+
+  return { ws, opened, send: (msg) => ws.send(JSON.stringify(msg)), waitFor, peek, close };
 }
 
 // Resolve once the client's state satisfies `pred`; fail fast on timeout.

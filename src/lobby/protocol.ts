@@ -99,6 +99,19 @@ export interface Tile {
 
 export type OreKind = "metal" | "power";
 
+// The four things a squad can build. Costs, footprints and HP live in the registry in
+// `game/build.ts`; only the name crosses the wire.
+export type BuildableKind = "miner" | "wall" | "turret" | "generator";
+
+// A newly-placed building, announced once so every client can create its render record. Placement
+// is instant — there is no build time and no vulnerable construction phase.
+export interface StructureSpawn {
+  id: string;
+  kind: BuildableKind;
+  tile: Tile;
+  hp: number;
+}
+
 // The immutable shared world the server generates once at match start and re-sends on
 // reconnect: the arena, the placed exit, every player's spawn, and the seed both sides expand
 // into the ore grid. Avatar motion is not here (it flows as peer positions), and the enemy/nest
@@ -186,6 +199,9 @@ export interface MapDelta {
   nests?: NestDelta[];
   wave?: WaveDelta;
   bank?: Bank;
+  // Buildings are near-static next to enemy motion, so they ride as sparse events rather than a
+  // full per-tick set like `moves`.
+  builds?: StructureSpawn[];
 }
 
 // A render-model enemy the client assembles each frame (not a wire type). Its position is
@@ -219,6 +235,7 @@ export interface WorldSnapshot {
   nests: RenderedNest[];
   exit: Exit;
   ore: Map<number, OreKind>;
+  structures: { id: string; kind: BuildableKind; tile: Tile; hp: number }[];
 }
 
 // The movement intent driving the client's own Avatar: which directions are held. The
@@ -259,6 +276,9 @@ export type GameHealth = Envelope<"game/health", { hp: number; seq: number }>;
 // Hand-mining (M4): held right-click reports the metal-ore tile under the cursor. The server
 // admits it (ore kind + loose reach + seq + cadence) and credits the shared bank itself.
 export type GameMine = Envelope<"game/mine", { tile: Tile; seq: number }>;
+// Placement (M4): the client asks for a buildable at a tile. The server re-runs the same
+// placement rule the ghost used, debits the bank itself, and mints the structure's id.
+export type GameBuild = Envelope<"game/build", { kind: BuildableKind; tile: Tile; seq: number }>;
 export type ClientMessage =
   | CreateLobby
   | JoinLobby
@@ -267,7 +287,8 @@ export type ClientMessage =
   | GamePos
   | GameAttack
   | GameHealth
-  | GameMine;
+  | GameMine
+  | GameBuild;
 
 export type LobbyErrorCode = "lobby-not-found" | "lobby-full" | "slot-released" | "invalid";
 
@@ -317,10 +338,13 @@ export type GameEnemyInit = Envelope<
   "game/enemy-init",
   { tick: number; enemies: EnemySnapshot[]; nests: NestSnapshot[]; wave: WaveDelta }
 >;
-// The economy keyframe (M4): the live shared bank a (re)joiner needs to rebuild. Ore is derived
-// from `WorldInit.oreSeed`, so it is deliberately absent — this stays bounded by what the squad
-// owns rather than growing with the match.
-export type GameBuildInit = Envelope<"game/build-init", { tick: number; bank: Bank }>;
+// The economy keyframe (M4): the live shared bank and every placed building, so a (re)joiner
+// rebuilds the base as it actually stands. Ore is derived from `WorldInit.oreSeed`, so it is
+// deliberately absent — this stays bounded by what the squad owns rather than by match length.
+export type GameBuildInit = Envelope<
+  "game/build-init",
+  { tick: number; bank: Bank; structures: StructureSpawn[] }
+>;
 
 export type ServerMessage =
   | LobbyCreated
@@ -394,6 +418,11 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       if (tile === null || !isFiniteNumber(msg.seq)) return null;
       return { type: "game/mine", tile, seq: msg.seq };
     }
+    case "game/build": {
+      const tile = asTile(msg.tile);
+      if (tile === null || !isBuildableKind(msg.kind) || !isFiniteNumber(msg.seq)) return null;
+      return { type: "game/build", kind: msg.kind, tile, seq: msg.seq };
+    }
     default:
       return null;
   }
@@ -410,6 +439,10 @@ function asTile(value: unknown): Tile | null {
 
 function isInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);
+}
+
+function isBuildableKind(value: unknown): value is BuildableKind {
+  return value === "miner" || value === "wall" || value === "turret" || value === "generator";
 }
 
 // A streamed position must be a Vec2 of finite numbers — a client could send anything,

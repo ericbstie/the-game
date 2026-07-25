@@ -1,6 +1,7 @@
 import { ClientWorld } from "../game/clientWorld";
 import { normalizeCode } from "./code";
 import {
+  type BuildableKind,
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
@@ -67,6 +68,7 @@ export class LobbyClient {
   private attackSeq = 0; // monotonic attack sequence, independent of posSeq
   private healthSeq = 0; // monotonic health sequence, independent of the others
   private mineSeq = 0; // monotonic hand-mine sequence, independent of the others
+  private buildSeq = 0; // monotonic placement sequence, independent of the others
 
   constructor(options: LobbyClientOptions = {}) {
     this.wsUrl = options.wsUrl ?? defaultWsUrl();
@@ -115,6 +117,12 @@ export class LobbyClient {
   // and credits the shared bank; the client never writes it. `seq` is monotonic, like sendPos.
   sendMine(tile: Tile): void {
     this.send({ type: "game/mine", tile, seq: ++this.mineSeq });
+  }
+
+  // Ask to place a buildable. The server re-runs the placement rule, debits the bank and mints
+  // the structure's id — the client never writes either. `seq` is monotonic, like sendPos.
+  sendBuild(kind: BuildableKind, tile: Tile): void {
+    this.send({ type: "game/build", kind, tile, seq: ++this.buildSeq });
   }
 
   // Report the client's own HP (it owns it). `hp <= 0` declares death. The server stores and

@@ -1,4 +1,12 @@
-import type { Arena, OreKind, Tile, Vec2 } from "../lobby/protocol";
+import type {
+  Arena,
+  Bank,
+  BuildableKind,
+  OreKind,
+  StructureSpawn,
+  Tile,
+  Vec2,
+} from "../lobby/protocol";
 import { DANGER_BAND_FRAC } from "./world";
 
 // The box world's buildable side (Milestone 4): the tile grid every structure snaps to, the
@@ -165,9 +173,10 @@ function mulberry32(seed: number): () => number {
 export const HAND_MINE_RATE = 8; // metal per second held
 export const MINE_CADENCE_MS = 100; // server-side floor on how often a client may report mining
 export const MINE_WINDOW_MAX_MS = 250; // caps the accrual after a pause, so idling banks nothing
-// "Whatever is on screen" is unknowable server-side, so — like ATTACK_POS_TOLERANCE — this is an
-// anti-teleport bound, not an exact reach.
-export const MINE_REACH = 2_000;
+// The one loose reach shared by mining, building and demolishing. "Whatever is on screen" is
+// unknowable server-side, so — like ATTACK_POS_TOLERANCE — this is an anti-teleport bound, not
+// an exact reach.
+export const INTERACT_REACH = 2_000;
 
 // Per-player hand-mine admission state. `seq` guards apply-if-newer; `lastAt` is both the cadence
 // floor and the accrual clock.
@@ -195,7 +204,7 @@ export function admitMine(
   if (oreAt(ore, report.tile) !== "metal") return 0;
   const elapsed = now - guard.lastAt;
   if (elapsed < MINE_CADENCE_MS) return 0; // too soon; the accrual clock is left untouched
-  if (lastPos && !withinReach(tileCenter(report.tile), lastPos, MINE_REACH)) return 0;
+  if (lastPos && !withinReach(tileCenter(report.tile), lastPos, INTERACT_REACH)) return 0;
   guard.lastAt = now;
   if (!Number.isFinite(elapsed)) return 0; // the very first report only starts the clock
   return (Math.min(elapsed, MINE_WINDOW_MAX_MS) / 1000) * HAND_MINE_RATE;
@@ -213,4 +222,188 @@ export type HarvestTarget = { kind: "mine"; tile: Tile } | null;
 
 export function resolveHarvest(tile: Tile, ore: OreGrid): HarvestTarget {
   return oreAt(ore, tile) === "metal" ? { kind: "mine", tile } : null;
+}
+
+// --- The buildables ----------------------------------------------------------------------
+// One table drives the whole build path: the bar, the ghost's validity test, and server-side
+// admission all read it, so a new buildable is an entry here plus its own behaviour — never a
+// second pass over the UI.
+
+// Bar order, which is also what the 1–4 keys select. A kind absent from BUILDABLES has not
+// shipped yet: its slot renders, but nothing will place.
+export const BUILD_SLOTS: readonly BuildableKind[] = ["miner", "wall", "turret", "generator"];
+
+export interface BuildableSpec {
+  footprint: number; // side length in tiles; every buildable is square
+  cost: number; // Metal, spent from the shared bank. Every building costs Metal only.
+  hp: number;
+  requires: OreKind | null; // the ore at least one tile under the footprint must be
+}
+
+export const MINER_TRICKLE = 4; // metal/s — half the hand rate, but it never stops and it stacks
+
+export const BUILDABLES: Partial<Record<BuildableKind, BuildableSpec>> = {
+  miner: { footprint: 2, cost: 50, hp: 200, requires: "metal" },
+};
+
+// A placed building. `tile` is the top-left of its square footprint; `hp` is sim-owned.
+export interface Structure {
+  id: string;
+  kind: BuildableKind;
+  tile: Tile;
+  hp: number;
+}
+
+// Everything the squad owns. Both sides hold one: the server's is authoritative, and each
+// client mirrors it from the deltas so the ghost can test placement without a round-trip.
+export interface BuildState {
+  arena: Arena;
+  structures: Map<string, Structure>;
+  occupancy: Map<number, string>; // tileKey → structure id, so overlap is a lookup, not a scan
+  bank: Bank;
+  nextId: number;
+}
+
+export function freshBuildState(arena: Arena): BuildState {
+  return { arena, structures: new Map(), occupancy: new Map(), bank: { metal: 0 }, nextId: 1 };
+}
+
+// Every tile a building of this kind at `tile` would cover.
+export function footprintTiles(tile: Tile, footprint: number): Tile[] {
+  const tiles: Tile[] = [];
+  for (let dy = 0; dy < footprint; dy++) {
+    for (let dx = 0; dx < footprint; dx++) tiles.push({ tx: tile.tx + dx, ty: tile.ty + dy });
+  }
+  return tiles;
+}
+
+// The world-space center of a footprint, used for reach checks and for drawing.
+export function footprintCenter(tile: Tile, footprint: number): Vec2 {
+  const half = (footprint * TILE) / 2;
+  return { x: tile.tx * TILE + half, y: tile.ty * TILE + half };
+}
+
+// Why a placement is refused, or null if it is legal. The ghost colours itself from this and
+// server-side admission gates on it, so the two can never disagree about what is placeable.
+export type PlacementError =
+  | "unknown-buildable"
+  | "unaffordable"
+  | "out-of-bounds"
+  | "blocked"
+  | "wrong-ore"
+  | "out-of-reach"
+  | null;
+
+export function placementError(
+  kind: BuildableKind,
+  tile: Tile,
+  ore: OreGrid,
+  build: BuildState,
+  from: Vec2 | null,
+): PlacementError {
+  const spec = BUILDABLES[kind];
+  if (!spec) return "unknown-buildable";
+  if (build.bank.metal < spec.cost) return "unaffordable";
+  const maxTile = Math.floor(Math.min(build.arena.width, build.arena.height) / TILE) - 1;
+  const tiles = footprintTiles(tile, spec.footprint);
+  for (const t of tiles) {
+    if (t.tx < 0 || t.ty < 0 || t.tx > maxTile || t.ty > maxTile) return "out-of-bounds";
+    if (build.occupancy.has(tileKey(t))) return "blocked";
+  }
+  // Any one tile under the footprint being the right ore is enough, so a big patch hosts
+  // several harvesters side by side and a 5×5 may straddle a patch edge.
+  if (spec.requires && !tiles.some((t) => oreAt(ore, t) === spec.requires)) return "wrong-ore";
+  if (from && !withinReach(footprintCenter(tile, spec.footprint), from, INTERACT_REACH)) {
+    return "out-of-reach";
+  }
+  return null;
+}
+
+// Per-player build admission state, separate from mining so one verb can't rate-limit the other.
+export interface BuildGuard {
+  seq: number;
+  lastAt: number;
+}
+
+export const BUILD_CADENCE_MS = 100; // server-side floor on how often a client may place
+
+export function freshBuildGuard(): BuildGuard {
+  return { seq: -1, lastAt: Number.NEGATIVE_INFINITY };
+}
+
+// Decide whether to accept a reported placement, mutating `guard` as a side effect (the
+// `admitAttack` idiom). Returns the spec so the caller can debit and place without a second
+// lookup, or null if the placement is refused.
+export function admitBuild(
+  guard: BuildGuard,
+  report: { kind: BuildableKind; tile: Tile; seq: number },
+  lastPos: Vec2 | null,
+  ore: OreGrid,
+  build: BuildState,
+  now: number,
+): BuildableSpec | null {
+  if (report.seq <= guard.seq) return null; // stale or duplicate
+  guard.seq = report.seq;
+  if (now - guard.lastAt < BUILD_CADENCE_MS) return null; // too soon
+  if (placementError(report.kind, report.tile, ore, build, lastPos) !== null) return null;
+  guard.lastAt = now;
+  return BUILDABLES[report.kind] ?? null;
+}
+
+// Place a building and debit the bank. The caller must have admitted it first — this is the
+// mutation, not the decision.
+export function placeStructure(
+  build: BuildState,
+  kind: BuildableKind,
+  tile: Tile,
+  spec: BuildableSpec,
+): Structure {
+  const structure: Structure = { id: `b${build.nextId++}`, kind, tile, hp: spec.hp };
+  build.bank.metal -= spec.cost;
+  insertStructure(build, structure);
+  return structure;
+}
+
+// Add a structure the server already minted an id for — the client's path when a `builds` event
+// or the reconnect keyframe arrives.
+export function insertStructure(build: BuildState, structure: Structure): void {
+  build.structures.set(structure.id, structure);
+  const spec = BUILDABLES[structure.kind];
+  if (!spec) return;
+  for (const t of footprintTiles(structure.tile, spec.footprint)) {
+    build.occupancy.set(tileKey(t), structure.id);
+  }
+}
+
+// Remove a structure and free its tiles immediately, so a rebuild on the same footprint is legal
+// the very same tick.
+export function removeStructure(build: BuildState, id: string): Structure | null {
+  const structure = build.structures.get(id);
+  if (!structure) return null;
+  build.structures.delete(id);
+  const spec = BUILDABLES[structure.kind];
+  if (spec) {
+    for (const t of footprintTiles(structure.tile, spec.footprint))
+      build.occupancy.delete(tileKey(t));
+  }
+  return structure;
+}
+
+// Advance the economy one tick: every miner trickles Metal into the shared bank. Deterministic
+// in (state, dtMs) — no clock — so it steps as fast as a test wants.
+export function stepBuild(build: BuildState, dtMs: number): void {
+  let miners = 0;
+  for (const s of build.structures.values()) if (s.kind === "miner") miners++;
+  if (miners > 0) build.bank.metal += (miners * MINER_TRICKLE * dtMs) / 1000;
+}
+
+// Every structure, shaped for the reconnect keyframe. Tiles are copied so the snapshot never
+// aliases live state.
+export function snapshotStructures(build: BuildState): StructureSpawn[] {
+  return [...build.structures.values()].map((s) => ({
+    id: s.id,
+    kind: s.kind,
+    tile: { ...s.tile },
+    hp: s.hp,
+  }));
 }

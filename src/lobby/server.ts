@@ -18,6 +18,7 @@ export interface ServeLobbyOptions {
   graceMs?: number;
   tickMs?: number; // enemy-sim tick period; forwarded to the hub (test knob)
   firstWaveMs?: number; // initial wave countdown; forwarded to the hub (test knob)
+  startingMetal?: number; // seeds the shared Metal bank at start; forwarded to the hub (test knob)
   idleTimeout?: number; // WS idle seconds before Bun pings/closes; see DEFAULT_IDLE_TIMEOUT
 }
 
@@ -46,6 +47,7 @@ export function serveLobby(options: ServeLobbyOptions = {}): LobbyServer {
     graceMs: options.graceMs,
     tickMs: options.tickMs,
     firstWaveMs: options.firstWaveMs,
+    startingMetal: options.startingMetal,
   });
 
   const server = Bun.serve<SocketData>({

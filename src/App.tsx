@@ -21,6 +21,7 @@ export function App({ wsUrl }: { wsUrl?: string } = {}) {
           onAttack={(pos, dir) => client.sendAttack(pos, dir)}
           onHealth={(hp) => client.sendHealth(hp)}
           onMine={(tile) => client.sendMine(tile)}
+          onBuild={(kind, tile) => client.sendBuild(kind, tile)}
         />
       );
     }
