@@ -1235,3 +1235,110 @@ describe("M4-T11: the whole squad in the door ends the match with a time", () =>
     hub.dispose();
   });
 });
+
+describe("M4-T12: a squad wipe ends the match in a loss", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+
+  const TICK = 5;
+  const endsFor = (t: Capture, socketId: string) =>
+    t.sent.filter((m) => m.socketId === socketId && m.msg.type === "game/match-end");
+  const settle = () => new Promise((r) => setTimeout(r, TICK * 4));
+
+  function match(count: number): { t: Capture; hub: LobbyHub; sockets: string[] } {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: TICK });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "P1" }));
+    const created = t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+    const sockets = ["s1"];
+    for (let i = 2; i <= count; i++) {
+      const socketId = `s${i}`;
+      hub.handleMessage(
+        socketId,
+        JSON.stringify({ type: "lobby/join", code: created.code, name: `P${i}` }),
+      );
+      sockets.push(socketId);
+    }
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    return { t, hub, sockets };
+  }
+
+  const report = (hub: LobbyHub, socketId: string, hp: number, seq = 1) =>
+    hub.handleMessage(socketId, JSON.stringify({ type: "game/health", hp, seq }));
+
+  test("a fresh match, where nobody has reported HP yet, is not a wipe", async () => {
+    const { t, hub, sockets } = match(2);
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+    hub.dispose();
+  });
+
+  test("one living player prevents the wipe", async () => {
+    const { t, hub, sockets } = match(2);
+    report(hub, sockets[0], 0);
+    report(hub, sockets[1], 12);
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+    hub.dispose();
+  });
+
+  test("every connected player dead ends the match at once, as a loss, for everyone", async () => {
+    const { t, hub, sockets } = match(2);
+    report(hub, sockets[0], 0);
+    report(hub, sockets[1], 0);
+    await settle();
+
+    for (const socketId of sockets) {
+      const ends = endsFor(t, socketId);
+      expect(ends).toHaveLength(1);
+      expect((ends[0].msg as Extract<ServerMessage, { type: "game/match-end" }>).outcome).toBe(
+        "wiped",
+      );
+    }
+    hub.dispose();
+  });
+
+  test("a player mid-respawn-countdown is dead for this purpose — no last-stand timer", async () => {
+    // A downed client reports 0 and reports nothing else until it revives, so the countdown is
+    // exactly the window in which the squad can be wiped.
+    const { t, hub, sockets } = match(1);
+    report(hub, sockets[0], 0);
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(1);
+    hub.dispose();
+  });
+
+  test("an in-grace player does not keep the match alive", async () => {
+    const { t, hub, sockets } = match(2);
+    report(hub, sockets[1], 100); // P2 is alive…
+    hub.handleClose(sockets[1]); // …then drops; the slot is held in grace
+    report(hub, sockets[0], 0); // the last connected player dies
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(1);
+    hub.dispose();
+  });
+
+  test("a session with nobody connected is paused, not lost", async () => {
+    const { t, hub, sockets } = match(1);
+    hub.handleClose(sockets[0]);
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+    hub.dispose();
+  });
+
+  test("exactly one match-end fires and the sim timer is cleared", async () => {
+    const { t, hub, sockets } = match(1);
+    report(hub, sockets[0], 0);
+    await settle();
+    const after = t.sent.length;
+    await new Promise((r) => setTimeout(r, TICK * 10));
+    expect(t.sent.length).toBe(after); // no further deltas, no second end
+    expect(endsFor(t, sockets[0])).toHaveLength(1);
+    hub.dispose();
+  });
+});

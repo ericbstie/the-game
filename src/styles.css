@@ -352,3 +352,8 @@ button:disabled {
   font-variant-numeric: tabular-nums;
   color: #39d353;
 }
+
+/* A loss reads in the danger colour, so the verdict is clear before the words are read. */
+.end[data-outcome="wiped"] .end-time strong {
+  color: #ff5d5d;
+}

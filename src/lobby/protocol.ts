@@ -40,8 +40,9 @@ export interface Self {
   slot: number;
 }
 
-// How a match finished. `escaped` is the win — the whole squad in the door at once.
-export type MatchOutcome = "escaped";
+// How a match finished. `escaped` is the win — the whole squad in the door at once. `wiped` is
+// the loss — every connected player dead at the same instant.
+export type MatchOutcome = "escaped" | "wiped";
 
 // A Session's lifecycle. It ends in an outcome rather than returning to the lobby: the match
 // reports its time and that is the run.

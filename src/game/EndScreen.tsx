@@ -9,13 +9,28 @@ interface EndScreenProps {
   onLeave: () => void;
 }
 
+// Win and loss read distinctly — same layout, opposite verdict.
+const COPY: Record<MatchOutcome, { title: string; detail: string; timeLabel: string }> = {
+  escaped: {
+    title: "Escaped",
+    detail: "The whole squad made it out of the box.",
+    timeLabel: "Escape time",
+  },
+  wiped: {
+    title: "Wiped",
+    detail: "The whole squad went down. The box keeps this one.",
+    timeLabel: "Survived for",
+  },
+};
+
 export function EndScreen({ outcome, elapsedMs, onLeave }: EndScreenProps) {
+  const copy = COPY[outcome];
   return (
     <main className="end" data-outcome={outcome}>
-      <h1>Escaped</h1>
-      <p className="end-detail">The whole squad made it out of the box.</p>
+      <h1>{copy.title}</h1>
+      <p className="end-detail">{copy.detail}</p>
       <p className="end-time">
-        <span className="end-time-label">Escape time</span>
+        <span className="end-time-label">{copy.timeLabel}</span>
         <strong>{formatElapsed(elapsedMs)}</strong>
       </p>
       <button type="button" onClick={onLeave}>

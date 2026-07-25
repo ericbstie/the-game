@@ -23,3 +23,17 @@ describe("EndScreen", () => {
     expect(screen.getByText("2:05.3")).toBeDefined();
   });
 });
+
+describe("EndScreen outcomes read distinctly", () => {
+  test("a wipe is a loss, not a quieter win", () => {
+    render(<EndScreen outcome="wiped" elapsedMs={61_000} onLeave={() => {}} />);
+    expect(screen.getByRole("heading", { name: "Wiped" })).toBeDefined();
+    expect(screen.getByText("Survived for")).toBeDefined();
+    expect(screen.getByText("1:01.0")).toBeDefined();
+  });
+
+  test("the outcome is on the root, so the two are styleable apart", () => {
+    const { container } = render(<EndScreen outcome="wiped" elapsedMs={0} onLeave={() => {}} />);
+    expect(container.querySelector('[data-outcome="wiped"]')).not.toBeNull();
+  });
+});

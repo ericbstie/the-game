@@ -459,6 +459,8 @@ export class LobbyHub {
 
     if (session.worldInit && squadEscaped(session, session.worldInit.exit)) {
       this.endMatch(session, "escaped");
+    } else if (squadWiped(session)) {
+      this.endMatch(session, "wiped");
     }
   }
 
@@ -742,13 +744,34 @@ export class LobbyHub {
 // behind" means. A disconnected (in-grace) player does not block: the squad cannot be held
 // hostage by someone else's dropped socket.
 function squadEscaped(session: SessionRecord, exit: Exit): boolean {
-  const connected = [...session.players.values()].filter((p) => p.presence.status === "connected");
-  if (connected.length === 0) return false; // an empty box escapes nothing
-  return connected.every((p) => {
-    if ((session.health.get(p.id)?.hp ?? PLAYER_MAX_HP) <= 0) return false;
+  const squad = connectedPlayers(session);
+  if (squad.length === 0) return false; // an empty box escapes nothing
+  return squad.every((p) => {
+    if (!isAlive(session, p.id)) return false;
     const pos = session.positions.get(p.id)?.pos;
     return pos !== undefined && insideExit(pos, exit);
   });
+}
+
+// Has the squad been wiped? Every connected player dead at the same instant, evaluated on the
+// same tick as the escape and against the same notion of alive.
+//
+// No grace period and no last-stand timer: a player counting down to respawn reported 0 HP when
+// they died and has not reported otherwise, so they are dead for this purpose. An in-grace player
+// is not connected, so they cannot keep the match alive either — but a session with nobody
+// connected at all is simply paused, not lost.
+function squadWiped(session: SessionRecord): boolean {
+  const squad = connectedPlayers(session);
+  return squad.length > 0 && squad.every((p) => !isAlive(session, p.id));
+}
+
+function connectedPlayers(session: SessionRecord): PlayerRecord[] {
+  return [...session.players.values()].filter((p) => p.presence.status === "connected");
+}
+
+// A player who has never reported HP counts as alive, so a fresh match never reads as a wipe.
+function isAlive(session: SessionRecord, id: PlayerId): boolean {
+  return (session.health.get(id)?.hp ?? PLAYER_MAX_HP) > 0;
 }
 
 // The players fed to the enemy sim: everyone with a known position, minus the dead. A player who
