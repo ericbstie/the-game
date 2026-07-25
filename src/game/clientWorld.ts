@@ -265,7 +265,12 @@ export class ClientWorld {
     // After `builds`: a turret placed this tick can already be holding a target in the same delta.
     this.applyAims(delta.aims ?? []);
     for (const id of delta.removals ?? []) removeStructure(this.build, id);
-    for (const shot of delta.shots ?? []) this.shots.push({ shot, at: now });
+    // The delta goes to the whole squad, shooter included, but an owner's line is drawn locally at
+    // fire time from its own live position — buffering the round-trip too would double it, a tick
+    // late and from the wrong origin.
+    for (const shot of delta.shots ?? []) {
+      if (shot.id !== this.selfId) this.shots.push({ shot, at: now });
+    }
     // Pruned every tick rather than only on arrival, so a squad that stops firing does not leave
     // stale events sitting in the buffer.
     const cutoff = now - BUFFER_MS;

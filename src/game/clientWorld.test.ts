@@ -489,6 +489,12 @@ describe("M5-I5: the client adopts streamed aims and shots, and refuses to draw 
     expect(w.peerShots()).toEqual([{ shot, at: 4_000 }]);
   });
 
+  test("the owner's own shot is not buffered — it is drawn locally at fire time instead", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "self", dir: { x: 1, y: 0 } }] }, 0);
+    expect(w.peerShots()).toEqual([]);
+  });
+
   test("a shot older than the peer-history window is dropped", () => {
     const w = new ClientWorld(init(), "self");
     w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "peer", dir: { x: 1, y: 0 } }] }, 0);
