@@ -108,6 +108,7 @@ interface SessionRecord {
   demolishGuards: Map<PlayerId, DemolishGuard>; // per-player demolish cadence/seq state
   pendingRemovals: string[]; // demolished ids awaiting broadcast, merged with the sim's own
   startedAt?: number; // wall clock at game/start; elapsed time from it is the match's score
+  result?: { outcome: MatchOutcome; elapsedMs: number }; // set once, at match end; re-sent on rejoin
 }
 
 // Server-authoritative hub over every Session. Owns the whole
@@ -408,6 +409,12 @@ export class LobbyHub {
     session.simTimer = timer;
   }
 
+  // Is this session mid-match? Every in-game command is gated on it, so a frame still in flight
+  // when the match ends cannot mutate a world nobody is simulating any more.
+  private inPlay(session: SessionRecord): boolean {
+    return session.phase === "in-game" && session.sim !== undefined;
+  }
+
   // One enemy-sim tick: resolve the admitted attacks queued since the last tick and step the
   // sim against the squad's last-known positions (read-only), then broadcast what changed.
   // `moves` is always present; spawn/hit/death arrays ride only when non-empty.
@@ -416,6 +423,9 @@ export class LobbyHub {
     const players = livePlayers(session.positions, session.health); // dead players drop from aggro
     const attacks = session.pendingAttacks;
     session.pendingAttacks = [];
+    // The economy settles first: miners trickle and the energy ceiling is recomputed before the
+    // turrets inside `stepEnemies` draw against it, so the budget is never a tick stale.
+    if (session.build) stepBuild(session.build, this.tickMs);
     const { events } = stepEnemies(
       session.sim,
       players,
@@ -434,7 +444,6 @@ export class LobbyHub {
     if (removals.length > 0) delta.removals = removals;
     if (events.wave) delta.wave = events.wave;
     if (session.build) {
-      stepBuild(session.build, this.tickMs); // miners trickle into the bank
       // The bank accrues fractionally but is spent and shown in whole Metal, so it rides only
       // when the whole figure actually moves — a sparse event, not a per-tick field.
       const metal = Math.floor(session.build.bank.metal);
@@ -473,11 +482,10 @@ export class LobbyHub {
       clearInterval(session.simTimer);
       session.simTimer = undefined;
     }
-    this.broadcast(session, {
-      type: "game/match-end",
-      outcome,
-      elapsedMs: Date.now() - (session.startedAt ?? Date.now()),
-    });
+    // Retained, not recomputed: the score is frozen at the moment the match ended, so a player
+    // who rejoins afterwards is told the same time everyone else saw.
+    session.result = { outcome, elapsedMs: Date.now() - (session.startedAt ?? Date.now()) };
+    this.broadcast(session, { type: "game/match-end", ...session.result });
   }
 
   // A reported attack: admit it (cadence + loose range + seq, all server-side) and queue the
@@ -488,7 +496,7 @@ export class LobbyHub {
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    if (!session.sim) return; // no combat before the match starts
+    if (!this.inPlay(session)) return; // no combat before the match starts or after it ends
     let guard = session.attackGuards.get(player.id);
     if (!guard) {
       guard = freshGuard();
@@ -508,7 +516,7 @@ export class LobbyHub {
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    if (!session.ore || !session.build) return; // no economy before the match starts
+    if (!this.inPlay(session) || !session.ore || !session.build) return; // only during a match
     let guard = session.mineGuards.get(player.id);
     if (!guard) {
       guard = freshMineGuard();
@@ -526,7 +534,7 @@ export class LobbyHub {
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    if (!session.ore || !session.build) return; // no building before the match starts
+    if (!this.inPlay(session) || !session.ore || !session.build) return; // only during a match
     let guard = session.buildGuards.get(player.id);
     if (!guard) {
       guard = freshBuildGuard();
@@ -559,7 +567,7 @@ export class LobbyHub {
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    if (!session.build) return; // nothing to demolish before the match starts
+    if (!this.inPlay(session) || !session.build) return; // only during a match
     let guard = session.demolishGuards.get(player.id);
     if (!guard) {
       guard = freshDemolishGuard();
@@ -581,7 +589,7 @@ export class LobbyHub {
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    if (!session.sim) return; // health before the match starts is meaningless
+    if (!this.inPlay(session)) return; // health outside a live match is meaningless
     const last = session.health.get(player.id);
     if (last && seq <= last.seq) return; // stale or duplicate — drop it
     // HP is client-authoritative, but clamp the untrusted value so a stray report can't poison
@@ -603,7 +611,7 @@ export class LobbyHub {
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    if (!session.worldInit) return; // positions before the match starts are meaningless
+    if (!this.inPlay(session) || !session.worldInit) return; // only during a match
     const last = session.positions.get(player.id);
     if (last && seq <= last.seq) return; // stale or duplicate — drop it
     session.positions.set(player.id, { pos, seq });
@@ -616,6 +624,12 @@ export class LobbyHub {
   // reconnecter's own, so their client restores it.
   private sendWorldState(session: SessionRecord, socketId: string): void {
     if (!session.worldInit) return;
+    // A finished match has no live world to rebuild — hand back the result, or a reconnecter
+    // would land in a box whose sim stopped ticking with no way to reach the end screen.
+    if (session.result) {
+      this.transport.send(socketId, { type: "game/match-end", ...session.result });
+      return;
+    }
     this.transport.send(socketId, { type: "game/world-init", init: session.worldInit });
     for (const [id, sample] of session.positions) {
       this.transport.send(socketId, {

@@ -1342,3 +1342,82 @@ describe("M4-T12: a squad wipe ends the match in a loss", () => {
     hub.dispose();
   });
 });
+
+describe("M4 review: a finished match stays finished", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+  const TICK = 5;
+  const settle = () => new Promise((r) => setTimeout(r, TICK * 4));
+  const sentTo = (t: Capture, socketId: string, type: ServerMessage["type"]) =>
+    t.sent.filter((m) => m.socketId === socketId && m.msg.type === type);
+
+  // A solo match wiped to a close, plus the token needed to rejoin it.
+  async function endedMatch(): Promise<{ t: Capture; hub: LobbyHub; code: string; token: string }> {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: TICK, startingMetal: 1_000 });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "P1" }));
+    const created = t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/health", hp: 0, seq: 1 }));
+    await settle();
+    return { t, hub, code: created.code, token: created.you.token };
+  }
+
+  test("a player rejoining after the end gets the result, not a dead world", async () => {
+    const { t, hub, code, token } = await endedMatch();
+    hub.handleClose("s1");
+    hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "P1", token }));
+
+    // Handing back world-init would put them in a box whose sim stopped ticking, with no route
+    // to the end screen.
+    expect(sentTo(t, "s2", "game/world-init")).toHaveLength(0);
+    const ends = sentTo(t, "s2", "game/match-end");
+    expect(ends).toHaveLength(1);
+    const end = ends[0].msg as Extract<ServerMessage, { type: "game/match-end" }>;
+    expect(end.outcome).toBe("wiped");
+    hub.dispose();
+  });
+
+  test("the reported time is frozen at the end, not recomputed on rejoin", async () => {
+    const { t, hub, code, token } = await endedMatch();
+    const first = (
+      sentTo(t, "s1", "game/match-end")[0].msg as Extract<ServerMessage, { type: "game/match-end" }>
+    ).elapsedMs;
+    await new Promise((r) => setTimeout(r, 60));
+    hub.handleClose("s1");
+    hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "P1", token }));
+    const rejoined = (
+      sentTo(t, "s2", "game/match-end")[0].msg as Extract<ServerMessage, { type: "game/match-end" }>
+    ).elapsedMs;
+    expect(rejoined).toBe(first);
+    hub.dispose();
+  });
+
+  test("in-game commands are ignored once the match is over", async () => {
+    // Two players, so a relayed position is observable: with one, `game/pos` fans out to nobody
+    // and the test could not tell a working guard from a broken one.
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: TICK });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "P1" }));
+    const created = t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+    hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code: created.code, name: "P2" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: { x: 1, y: 1 }, seq: 1 }));
+    expect(sentTo(t, "s2", "game/peer-pos")).toHaveLength(1); // relayed while the match is live
+
+    hub.handleMessage("s1", JSON.stringify({ type: "game/health", hp: 0, seq: 1 }));
+    hub.handleMessage("s2", JSON.stringify({ type: "game/health", hp: 0, seq: 1 }));
+    await settle();
+    expect(sentTo(t, "s1", "game/match-end")).toHaveLength(1);
+
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: { x: 2, y: 2 }, seq: 2 }));
+    expect(sentTo(t, "s2", "game/peer-pos")).toHaveLength(1); // still 1: the guard held
+    hub.dispose();
+  });
+});
