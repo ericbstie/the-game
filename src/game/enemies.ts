@@ -14,6 +14,7 @@ import type {
   WorldInit,
 } from "../lobby/protocol";
 import {
+  ActivationQueue,
   type BuildState,
   pushOutOfSolids,
   removeStructure,
@@ -21,9 +22,12 @@ import {
   structureBlocking,
   structureCenter,
   structureRadius,
+  TURRET_ACTIVE_DRAW,
   TURRET_CADENCE_MS,
   TURRET_DAMAGE,
+  TURRET_IDLE_DRAW,
   TURRET_RANGE,
+  type TurretRuntime,
 } from "./build";
 import { DANGER_BAND_FRAC, PLAYER_RADIUS } from "./world";
 
@@ -306,7 +310,7 @@ export function stepEnemies(
   const enemiesHit = new Set<string>();
   const nestsHit = new Set<string>();
   applyAttacks(state, attacks, enemiesHit, nestsHit);
-  fireTurrets(state, build, dtMs, enemiesHit, nestsHit);
+  stepTurrets(state, build, dtMs, enemiesHit, nestsHit);
   const { hits, deaths, nests } = reapDamage(state, enemiesHit, nestsHit);
 
   const context: StepContext = {
@@ -424,13 +428,14 @@ function applyAttacks(
   }
 }
 
-// Every turret on its own cadence strikes the nearest thing in range — enemy or nest, whichever
-// is closer, with no lowest-HP or elite priority.
+// Advance every turret one tick: hold or re-acquire a target, settle the power budget, and let
+// the turrets that won power fire on their own cadence.
 //
-// Hitscan straight through walls and structures: turrets need no line of sight and no firing
-// lane, so there is deliberately no ray-vs-structure test here and no lanes to leave open when
-// you build. Nests are legitimate targets, so a forward turret line sieges one unattended.
-function fireTurrets(
+// A turret strikes the nearest thing in range — enemy or nest, whichever is closer, with no
+// lowest-HP or elite priority. Hitscan straight through walls and structures: turrets need no
+// line of sight and no firing lane, so there is deliberately no ray-vs-structure test here.
+// Nests are legitimate targets, so a forward turret line sieges one unattended.
+function stepTurrets(
   state: EnemyState,
   build: BuildState | null,
   dtMs: number,
@@ -438,13 +443,50 @@ function fireTurrets(
   nestsHit: Set<string>,
 ): void {
   if (!build) return;
-  for (const turret of build.structures.values()) {
-    if (turret.kind !== "turret") continue;
-    turret.cooldownMs = Math.max(0, turret.cooldownMs - dtMs);
-    if (turret.cooldownMs > 0) continue;
-    const target = nearestTarget(state, structureCenter(turret), TURRET_RANGE);
-    if (!target) continue;
-    turret.cooldownMs = TURRET_CADENCE_MS;
+  const turrets = [...build.structures.values()].filter((s) => s.turret !== undefined);
+  if (turrets.length === 0) {
+    build.power.consumption = 0;
+    return;
+  }
+
+  // Every standing turret draws idle, simply for existing. That is committed before anything
+  // gets to activate, which is what makes over-building starve the grid rather than break it.
+  let committed = turrets.length * TURRET_IDLE_DRAW;
+  const wants: Structure[] = []; // turrets with a target but no power, in the order they asked
+  const engaged = new Map<string, TurretTarget>();
+
+  for (const turret of turrets) {
+    const runtime = turret.turret as TurretRuntime;
+    runtime.cooldownMs = Math.max(0, runtime.cooldownMs - dtMs);
+    const from = structureCenter(turret);
+    // Sticky power is tied to the target: losing it is the one thing that releases the slot.
+    const held = heldTarget(state, runtime.targetId, from);
+    if (!held) {
+      runtime.powered = false;
+      runtime.targetId = null;
+    }
+    const target = held ?? nearestTarget(state, from, TURRET_RANGE);
+    if (!target) continue; // nothing to shoot: it stands there drawing idle
+    runtime.targetId = target.enemy?.id ?? target.nest?.id ?? null;
+    engaged.set(turret.id, target);
+    // An already-firing turret keeps its reservation and is never re-queued — that is what stops
+    // the budget flickering between two turrets tick after tick.
+    if (runtime.powered) committed += TURRET_ACTIVE_DRAW;
+    else wants.push(turret);
+  }
+
+  const queue = new ActivationQueue(build.power.generation, committed);
+  for (const turret of wants) queue.request(turret);
+  queue.drain();
+  // Over-building is legal, so the reported draw is clamped at the ceiling: the consequence is
+  // that nothing has headroom left to activate, not a number that reads as broken.
+  build.power.consumption = Math.min(queue.committed, build.power.generation);
+
+  for (const turret of turrets) {
+    const runtime = turret.turret as TurretRuntime;
+    const target = engaged.get(turret.id);
+    if (!runtime.powered || !target || runtime.cooldownMs > 0) continue;
+    runtime.cooldownMs = TURRET_CADENCE_MS;
     if (target.enemy) {
       target.enemy.hp -= TURRET_DAMAGE;
       enemiesHit.add(target.enemy.id);
@@ -453,6 +495,19 @@ function fireTurrets(
       nestsHit.add(target.nest.id);
     }
   }
+}
+
+type TurretTarget = { enemy?: Enemy; nest?: Nest };
+
+// A turret's held target, still alive and still in range — or null, which releases its power.
+function heldTarget(state: EnemyState, id: string | null, from: Vec2): TurretTarget | null {
+  if (id === null) return null;
+  const inRange = (pos: Vec2) => Math.hypot(pos.x - from.x, pos.y - from.y) <= TURRET_RANGE;
+  const enemy = state.enemies.get(id);
+  if (enemy) return enemy.hp > 0 && inRange(enemy.pos) ? { enemy } : null;
+  const nest = state.nests.find((n) => n.id === id);
+  if (nest) return nest.alive && inRange(nest.pos) ? { nest } : null;
+  return null;
 }
 
 // The nearest live enemy or standing nest within `range` of a point, by centre distance.

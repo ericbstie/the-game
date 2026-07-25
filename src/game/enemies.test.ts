@@ -4,14 +4,18 @@ import {
   BUILDABLES,
   type BuildableSpec,
   type BuildState,
+  demolishStructure,
   freshBuildState,
   placeStructure,
   removeStructure,
+  type Structure,
   structureBlocking,
   structureCenter,
   TILE,
+  TURRET_ACTIVE_DRAW,
   TURRET_CADENCE_MS,
   TURRET_DAMAGE,
+  TURRET_IDLE_DRAW,
   TURRET_RANGE,
   tileOf,
 } from "./build";
@@ -565,6 +569,7 @@ describe("M4-T8: a turret shoots the nearest enemy, through walls, and sieges ne
   const withTurret = (tile: Tile) => {
     const build = freshBuildState(ARENA);
     build.bank.metal = 100_000;
+    build.power.generation = 10_000; // ample headroom; the budget itself is #65's subject
     return { build, turret: placeStructure(build, "turret", tile, TURRET) };
   };
   const fire = (s: EnemyState, build: BuildState, dtMs = TURRET_CADENCE_MS) =>
@@ -650,5 +655,124 @@ describe("M4-T8: a turret shoots the nearest enemy, through walls, and sieges ne
     const events = fire(s, build, 0);
     expect(events.deaths).toEqual(["e1"]);
     expect(events.hits).toEqual([]);
+  });
+});
+
+describe("M4-T9: the power budget decides which turrets get to fire", () => {
+  const TURRET = BUILDABLES.turret as BuildableSpec;
+  const ORIGIN = { x: C.x + 5_000, y: C.y };
+
+  // `count` turrets in a row, all within range of the same spot, on a grid of `generation` energy.
+  function grid(count: number, generation: number) {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 1_000_000;
+    build.power.generation = generation;
+    const turrets = Array.from({ length: count }, (_, i) =>
+      placeStructure(build, "turret", tileOf({ x: ORIGIN.x + i * TILE * 3, y: ORIGIN.y }), TURRET),
+    );
+    return { build, turrets };
+  }
+  const firing = (turrets: Structure[]) => turrets.filter((t) => t.turret?.powered).length;
+  // A sponge parked in range of every turret, so nothing dies and the budget is the only variable.
+  const sponge = () => stateWith([grunt("e1", { x: ORIGIN.x + 100, y: ORIGIN.y }, 1_000_000)]);
+
+  // Exactly two of three fit: 3 × idle 10 = 30, plus 2 × active 100 = 230; a third would need 330.
+  const FITS_TWO = 3 * TURRET_IDLE_DRAW + 2 * TURRET_ACTIVE_DRAW;
+
+  test("idle draw is charged for merely existing, before anything activates", () => {
+    const { build } = grid(3, 0); // no generation at all, so nothing can activate
+    stepEnemies(sponge(), [], [], 50, build);
+    expect(build.power.consumption).toBe(0); // clamped at a zero ceiling
+  });
+
+  test("with a ceiling that fits N−1 of N turrets, exactly N−1 fire", () => {
+    const { build, turrets } = grid(3, FITS_TWO);
+    stepEnemies(sponge(), [], [], 50, build);
+    expect(firing(turrets)).toBe(2);
+    expect(build.power.consumption).toBe(FITS_TWO);
+  });
+
+  test("the odd turret out stays idle across many ticks without flickering", () => {
+    const { build, turrets } = grid(3, FITS_TWO);
+    const s = sponge();
+    const powered: string[] = [];
+    for (let i = 0; i < 200; i++) {
+      stepEnemies(s, [], [], 50, build);
+      powered.push(turrets.map((t) => (t.turret?.powered ? "1" : "0")).join(""));
+    }
+    // One stable pattern for the whole run: a flickering budget would show several.
+    expect(new Set(powered).size).toBe(1);
+    expect(firing(turrets)).toBe(2);
+  });
+
+  test("an already-firing turret keeps its power when a new turret asks for it", () => {
+    const { build, turrets } = grid(2, 2 * TURRET_IDLE_DRAW + TURRET_ACTIVE_DRAW);
+    const s = sponge();
+    stepEnemies(s, [], [], 50, build);
+    const first = turrets.findIndex((t) => t.turret?.powered);
+    expect(first).toBeGreaterThanOrEqual(0);
+    for (let i = 0; i < 50; i++) stepEnemies(s, [], [], 50, build);
+    expect(turrets[first].turret?.powered).toBe(true); // never bumped
+    expect(firing(turrets)).toBe(1);
+  });
+
+  test("power is released when the target dies", () => {
+    const { build, turrets } = grid(1, 1_000);
+    const s = stateWith([grunt("e1", { x: ORIGIN.x + 100, y: ORIGIN.y }, TURRET_DAMAGE)]);
+    stepEnemies(s, [], [], 50, build);
+    expect(turrets[0].turret?.powered).toBe(true);
+    stepEnemies(s, [], [], 50, build); // the grunt died to that first shot
+    expect(turrets[0].turret?.powered).toBe(false);
+    expect(build.power.consumption).toBe(TURRET_IDLE_DRAW);
+  });
+
+  test("power is released when the target leaves range", () => {
+    const { build, turrets } = grid(1, 1_000);
+    const s = stateWith([grunt("e1", { x: ORIGIN.x + 100, y: ORIGIN.y }, 1_000_000)]);
+    stepEnemies(s, [], [], 50, build);
+    expect(turrets[0].turret?.powered).toBe(true);
+
+    const runaway = only(s);
+    runaway.pos = { x: ORIGIN.x + TURRET_RANGE + 5_000, y: ORIGIN.y };
+    stepEnemies(s, [], [], 50, build);
+    expect(turrets[0].turret?.powered).toBe(false);
+  });
+
+  test("over-building clamps the display and blocks every activation — then a demolish recovers it", () => {
+    const generation = 4 * TURRET_IDLE_DRAW + TURRET_ACTIVE_DRAW; // one turret's worth of headroom
+    const { build, turrets } = grid(20, generation); // idle alone (200) exceeds the ceiling
+    const s = sponge();
+    stepEnemies(s, [], [], 50, build);
+    expect(firing(turrets)).toBe(0); // no headroom left for anything to activate
+    expect(build.power.consumption).toBe(generation); // clamped, not a runaway number
+
+    // Recoverable, and self-inflicted rather than a failure: tear turrets down and it comes back.
+    for (const t of turrets.slice(0, 17)) demolishStructure(build, t);
+    stepEnemies(s, [], [], 50, build);
+    expect(firing(turrets.slice(17))).toBe(1);
+  });
+
+  test("the activation queue serves several simultaneous requests against one free slot", () => {
+    // Five turrets, all unpowered, all with a target, and headroom for exactly one.
+    const { build, turrets } = grid(5, 5 * TURRET_IDLE_DRAW + TURRET_ACTIVE_DRAW);
+    stepEnemies(sponge(), [], [], 50, build);
+    // Check-and-reserve is one indivisible step, so exactly one wins — never two seeing the
+    // same free slot, never zero.
+    expect(firing(turrets)).toBe(1);
+    expect(turrets[0].turret?.powered).toBe(true); // whoever asked first
+  });
+
+  test("an unpowered turret does not fire, however long it stands there", () => {
+    const { build } = grid(1, 0);
+    const s = stateWith([grunt("e1", { x: ORIGIN.x + 100, y: ORIGIN.y })]);
+    for (let i = 0; i < 100; i++) stepEnemies(s, [], [], 50, build);
+    expect(at(s, "e1")?.hp).toBe(GRUNT_HP); // still untouched
+  });
+
+  test("with no turrets standing, consumption is zero", () => {
+    const build = freshBuildState(ARENA);
+    build.power.generation = 1_000;
+    stepEnemies(sponge(), [], [], 50, build);
+    expect(build.power.consumption).toBe(0);
   });
 });

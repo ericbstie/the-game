@@ -250,6 +250,13 @@ export const TURRET_RANGE = 700;
 export const TURRET_DAMAGE = 4;
 export const TURRET_CADENCE_MS = 200;
 
+// Turrets are gated by energy at run time, not at build time. A standing turret draws a little
+// simply for existing; one holding a target draws a lot, continuously — not per shot. The
+// practical shape: your grid supports a limited number of *simultaneously firing* turrets, and a
+// big wave is exactly when demand spikes.
+export const TURRET_IDLE_DRAW = 10;
+export const TURRET_ACTIVE_DRAW = 100;
+
 export const BUILDABLES: Partial<Record<BuildableKind, BuildableSpec>> = {
   miner: { footprint: 2, cost: 50, hp: 200, requires: "metal" },
   wall: { footprint: 2, cost: 10, hp: 400, requires: null },
@@ -257,15 +264,23 @@ export const BUILDABLES: Partial<Record<BuildableKind, BuildableSpec>> = {
   turret: { footprint: 2, cost: 120, hp: 250, requires: null },
 };
 
+// A turret's live state. `cooldownMs` counts down to its next shot on the injected `dtMs` rather
+// than a clock, like an enemy's `biteMs`. `powered` is whether it has won an activation slot;
+// `targetId` is the enemy or nest it is holding, and losing that target is what releases the
+// power. Only turrets carry this, so walls and miners stay free of turret fields.
+export interface TurretRuntime {
+  cooldownMs: number;
+  powered: boolean;
+  targetId: string | null;
+}
+
 // A placed building. `tile` is the top-left of its square footprint; `hp` is sim-owned.
-// `cooldownMs` counts down to a turret's next shot — driven by the injected `dtMs` rather than a
-// clock, like an enemy's `biteMs`. Other kinds simply never read it.
 export interface Structure {
   id: string;
   kind: BuildableKind;
   tile: Tile;
   hp: number;
-  cooldownMs: number;
+  turret?: TurretRuntime;
 }
 
 // Everything the squad owns. Both sides hold one: the server's is authoritative, and each
@@ -397,7 +412,10 @@ export function placeStructure(
 // Add a structure the server already minted an id for — the client's path when a `builds` event
 // or the reconnect keyframe arrives, and the tail of `placeStructure` on the server.
 export function insertStructure(build: BuildState, spawn: StructureSpawn): Structure {
-  const structure: Structure = { ...spawn, tile: { ...spawn.tile }, cooldownMs: 0 };
+  const structure: Structure = { ...spawn, tile: { ...spawn.tile } };
+  if (structure.kind === "turret") {
+    structure.turret = { cooldownMs: 0, powered: false, targetId: null };
+  }
   build.structures.set(structure.id, structure);
   const spec = BUILDABLES[structure.kind];
   if (spec) {
@@ -555,6 +573,42 @@ export function demolishStructure(build: BuildState, structure: Structure): numb
   removeStructure(build, structure.id);
   build.bank.metal += refund;
   return refund;
+}
+
+// --- The power budget ------------------------------------------------------------------------
+// Turret activation is admitted through a queue, drained one request at a time, each performing
+// its "is there free power?" check *and* its reservation in a single indivisible step. That
+// indivisibility is the whole point: an event/pub-sub design would let two turrets both see the
+// same free slot before either claimed it. No locks are needed — the runtime's single-threaded
+// tick supplies the atomicity; the queue supplies the order.
+export class ActivationQueue {
+  private readonly pending: Structure[] = [];
+
+  // `reserved` starts at what is already committed this tick: every turret's idle draw, plus the
+  // active draw of every turret that is already firing. Those are never re-queued and never bumped.
+  constructor(
+    private readonly generation: number,
+    private reserved: number,
+  ) {}
+
+  request(turret: Structure): void {
+    this.pending.push(turret);
+  }
+
+  // Whoever requested first gets the power. A turret that finds no headroom simply does not
+  // activate: it keeps standing, drawing idle, doing nothing. That is recoverable, not a failure.
+  drain(): void {
+    for (const turret of this.pending) {
+      if (this.reserved + TURRET_ACTIVE_DRAW > this.generation) continue;
+      this.reserved += TURRET_ACTIVE_DRAW;
+      if (turret.turret) turret.turret.powered = true;
+    }
+    this.pending.length = 0;
+  }
+
+  get committed(): number {
+    return this.reserved;
+  }
 }
 
 // Every structure, shaped for the reconnect keyframe. Tiles are copied so the snapshot never

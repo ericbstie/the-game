@@ -205,14 +205,11 @@ export function GameScreen({
       }
       setMetal(world.metal()); // React bails out when the whole-metal readout hasn't moved
       const live = world.power();
-      // Over-building is legal, so the displayed draw is clamped at the ceiling: the consequence
-      // is that nothing has headroom left to activate, not a number that reads as broken.
-      setPower((shown) => {
-        const drawn = Math.min(live.consumption, live.generation);
-        return shown.generation === live.generation && shown.consumption === drawn
-          ? shown
-          : { generation: live.generation, consumption: drawn };
-      });
+      setPower((shown) =>
+        shown.generation === live.generation && shown.consumption === live.consumption
+          ? shown // same numbers: return the same object so React bails out of the re-render
+          : { ...live },
+      );
       // A downed player stops streaming position — peers hold its last pos as a corpse.
       if (!world.isDead()) {
         const pos = world.selfPos();
