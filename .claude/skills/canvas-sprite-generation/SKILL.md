@@ -11,10 +11,11 @@ description: >-
 
 # 2D Canvas Sprite Generation
 
-This project is a React + Bun browser game rendered on an HTML5 canvas, with no
-art-asset pipeline. Generate sprites **in code**: draw each once to an offscreen
-canvas, cache it, and blit the cache every frame. No PNGs to load, no network,
-nothing to lose.
+This project is a React + Bun browser game for **PC**, rendered on an HTML5 canvas. Generate
+sprites **in code**: draw each once to an offscreen canvas, cache it, and blit the cache every
+frame. No PNGs to load, no network, nothing to lose. Procedural stays the preference, but it is no
+longer a hard rule — if procedural drawing cannot reach the style, the style wins
+(`docs/adr/0002`).
 
 Every sprite goes through the loop in [`docs/sprite-loop.md`](../../../docs/sprite-loop.md) —
 write it, render a review sheet, have a subagent look at the sheet. Read that first.
@@ -45,8 +46,10 @@ ctx.drawImage(grunt, Math.round(x - 8), Math.round(y - 8), 16, 16);
 
 ## Pixel art from a string grid
 
-For readable, editable pixel sprites, define art as rows of characters mapped to
-a palette. Easy to tweak, diff-friendly, no tooling.
+Not for the characters — this style is ink contours, not pixel art. It suits the small hard-edged
+**icons** (the HUD warning symbol, the unpowered-turret lightning), which are axis-aligned and want
+no anti-aliasing at all. Rows of characters mapped to a palette are easy to tweak, diff-friendly,
+and need no tooling.
 
 ```js
 function pixelSprite(rows, palette, scale = 1, dpr = devicePixelRatio) {
@@ -62,13 +65,13 @@ function pixelSprite(rows, palette, scale = 1, dpr = devicePixelRatio) {
   });
 }
 
-const door = pixelSprite([
-  '.####.',
-  '#....#',
-  '#.oo.#',
-  '#.oo.#',
-  '#....#',
-], { '#': '#8d6e63', '.': '#5d4037', 'o': '#ffd54f' }, 4);
+const bolt = pixelSprite([
+  '..##',
+  '.##.',
+  '####',
+  '.##.',
+  '##..',
+], { '#': '#000' }, 4);
 ```
 
 ## HiDPI — two scalings, and the bake is the one people miss
@@ -86,6 +89,11 @@ Scaling the **backing store** is necessary and not sufficient. There are two:
 So **bake at `size × dpr` and blit into a `size`-CSS-px box**, as in the pattern above. The sprite
 cache is keyed by dpr as well as by kind, facing and frame, and re-bakes when dpr changes — which
 the render loop already detects.
+
+The game targets **PC only**, so the densities to expect are 1 on an ordinary monitor, 2 on a
+retina laptop, and the fractional 1.25 or 1.5 that Windows display scaling produces. Nothing needs
+to hold up at phone densities — but a fractional dpr does mean the bake's pixel size is rounded, so
+work in logical units and let the bake round once.
 
 **Do not try to "fix" the grey.** Thresholding to hard black shatters the curves; per-pixel
 `putImageData` goes visibly polygonal; `getContext('2d', { antialias: false })` is silently ignored
@@ -107,7 +115,7 @@ Details and measurements: [`docs/sprite-loop.md`](../../../docs/sprite-loop.md).
 Rotating inside `drawImage` every frame costs. Bake the variants instead. Note that `src` is
 already at device resolution, so the rotation bakes at `dpr` 1 — and that a **character's** 8
 facings are *drawn*, not rotated: a figure seen from behind is not a rotation of one seen from the
-front. Rotation is for parts that really do turn, like a turret barrel.
+front. Flips are the exception that does hold — a facing and its mirror are one drawing.
 
 ```js
 function bakeRotations(src, steps = 8) {
@@ -124,12 +132,15 @@ function bakeRotations(src, steps = 8) {
 Flip horizontally once into a cached canvas with `g.scale(-1, 1)` rather than
 per frame.
 
-## Color variants — one sprite, many teams
+## Colour is forbidden by default
 
-Draw the base in a neutral key color and recolor for variants (grunt vs elite,
-player teams) instead of authoring each by hand: bake the shape, then either
-re-run `pixelSprite` with a different palette, or set `globalCompositeOperation =
-'source-in'` and fill a tint over the baked alpha.
+The game is **black and white** — ink contours, solid fills, no interior detail. There are no
+palettes and no colour variants. Two exceptions have been granted, and no more without an explicit
+grant: the **self halo** over your own avatar (a glow, barely yellow, mostly white) and **power
+ore** (glowing red). Metal ore stays pure ink.
+
+So what tells two things apart is the **silhouette** — the outline of the black shape, since at
+these sizes there is no colour or shading to read. Spend the effort there.
 
 ## Sprite atlas (optional)
 
@@ -142,11 +153,20 @@ blit by rect: `drawImage(atlas, col*S, row*S, S, S, dx, dy, S, S)`. Keep a small
 Generate one baked sprite per entity type and reuse across all instances — there
 may be hundreds of grunts on screen, but only one grunt canvas:
 
-- **Player / squad** — recolor one base sprite per player so teammates are told apart at a glance.
-- **Grunt vs elite** — same silhouette, elite larger and a hotter palette; readability over detail (the design calls for readable enemies).
-- **Nest** — a distinct, larger structure; pulse it on the ~30s wave beat by blitting a cached "charging" frame rather than redrawing.
-- **Miner / wall / turret / generator** — simple geometric bakes on a 15-unit tile grid (2×2 tiles each, 5×5 for the generator); a turret can be a base sprite plus a separately-baked, rotatable barrel. There is no landmine.
-- **Ore (metal / power)** — ground texture, not entities: two palettes of the same tile, filling whole patches. Density, not unique art, sells the field — and a full screen of it can't be culled, so bake it in bulk rather than per tile.
+- **Player** — **one sprite shared by all six players**, upright. Squadmates are told apart by the
+  name label above the head, and you find yourself by the halo. There is deliberately no per-player
+  variant.
+- **Grunt vs elite** — both spiders, body and face upright with legs splayed flat around them, and
+  separated by **silhouette alone**: the grunt exaggerated into long legs, the elite into a large
+  body instead.
+- **Egg sac** — the spawner, drawn in elevation, in two states: intact and destroyed. Waves arrive
+  unannounced, so it has no charging or telegraph frame.
+- **Miner / wall / turret** — elevation, top surface and front face both visible, on the 15-unit
+  tile grid (2×2 tiles each). **Generator** — flat, from above, 5×5 tiles. There is no landmine.
+- **Ore (metal / power)** — ground texture, not entities: the same tile filling whole patches, metal
+  in pure ink and power with its red glow. Density, not unique art, sells the field — and a full
+  screen of it can't be culled, so bake it in bulk rather than per tile.
 
-Keep sprites small (8–24px) and let scale do the rest — it's faster, and it
-matches the game's readable, watchable look.
+**The sizes are fixed by the zoom**, which does not change: 1 world unit = 1 CSS px, so a player is
+~28 px, a grunt 32, an elite 48, a 2×2 building 30 and an ore tile 15. Draw for those sizes rather
+than drawing small and scaling up.

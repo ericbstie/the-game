@@ -43,7 +43,7 @@ export default grunt;
 
 ```sh
 bun run sprite:sheet src/sprite/grunt/grunt.ts            # → src/sprite/grunt/sheet.png
-bun run sprite:sheet src/sprite/grunt/grunt.ts --dpr 3    # check another display density
+bun run sprite:sheet src/sprite/grunt/grunt.ts --dpr 1    # check an ordinary, non-retina monitor
 ```
 
 About a second. It writes the PNG **and** prints pixel facts measured on a real canvas: ink and
