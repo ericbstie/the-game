@@ -45,9 +45,10 @@ asked:
   security, or accessibility.
 - **`canvas-sprite-generation`** — whenever creating, drawing, or animating
   sprites or entity art (player, grunts, elites, nests, miners, walls, turrets,
-  mines, clusters, the door), or handling pixel-crisp rendering, sprite caching,
+  generators, ore, the door), or handling pixel-crisp rendering, sprite caching,
   atlases, or color variants, use this skill. Generate sprites procedurally in
-  code (baked to offscreen canvases); the game ships no image assets.
+  code (baked to offscreen canvases). Shipping no image assets is the strong
+  preference but **no longer a hard rule** — see `docs/adr/0002`.
 
 A third skill, **`signal-only`**, is effectively always-on: on every turn,
 write self-documenting code (comments only for *why*, never to restate the
