@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { BUILDABLES, generateOre, MINE_CADENCE_MS, tileCenter } from "../game/build";
 import { NEST_COUNT } from "../game/enemies";
 import { ARENA } from "../game/world";
 import { LobbyHub, livePlayers, type Transport } from "./lobby";
-import type { ServerMessage } from "./protocol";
+import type { ServerMessage, Tile, Vec2 } from "./protocol";
 import type { LobbyServer } from "./server";
 import { expectMessage, makeClient, startServer, type TestClient } from "./testing";
 
@@ -775,5 +776,648 @@ describe("M3: enemy sim tick lifecycle", () => {
           (d.hits ?? []).some((h) => h.id === target.id) || (d.deaths ?? []).includes(target.id),
       );
     expect(struck).toBe(true);
+  });
+});
+
+describe("M4-T1: hand-mining fills the squad's shared Metal bank", () => {
+  // The tile a player standing at `pos` can legitimately mine: the nearest metal ore the
+  // generated grid actually holds, so the test exercises admission rather than dodging it.
+  function nearestMetalTile(oreSeed: number, to: Vec2): Tile {
+    const ore = generateOre(ARENA, oreSeed);
+    let best: Tile | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const [key, kind] of ore) {
+      if (kind !== "metal") continue;
+      const tile = { tx: Math.floor(key / 65_536), ty: key % 65_536 };
+      const c = tileCenter(tile);
+      const d = Math.hypot(c.x - to.x, c.y - to.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = tile;
+      }
+    }
+    if (!best) throw new Error("the generated grid holds no metal ore");
+    return best;
+  }
+
+  // Hold right-click on `tile` for a few cadences — long enough to accrue whole Metal, since the
+  // bank only rides a delta when its whole-number readout actually moves.
+  async function holdMine(client: TestClient, tile: Tile, reports = 5): Promise<void> {
+    client.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
+    for (let seq = 1; seq <= reports; seq++) {
+      client.send({ type: "game/mine", tile, seq });
+      await new Promise((r) => setTimeout(r, MINE_CADENCE_MS + 20));
+    }
+  }
+
+  test("one player mining raises the Metal readout on every client", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    hostClient.send({ type: "game/start" });
+    const init = expectMessage(
+      await hostClient.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+
+    // Stand on the ore first: admission measures reach from the last relayed position.
+    const tile = nearestMetalTile(init.oreSeed, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    await holdMine(hostClient, tile);
+
+    const banked = (m: ServerMessage) => m.type === "game/map-delta" && (m.bank?.metal ?? 0) > 0;
+    const onHost = expectMessage(await hostClient.waitFor(banked), "game/map-delta");
+    const onBen = expectMessage(await ben.waitFor(banked), "game/map-delta");
+    expect(onHost.bank?.metal).toBeGreaterThan(0);
+    expect(onBen.bank?.metal).toBe(onHost.bank?.metal); // one shared bank, not a per-player purse
+  });
+
+  test("mining bare ground banks nothing", async () => {
+    const server = spawn();
+    const { client: hostClient } = await host(server, "Ana");
+    hostClient.send({ type: "game/start" });
+    await hostClient.waitFor((m) => m.type === "game/world-init");
+
+    const bare = { tx: 0, ty: 0 }; // the arena corner: outside every patch
+    hostClient.send({ type: "game/pos", pos: tileCenter(bare), seq: 1 });
+    for (let seq = 1; seq <= 4; seq++) hostClient.send({ type: "game/mine", tile: bare, seq });
+
+    // Four ticks with no bank field is the assertion — a credited mine would ride one of them.
+    const seen: ServerMessage[] = [];
+    for (let i = 0; i < 4; i++)
+      seen.push(await hostClient.waitFor((m) => m.type === "game/map-delta"));
+    expect(seen.every((m) => m.type === "game/map-delta" && m.bank === undefined)).toBe(true);
+  });
+
+  test("a reconnecter is handed the live bank in the economy keyframe", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const joinedFirst = (await joinLobby(server, code, "Ben")).joined;
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+    hostClient.send({ type: "game/start" });
+    const init = expectMessage(
+      await hostClient.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+
+    const tile = nearestMetalTile(init.oreSeed, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    await holdMine(hostClient, tile);
+    await hostClient.waitFor((m) => m.type === "game/map-delta" && (m.bank?.metal ?? 0) > 0);
+
+    const back = await connect(server);
+    back.send({ type: "lobby/join", code, name: "Ben", token: joinedFirst.you.token });
+    const keyframe = expectMessage(
+      await back.waitFor((m) => m.type === "game/build-init"),
+      "game/build-init",
+    );
+    expect(keyframe.bank.metal).toBeGreaterThan(0);
+  });
+});
+
+describe("M4-T2: placing a miner", () => {
+  const MINER_COST = (BUILDABLES.miner as { cost: number }).cost;
+
+  // A funded match: hand-mining the 50 metal a miner costs takes 6+ seconds by design, which is
+  // the economy working, not something each test should re-prove.
+  function funded(): LobbyServer {
+    const server = startServer({ startingMetal: MINER_COST });
+    servers.push(server);
+    return server;
+  }
+
+  // The metal-ore tile nearest arena center, and the position a player must stand at to reach it.
+  function nearestMetal(oreSeed: number): Tile {
+    const ore = generateOre(ARENA, oreSeed);
+    let best: Tile | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const [key, kind] of ore) {
+      if (kind !== "metal") continue;
+      const t = { tx: Math.floor(key / 65_536), ty: key % 65_536 };
+      const c = tileCenter(t);
+      const d = Math.hypot(c.x - ARENA.width / 2, c.y - ARENA.height / 2);
+      if (d < bestDist) {
+        bestDist = d;
+        best = t;
+      }
+    }
+    if (!best) throw new Error("the generated grid holds no metal ore");
+    return best;
+  }
+
+  async function startedMatch(server: LobbyServer, withPeer: boolean) {
+    const { client: hostClient, code } = await host(server, "Ana");
+    const peer = withPeer ? await joinLobby(server, code, "Ben") : null;
+    if (peer) await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+    hostClient.send({ type: "game/start" });
+    const init = expectMessage(
+      await hostClient.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+    const tile = nearestMetal(init.oreSeed);
+    hostClient.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 }); // in reach of the tile
+    return { hostClient, peer, code, tile };
+  }
+
+  test("a placed miner reaches every client and then raises the bank on its own", async () => {
+    const { hostClient, peer, tile } = await startedMatch(funded(), true);
+    hostClient.send({ type: "game/build", kind: "miner", tile, seq: 1 });
+
+    const built = (m: ServerMessage) => m.type === "game/map-delta" && (m.builds?.length ?? 0) > 0;
+    const onHost = expectMessage(await hostClient.waitFor(built), "game/map-delta");
+    const onPeer = expectMessage(
+      await (peer as { client: TestClient }).client.waitFor(built),
+      "game/map-delta",
+    );
+    expect(onHost.builds?.[0]).toMatchObject({ kind: "miner", tile, hp: 200 });
+    expect(onPeer.builds?.[0]?.id).toBe(onHost.builds?.[0]?.id as string); // one shared structure
+
+    // The bank was spent down to 0 on placement; with nobody holding right-click, only the miner
+    // can bring it back up.
+    const climbed = await hostClient.waitFor(
+      (m) => m.type === "game/map-delta" && (m.bank?.metal ?? 0) > 0,
+      3_000,
+    );
+    expect(expectMessage(climbed, "game/map-delta").bank?.metal).toBeGreaterThan(0);
+  });
+
+  test("placing debits the bank, so a second miner is unaffordable", async () => {
+    const { hostClient, tile } = await startedMatch(funded(), false);
+    hostClient.send({ type: "game/build", kind: "miner", tile, seq: 1 });
+    await hostClient.waitFor((m) => m.type === "game/map-delta" && (m.builds?.length ?? 0) > 0);
+
+    const second = { tx: tile.tx + 2, ty: tile.ty };
+    hostClient.send({ type: "game/build", kind: "miner", tile: second, seq: 2 });
+    const seen: ServerMessage[] = [];
+    for (let i = 0; i < 5; i++) {
+      seen.push(await hostClient.waitFor((m) => m.type === "game/map-delta"));
+    }
+    expect(seen.every((m) => m.type === "game/map-delta" && m.builds === undefined)).toBe(true);
+  });
+
+  test("an unaffordable placement is refused — no structure at all", async () => {
+    const server = spawn(); // no starting metal
+    const { hostClient, tile } = await startedMatch(server, false);
+    hostClient.send({ type: "game/build", kind: "miner", tile, seq: 1 });
+
+    const seen: ServerMessage[] = [];
+    for (let i = 0; i < 4; i++) {
+      seen.push(await hostClient.waitFor((m) => m.type === "game/map-delta"));
+    }
+    expect(seen.every((m) => m.type === "game/map-delta" && m.builds === undefined)).toBe(true);
+  });
+
+  test("a miner is refused on bare ground", async () => {
+    const { hostClient } = await startedMatch(funded(), false);
+    const bare = { tx: 0, ty: 0 };
+    hostClient.send({ type: "game/pos", pos: tileCenter(bare), seq: 2 });
+    hostClient.send({ type: "game/build", kind: "miner", tile: bare, seq: 1 });
+
+    const seen: ServerMessage[] = [];
+    for (let i = 0; i < 4; i++) {
+      seen.push(await hostClient.waitFor((m) => m.type === "game/map-delta"));
+    }
+    expect(seen.every((m) => m.type === "game/map-delta" && m.builds === undefined)).toBe(true);
+  });
+
+  test("the reconnect keyframe rebuilds the bank and every standing structure", async () => {
+    const server = funded();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const joinedFirst = (await joinLobby(server, code, "Ben")).joined;
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+    hostClient.send({ type: "game/start" });
+    const init = expectMessage(
+      await hostClient.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+    const tile = nearestMetal(init.oreSeed);
+    hostClient.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
+    hostClient.send({ type: "game/build", kind: "miner", tile, seq: 1 });
+    await hostClient.waitFor((m) => m.type === "game/map-delta" && (m.builds?.length ?? 0) > 0);
+
+    const back = await connect(server);
+    back.send({ type: "lobby/join", code, name: "Ben", token: joinedFirst.you.token });
+    const keyframe = expectMessage(
+      await back.waitFor((m) => m.type === "game/build-init"),
+      "game/build-init",
+    );
+    expect(keyframe.structures).toHaveLength(1);
+    expect(keyframe.structures[0]).toMatchObject({ kind: "miner", tile, hp: 200 });
+  });
+});
+
+describe("M4-T5: demolish returns 20% of the metal", () => {
+  const MINER = BUILDABLES.miner as { cost: number };
+
+  function nearestMetal(oreSeed: number): Tile {
+    const ore = generateOre(ARENA, oreSeed);
+    let best: Tile | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const [key, kind] of ore) {
+      if (kind !== "metal") continue;
+      const t = { tx: Math.floor(key / 65_536), ty: key % 65_536 };
+      const c = tileCenter(t);
+      const d = Math.hypot(c.x - ARENA.width / 2, c.y - ARENA.height / 2);
+      if (d < bestDist) {
+        bestDist = d;
+        best = t;
+      }
+    }
+    if (!best) throw new Error("the generated grid holds no metal ore");
+    return best;
+  }
+
+  test("any player can demolish a structure another placed; it vanishes for everyone", async () => {
+    const server = startServer({ startingMetal: MINER.cost });
+    servers.push(server);
+    const { client: ana, code } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await ana.waitFor((m) => m.type === "lobby/player-joined");
+    ana.send({ type: "game/start" });
+    const init = expectMessage(
+      await ana.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+
+    const tile = nearestMetal(init.oreSeed);
+    ana.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
+    ana.send({ type: "game/build", kind: "miner", tile, seq: 1 });
+    const spawned = expectMessage(
+      await ana.waitFor((m) => m.type === "game/map-delta" && (m.builds?.length ?? 0) > 0),
+      "game/map-delta",
+    );
+    const id = spawned.builds?.[0]?.id as string;
+    await ben.waitFor((m) => m.type === "game/map-delta" && (m.builds?.length ?? 0) > 0);
+
+    // Ben demolishes what Ana built — structures are communal, so there is no ownership check.
+    ben.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
+    ben.send({ type: "game/demolish", id, seq: 1 });
+
+    const removed = (m: ServerMessage) =>
+      m.type === "game/map-delta" && (m.removals ?? []).includes(id);
+    expect(expectMessage(await ana.waitFor(removed), "game/map-delta").removals).toContain(id);
+    expect(expectMessage(await ben.waitFor(removed), "game/map-delta").removals).toContain(id);
+  });
+
+  test("the refund lands in the shared bank", async () => {
+    const server = startServer({ startingMetal: MINER.cost });
+    servers.push(server);
+    const { client: ana } = await host(server, "Ana");
+    ana.send({ type: "game/start" });
+    const init = expectMessage(
+      await ana.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+
+    const tile = nearestMetal(init.oreSeed);
+    ana.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
+    ana.send({ type: "game/build", kind: "miner", tile, seq: 1 });
+    const spawned = expectMessage(
+      await ana.waitFor((m) => m.type === "game/map-delta" && (m.builds?.length ?? 0) > 0),
+      "game/map-delta",
+    );
+    // Placing spent the whole bank; only the refund can bring it back above zero this fast.
+    ana.send({ type: "game/demolish", id: spawned.builds?.[0]?.id as string, seq: 1 });
+    const refunded = expectMessage(
+      await ana.waitFor((m) => m.type === "game/map-delta" && (m.bank?.metal ?? 0) > 0),
+      "game/map-delta",
+    );
+    expect(refunded.bank?.metal).toBe(Math.floor(MINER.cost * 0.2));
+  });
+
+  test("demolishing a structure that is already gone changes nothing", async () => {
+    const server = startServer({ startingMetal: MINER.cost });
+    servers.push(server);
+    const { client: ana } = await host(server, "Ana");
+    ana.send({ type: "game/start" });
+    await ana.waitFor((m) => m.type === "game/world-init");
+
+    ana.send({ type: "game/demolish", id: "b999", seq: 1 });
+    const seen: ServerMessage[] = [];
+    for (let i = 0; i < 4; i++) seen.push(await ana.waitFor((m) => m.type === "game/map-delta"));
+    expect(
+      seen.every((m) => m.type === "game/map-delta" && m.removals === undefined && !m.bank),
+    ).toBe(true);
+  });
+});
+
+// The escape and its teardown, driven through a capture transport so the simultaneity check and
+// the cleared interval can both be asserted deterministically.
+describe("M4-T11: the whole squad in the door ends the match with a time", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+
+  const TICK = 5;
+  const endsFor = (t: Capture, socketId: string) =>
+    t.sent.filter((m) => m.socketId === socketId && m.msg.type === "game/match-end");
+
+  // A started match with `count` seated players, plus a handle on each one's id and socket.
+  function match(count: number): { t: Capture; hub: LobbyHub; ids: string[]; sockets: string[] } {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: TICK });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "P1" }));
+    const created = t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+    const ids = [created.you.id];
+    const sockets = ["s1"];
+    for (let i = 2; i <= count; i++) {
+      const socketId = `s${i}`;
+      hub.handleMessage(
+        socketId,
+        JSON.stringify({ type: "lobby/join", code: created.code, name: `P${i}` }),
+      );
+      const joined = t.sent.find((m) => m.socketId === socketId && m.msg.type === "lobby/joined")
+        ?.msg as Extract<ServerMessage, { type: "lobby/joined" }>;
+      ids.push(joined.you.id);
+      sockets.push(socketId);
+    }
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    return { t, hub, ids, sockets };
+  }
+
+  const worldOf = (t: Capture) =>
+    (
+      t.sent.find((m) => m.msg.type === "game/world-init")?.msg as
+        | Extract<ServerMessage, { type: "game/world-init" }>
+        | undefined
+    )?.init;
+
+  // The centre of the door, wherever this session happened to place it.
+  const doorCentre = (t: Capture) => {
+    const exit = worldOf(t)?.exit as { x: number; y: number; width: number; height: number };
+    return { x: exit.x + exit.width / 2, y: exit.y + exit.height / 2 };
+  };
+  const walkTo = (hub: LobbyHub, socketId: string, pos: { x: number; y: number }, seq = 1) =>
+    hub.handleMessage(socketId, JSON.stringify({ type: "game/pos", pos, seq }));
+  const settle = () => new Promise((r) => setTimeout(r, TICK * 4));
+
+  test("a partial squad in the door does not trigger the escape", async () => {
+    const { t, hub, sockets } = match(2);
+    walkTo(hub, sockets[0], doorCentre(t));
+    walkTo(hub, sockets[1], { x: ARENA.width / 2, y: ARENA.height / 2 }); // still at spawn
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+    hub.dispose();
+  });
+
+  test("everyone in at once triggers exactly one match-end, for every client", async () => {
+    const { t, hub, sockets } = match(2);
+    const door = doorCentre(t);
+    walkTo(hub, sockets[0], door);
+    walkTo(hub, sockets[1], { x: door.x + 10, y: door.y });
+    await settle();
+
+    for (const socketId of sockets) {
+      const ends = endsFor(t, socketId);
+      expect(ends).toHaveLength(1); // exactly one, however many ticks elapsed
+      const end = ends[0].msg as Extract<ServerMessage, { type: "game/match-end" }>;
+      expect(end.outcome).toBe("escaped");
+      expect(end.elapsedMs).toBeGreaterThanOrEqual(0);
+    }
+    hub.dispose();
+  });
+
+  test("a dead player standing in the door does not count — they must respawn and walk back", async () => {
+    const { t, hub, sockets } = match(2);
+    const door = doorCentre(t);
+    walkTo(hub, sockets[0], door);
+    walkTo(hub, sockets[1], { x: door.x + 10, y: door.y });
+    hub.handleMessage(sockets[1], JSON.stringify({ type: "game/health", hp: 0, seq: 1 }));
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+
+    hub.handleMessage(sockets[1], JSON.stringify({ type: "game/health", hp: 100, seq: 2 }));
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(1); // back on their feet in the door
+    hub.dispose();
+  });
+
+  test("an in-grace player does not block the escape", async () => {
+    const { t, hub, sockets } = match(2);
+    const door = doorCentre(t);
+    walkTo(hub, sockets[0], door);
+    walkTo(hub, sockets[1], { x: ARENA.width / 2, y: ARENA.height / 2 }); // nowhere near it
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+
+    hub.handleClose(sockets[1]); // their socket drops; the slot is held in grace
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(1);
+    hub.dispose();
+  });
+
+  test("the sim timer is cleared, so no delta rides after the match ends", async () => {
+    const { t, hub, sockets } = match(1);
+    walkTo(hub, sockets[0], doorCentre(t));
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(1);
+
+    const after = t.sent.length;
+    await new Promise((r) => setTimeout(r, TICK * 10));
+    expect(t.sent.length).toBe(after); // nothing more; the interval really is gone
+    hub.dispose();
+  });
+
+  test("the escape is a simultaneity check, not a per-player check-in", async () => {
+    const { t, hub, sockets } = match(2);
+    const door = doorCentre(t);
+    const centre = { x: ARENA.width / 2, y: ARENA.height / 2 };
+    walkTo(hub, sockets[0], door, 1); // P1 arrives…
+    await settle();
+    walkTo(hub, sockets[0], centre, 2); // …and wanders back out
+    walkTo(hub, sockets[1], door, 1); // P2 arrives only now
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0); // they were never both in at once
+    hub.dispose();
+  });
+});
+
+describe("M4-T12: a squad wipe ends the match in a loss", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+
+  const TICK = 5;
+  const endsFor = (t: Capture, socketId: string) =>
+    t.sent.filter((m) => m.socketId === socketId && m.msg.type === "game/match-end");
+  const settle = () => new Promise((r) => setTimeout(r, TICK * 4));
+
+  function match(count: number): { t: Capture; hub: LobbyHub; sockets: string[] } {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: TICK });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "P1" }));
+    const created = t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+    const sockets = ["s1"];
+    for (let i = 2; i <= count; i++) {
+      const socketId = `s${i}`;
+      hub.handleMessage(
+        socketId,
+        JSON.stringify({ type: "lobby/join", code: created.code, name: `P${i}` }),
+      );
+      sockets.push(socketId);
+    }
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    return { t, hub, sockets };
+  }
+
+  const report = (hub: LobbyHub, socketId: string, hp: number, seq = 1) =>
+    hub.handleMessage(socketId, JSON.stringify({ type: "game/health", hp, seq }));
+
+  test("a fresh match, where nobody has reported HP yet, is not a wipe", async () => {
+    const { t, hub, sockets } = match(2);
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+    hub.dispose();
+  });
+
+  test("one living player prevents the wipe", async () => {
+    const { t, hub, sockets } = match(2);
+    report(hub, sockets[0], 0);
+    report(hub, sockets[1], 12);
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+    hub.dispose();
+  });
+
+  test("every connected player dead ends the match at once, as a loss, for everyone", async () => {
+    const { t, hub, sockets } = match(2);
+    report(hub, sockets[0], 0);
+    report(hub, sockets[1], 0);
+    await settle();
+
+    for (const socketId of sockets) {
+      const ends = endsFor(t, socketId);
+      expect(ends).toHaveLength(1);
+      expect((ends[0].msg as Extract<ServerMessage, { type: "game/match-end" }>).outcome).toBe(
+        "wiped",
+      );
+    }
+    hub.dispose();
+  });
+
+  test("a player mid-respawn-countdown is dead for this purpose — no last-stand timer", async () => {
+    // A downed client reports 0 and reports nothing else until it revives, so the countdown is
+    // exactly the window in which the squad can be wiped.
+    const { t, hub, sockets } = match(1);
+    report(hub, sockets[0], 0);
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(1);
+    hub.dispose();
+  });
+
+  test("an in-grace player does not keep the match alive", async () => {
+    const { t, hub, sockets } = match(2);
+    report(hub, sockets[1], 100); // P2 is alive…
+    hub.handleClose(sockets[1]); // …then drops; the slot is held in grace
+    report(hub, sockets[0], 0); // the last connected player dies
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(1);
+    hub.dispose();
+  });
+
+  test("a session with nobody connected is paused, not lost", async () => {
+    const { t, hub, sockets } = match(1);
+    hub.handleClose(sockets[0]);
+    await settle();
+    expect(endsFor(t, sockets[0])).toHaveLength(0);
+    hub.dispose();
+  });
+
+  test("exactly one match-end fires and the sim timer is cleared", async () => {
+    const { t, hub, sockets } = match(1);
+    report(hub, sockets[0], 0);
+    await settle();
+    const after = t.sent.length;
+    await new Promise((r) => setTimeout(r, TICK * 10));
+    expect(t.sent.length).toBe(after); // no further deltas, no second end
+    expect(endsFor(t, sockets[0])).toHaveLength(1);
+    hub.dispose();
+  });
+});
+
+describe("M4 review: a finished match stays finished", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+  const TICK = 5;
+  const settle = () => new Promise((r) => setTimeout(r, TICK * 4));
+  const sentTo = (t: Capture, socketId: string, type: ServerMessage["type"]) =>
+    t.sent.filter((m) => m.socketId === socketId && m.msg.type === type);
+
+  // A solo match wiped to a close, plus the token needed to rejoin it.
+  async function endedMatch(): Promise<{ t: Capture; hub: LobbyHub; code: string; token: string }> {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: TICK, startingMetal: 1_000 });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "P1" }));
+    const created = t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/health", hp: 0, seq: 1 }));
+    await settle();
+    return { t, hub, code: created.code, token: created.you.token };
+  }
+
+  test("a player rejoining after the end gets the result, not a dead world", async () => {
+    const { t, hub, code, token } = await endedMatch();
+    hub.handleClose("s1");
+    hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "P1", token }));
+
+    // Handing back world-init would put them in a box whose sim stopped ticking, with no route
+    // to the end screen.
+    expect(sentTo(t, "s2", "game/world-init")).toHaveLength(0);
+    const ends = sentTo(t, "s2", "game/match-end");
+    expect(ends).toHaveLength(1);
+    const end = ends[0].msg as Extract<ServerMessage, { type: "game/match-end" }>;
+    expect(end.outcome).toBe("wiped");
+    hub.dispose();
+  });
+
+  test("the reported time is frozen at the end, not recomputed on rejoin", async () => {
+    const { t, hub, code, token } = await endedMatch();
+    const first = (
+      sentTo(t, "s1", "game/match-end")[0].msg as Extract<ServerMessage, { type: "game/match-end" }>
+    ).elapsedMs;
+    await new Promise((r) => setTimeout(r, 60));
+    hub.handleClose("s1");
+    hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "P1", token }));
+    const rejoined = (
+      sentTo(t, "s2", "game/match-end")[0].msg as Extract<ServerMessage, { type: "game/match-end" }>
+    ).elapsedMs;
+    expect(rejoined).toBe(first);
+    hub.dispose();
+  });
+
+  test("in-game commands are ignored once the match is over", async () => {
+    // Two players, so a relayed position is observable: with one, `game/pos` fans out to nobody
+    // and the test could not tell a working guard from a broken one.
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: TICK });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "P1" }));
+    const created = t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+    hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code: created.code, name: "P2" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: { x: 1, y: 1 }, seq: 1 }));
+    expect(sentTo(t, "s2", "game/peer-pos")).toHaveLength(1); // relayed while the match is live
+
+    hub.handleMessage("s1", JSON.stringify({ type: "game/health", hp: 0, seq: 1 }));
+    hub.handleMessage("s2", JSON.stringify({ type: "game/health", hp: 0, seq: 1 }));
+    await settle();
+    expect(sentTo(t, "s1", "game/match-end")).toHaveLength(1);
+
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: { x: 2, y: 2 }, seq: 2 }));
+    expect(sentTo(t, "s2", "game/peer-pos")).toHaveLength(1); // still 1: the guard held
+    hub.dispose();
   });
 });

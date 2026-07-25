@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { aimDir, keyToDirection, movesEqual, NO_MOVE } from "./input";
+import { aimDir, keyToBuildSlot, keyToDirection, movesEqual, NO_MOVE } from "./input";
 
 describe("keyToDirection", () => {
   test("maps WASD and arrow keys to directions (case-insensitive)", () => {
@@ -47,5 +47,27 @@ describe("aimDir", () => {
       x: 1,
       y: 0,
     });
+  });
+});
+
+describe("keyToBuildSlot", () => {
+  test("1–4 select their slot, zero-indexed", () => {
+    expect(keyToBuildSlot("1", 4)).toBe(0);
+    expect(keyToBuildSlot("4", 4)).toBe(3);
+  });
+
+  test("Escape cancels the selection", () => {
+    expect(keyToBuildSlot("Escape", 4)).toBe("cancel");
+  });
+
+  test("a number past the last slot is not a build key", () => {
+    expect(keyToBuildSlot("5", 4)).toBeNull();
+    expect(keyToBuildSlot("0", 4)).toBeNull();
+  });
+
+  test("movement and other keys pass through untouched", () => {
+    for (const key of ["w", "a", "s", "d", "ArrowUp", " ", "", "e"]) {
+      expect(keyToBuildSlot(key, 4)).toBeNull();
+    }
   });
 });

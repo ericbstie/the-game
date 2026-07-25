@@ -20,6 +20,10 @@ const EXIT_THICK = 98; // door depth ≈ 3.5× player diameter, readable against
 // The door length is a fraction of the arena, so it scales with the box instead of vanishing.
 const EXIT_LONG_FRAC = 0.03; // door length along its wall ≈ 936 u at 31,200
 
+// The outer ring where the danger lives: nests sit in it and ore thickens toward it. Shared
+// geometry, so the enemy sim and the ore generator agree on where "the edge" begins.
+export const DANGER_BAND_FRAC = 0.08;
+
 export interface SpawnPlayer {
   id: PlayerId;
   slot: number;
@@ -33,10 +37,14 @@ export interface WorldOptions {
 
 export function generateWorld(players: SpawnPlayer[], options: WorldOptions = {}): WorldInit {
   const arena = options.arena ?? ARENA;
+  const rng = options.rng ?? Math.random;
   return {
     arena,
-    exit: placeExit(arena, options.rng ?? Math.random),
+    exit: placeExit(arena, rng),
     spawns: players.map((p) => spawn(p, arena)),
+    // Only the seed travels: every client expands it into the same ore grid locally, so the
+    // ~7k ore tiles never touch the wire and never grow the reconnect keyframe.
+    oreSeed: Math.floor(rng() * 0x1_0000_0000),
   };
 }
 
@@ -53,6 +61,52 @@ export function stepPos(pos: Vec2, input: MoveInput, dtMs: number, arena: Arena)
   return {
     x: clamp(pos.x + dx * PLAYER_SPEED * dt, PLAYER_RADIUS, arena.width - PLAYER_RADIUS),
     y: clamp(pos.y + dy * PLAYER_SPEED * dt, PLAYER_RADIUS, arena.height - PLAYER_RADIUS),
+  };
+}
+
+// Is an avatar standing in the escape door? Measured on its centre, which is generous enough at
+// a 98 × 936 door that "I'm clearly in it" and "the check passes" never disagree.
+export function insideExit(pos: Vec2, exit: Exit): boolean {
+  return (
+    pos.x >= exit.x &&
+    pos.x <= exit.x + exit.width &&
+    pos.y >= exit.y &&
+    pos.y <= exit.y + exit.height
+  );
+}
+
+// A circle the avatar cannot stand inside — an enemy, as the owner's client renders it.
+export interface Body {
+  pos: Vec2;
+  radius: number;
+}
+
+// Push the avatar clear of every body it overlaps, accumulating one displacement per body.
+//
+// Soft-push, not a hard stop: pressing into a grunt slows you and shoves you back out rather
+// than blocking the move outright. Accumulating is what prevents a hard trap — surrounded on
+// three sides, the three pushes sum to a vector pointing out the fourth.
+export function pushOutOfBodies(pos: Vec2, radius: number, bodies: Body[], arena: Arena): Vec2 {
+  let { x, y } = pos;
+  for (const body of bodies) {
+    const dx = x - body.pos.x;
+    const dy = y - body.pos.y;
+    const dist = Math.hypot(dx, dy);
+    const apart = radius + body.radius;
+    if (dist >= apart) continue;
+    // Dead-centre overlap has no direction to push along; break the tie deterministically so
+    // two clients never disagree about which way you popped out.
+    if (dist === 0) {
+      x += apart;
+      continue;
+    }
+    const push = apart - dist;
+    x += (dx / dist) * push;
+    y += (dy / dist) * push;
+  }
+  return {
+    x: clamp(x, PLAYER_RADIUS, arena.width - PLAYER_RADIUS),
+    y: clamp(y, PLAYER_RADIUS, arena.height - PLAYER_RADIUS),
   };
 }
 

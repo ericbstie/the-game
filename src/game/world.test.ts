@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { ARENA, generateWorld, PLAYER_RADIUS, PLAYER_SPEED, stepPos } from "./world";
+import {
+  ARENA,
+  generateWorld,
+  insideExit,
+  PLAYER_RADIUS,
+  PLAYER_SPEED,
+  pushOutOfBodies,
+  stepPos,
+} from "./world";
 
 const players = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, slot: i + 1, name: `P${i + 1}` }));
@@ -98,5 +106,88 @@ describe("stepPos", () => {
     const start = { x: 100, y: 100 };
     stepPos(start, held("right"), 100, ARENA);
     expect(start).toEqual({ x: 100, y: 100 });
+  });
+});
+
+describe("pushOutOfBodies (M4-T6: player↔enemy soft-push)", () => {
+  const body = (x: number, y: number, radius = 16) => ({ pos: { x, y }, radius });
+  const R = PLAYER_RADIUS;
+
+  test("a player pressed into an enemy ends outside it", () => {
+    const enemy = body(1_000, 1_000);
+    const inside = { x: 1_005, y: 1_000 }; // well inside the combined radii
+    const out = pushOutOfBodies(inside, R, [enemy], ARENA);
+    expect(Math.hypot(out.x - enemy.pos.x, out.y - enemy.pos.y)).toBeCloseTo(R + enemy.radius, 6);
+  });
+
+  test("a player clear of every body is left exactly where it was", () => {
+    const pos = { x: 1_000, y: 1_000 };
+    expect(pushOutOfBodies(pos, R, [body(2_000, 2_000)], ARENA)).toEqual(pos);
+  });
+
+  test("exactly co-located resolves deterministically instead of dividing by zero", () => {
+    const at = { x: 1_000, y: 1_000 };
+    const out = pushOutOfBodies(at, R, [body(at.x, at.y)], ARENA);
+    expect(Number.isFinite(out.x) && Number.isFinite(out.y)).toBe(true);
+    expect(out).not.toEqual(at);
+  });
+
+  test("surrounded on three sides, the pushes sum to an escape along the fourth", () => {
+    const at = { x: 1_000, y: 1_000 };
+    const near = R + 16 - 5; // just inside contact on each side
+    const out = pushOutOfBodies(
+      at,
+      R,
+      [body(at.x - near, at.y), body(at.x, at.y - near), body(at.x, at.y + near)],
+      ARENA,
+    );
+    expect(out.x).toBeGreaterThan(at.x); // shoved out the open east side
+
+    // Pushes accumulate one body at a time, so a single frame need not clear all three at once.
+    // What matters is that repeated frames converge out of the pocket rather than trapping you.
+    let p = at;
+    const bodies = [body(at.x - near, at.y), body(at.x, at.y - near), body(at.x, at.y + near)];
+    for (let i = 0; i < 20; i++) p = pushOutOfBodies(p, R, bodies, ARENA);
+    for (const b of bodies) {
+      expect(Math.hypot(p.x - b.pos.x, p.y - b.pos.y)).toBeGreaterThanOrEqual(R + b.radius - 1e-6);
+    }
+  });
+
+  test("a shove never puts the avatar through an arena wall", () => {
+    const atWall = { x: PLAYER_RADIUS, y: 1_000 };
+    const out = pushOutOfBodies(atWall, R, [body(atWall.x + 5, atWall.y)], ARENA);
+    expect(out.x).toBeGreaterThanOrEqual(PLAYER_RADIUS);
+  });
+
+  test("does not mutate the position it was given", () => {
+    const at = { x: 1_000, y: 1_000 };
+    pushOutOfBodies(at, R, [body(1_005, 1_000)], ARENA);
+    expect(at).toEqual({ x: 1_000, y: 1_000 });
+  });
+});
+
+describe("insideExit (M4-T11: standing in the door)", () => {
+  const exit = { x: 100, y: 200, width: 936, height: 98 };
+
+  test("a point inside the door rect is in", () => {
+    expect(insideExit({ x: 500, y: 250 }, exit)).toBe(true);
+  });
+
+  test("the rect's own corners and edges count as in", () => {
+    expect(insideExit({ x: 100, y: 200 }, exit)).toBe(true);
+    expect(insideExit({ x: 1036, y: 298 }, exit)).toBe(true);
+  });
+
+  test("a point just outside on any side is out", () => {
+    expect(insideExit({ x: 99, y: 250 }, exit)).toBe(false);
+    expect(insideExit({ x: 1037, y: 250 }, exit)).toBe(false);
+    expect(insideExit({ x: 500, y: 199 }, exit)).toBe(false);
+    expect(insideExit({ x: 500, y: 299 }, exit)).toBe(false);
+  });
+
+  test("the door a real world generates is somewhere a player can actually stand", () => {
+    const { exit: placed } = generateWorld(players(1), { rng: () => 0.5 });
+    const centre = { x: placed.x + placed.width / 2, y: placed.y + placed.height / 2 };
+    expect(insideExit(centre, placed)).toBe(true);
   });
 });

@@ -8,11 +8,28 @@ import type {
   NestDelta,
   NestSnapshot,
   PlayerId,
+  StructureHit,
   Vec2,
   WaveDelta,
-  Weapon,
   WorldInit,
 } from "../lobby/protocol";
+import {
+  ActivationQueue,
+  type BuildState,
+  pushOutOfSolids,
+  removeStructure,
+  type Structure,
+  structureBlocking,
+  structureCenter,
+  structureRadius,
+  TURRET_ACTIVE_DRAW,
+  TURRET_CADENCE_MS,
+  TURRET_DAMAGE,
+  TURRET_IDLE_DRAW,
+  TURRET_RANGE,
+  type TurretRuntime,
+} from "./build";
+import { DANGER_BAND_FRAC, PLAYER_RADIUS } from "./world";
 
 // The box world's dynamic side (Milestone 3): a pure, server-authoritative enemy simulation.
 // `spawnEnemyState` seeds the initial enemies from the immutable world-init; `stepEnemies`
@@ -65,17 +82,12 @@ export function enemyContactCadenceMs(kind: EnemyKind): number {
   return STATS[kind].contactCadenceMs;
 }
 
-// Player weapons (M3 minimal model). Melee is a cleave wedge; ranged (#41) is a hitscan ray.
-export const MELEE_RANGE = 70; // reach of the swing, measured origin → enemy edge
-export const MELEE_ARC = 120; // total wedge angle in degrees; half of this each side of `dir`
-export const MELEE_DAMAGE = 3;
-export const MELEE_CADENCE_MS = 400; // server-enforced min gap between melee swings (anti-nuke)
-
-// Ranged — a hitscan ray (no projectile entity, no per-tick wire state). Reach + DPS.
+// The player's one weapon (M4 retired M3's melee/ranged pair so right-click could become
+// hand-mining): a hitscan ray — no projectile entity, no per-tick wire state. Reach + DPS.
 export const RANGED_RANGE = 700; // how far the ray reaches from the origin
 export const RANGED_HALFWIDTH = 24; // the ray's half-thickness; an enemy within it is on-line
 export const RANGED_DAMAGE = 1;
-export const RANGED_CADENCE_MS = 180; // ranged fires faster than melee
+export const RANGED_CADENCE_MS = 180;
 
 // The server's loose anti-teleport-aim tolerance: a reported swing origin this far from the
 // player's last relayed position is rejected. Generous enough to survive relay lag (a player
@@ -98,13 +110,6 @@ export const WAVE_PERIOD_MS = 30_000; // first wave at 0:30, then every 30 s
 export const WAVE_TELEGRAPH_MS = 3_000; // nest-pulse prep window before a wave (visuals deferred)
 export const ENEMY_CAP = 240; // hard concurrency governor; a nest holds its remainder at the cap
 
-// Danger-band geometry mirrors world.ts: nests and enemies live in the outer ring near the walls.
-const DANGER_BAND_FRAC = 0.08;
-
-function weaponCadence(weapon: Weapon): number {
-  return weapon === "melee" ? MELEE_CADENCE_MS : RANGED_CADENCE_MS;
-}
-
 // A point's bearing from arena center, in degrees normalized to [0, 360).
 export function angleOf(pos: Vec2, arena: Arena): number {
   const deg = (Math.atan2(pos.y - arena.height / 2, pos.x - arena.width / 2) * 180) / Math.PI;
@@ -126,15 +131,22 @@ function enemySpeed(kind: EnemyKind): number {
   return STATS[kind].speed;
 }
 
+// What an enemy has locked on to. Players and structures share the same aggro radius, but a
+// player always outranks a structure — the squad is the threat, the base is the consolation.
+export type EnemyTarget = { kind: "player"; id: PlayerId } | { kind: "structure"; id: string };
+
 // One live enemy. `sector` is the 45° wedge it was spawned into (inherited from its nest);
-// `target` is the player it is currently chasing (ENGAGED), recomputed each tick.
+// `target` is what it is currently chasing (ENGAGED), held until that target dies or leaves
+// range. `biteMs` counts down to its next bite on a structure — driven by the injected `dtMs`,
+// never a clock, so the sim stays deterministic.
 export interface Enemy {
   id: string;
   kind: EnemyKind;
   pos: Vec2;
   hp: number;
   sector: number;
-  target?: PlayerId;
+  biteMs: number;
+  target?: EnemyTarget;
 }
 
 // A spawner nest: static position/sector, dynamic hp/alive. Killing it silences its sector (#44).
@@ -152,10 +164,9 @@ export interface PlayerRef {
   pos: Vec2;
 }
 
-// A server-validated attack the sim resolves against enemy HP. `pos` is the swing origin,
+// A server-validated shot the sim resolves against enemy HP. `pos` is the shot origin,
 // `dir` a unit aim vector. The hub admits it (cadence/range/seq) before it reaches the sim.
 export interface Attack {
-  weapon: Weapon;
   pos: Vec2;
   dir: Vec2;
 }
@@ -170,18 +181,20 @@ export interface EnemyEvents {
   deaths: string[];
   nests: NestDelta[];
   wave: WaveDelta | null;
+  // Structures chewed on this tick, and the ids of any that fell. Sparse, mirroring hits/deaths.
+  structHits: StructureHit[];
+  removals: string[];
 }
 
-// Per-player attack admission state (server-side). `seq` guards apply-if-newer; the two
-// timestamps rate-limit each weapon independently.
+// Per-player attack admission state (server-side). `seq` guards apply-if-newer; `lastAt`
+// rate-limits the weapon.
 export interface AttackGuard {
   seq: number;
-  meleeAt: number;
-  rangedAt: number;
+  lastAt: number;
 }
 
 export function freshGuard(): AttackGuard {
-  return { seq: -1, meleeAt: Number.NEGATIVE_INFINITY, rangedAt: Number.NEGATIVE_INFINITY };
+  return { seq: -1, lastAt: Number.NEGATIVE_INFINITY };
 }
 
 // Decide whether to accept a reported attack, mutating `guard` as a side effect. Pure in its
@@ -190,22 +203,20 @@ export function freshGuard(): AttackGuard {
 // resists teleport-aim; the seq drops stale/duplicate reports (the `game/pos` idiom).
 export function admitAttack(
   guard: AttackGuard,
-  report: { weapon: Weapon; pos: Vec2; seq: number },
+  report: { pos: Vec2; seq: number },
   lastPos: Vec2 | null,
   now: number,
 ): boolean {
   if (report.seq <= guard.seq) return false; // stale or duplicate
   guard.seq = report.seq;
-  const lastAt = report.weapon === "melee" ? guard.meleeAt : guard.rangedAt;
-  if (now - lastAt < weaponCadence(report.weapon)) return false; // too soon
+  if (now - guard.lastAt < RANGED_CADENCE_MS) return false; // too soon
   if (
     lastPos &&
     Math.hypot(report.pos.x - lastPos.x, report.pos.y - lastPos.y) > ATTACK_POS_TOLERANCE
   ) {
     return false; // teleport-aim
   }
-  if (report.weapon === "melee") guard.meleeAt = now;
-  else guard.rangedAt = now;
+  guard.lastAt = now;
   return true;
 }
 
@@ -284,25 +295,71 @@ export function spawnEnemyState(world: WorldInit, rng: () => number = Math.rando
 
 // Advance the whole sim one tick. Mutates `state` in place (one state per session, stepped at
 // 20 Hz) and returns the same reference plus the events to broadcast. Deterministic in
-// (state, players, attacks, dtMs). Attacks resolve first (so a killed enemy neither moves nor
-// appears in `moves` this tick), then survivors chase.
+// (state, players, attacks, build, dtMs). Attacks resolve first (so a killed enemy neither moves
+// nor appears in `moves` this tick), then survivors chase and chew.
 export function stepEnemies(
   state: EnemyState,
   players: PlayerRef[],
   attacks: Attack[],
   dtMs: number,
+  build: BuildState | null = null,
 ): { state: EnemyState; events: EnemyEvents } {
-  const { spawns, wave } = tickWaves(state, dtMs);
-  const { hits, deaths, nests } = resolveAttacks(state, attacks);
+  const { spawns, wave } = tickWaves(state, dtMs, build);
+  // Player shots and turret fire land in the same damage pass, so a target struck by both this
+  // tick reports once. The sim stays the sole writer of enemy and nest HP either way.
+  const enemiesHit = new Set<string>();
+  const nestsHit = new Set<string>();
+  applyAttacks(state, attacks, enemiesHit, nestsHit);
+  stepTurrets(state, build, dtMs, enemiesHit, nestsHit);
+  const { hits, deaths, nests } = reapDamage(state, enemiesHit, nestsHit);
 
-  const dt = dtMs / 1000;
-  const center = { x: state.arena.width / 2, y: state.arena.height / 2 };
-  const holdEdge = Math.min(state.arena.width, state.arena.height) * HOLD_EDGE_FRAC;
-  for (const enemy of state.enemies.values()) stepEnemy(enemy, players, center, holdEdge, dt);
+  const context: StepContext = {
+    players,
+    build,
+    center: { x: state.arena.width / 2, y: state.arena.height / 2 },
+    holdEdge: Math.min(state.arena.width, state.arena.height) * HOLD_EDGE_FRAC,
+    dtMs,
+    damaged: new Set<string>(),
+  };
+  for (const enemy of state.enemies.values()) stepEnemy(enemy, context);
 
   const moves: EnemyMove[] = [];
   for (const enemy of state.enemies.values()) moves.push([enemy.id, enemy.pos.x, enemy.pos.y]);
-  return { state, events: { moves, spawns, hits, deaths, nests, wave } };
+  return {
+    state,
+    events: { moves, spawns, hits, deaths, nests, wave, ...reapStructures(context) },
+  };
+}
+
+// Everything one enemy's step reads, plus the structures it chewed on. Bundled so `stepEnemy`
+// keeps a single parameter as targeting grows.
+interface StepContext {
+  players: PlayerRef[];
+  build: BuildState | null;
+  center: Vec2;
+  holdEdge: number;
+  dtMs: number;
+  damaged: Set<string>; // structure ids bitten this tick, resolved into hits/removals at the end
+}
+
+// Turn this tick's structure damage into wire events. A structure at 0 HP is simply removed —
+// nothing explodes, and there is no repair (demolish and rebuild is the only restoration).
+function reapStructures(context: StepContext): { structHits: StructureHit[]; removals: string[] } {
+  const structHits: StructureHit[] = [];
+  const removals: string[] = [];
+  const build = context.build;
+  if (!build) return { structHits, removals };
+  for (const id of context.damaged) {
+    const structure = build.structures.get(id);
+    if (!structure) continue;
+    if (structure.hp <= 0) {
+      removeStructure(build, id);
+      removals.push(id);
+    } else {
+      structHits.push({ id, hp: structure.hp });
+    }
+  }
+  return { structHits, removals };
 }
 
 // Advance the wave clock; when it reaches zero, fire the next wave and re-arm it. Real ticks are
@@ -310,25 +367,29 @@ export function stepEnemies(
 function tickWaves(
   state: EnemyState,
   dtMs: number,
+  build: BuildState | null,
 ): { spawns: EnemySpawn[]; wave: WaveDelta | null } {
   state.msUntilWave -= dtMs;
   if (state.msUntilWave > 0) return { spawns: [], wave: null };
   state.msUntilWave += WAVE_PERIOD_MS;
-  const spawns = spawnWave(state);
+  const spawns = spawnWave(state, build);
   return { spawns, wave: { index: state.waveIndex, clockMs: state.msUntilWave } };
 }
 
 // Every still-active nest emits `2 + w` grunts into its own sector, plus `max(0, w−2)` elites
 // spread across distinct nests (none before wave 3), all up to the concurrency cap. A nest that
 // would breach ENEMY_CAP holds its remainder rather than spawning it.
-function spawnWave(state: EnemyState): EnemySpawn[] {
+function spawnWave(state: EnemyState, build: BuildState | null): EnemySpawn[] {
   state.waveIndex += 1;
   const w = state.waveIndex;
   const active = state.nests.filter((n) => n.alive);
   const spawns: EnemySpawn[] = [];
   const emit = (kind: EnemyKind, nest: Nest): boolean => {
     if (state.enemies.size >= ENEMY_CAP) return false; // cap governor holds the remainder
-    spawns.push(addEnemy(state, kind, jitter(nest.pos, state.rng), nest.sector));
+    // A nest walled in is a legitimate strategy, so a wave that lands inside a footprint still
+    // spawns — the overlapping enemy is simply pushed clear.
+    const at = pushOutOfSolids(build, jitter(nest.pos, state.rng), enemyRadius(kind));
+    spawns.push(addEnemy(state, kind, at, nest.sector));
     return true;
   };
   for (const nest of active) {
@@ -347,42 +408,146 @@ function jitter(pos: Vec2, rng: () => number): Vec2 {
   };
 }
 
-// Apply every admitted attack to enemy and nest HP — this sim is the sole writer. Melee cleaves
-// every enemy/nest in its wedge; ranged strikes the single nearest target (enemy or nest) along
-// its ray. Damage accumulates across attacks; an enemy hit then killed reports only its death.
-function resolveAttacks(
+// Apply every admitted shot to enemy and nest HP — this sim is the sole writer. A shot strikes
+// the single nearest target (enemy or nest) along its ray.
+function applyAttacks(
   state: EnemyState,
   attacks: Attack[],
-): { hits: EnemyHit[]; deaths: string[]; nests: NestDelta[] } {
-  const enemiesHit = new Set<string>();
-  const nestsHit = new Set<string>();
+  enemiesHit: Set<string>,
+  nestsHit: Set<string>,
+): void {
   for (const attack of attacks) {
-    const damage = attack.weapon === "melee" ? MELEE_DAMAGE : RANGED_DAMAGE;
-    if (attack.weapon === "melee") {
-      for (const enemy of state.enemies.values()) {
-        if (enemy.hp > 0 && inMeleeWedge(attack, enemy.pos, enemyRadius(enemy.kind))) {
-          enemy.hp -= damage;
-          enemiesHit.add(enemy.id);
-        }
-      }
-      for (const nest of state.nests) {
-        if (nest.alive && inMeleeWedge(attack, nest.pos, NEST_RADIUS)) {
-          nest.hp -= damage;
-          nestsHit.add(nest.id);
-        }
-      }
-    } else {
-      const hit = nearestRayHit(state, attack);
-      if (hit?.enemy) {
-        hit.enemy.hp -= damage;
-        enemiesHit.add(hit.enemy.id);
-      } else if (hit?.nest) {
-        hit.nest.hp -= damage;
-        nestsHit.add(hit.nest.id);
-      }
+    const hit = nearestRayHit(state, attack);
+    if (hit?.enemy) {
+      hit.enemy.hp -= RANGED_DAMAGE;
+      enemiesHit.add(hit.enemy.id);
+    } else if (hit?.nest) {
+      hit.nest.hp -= RANGED_DAMAGE;
+      nestsHit.add(hit.nest.id);
     }
   }
+}
 
+// Advance every turret one tick: hold or re-acquire a target, settle the power budget, and let
+// the turrets that won power fire on their own cadence.
+//
+// A turret strikes the nearest thing in range — enemy or nest, whichever is closer, with no
+// lowest-HP or elite priority. Hitscan straight through walls and structures: turrets need no
+// line of sight and no firing lane, so there is deliberately no ray-vs-structure test here.
+// Nests are legitimate targets, so a forward turret line sieges one unattended.
+function stepTurrets(
+  state: EnemyState,
+  build: BuildState | null,
+  dtMs: number,
+  enemiesHit: Set<string>,
+  nestsHit: Set<string>,
+): void {
+  if (!build) return;
+  const turrets = [...build.structures.values()].filter((s) => s.turret !== undefined);
+  if (turrets.length === 0) {
+    build.power.consumption = 0;
+    return;
+  }
+
+  // Every standing turret draws idle, simply for existing. That is committed before anything
+  // gets to activate, which is what makes over-building starve the grid rather than break it.
+  let committed = turrets.length * TURRET_IDLE_DRAW;
+  const wants: Structure[] = []; // turrets with a target but no power, in the order they asked
+  const engaged = new Map<string, TurretTarget>();
+
+  for (const turret of turrets) {
+    const runtime = turret.turret as TurretRuntime;
+    runtime.cooldownMs = Math.max(0, runtime.cooldownMs - dtMs);
+    const from = structureCenter(turret);
+    // Sticky power is tied to the target: losing it is the one thing that releases the slot.
+    const held = heldTarget(state, runtime.targetId, from);
+    if (!held) {
+      runtime.powered = false;
+      runtime.targetId = null;
+    }
+    const target = held ?? nearestTarget(state, from, TURRET_RANGE);
+    if (!target) continue; // nothing to shoot: it stands there drawing idle
+    runtime.targetId = target.enemy?.id ?? target.nest?.id ?? null;
+    engaged.set(turret.id, target);
+    // An already-firing turret keeps its reservation and is never re-queued — that is what stops
+    // the budget flickering between two turrets tick after tick.
+    if (runtime.powered) committed += TURRET_ACTIVE_DRAW;
+    else wants.push(turret);
+  }
+
+  const queue = new ActivationQueue(build.power.generation, committed);
+  for (const turret of wants) queue.request(turret);
+  queue.drain();
+  // Over-building is legal, so the reported draw is clamped at the ceiling: the consequence is
+  // that nothing has headroom left to activate, not a number that reads as broken.
+  build.power.consumption = Math.min(queue.committed, build.power.generation);
+
+  for (const turret of turrets) {
+    const runtime = turret.turret as TurretRuntime;
+    const target = engaged.get(turret.id);
+    if (!runtime.powered || !target || runtime.cooldownMs > 0) continue;
+    runtime.cooldownMs = TURRET_CADENCE_MS;
+    if (target.enemy) {
+      target.enemy.hp -= TURRET_DAMAGE;
+      enemiesHit.add(target.enemy.id);
+    } else if (target.nest) {
+      target.nest.hp -= TURRET_DAMAGE;
+      nestsHit.add(target.nest.id);
+    }
+  }
+}
+
+type TurretTarget = { enemy?: Enemy; nest?: Nest };
+
+// A turret's held target, still alive and still in range — or null, which releases its power.
+function heldTarget(state: EnemyState, id: string | null, from: Vec2): TurretTarget | null {
+  if (id === null) return null;
+  const inRange = (pos: Vec2) => Math.hypot(pos.x - from.x, pos.y - from.y) <= TURRET_RANGE;
+  const enemy = state.enemies.get(id);
+  if (enemy) return enemy.hp > 0 && inRange(enemy.pos) ? { enemy } : null;
+  const nest = state.nests.find((n) => n.id === id);
+  if (nest) return nest.alive && inRange(nest.pos) ? { nest } : null;
+  return null;
+}
+
+// The nearest live enemy or standing nest within `range` of a point, by centre distance.
+function nearestTarget(
+  state: EnemyState,
+  from: Vec2,
+  range: number,
+): { enemy?: Enemy; nest?: Nest } | null {
+  let bestDist = range;
+  let bestEnemy: Enemy | undefined;
+  let bestNest: Nest | undefined;
+  for (const enemy of state.enemies.values()) {
+    if (enemy.hp <= 0) continue;
+    const dist = Math.hypot(enemy.pos.x - from.x, enemy.pos.y - from.y);
+    if (dist <= bestDist) {
+      bestDist = dist;
+      bestEnemy = enemy;
+      bestNest = undefined;
+    }
+  }
+  for (const nest of state.nests) {
+    if (!nest.alive) continue;
+    const dist = Math.hypot(nest.pos.x - from.x, nest.pos.y - from.y);
+    if (dist <= bestDist) {
+      bestDist = dist;
+      bestNest = nest;
+      bestEnemy = undefined;
+    }
+  }
+  if (!bestEnemy && !bestNest) return null;
+  return { enemy: bestEnemy, nest: bestNest };
+}
+
+// Turn this tick's accumulated damage into wire events. An enemy hit and then killed reports
+// only its death.
+function reapDamage(
+  state: EnemyState,
+  enemiesHit: Set<string>,
+  nestsHit: Set<string>,
+): { hits: EnemyHit[]; deaths: string[]; nests: NestDelta[] } {
   const hits: EnemyHit[] = [];
   const deaths: string[] = [];
   for (const id of enemiesHit) {
@@ -407,19 +572,6 @@ function resolveAttacks(
     nests.push({ id: nest.id, hp: nest.hp, alive: nest.alive });
   }
   return { hits, deaths, nests };
-}
-
-// Is a circle at `pos` (of the given radius) inside the melee cleave wedge? Within reach of the
-// origin and inside the arc around `dir`. A degenerate zero-length aim skips the arc test.
-function inMeleeWedge(attack: Attack, pos: Vec2, radius: number): boolean {
-  const dx = pos.x - attack.pos.x;
-  const dy = pos.y - attack.pos.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist > MELEE_RANGE + radius) return false;
-  const dirLen = Math.hypot(attack.dir.x, attack.dir.y);
-  if (dist === 0 || dirLen === 0) return true;
-  const cos = (attack.dir.x * dx + attack.dir.y * dy) / (dirLen * dist);
-  return Math.acos(clampUnit(cos)) <= (MELEE_ARC / 2) * (Math.PI / 180);
 }
 
 // The single nearest target a hitscan ray reaches — an enemy or a nest, whichever is closer
@@ -453,43 +605,132 @@ function nearestRayHit(state: EnemyState, attack: Attack): { enemy?: Enemy; nest
   return best === null ? null : { enemy: best.enemy, nest: best.nest };
 }
 
-function clampUnit(value: number): number {
-  return Math.max(-1, Math.min(1, value));
-}
-
 // One enemy's pure geometric step — one of three states:
-//   ENGAGED — a player within AGGRO_RADIUS → chase the nearest, never overshooting it.
+//   ENGAGED — a player or structure within AGGRO_RADIUS → chase it, never overshooting; chew on
+//             it once in contact.
 //   MARCH   — un-aggroed and still outside the hold edge → advance toward center, stopping
 //             exactly at the edge (so it never floods the safe center).
 //   HOLD    — un-aggroed and at/inside the hold edge → stop. A wave forms a front line here.
-function stepEnemy(
-  enemy: Enemy,
-  players: PlayerRef[],
-  center: Vec2,
-  holdEdge: number,
-  dt: number,
-): void {
-  const speed = enemySpeed(enemy.kind) * dt;
-  const target = nearestWithin(players, enemy.pos, AGGRO_RADIUS);
-  if (target) {
-    enemy.target = target.id;
-    stepToward(enemy, target.pos, speed); // ENGAGED
+function stepEnemy(enemy: Enemy, context: StepContext): void {
+  enemy.biteMs = Math.max(0, enemy.biteMs - context.dtMs);
+  const speed = enemySpeed(enemy.kind) * (context.dtMs / 1000);
+  const engaged = acquire(enemy, context);
+  if (engaged) {
+    stepToward(enemy, engaged.pos, speed, context); // ENGAGED
     return;
   }
-  enemy.target = undefined;
+  const { center, holdEdge } = context;
   const distFromCenter = Math.hypot(center.x - enemy.pos.x, center.y - enemy.pos.y);
   if (distFromCenter <= holdEdge) return; // HOLD
-  stepToward(enemy, center, Math.min(speed, distFromCenter - holdEdge)); // MARCH, capped at the edge
+  // MARCH, capped at the edge so it never floods the safe centre.
+  stepToward(enemy, center, Math.min(speed, distFromCenter - holdEdge), context);
 }
 
-// Move the enemy toward `to` by up to `maxTravel`, never past it.
-function stepToward(enemy: Enemy, to: Vec2, maxTravel: number): void {
+interface Engagement {
+  pos: Vec2;
+  radius: number;
+  structure?: Structure;
+}
+
+// Decide what this enemy is chasing, and set `enemy.target` to match.
+//
+// Lock and commit: a held target is kept until it dies or leaves AGGRO_RADIUS — an enemy chasing
+// you will not swap to a closer teammate. The one override is priority: a player in range always
+// beats a structure, so walking into a wave pulls it off your miner.
+function acquire(enemy: Enemy, context: StepContext): Engagement | null {
+  const held = resolveTarget(enemy.target, enemy.pos, context);
+  if (held && enemy.target?.kind === "player") return held;
+
+  const player = nearestWithin(context.players, enemy.pos, AGGRO_RADIUS);
+  if (player) {
+    enemy.target = { kind: "player", id: player.id };
+    return { pos: player.pos, radius: PLAYER_RADIUS };
+  }
+  if (held) return held; // still locked on its structure; no player has shown up to outrank it
+
+  const structure = nearestStructureWithin(context.build, enemy.pos, AGGRO_RADIUS);
+  if (structure) {
+    enemy.target = { kind: "structure", id: structure.id };
+    return { pos: structureCenter(structure), radius: structureRadius(structure), structure };
+  }
+  enemy.target = undefined;
+  return null;
+}
+
+// Where a held target is now, or null if it has died, disconnected, or left the aggro radius —
+// the only two things that break a lock.
+function resolveTarget(
+  target: EnemyTarget | undefined,
+  from: Vec2,
+  context: StepContext,
+): Engagement | null {
+  if (!target) return null;
+  const engagement = (): Engagement | null => {
+    if (target.kind === "player") {
+      const player = context.players.find((p) => p.id === target.id);
+      return player ? { pos: player.pos, radius: PLAYER_RADIUS } : null;
+    }
+    const structure = context.build?.structures.get(target.id);
+    if (!structure) return null;
+    return { pos: structureCenter(structure), radius: structureRadius(structure), structure };
+  };
+  const held = engagement();
+  if (!held) return null;
+  const dist = Math.hypot(held.pos.x - from.x, held.pos.y - from.y);
+  return dist <= AGGRO_RADIUS ? held : null;
+}
+
+// Chew on the structure in front of this enemy, on its own per-kind contact cadence. The sim is
+// the sole writer of structure HP, exactly as it is for enemy and nest HP.
+function bite(enemy: Enemy, structure: Structure, context: StepContext): void {
+  if (enemy.biteMs > 0) return;
+  structure.hp -= enemyContactDamage(enemy.kind);
+  enemy.biteMs = enemyContactCadenceMs(enemy.kind);
+  context.damaged.add(structure.id);
+}
+
+// The nearest structure within `radius`, or null. An enemy diverts to any structure it detects —
+// this is not limited to ones standing in its path.
+function nearestStructureWithin(
+  build: BuildState | null,
+  from: Vec2,
+  radius: number,
+): Structure | null {
+  if (!build) return null;
+  let best: Structure | null = null;
+  let bestDist = radius;
+  for (const s of build.structures.values()) {
+    const c = structureCenter(s);
+    const d = Math.hypot(c.x - from.x, c.y - from.y);
+    if (d <= bestDist) {
+      bestDist = d;
+      best = s;
+    }
+  }
+  return best;
+}
+
+// Move the enemy toward `to` by up to `maxTravel`, never past it — unless a structure is in the
+// way, in which case it stops and bashes that structure instead.
+//
+// There is no pathfinding: at ENEMY_CAP 240 across a 31,200² arena a nav-grid costs more than the
+// behaviour is worth (#49). The accepted price is that an enemy will chew a stray open-field wall
+// rather than walk around its end. It is also what makes walling a nest in a real strategy — the
+// enemies inside attack the wall.
+function stepToward(enemy: Enemy, to: Vec2, maxTravel: number, context: StepContext): void {
   const dx = to.x - enemy.pos.x;
   const dy = to.y - enemy.pos.y;
   const len = Math.hypot(dx, dy);
-  if (len === 0 || maxTravel <= 0) return;
-  const t = Math.min(maxTravel, len);
-  enemy.pos = { x: enemy.pos.x + (dx / len) * t, y: enemy.pos.y + (dy / len) * t };
+  const travel = len === 0 ? 0 : Math.min(Math.max(maxTravel, 0), len);
+  // Probing from the enemy's own position when it cannot travel is deliberate: one already
+  // pressed against a structure keeps chewing rather than needing room to move first.
+  const next =
+    travel === 0
+      ? enemy.pos
+      : { x: enemy.pos.x + (dx / len) * travel, y: enemy.pos.y + (dy / len) * travel };
+  const blocker = structureBlocking(context.build, next, enemyRadius(enemy.kind));
+  if (blocker) bite(enemy, blocker, context);
+  else enemy.pos = next;
 }
 
 // The nearest player, but only if within `radius` — otherwise the enemy is un-aggroed.
@@ -511,6 +752,6 @@ function nearestWithin(players: PlayerRef[], from: Vec2, radius: number): Player
 function addEnemy(state: EnemyState, kind: EnemyKind, pos: Vec2, sector: number): EnemySpawn {
   const id = `e${state.nextId++}`;
   const hp = STATS[kind].hp;
-  state.enemies.set(id, { id, kind, pos: { ...pos }, hp, sector });
+  state.enemies.set(id, { id, kind, pos: { ...pos }, hp, sector, biteMs: 0 });
   return { id, kind, pos: { ...pos }, hp, sector };
 }

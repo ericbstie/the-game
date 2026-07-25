@@ -1,6 +1,7 @@
 import type {
   Arena,
   Avatar,
+  Bank,
   EnemyKind,
   EnemySnapshot,
   Exit,
@@ -8,12 +9,23 @@ import type {
   MoveInput,
   NestSnapshot,
   PlayerId,
+  Power,
   RenderedEnemy,
   RenderedNest,
+  StructureSpawn,
   Vec2,
   WorldInit,
   WorldSnapshot,
 } from "../lobby/protocol";
+import {
+  type BuildState,
+  freshBuildState,
+  generateOre,
+  insertStructure,
+  type OreGrid,
+  removeStructure,
+  slidePos,
+} from "./build";
 import {
   enemyContactCadenceMs,
   enemyContactDamage,
@@ -23,7 +35,7 @@ import {
   nestLayout,
 } from "./enemies";
 import { interpolateAt, type PosSample } from "./interpolate";
-import { PLAYER_MAX_HP, PLAYER_RADIUS, stepPos } from "./world";
+import { type Body, PLAYER_MAX_HP, PLAYER_RADIUS, pushOutOfBodies, stepPos } from "./world";
 
 // The client's local view of the shared world (Milestone 2 refinement). Built once from
 // `game/world-init`, then driven two ways:
@@ -37,7 +49,9 @@ import { PLAYER_MAX_HP, PLAYER_RADIUS, stepPos } from "./world";
 export const RENDER_DELAY_MS = 100; // render peers this far behind real time to smooth the relay
 export const BUFFER_MS = 500; // keep this much peer history; older samples are pruned
 export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their 20 Hz stream
-export const RESPAWN_DELAY_MS = 3000; // dead this long, then the client snaps back to center
+// Dead this long, then the client snaps back to center. With a stopwatch for a score and a base
+// to defend, the long walk back from centre is the penalty — at 3 s (M3) dying was free.
+export const RESPAWN_DELAY_MS = 20_000;
 
 interface AvatarRecord {
   id: PlayerId;
@@ -64,10 +78,12 @@ interface EnemyRecord {
 
 export class ClientWorld {
   readonly arena: Arena;
+  readonly ore: OreGrid; // derived from the world's seed, byte-identical to the server's copy
   private readonly exit: Exit;
   private readonly nests: Nest[]; // static layout derived from the arena; hp/alive track the stream
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
   private readonly enemies = new Map<string, EnemyRecord>();
+  readonly build: BuildState; // server-owned; mirrored here so the ghost tests placement locally
   private lastTick = -1; // highest applied map-delta tick; guards apply-if-newer
   private selfHp: number; // client-authoritative: the owner judges its own contact damage
 
@@ -83,6 +99,8 @@ export class ClientWorld {
     this.arena = init.arena;
     this.exit = init.exit;
     this.nests = nestLayout(init.arena);
+    this.ore = generateOre(init.arena, init.oreSeed);
+    this.build = freshBuildState(init.arena);
     for (const s of init.spawns) {
       this.avatars.set(s.id, {
         id: s.id,
@@ -97,10 +115,32 @@ export class ClientWorld {
     }
   }
 
-  // Advance only the owner's Avatar — peers never move from local input.
-  stepSelf(dtMs: number, input: MoveInput): void {
+  // Advance only the owner's Avatar — peers never move from local input. Three stages, in order:
+  // integrate the held input, clamp against structures (`slidePos` resolves the axes separately,
+  // so you slide along a wall instead of sticking and a corner is never a hard trap), then get
+  // shoved out of any enemy you pressed into.
+  //
+  // Enemy collision resolves here, on the owner's avatar against the *rendered* enemy stream —
+  // the same client-authoritative stance M3 takes for contact damage ("if it touched me on my
+  // screen, it hit me"), so the server needs no player-blocking step. Peers are deliberately
+  // excluded: they render ~100 ms behind, so blocking against them would be contested.
+  stepSelf(dtMs: number, input: MoveInput, now: number): void {
     const self = this.avatars.get(this.selfId);
-    if (self) self.pos = stepPos(self.pos, input, dtMs, this.arena);
+    if (!self) return;
+    const stepped = stepPos(self.pos, input, dtMs, this.arena);
+    const slid = slidePos(this.build, self.pos, stepped, PLAYER_RADIUS);
+    const pushed = pushOutOfBodies(slid, PLAYER_RADIUS, this.enemyBodies(now), this.arena);
+    // Re-clamp: a shove must not push you through a wall you were standing against.
+    self.pos = slidePos(this.build, slid, pushed, PLAYER_RADIUS);
+  }
+
+  // Every enemy as the owner currently sees it — the interpolated stream, not the raw samples.
+  private enemyBodies(now: number): Body[] {
+    const renderTime = now - ENEMY_RENDER_DELAY_MS;
+    return [...this.enemies.values()].map((e) => ({
+      pos: interpolateAt(e.buffer, renderTime) ?? e.pos,
+      radius: enemyRadius(e.kind),
+    }));
   }
 
   // Apply a relayed position, dropping a stale/duplicate frame by its per-peer seq. The
@@ -202,6 +242,35 @@ export class ClientWorld {
         nest.alive = nd.alive;
       }
     }
+    if (delta.bank) this.build.bank.metal = delta.bank.metal;
+    if (delta.power) this.build.power = { ...delta.power };
+    for (const b of delta.builds ?? []) {
+      if (!this.build.structures.has(b.id)) insertStructure(this.build, { ...b });
+    }
+    for (const h of delta.structHits ?? []) {
+      const structure = this.build.structures.get(h.id);
+      if (structure) structure.hp = h.hp;
+    }
+    for (const id of delta.removals ?? []) removeStructure(this.build, id);
+  }
+
+  // Rebuild the economy from the reconnect keyframe: the bank and every building the squad has
+  // standing. The ore grid needs nothing — it was derived from the seed when this world was built.
+  initBuild(msg: { bank: Bank; power: Power; structures: StructureSpawn[] }): void {
+    for (const id of [...this.build.structures.keys()]) removeStructure(this.build, id);
+    for (const s of msg.structures) insertStructure(this.build, { ...s });
+    this.build.bank.metal = msg.bank.metal;
+    this.build.power = { ...msg.power };
+  }
+
+  // The shared Metal readout. The server sends whole Metal, so this needs no rounding of its own.
+  metal(): number {
+    return this.build.bank.metal;
+  }
+
+  // The live energy rate: what the grid can generate, and what is drawing against it.
+  power(): Power {
+    return this.build.power;
   }
 
   // Rebuild live enemy/nest state from the reconnect keyframe — world-init only carries the
@@ -257,6 +326,8 @@ export class ClientWorld {
       enemies: this.renderEnemies(now),
       nests: this.nests.map(renderNest),
       exit: this.exit,
+      ore: this.ore,
+      structures: [...this.build.structures.values()],
     };
   }
 

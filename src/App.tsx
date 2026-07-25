@@ -1,3 +1,4 @@
+import { EndScreen } from "./game/EndScreen";
 import { GameScreen } from "./game/GameScreen";
 import { LobbyScreen } from "./lobby/LobbyScreen";
 import { Menu } from "./lobby/Menu";
@@ -12,14 +13,27 @@ export function App({ wsUrl }: { wsUrl?: string } = {}) {
 
   const seated = state.status === "lobby" || state.status === "reconnecting";
   if (seated) {
+    // A finished match outranks the live world: the run is over, so show the time, not the box.
+    if (state.matchEnd) {
+      return (
+        <EndScreen
+          outcome={state.matchEnd.outcome}
+          elapsedMs={state.matchEnd.elapsedMs}
+          onLeave={() => client.leave()}
+        />
+      );
+    }
     if (state.snapshot?.phase === "in-game" || state.world) {
       return (
         <GameScreen
           state={state}
           onLeave={() => client.leave()}
           onPos={(pos) => client.sendPos(pos)}
-          onAttack={(weapon, pos, dir) => client.sendAttack(weapon, pos, dir)}
+          onAttack={(pos, dir) => client.sendAttack(pos, dir)}
           onHealth={(hp) => client.sendHealth(hp)}
+          onMine={(tile) => client.sendMine(tile)}
+          onBuild={(kind, tile) => client.sendBuild(kind, tile)}
+          onDemolish={(id) => client.sendDemolish(id)}
         />
       );
     }

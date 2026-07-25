@@ -1,4 +1,23 @@
 import {
+  admitBuild,
+  admitDemolish,
+  admitMine,
+  type BuildGuard,
+  type BuildState,
+  type DemolishGuard,
+  demolishStructure,
+  freshBuildGuard,
+  freshBuildState,
+  freshDemolishGuard,
+  freshMineGuard,
+  generateOre,
+  type MineGuard,
+  type OreGrid,
+  placeStructure,
+  snapshotStructures,
+  stepBuild,
+} from "../game/build";
+import {
   type Attack,
   type AttackGuard,
   admitAttack,
@@ -9,23 +28,29 @@ import {
   spawnEnemyState,
   stepEnemies,
 } from "../game/enemies";
-import { generateWorld, PLAYER_MAX_HP } from "../game/world";
+import { generateWorld, insideExit, PLAYER_MAX_HP } from "../game/world";
 import { generateCode, normalizeCode } from "./code";
 import {
+  type BuildableKind,
+  type Exit,
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
   MAX_PLAYERS,
   type MapDelta,
+  type MatchOutcome,
   NAME_MAX,
+  type Phase,
   type PlayerId,
   type PlayerToken,
+  type Power,
   type Presence,
   type PublicPlayer,
   parseClientMessage,
   type ServerMessage,
+  type StructureSpawn,
+  type Tile,
   type Vec2,
-  type Weapon,
   type WorldInit,
 } from "./protocol";
 
@@ -41,6 +66,7 @@ export interface LobbyConfig {
   graceMs?: number; // slot held + greyed this long after a drop; default 45s
   tickMs?: number; // enemy-sim tick period; default 50ms (~20 Hz). Overridable for fast tests.
   firstWaveMs?: number; // override the initial wave countdown (default: the sim's 30s). Test knob.
+  startingMetal?: number; // seed the shared bank at match start (default 0). Test knob.
 }
 
 const DEFAULT_GRACE_MS = 45_000;
@@ -59,7 +85,7 @@ interface PlayerRecord {
 interface SessionRecord {
   code: LobbyCode;
   maxPlayers: number;
-  phase: "lobby" | "in-game";
+  phase: Phase;
   host: PlayerId;
   rev: number;
   players: Map<PlayerId, PlayerRecord>;
@@ -72,6 +98,17 @@ interface SessionRecord {
   tickNo: number; // monotonic map-delta tick counter (apply-if-newer on clients)
   attackGuards: Map<PlayerId, AttackGuard>; // per-player cadence/seq admission state
   pendingAttacks: Attack[]; // admitted attacks awaiting the next tick's resolution
+  ore?: OreGrid; // derived from worldInit.oreSeed at start; identical to every client's copy
+  build?: BuildState; // the squad's economy — bank and buildings, written only by this hub
+  sentMetal: number; // the last whole-Metal figure broadcast; the bank rides only when it moves
+  sentPower: Power; // the last power figures broadcast; power rides only when they move
+  pendingBuilds: StructureSpawn[]; // placements admitted since the last tick, awaiting broadcast
+  mineGuards: Map<PlayerId, MineGuard>; // per-player hand-mine cadence/seq/accrual state
+  buildGuards: Map<PlayerId, BuildGuard>; // per-player placement cadence/seq state
+  demolishGuards: Map<PlayerId, DemolishGuard>; // per-player demolish cadence/seq state
+  pendingRemovals: string[]; // demolished ids awaiting broadcast, merged with the sim's own
+  startedAt?: number; // wall clock at game/start; elapsed time from it is the match's score
+  result?: { outcome: MatchOutcome; elapsedMs: number }; // set once, at match end; re-sent on rejoin
 }
 
 // Server-authoritative hub over every Session. Owns the whole
@@ -84,6 +121,7 @@ export class LobbyHub {
   private readonly graceMs: number;
   private readonly tickMs: number;
   private readonly firstWaveMs?: number;
+  private readonly startingMetal: number;
   private disposed = false;
 
   constructor(
@@ -93,6 +131,7 @@ export class LobbyHub {
     this.graceMs = config.graceMs ?? DEFAULT_GRACE_MS;
     this.tickMs = config.tickMs ?? DEFAULT_TICK_MS;
     this.firstWaveMs = config.firstWaveMs;
+    this.startingMetal = config.startingMetal ?? 0;
   }
 
   handleMessage(socketId: string, raw: string): void {
@@ -118,10 +157,19 @@ export class LobbyHub {
         this.gamePos(socketId, msg.pos, msg.seq);
         return;
       case "game/attack":
-        this.gameAttack(socketId, msg.weapon, msg.pos, msg.dir, msg.seq);
+        this.gameAttack(socketId, msg.pos, msg.dir, msg.seq);
         return;
       case "game/health":
         this.gameHealth(socketId, msg.hp, msg.seq);
+        return;
+      case "game/mine":
+        this.gameMine(socketId, msg.tile, msg.seq);
+        return;
+      case "game/build":
+        this.gameBuild(socketId, msg.kind, msg.tile, msg.seq);
+        return;
+      case "game/demolish":
+        this.gameDemolish(socketId, msg.id, msg.seq);
         return;
     }
   }
@@ -194,6 +242,13 @@ export class LobbyHub {
       tickNo: 0,
       attackGuards: new Map(),
       pendingAttacks: [],
+      sentMetal: 0,
+      sentPower: { generation: 0, consumption: 0 },
+      pendingBuilds: [],
+      mineGuards: new Map(),
+      buildGuards: new Map(),
+      demolishGuards: new Map(),
+      pendingRemovals: [],
     };
     this.sessions.set(code, session);
     this.sockets.set(socketId, { code, playerId: player.id });
@@ -330,13 +385,21 @@ export class LobbyHub {
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
     if (session.host !== player.id) return; // only the host starts the match
-    if (session.phase === "in-game") return; // already started — idempotent
+    if (session.phase !== "lobby") return; // already started, or already over
 
     session.phase = "in-game";
+    session.startedAt = Date.now(); // the stopwatch: elapsed time from here is the score
     session.worldInit = generateWorld(
       [...session.players.values()].map((p) => ({ id: p.id, slot: p.slot, name: p.name })),
     );
     this.broadcast(session, { type: "game/world-init", init: session.worldInit });
+
+    // The ore never rides the wire — the server expands the same seed every client does, so
+    // its admission checks read a grid byte-identical to the one under the player's cursor.
+    session.ore = generateOre(session.worldInit.arena, session.worldInit.oreSeed);
+    session.build = freshBuildState(session.worldInit.arena);
+    session.build.bank.metal = this.startingMetal;
+    session.sentMetal = this.startingMetal;
 
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
     session.sim = spawnEnemyState(session.worldInit);
@@ -344,6 +407,12 @@ export class LobbyHub {
     const timer = setInterval(() => this.tick(session), this.tickMs);
     timer.unref?.();
     session.simTimer = timer;
+  }
+
+  // Is this session mid-match? Every in-game command is gated on it, so a frame still in flight
+  // when the match ends cannot mutate a world nobody is simulating any more.
+  private inPlay(session: SessionRecord): boolean {
+    return session.phase === "in-game" && session.sim !== undefined;
   }
 
   // One enemy-sim tick: resolve the admitted attacks queued since the last tick and step the
@@ -354,34 +423,161 @@ export class LobbyHub {
     const players = livePlayers(session.positions, session.health); // dead players drop from aggro
     const attacks = session.pendingAttacks;
     session.pendingAttacks = [];
-    const { events } = stepEnemies(session.sim, players, attacks, this.tickMs);
+    // The economy settles first: miners trickle and the energy ceiling is recomputed before the
+    // turrets inside `stepEnemies` draw against it, so the budget is never a tick stale.
+    if (session.build) stepBuild(session.build, this.tickMs);
+    const { events } = stepEnemies(
+      session.sim,
+      players,
+      attacks,
+      this.tickMs,
+      session.build ?? null,
+    );
     const delta: MapDelta = { tick: ++session.tickNo, moves: events.moves };
     if (events.spawns.length > 0) delta.spawns = events.spawns;
     if (events.hits.length > 0) delta.hits = events.hits;
     if (events.deaths.length > 0) delta.deaths = events.deaths;
     if (events.nests.length > 0) delta.nests = events.nests;
+    if (events.structHits.length > 0) delta.structHits = events.structHits;
+    const removals = [...events.removals, ...session.pendingRemovals];
+    session.pendingRemovals = [];
+    if (removals.length > 0) delta.removals = removals;
     if (events.wave) delta.wave = events.wave;
+    if (session.build) {
+      // The bank accrues fractionally but is spent and shown in whole Metal, so it rides only
+      // when the whole figure actually moves — a sparse event, not a per-tick field.
+      const metal = Math.floor(session.build.bank.metal);
+      if (metal !== session.sentMetal) {
+        session.sentMetal = metal;
+        delta.bank = { metal };
+      }
+      const power = session.build.power;
+      if (
+        power.generation !== session.sentPower.generation ||
+        power.consumption !== session.sentPower.consumption
+      ) {
+        session.sentPower = { ...power };
+        delta.power = { ...power };
+      }
+    }
+    if (session.pendingBuilds.length > 0) {
+      delta.builds = session.pendingBuilds;
+      session.pendingBuilds = [];
+    }
     this.broadcast(session, { type: "game/map-delta", ...delta });
+
+    if (session.worldInit && squadEscaped(session, session.worldInit.exit)) {
+      this.endMatch(session, "escaped");
+    } else if (squadWiped(session)) {
+      this.endMatch(session, "wiped");
+    }
+  }
+
+  // End the match once and tear the tick down. The phase guard is what makes it exactly once:
+  // the escape predicate is evaluated every tick, and the tick that fires it is the last one.
+  private endMatch(session: SessionRecord, outcome: MatchOutcome): void {
+    if (session.phase !== "in-game") return;
+    session.phase = outcome;
+    if (session.simTimer) {
+      clearInterval(session.simTimer);
+      session.simTimer = undefined;
+    }
+    // Retained, not recomputed: the score is frozen at the moment the match ended, so a player
+    // who rejoins afterwards is told the same time everyone else saw.
+    session.result = { outcome, elapsedMs: Date.now() - (session.startedAt ?? Date.now()) };
+    this.broadcast(session, { type: "game/match-end", ...session.result });
   }
 
   // A reported attack: admit it (cadence + loose range + seq, all server-side) and queue the
   // valid ones for the next tick. The client never writes enemy HP — the sim resolves it.
-  private gameAttack(socketId: string, weapon: Weapon, pos: Vec2, dir: Vec2, seq: number): void {
+  private gameAttack(socketId: string, pos: Vec2, dir: Vec2, seq: number): void {
     const bind = this.sockets.get(socketId);
     if (!bind) return;
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    if (!session.sim) return; // no combat before the match starts
+    if (!this.inPlay(session)) return; // no combat before the match starts or after it ends
     let guard = session.attackGuards.get(player.id);
     if (!guard) {
       guard = freshGuard();
       session.attackGuards.set(player.id, guard);
     }
     const lastPos = session.positions.get(player.id)?.pos ?? null;
-    if (admitAttack(guard, { weapon, pos, seq }, lastPos, Date.now())) {
-      session.pendingAttacks.push({ weapon, pos, dir });
+    if (admitAttack(guard, { pos, seq }, lastPos, Date.now())) {
+      session.pendingAttacks.push({ pos, dir });
     }
+  }
+
+  // A reported hand-mine: admit it (ore kind + loose reach + seq + cadence) and credit the
+  // shared bank here. The bank is server-owned — a client only ever asks.
+  private gameMine(socketId: string, tile: Tile, seq: number): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (!this.inPlay(session) || !session.ore || !session.build) return; // only during a match
+    let guard = session.mineGuards.get(player.id);
+    if (!guard) {
+      guard = freshMineGuard();
+      session.mineGuards.set(player.id, guard);
+    }
+    const lastPos = session.positions.get(player.id)?.pos ?? null;
+    session.build.bank.metal += admitMine(guard, { tile, seq }, lastPos, session.ore, Date.now());
+  }
+
+  // A reported placement: re-run the same rule the client's ghost used, then debit the bank and
+  // mint the structure here. The client proposes; the server places.
+  private gameBuild(socketId: string, kind: BuildableKind, tile: Tile, seq: number): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (!this.inPlay(session) || !session.ore || !session.build) return; // only during a match
+    let guard = session.buildGuards.get(player.id);
+    if (!guard) {
+      guard = freshBuildGuard();
+      session.buildGuards.set(player.id, guard);
+    }
+    const lastPos = session.positions.get(player.id)?.pos ?? null;
+    const spec = admitBuild(
+      guard,
+      { kind, tile, seq },
+      lastPos,
+      session.ore,
+      session.build,
+      Date.now(),
+    );
+    if (!spec) return;
+    const placed = placeStructure(session.build, kind, tile, spec);
+    session.pendingBuilds.push({
+      id: placed.id,
+      kind: placed.kind,
+      tile: placed.tile,
+      hp: placed.hp,
+    });
+  }
+
+  // A reported demolish. Communal by design — no ownership check — and the refund is credited
+  // here, so the client never writes the bank.
+  private gameDemolish(socketId: string, id: string, seq: number): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (!this.inPlay(session) || !session.build) return; // only during a match
+    let guard = session.demolishGuards.get(player.id);
+    if (!guard) {
+      guard = freshDemolishGuard();
+      session.demolishGuards.set(player.id, guard);
+    }
+    const lastPos = session.positions.get(player.id)?.pos ?? null;
+    const structure = admitDemolish(guard, { id, seq }, lastPos, session.build, Date.now());
+    if (!structure) return;
+    demolishStructure(session.build, structure);
+    session.pendingRemovals.push(structure.id);
   }
 
   // Store and relay a client's reported HP (it owns its health; the server never computes it),
@@ -393,7 +589,7 @@ export class LobbyHub {
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    if (!session.sim) return; // health before the match starts is meaningless
+    if (!this.inPlay(session)) return; // health outside a live match is meaningless
     const last = session.health.get(player.id);
     if (last && seq <= last.seq) return; // stale or duplicate — drop it
     // HP is client-authoritative, but clamp the untrusted value so a stray report can't poison
@@ -415,7 +611,7 @@ export class LobbyHub {
     const session = this.sessions.get(bind.code);
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
-    if (!session.worldInit) return; // positions before the match starts are meaningless
+    if (!this.inPlay(session) || !session.worldInit) return; // only during a match
     const last = session.positions.get(player.id);
     if (last && seq <= last.seq) return; // stale or duplicate — drop it
     session.positions.set(player.id, { pos, seq });
@@ -428,6 +624,12 @@ export class LobbyHub {
   // reconnecter's own, so their client restores it.
   private sendWorldState(session: SessionRecord, socketId: string): void {
     if (!session.worldInit) return;
+    // A finished match has no live world to rebuild — hand back the result, or a reconnecter
+    // would land in a box whose sim stopped ticking with no way to reach the end screen.
+    if (session.result) {
+      this.transport.send(socketId, { type: "game/match-end", ...session.result });
+      return;
+    }
     this.transport.send(socketId, { type: "game/world-init", init: session.worldInit });
     for (const [id, sample] of session.positions) {
       this.transport.send(socketId, {
@@ -440,6 +642,17 @@ export class LobbyHub {
     if (session.sim) {
       const snap = snapshotEnemies(session.sim);
       this.transport.send(socketId, { type: "game/enemy-init", tick: session.tickNo, ...snap });
+    }
+    if (session.build) {
+      // The economy keyframe. Ore is derived from the seed, so only the bank and the placed
+      // buildings need rebuilding — bounded by what the squad owns, not by how long it has played.
+      this.transport.send(socketId, {
+        type: "game/build-init",
+        tick: session.tickNo,
+        bank: { metal: Math.floor(session.build.bank.metal) },
+        power: { ...session.build.power },
+        structures: snapshotStructures(session.build),
+      });
     }
     for (const [id, sample] of session.health) {
       this.transport.send(socketId, {
@@ -479,6 +692,9 @@ export class LobbyHub {
     session.positions.delete(player.id);
     session.health.delete(player.id);
     session.attackGuards.delete(player.id);
+    session.mineGuards.delete(player.id);
+    session.buildGuards.delete(player.id);
+    session.demolishGuards.delete(player.id);
     const timer = session.graceTimers.get(player.id);
     if (timer) {
       clearTimeout(timer);
@@ -533,6 +749,43 @@ export class LobbyHub {
   private error(socketId: string, code: LobbyErrorCode): void {
     this.transport.send(socketId, { type: "lobby/error", code });
   }
+}
+
+// Has the whole squad escaped? A simultaneity check, not a per-player check-in: every connected
+// player must be alive AND standing in the door in this same instant.
+//
+// A downed player blocks it — they have to respawn and walk back, which is what "no one left
+// behind" means. A disconnected (in-grace) player does not block: the squad cannot be held
+// hostage by someone else's dropped socket.
+function squadEscaped(session: SessionRecord, exit: Exit): boolean {
+  const squad = connectedPlayers(session);
+  if (squad.length === 0) return false; // an empty box escapes nothing
+  return squad.every((p) => {
+    if (!isAlive(session, p.id)) return false;
+    const pos = session.positions.get(p.id)?.pos;
+    return pos !== undefined && insideExit(pos, exit);
+  });
+}
+
+// Has the squad been wiped? Every connected player dead at the same instant, evaluated on the
+// same tick as the escape and against the same notion of alive.
+//
+// No grace period and no last-stand timer: a player counting down to respawn reported 0 HP when
+// they died and has not reported otherwise, so they are dead for this purpose. An in-grace player
+// is not connected, so they cannot keep the match alive either — but a session with nobody
+// connected at all is simply paused, not lost.
+function squadWiped(session: SessionRecord): boolean {
+  const squad = connectedPlayers(session);
+  return squad.length > 0 && squad.every((p) => !isAlive(session, p.id));
+}
+
+function connectedPlayers(session: SessionRecord): PlayerRecord[] {
+  return [...session.players.values()].filter((p) => p.presence.status === "connected");
+}
+
+// A player who has never reported HP counts as alive, so a fresh match never reads as a wipe.
+function isAlive(session: SessionRecord, id: PlayerId): boolean {
+  return (session.health.get(id)?.hp ?? PLAYER_MAX_HP) > 0;
 }
 
 // The players fed to the enemy sim: everyone with a known position, minus the dead. A player who

@@ -193,13 +193,15 @@ button:disabled {
 
 .game .hint {
   position: absolute;
-  bottom: 0.75rem;
-  left: 0;
-  right: 0;
+  bottom: 7rem; /* stacked above the build bar, clear of the HP bar and the banks */
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 1;
+  width: min(60ch, 90vw);
   text-align: center;
   color: #9a9aa8;
   font-size: 0.85rem;
+  line-height: 1.4;
   pointer-events: none;
 }
 
@@ -237,4 +239,123 @@ button:disabled {
   color: #e8e8ee;
   font-size: 0.85rem;
   font-variant-numeric: tabular-nums;
+}
+
+/* The shared banks, opposite the health bar so the squad's economy and your own survival
+   read as the two separate things they are. */
+.banks {
+  position: absolute;
+  bottom: 1rem;
+  right: 1rem;
+  z-index: 1;
+  display: flex;
+  gap: 0.75rem;
+  pointer-events: none;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.banks .bank {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid #2a2a35;
+  border-radius: 4px;
+  background: #14141ccc;
+}
+
+.banks .metal {
+  color: #b9c2d0;
+}
+
+.banks .energy {
+  color: #7fd4c1;
+}
+
+/* The build bar sits bottom-centre, between the health bar and the banks. It is the only
+   overlay that takes clicks — everything else in the HUD is read-only. */
+.build-bar {
+  position: absolute;
+  bottom: 3.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  gap: 0.4rem;
+}
+
+.build-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  width: 5.5rem;
+  padding: 0.35rem 0.25rem;
+  border: 1px solid #2a2a35;
+  border-radius: 6px;
+  background: #14141ce6;
+  color: #9a9aa8;
+  font-size: 0.7rem;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+
+.build-slot:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.build-slot[aria-pressed="true"] {
+  border-color: #4f8cff;
+  color: #e8e8ee;
+  background: #1c2436;
+}
+
+.build-slot .build-key {
+  color: #6d6d7c;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The end screen replaces the match entirely: the run is over, so the box goes away and the
+   time is the only thing left to look at. */
+.end {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(90vw, 26rem);
+  padding: 2rem;
+  text-align: center;
+}
+
+.end h1 {
+  font-size: 2.25rem;
+}
+
+.end-detail {
+  color: #9a9aa8;
+}
+
+.end-time {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.end-time-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #6a6a78;
+}
+
+.end-time strong {
+  font-size: 3rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #39d353;
+}
+
+/* A loss reads in the danger colour, so the verdict is clear before the words are read. */
+.end[data-outcome="wiped"] .end-time strong {
+  color: #ff5d5d;
 }

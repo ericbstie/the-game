@@ -40,9 +40,17 @@ export interface Self {
   slot: number;
 }
 
+// How a match finished. `escaped` is the win — the whole squad in the door at once. `wiped` is
+// the loss — every connected player dead at the same instant.
+export type MatchOutcome = "escaped" | "wiped";
+
+// A Session's lifecycle. It ends in an outcome rather than returning to the lobby: the match
+// reports its time and that is the run.
+export type Phase = "lobby" | "in-game" | MatchOutcome;
+
 export interface LobbySnapshot {
   code: LobbyCode;
-  phase: "lobby" | "in-game";
+  phase: Phase;
   maxPlayers: number;
   host: PlayerId;
   players: PublicPlayer[]; // sorted by slot
@@ -90,13 +98,37 @@ export interface Spawn {
   pos: Vec2;
 }
 
+// A whole-tile coordinate on the build grid (Milestone 4). One tile is `TILE` world units;
+// every buildable snaps to this grid and ore is made of tiles, not point-nodes.
+export interface Tile {
+  tx: number;
+  ty: number;
+}
+
+export type OreKind = "metal" | "power";
+
+// The four things a squad can build. Costs, footprints and HP live in the registry in
+// `game/build.ts`; only the name crosses the wire.
+export type BuildableKind = "miner" | "wall" | "turret" | "generator";
+
+// A newly-placed building, announced once so every client can create its render record. Placement
+// is instant — there is no build time and no vulnerable construction phase.
+export interface StructureSpawn {
+  id: string;
+  kind: BuildableKind;
+  tile: Tile;
+  hp: number;
+}
+
 // The immutable shared world the server generates once at match start and re-sends on
-// reconnect: the arena, the placed exit, and every player's spawn. Avatar motion is not here
-// (it flows as peer positions), and the enemy/nest layout is derived from the arena.
+// reconnect: the arena, the placed exit, every player's spawn, and the seed both sides expand
+// into the ore grid. Avatar motion is not here (it flows as peer positions), and the enemy/nest
+// layout — like the ore — is derived rather than streamed.
 export interface WorldInit {
   arena: Arena;
   exit: Exit;
   spawns: Spawn[];
+  oreSeed: number;
 }
 
 // --- Dynamic enemies & combat (Milestone 3) ---
@@ -158,6 +190,26 @@ export interface EnemyHit {
   hp: number;
 }
 
+// A structure's HP after taking damage this tick. Destroyed structures ride `removals` instead.
+export interface StructureHit {
+  id: string;
+  hp: number;
+}
+
+// The squad's shared Metal stockpile. Server-owned and never client-writable; it rides a delta
+// only on the ticks it actually changed.
+export interface Bank {
+  metal: number;
+}
+
+// Energy, which is deliberately *not* a bank. Generation is a live ceiling recomputed from the
+// standing generators; consumption is what the running structures draw against it. Nothing is
+// stored and no reserve carries between moments.
+export interface Power {
+  generation: number;
+  consumption: number;
+}
+
 // The per-tick enemy/combat delta: a full `moves` set plus sparse event arrays — only the
 // non-empty ones ride the wire. `tick` is monotonic per session; the client applies-if-newer.
 export interface MapDelta {
@@ -168,11 +220,14 @@ export interface MapDelta {
   deaths?: string[];
   nests?: NestDelta[];
   wave?: WaveDelta;
+  bank?: Bank;
+  // Buildings are near-static next to enemy motion, so they ride as sparse events rather than a
+  // full per-tick set like `moves`. `removals` covers a structure destroyed or demolished.
+  builds?: StructureSpawn[];
+  structHits?: StructureHit[];
+  removals?: string[];
+  power?: Power;
 }
-
-// A player weapon. Melee is a close cleave wedge; ranged is a hitscan ray (added in #41).
-// Every player has both in M3's minimal model.
-export type Weapon = "melee" | "ranged";
 
 // A render-model enemy the client assembles each frame (not a wire type). Its position is
 // interpolated a short delay behind the stream, exactly like a peer avatar.
@@ -197,12 +252,15 @@ export interface RenderedNest {
 
 // The render model the client assembles each frame from world-init + local self-sim +
 // relayed peer positions + the enemy stream. Not a wire type — it never crosses the socket.
+// `ore` is the locally-derived grid, shared by reference (it never changes).
 export interface WorldSnapshot {
   arena: Arena;
   players: Avatar[]; // sorted by slot
   enemies: RenderedEnemy[];
   nests: RenderedNest[];
   exit: Exit;
+  ore: Map<number, OreKind>;
+  structures: { id: string; kind: BuildableKind; tile: Tile; hp: number }[];
 }
 
 // The movement intent driving the client's own Avatar: which directions are held. The
@@ -232,16 +290,23 @@ export type LeaveLobby = Envelope<"lobby/leave">;
 // stale/out-of-order frame is dropped.
 export type StartGame = Envelope<"game/start">;
 export type GamePos = Envelope<"game/pos", { pos: Vec2; seq: number }>;
-// A reported player attack (M3): the client swings/fires and reports it; the server validates
-// (cadence + loose range + seq) and applies the damage — enemy HP is never client-writable.
-// `pos` is the swing origin (the player's own position); `dir` is a unit aim vector.
-export type GameAttack = Envelope<
-  "game/attack",
-  { weapon: Weapon; pos: Vec2; dir: Vec2; seq: number }
->;
+// A reported player shot (M3, single-weapon since M4): the client fires and reports it; the
+// server validates (cadence + loose range + seq) and applies the damage — enemy HP is never
+// client-writable. `pos` is the shot origin (the player's own position); `dir` is a unit aim
+// vector.
+export type GameAttack = Envelope<"game/attack", { pos: Vec2; dir: Vec2; seq: number }>;
 // The client owns its HP (it judges contact damage at its own true position) and reports the
 // result; `hp <= 0` declares death. The server never computes it — it stores and relays it.
 export type GameHealth = Envelope<"game/health", { hp: number; seq: number }>;
+// Hand-mining (M4): held right-click reports the metal-ore tile under the cursor. The server
+// admits it (ore kind + loose reach + seq + cadence) and credits the shared bank itself.
+export type GameMine = Envelope<"game/mine", { tile: Tile; seq: number }>;
+// Placement (M4): the client asks for a buildable at a tile. The server re-runs the same
+// placement rule the ghost used, debits the bank itself, and mints the structure's id.
+export type GameBuild = Envelope<"game/build", { kind: BuildableKind; tile: Tile; seq: number }>;
+// Demolish (M4): held right-click over a structure. Fully communal — no ownership check — and
+// it reuses the `removals` and `bank` deltas rather than adding wire shapes of its own.
+export type GameDemolish = Envelope<"game/demolish", { id: string; seq: number }>;
 export type ClientMessage =
   | CreateLobby
   | JoinLobby
@@ -249,7 +314,10 @@ export type ClientMessage =
   | StartGame
   | GamePos
   | GameAttack
-  | GameHealth;
+  | GameHealth
+  | GameMine
+  | GameBuild
+  | GameDemolish;
 
 export type LobbyErrorCode = "lobby-not-found" | "lobby-full" | "slot-released" | "invalid";
 
@@ -299,6 +367,16 @@ export type GameEnemyInit = Envelope<
   "game/enemy-init",
   { tick: number; enemies: EnemySnapshot[]; nests: NestSnapshot[]; wave: WaveDelta }
 >;
+// The economy keyframe (M4): the live shared bank and every placed building, so a (re)joiner
+// rebuilds the base as it actually stands. Ore is derived from `WorldInit.oreSeed`, so it is
+// deliberately absent — this stays bounded by what the squad owns rather than by match length.
+// The match is over (M4). `elapsedMs` since `game/start` is the score — there is no leaderboard
+// and nothing is persisted; the match reports its time and that is the milestone.
+export type GameMatchEnd = Envelope<"game/match-end", { outcome: MatchOutcome; elapsedMs: number }>;
+export type GameBuildInit = Envelope<
+  "game/build-init",
+  { tick: number; bank: Bank; power: Power; structures: StructureSpawn[] }
+>;
 
 export type ServerMessage =
   | LobbyCreated
@@ -313,7 +391,9 @@ export type ServerMessage =
   | GamePeerPos
   | GameMapDelta
   | GamePeerHealth
-  | GameEnemyInit;
+  | GameEnemyInit
+  | GameBuildInit
+  | GameMatchEnd;
 
 // Hand-rolled inbound narrowing (no schema dep, per spec). Untrusted client input is
 // never assumed valid: every field is checked before the message is trusted.
@@ -359,22 +439,47 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     case "game/attack": {
       const pos = asVec2(msg.pos);
       const dir = asVec2(msg.dir);
-      if (pos === null || dir === null || !isWeapon(msg.weapon) || !isFiniteNumber(msg.seq)) {
-        return null;
-      }
-      return { type: "game/attack", weapon: msg.weapon, pos, dir, seq: msg.seq };
+      if (pos === null || dir === null || !isFiniteNumber(msg.seq)) return null;
+      return { type: "game/attack", pos, dir, seq: msg.seq };
     }
     case "game/health": {
       if (!isFiniteNumber(msg.hp) || !isFiniteNumber(msg.seq)) return null;
       return { type: "game/health", hp: msg.hp, seq: msg.seq };
+    }
+    case "game/mine": {
+      const tile = asTile(msg.tile);
+      if (tile === null || !isFiniteNumber(msg.seq)) return null;
+      return { type: "game/mine", tile, seq: msg.seq };
+    }
+    case "game/build": {
+      const tile = asTile(msg.tile);
+      if (tile === null || !isBuildableKind(msg.kind) || !isFiniteNumber(msg.seq)) return null;
+      return { type: "game/build", kind: msg.kind, tile, seq: msg.seq };
+    }
+    case "game/demolish": {
+      if (typeof msg.id !== "string" || !isFiniteNumber(msg.seq)) return null;
+      return { type: "game/demolish", id: msg.id, seq: msg.seq };
     }
     default:
       return null;
   }
 }
 
-function isWeapon(value: unknown): value is Weapon {
-  return value === "melee" || value === "ranged";
+// A tile coordinate must be a pair of integers — a fractional or NaN tile would index the ore
+// grid's packed key into nonsense, so it is rejected before the tile is trusted.
+function asTile(value: unknown): Tile | null {
+  if (typeof value !== "object" || value === null) return null;
+  const t = value as Record<string, unknown>;
+  if (!isInteger(t.tx) || !isInteger(t.ty)) return null;
+  return { tx: t.tx, ty: t.ty };
+}
+
+function isInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value);
+}
+
+function isBuildableKind(value: unknown): value is BuildableKind {
+  return value === "miner" || value === "wall" || value === "turret" || value === "generator";
 }
 
 // A streamed position must be a Vec2 of finite numbers — a client could send anything,

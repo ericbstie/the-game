@@ -1,5 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import type { Vec2, Weapon, WorldInit } from "../lobby/protocol";
+import type { Tile, Vec2, WorldInit } from "../lobby/protocol";
+import {
+  BUILDABLES,
+  type BuildableSpec,
+  type BuildState,
+  demolishStructure,
+  freshBuildState,
+  placeStructure,
+  removeStructure,
+  type Structure,
+  structureBlocking,
+  structureCenter,
+  TILE,
+  TURRET_ACTIVE_DRAW,
+  TURRET_CADENCE_MS,
+  TURRET_DAMAGE,
+  TURRET_IDLE_DRAW,
+  TURRET_RANGE,
+  tileOf,
+} from "./build";
 import {
   ATTACK_POS_TOLERANCE,
   type Attack,
@@ -9,16 +28,18 @@ import {
   ENEMY_CAP,
   type Enemy,
   type EnemyState,
+  enemyContactCadenceMs,
+  enemyContactDamage,
+  enemyRadius,
   freshGuard,
   GRUNT_HP,
   GRUNT_RADIUS,
   GRUNT_SPEED,
-  MELEE_CADENCE_MS,
-  MELEE_DAMAGE,
   NEST_COUNT,
   NEST_HP,
   type Nest,
   nestLayout,
+  RANGED_CADENCE_MS,
   RANGED_DAMAGE,
   RANGED_HALFWIDTH,
   RANGED_RANGE,
@@ -37,6 +58,7 @@ const worldInit = (): WorldInit => ({
   arena: ARENA,
   exit: { x: 0, y: 100, width: 18, height: 96 },
   spawns: [],
+  oreSeed: 1,
 });
 
 const grunt = (id: string, pos: Vec2, hp = GRUNT_HP, sector = 0): Enemy => ({
@@ -45,6 +67,7 @@ const grunt = (id: string, pos: Vec2, hp = GRUNT_HP, sector = 0): Enemy => ({
   pos,
   hp,
   sector,
+  biteMs: 0,
 });
 const stateWith = (enemies: Enemy[]): EnemyState => ({
   arena: ARENA,
@@ -58,8 +81,7 @@ const stateWith = (enemies: Enemy[]): EnemyState => ({
 const only = (state: EnemyState) => [...state.enemies.values()][0];
 const at = (state: EnemyState, id: string) => state.enemies.get(id);
 const player = (pos: Vec2) => [{ id: "p1", pos }];
-const melee = (pos: Vec2, dir: Vec2): Attack => ({ weapon: "melee", pos, dir });
-const ranged = (pos: Vec2, dir: Vec2): Attack => ({ weapon: "ranged", pos, dir });
+const shot = (pos: Vec2, dir: Vec2): Attack => ({ pos, dir });
 const step = (state: EnemyState, attacks: Attack[]) => stepEnemies(state, [], attacks, 0).events;
 
 describe("spawnEnemyState", () => {
@@ -188,7 +210,7 @@ describe("stepEnemies AI (ENGAGED / MARCH / HOLD)", () => {
     const prey = { x: near.x + 500, y: near.y }; // 500 < AGGRO_RADIUS
     stepEnemies(s, [{ id: "p1", pos: prey }], [], 100);
     expect(only(s).pos.x).toBeGreaterThan(near.x); // moved toward the player
-    expect(only(s).target).toBe("p1");
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
     const d = only(s).pos.x - near.x;
     expect(d).toBeLessThanOrEqual((GRUNT_SPEED * 100) / 1000 + 1e-6); // capped by speed
   });
@@ -213,7 +235,7 @@ describe("stepEnemies AI (ENGAGED / MARCH / HOLD)", () => {
     const onEdge = { x: C.x + HOLD_EDGE, y: C.y };
     const s = stateWith([grunt("e1", { ...onEdge })]);
     stepEnemies(s, [{ id: "p1", pos: { x: onEdge.x + 500, y: onEdge.y } }], [], 100); // within aggro
-    expect(only(s).target).toBe("p1");
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
     expect(only(s).pos.x).toBeGreaterThan(onEdge.x); // peeled outward toward the player
 
     const peeledOut = Math.hypot(only(s).pos.x - C.x, only(s).pos.y - C.y);
@@ -241,46 +263,10 @@ describe("stepEnemies AI (ENGAGED / MARCH / HOLD)", () => {
   });
 });
 
-describe("stepEnemies melee resolution (cleave wedge)", () => {
-  test("a swing damages an enemy within reach and inside the arc", () => {
-    const s = stateWith([grunt("e1", { x: 100, y: 100 })]);
-    const events = step(s, [melee({ x: 50, y: 100 }, { x: 1, y: 0 })]);
-    expect(events.hits).toEqual([{ id: "e1", hp: GRUNT_HP - MELEE_DAMAGE }]);
-    expect(at(s, "e1")?.hp).toBe(GRUNT_HP - MELEE_DAMAGE);
-  });
-
-  test("an enemy beyond reach is not hit", () => {
-    const s = stateWith([grunt("e1", { x: 300, y: 100 })]);
-    expect(step(s, [melee({ x: 50, y: 100 }, { x: 1, y: 0 })]).hits).toEqual([]);
-    expect(at(s, "e1")?.hp).toBe(GRUNT_HP);
-  });
-
-  test("an enemy behind the swing (outside the arc) is not hit", () => {
-    const s = stateWith([grunt("e1", { x: 100, y: 100 })]);
-    expect(step(s, [melee({ x: 50, y: 100 }, { x: -1, y: 0 })]).hits).toEqual([]);
-    expect(at(s, "e1")?.hp).toBe(GRUNT_HP);
-  });
-
-  test("cleaves every enemy in the wedge", () => {
-    const s = stateWith([grunt("e1", { x: 100, y: 90 }), grunt("e2", { x: 100, y: 110 })]);
-    const events = step(s, [melee({ x: 50, y: 100 }, { x: 1, y: 0 })]);
-    expect(events.hits.map((h) => h.id).sort()).toEqual(["e1", "e2"]);
-  });
-
-  test("a lethal hit kills the enemy: reported in deaths, removed, absent from moves", () => {
-    const s = stateWith([grunt("e1", { x: 100, y: 100 }, MELEE_DAMAGE)]);
-    const events = step(s, [melee({ x: 50, y: 100 }, { x: 1, y: 0 })]);
-    expect(events.deaths).toEqual(["e1"]);
-    expect(events.hits).toEqual([]);
-    expect(s.enemies.has("e1")).toBe(false);
-    expect(events.moves).toEqual([]);
-  });
-});
-
-describe("stepEnemies ranged resolution (hitscan ray)", () => {
+describe("stepEnemies shot resolution (hitscan ray)", () => {
   test("hits the nearest enemy along the ray, not the ones behind it", () => {
     const s = stateWith([grunt("far", { x: 400, y: 100 }), grunt("near", { x: 200, y: 100 })]);
-    const events = step(s, [ranged({ x: 100, y: 100 }, { x: 1, y: 0 })]);
+    const events = step(s, [shot({ x: 100, y: 100 }, { x: 1, y: 0 })]);
     expect(events.hits).toEqual([{ id: "near", hp: GRUNT_HP - RANGED_DAMAGE }]);
     expect(at(s, "far")?.hp).toBe(GRUNT_HP); // single-target, no cleave
   });
@@ -288,17 +274,32 @@ describe("stepEnemies ranged resolution (hitscan ray)", () => {
   test("misses an enemy off the ray line (beyond the half-width)", () => {
     const offLine = { x: 300, y: 100 + RANGED_HALFWIDTH + GRUNT_RADIUS + 1 };
     const s = stateWith([grunt("e1", offLine)]);
-    expect(step(s, [ranged({ x: 100, y: 100 }, { x: 1, y: 0 })]).hits).toEqual([]);
+    expect(step(s, [shot({ x: 100, y: 100 }, { x: 1, y: 0 })]).hits).toEqual([]);
   });
 
   test("misses an enemy beyond the ray's range", () => {
     const s = stateWith([grunt("e1", { x: 100 + RANGED_RANGE + 50, y: 100 })]);
-    expect(step(s, [ranged({ x: 100, y: 100 }, { x: 1, y: 0 })]).hits).toEqual([]);
+    expect(step(s, [shot({ x: 100, y: 100 }, { x: 1, y: 0 })]).hits).toEqual([]);
   });
 
   test("does not hit an enemy behind the shooter", () => {
     const s = stateWith([grunt("e1", { x: 50, y: 100 })]);
-    expect(step(s, [ranged({ x: 100, y: 100 }, { x: 1, y: 0 })]).hits).toEqual([]);
+    expect(step(s, [shot({ x: 100, y: 100 }, { x: 1, y: 0 })]).hits).toEqual([]);
+  });
+
+  test("a lethal hit kills the enemy: reported in deaths, removed, absent from moves", () => {
+    const s = stateWith([grunt("e1", { x: 200, y: 100 }, RANGED_DAMAGE)]);
+    const events = step(s, [shot({ x: 100, y: 100 }, { x: 1, y: 0 })]);
+    expect(events.deaths).toEqual(["e1"]);
+    expect(events.hits).toEqual([]);
+    expect(s.enemies.has("e1")).toBe(false);
+    expect(events.moves).toEqual([]);
+  });
+
+  test("there is only one weapon — the melee cleave is gone, so no arc spares a target", () => {
+    const s = stateWith([grunt("e1", { x: 100, y: 90 }), grunt("e2", { x: 100, y: 110 })]);
+    // Both sat inside the old 120° wedge and would both have been cleaved. A shot takes one.
+    expect(step(s, [shot({ x: 50, y: 100 }, { x: 1, y: 0 })]).hits).toHaveLength(1);
   });
 });
 
@@ -309,26 +310,20 @@ describe("nests are attackable, and silencing one carves a safe lane", () => {
     return n;
   };
 
-  test("a melee swing on a nest lowers its HP (still alive)", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5);
-    const nest = nestAt(s, 0);
-    const events = stepEnemies(s, [], [melee(nest.pos, { x: 1, y: 0 })], 0).events;
-    expect(events.nests).toEqual([{ id: nest.id, hp: NEST_HP - MELEE_DAMAGE, alive: true }]);
-  });
-
-  test("a ranged shot can strike a nest", () => {
+  test("a shot on a nest lowers its HP (still alive)", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
     const nest = nestAt(s, 0);
     const origin = { x: nest.pos.x - 100, y: nest.pos.y };
-    const events = stepEnemies(s, [], [ranged(origin, { x: 1, y: 0 })], 0).events;
+    const events = stepEnemies(s, [], [shot(origin, { x: 1, y: 0 })], 0).events;
     expect(events.nests).toEqual([{ id: nest.id, hp: NEST_HP - RANGED_DAMAGE, alive: true }]);
   });
 
   test("fire to 0 HP silences the nest (alive:false, hp clamped to 0)", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
     const nest = nestAt(s, 0);
-    nest.hp = MELEE_DAMAGE; // one swing away from death
-    const events = stepEnemies(s, [], [melee(nest.pos, { x: 1, y: 0 })], 0).events;
+    nest.hp = RANGED_DAMAGE; // one shot away from death
+    const origin = { x: nest.pos.x - 100, y: nest.pos.y };
+    const events = stepEnemies(s, [], [shot(origin, { x: 1, y: 0 })], 0).events;
     expect(events.nests).toEqual([{ id: nest.id, hp: 0, alive: false }]);
     expect(nestAt(s, 0).alive).toBe(false);
   });
@@ -351,17 +346,13 @@ describe("nests are attackable, and silencing one carves a safe lane", () => {
 });
 
 describe("admitAttack (server-side attack admission)", () => {
-  const report = (seq: number, weapon: Weapon = "melee", pos: Vec2 = { x: 0, y: 0 }) => ({
-    weapon,
-    pos,
-    seq,
-  });
+  const report = (seq: number, pos: Vec2 = { x: 0, y: 0 }) => ({ pos, seq });
 
   test("accepts a fresh in-cadence attack and records its seq + timestamp", () => {
     const g = freshGuard();
     expect(admitAttack(g, report(1), null, 1000)).toBe(true);
     expect(g.seq).toBe(1);
-    expect(g.meleeAt).toBe(1000);
+    expect(g.lastAt).toBe(1000);
   });
 
   test("drops a stale or duplicate seq", () => {
@@ -371,36 +362,417 @@ describe("admitAttack (server-side attack admission)", () => {
     expect(admitAttack(g, report(3), null, 9000)).toBe(false); // older seq
   });
 
-  test("rate-limits a too-soon second swing, then allows once the cadence elapses", () => {
+  test("rate-limits a too-soon second shot, then allows once the cadence elapses", () => {
     const g = freshGuard();
     admitAttack(g, report(1), null, 1000);
-    expect(admitAttack(g, report(2), null, 1000 + MELEE_CADENCE_MS - 1)).toBe(false);
-    expect(admitAttack(g, report(3), null, 1000 + MELEE_CADENCE_MS)).toBe(true);
+    expect(admitAttack(g, report(2), null, 1000 + RANGED_CADENCE_MS - 1)).toBe(false);
+    expect(admitAttack(g, report(3), null, 1000 + RANGED_CADENCE_MS)).toBe(true);
   });
 
   test("rejects a teleport-far origin, accepts one within tolerance", () => {
     const last = { x: 0, y: 0 };
-    expect(
-      admitAttack(
-        freshGuard(),
-        report(1, "melee", { x: ATTACK_POS_TOLERANCE + 1, y: 0 }),
-        last,
-        1000,
-      ),
-    ).toBe(false);
-    expect(
-      admitAttack(
-        freshGuard(),
-        report(1, "melee", { x: ATTACK_POS_TOLERANCE - 1, y: 0 }),
-        last,
-        1000,
-      ),
-    ).toBe(true);
+    const far = report(1, { x: ATTACK_POS_TOLERANCE + 1, y: 0 });
+    const near = report(1, { x: ATTACK_POS_TOLERANCE - 1, y: 0 });
+    expect(admitAttack(freshGuard(), far, last, 1000)).toBe(false);
+    expect(admitAttack(freshGuard(), near, last, 1000)).toBe(true);
+  });
+});
+
+describe("M4-T3: enemies leave the front line to chew on your structures", () => {
+  const MINER = BUILDABLES.miner as BuildableSpec;
+  // A build state holding one miner whose footprint centre sits at `pos`.
+  const withMiner = (pos: Vec2) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 10_000;
+    const tile = tileOf({ x: pos.x - TILE, y: pos.y - TILE }); // centre the 2×2 on `pos`
+    return { build, miner: placeStructure(build, "miner", tile, MINER) };
+  };
+  const stepWith = (s: EnemyState, players: Vec2[], build: BuildState, dtMs = 100) =>
+    stepEnemies(
+      s,
+      players.map((pos, i) => ({ id: `p${i + 1}`, pos })),
+      [],
+      dtMs,
+      build,
+    ).events;
+
+  test("with no player in range, an enemy locks the miner and closes on it", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 1_000, y: minerAt.y })]);
+
+    stepWith(s, [], build);
+    expect(only(s).target).toEqual({ kind: "structure", id: miner.id });
+    expect(only(s).pos.x).toBeLessThan(minerAt.x + 1_000); // closing in
   });
 
-  test("melee and ranged cadences are tracked independently", () => {
-    const g = freshGuard();
-    expect(admitAttack(g, report(1, "melee"), null, 1000)).toBe(true);
-    expect(admitAttack(g, report(2, "ranged"), null, 1000)).toBe(true); // not blocked by the melee gap
+  test("a player in range always outranks a structure", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 100, y: minerAt.y })]);
+
+    stepWith(s, [], build); // locks the miner first…
+    expect(only(s).target?.kind).toBe("structure");
+    stepWith(s, [{ x: minerAt.x + 400, y: minerAt.y }], build); // …then a player walks in
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
+  });
+
+  test("an enemy locked on a player ignores a closer teammate and a closer miner", () => {
+    const start = { x: C.x + 5_000, y: C.y };
+    const { build } = withMiner({ x: start.x + 60, y: start.y }); // a miner right on top of it
+    const s = stateWith([grunt("e1", { ...start })]);
+    const chased = { x: start.x + 1_500, y: start.y };
+
+    stepWith(s, [chased], build);
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
+    // p2 is far closer, and so is the miner — lock and commit means neither steals the chase.
+    stepWith(s, [chased, { x: start.x + 100, y: start.y }], build);
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
+  });
+
+  test("a locked structure is dropped only when it dies or leaves range", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 500, y: minerAt.y })]);
+    stepWith(s, [], build);
+    expect(only(s).target).toEqual({ kind: "structure", id: miner.id });
+
+    removeStructure(build, miner.id); // demolished out from under it
+    stepWith(s, [], build);
+    expect(only(s).target).toBeUndefined();
+  });
+
+  test("an undefended miner is chewed down and removed exactly once", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 200, y: minerAt.y })]);
+
+    let hitTotal = 0;
+    let removals: string[] = [];
+    for (let i = 0; i < 600 && removals.length === 0; i++) {
+      const events = stepWith(s, [], build);
+      hitTotal += events.structHits.length;
+      removals = events.removals;
+    }
+    expect(removals).toEqual([miner.id]);
+    // Every bite but the lethal one reports as a hit; the last reports as a removal.
+    expect(hitTotal).toBe(Math.ceil(MINER.hp / enemyContactDamage("grunt")) - 1);
+    expect(build.structures.has(miner.id)).toBe(false);
+    expect(build.occupancy.size).toBe(0); // its tiles freed
+  });
+
+  test("damage lands on the enemy's own contact cadence, not once per tick", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    // Stand the grunt just inside contact range of the miner's true (tile-snapped) centre.
+    const centre = structureCenter(miner);
+    const s = stateWith([grunt("e1", { x: centre.x + GRUNT_RADIUS + TILE - 1, y: centre.y })]);
+    const cadence = enemyContactCadenceMs("grunt");
+
+    stepWith(s, [], build, 0); // first bite: the cooldown starts at zero
+    expect(build.structures.get(miner.id)?.hp).toBe(MINER.hp - enemyContactDamage("grunt"));
+    stepWith(s, [], build, cadence - 1); // still cooling down
+    expect(build.structures.get(miner.id)?.hp).toBe(MINER.hp - enemyContactDamage("grunt"));
+    stepWith(s, [], build, 1); // cadence elapsed
+    expect(build.structures.get(miner.id)?.hp).toBe(MINER.hp - 2 * enemyContactDamage("grunt"));
+  });
+
+  test("an enemy out of reach of its target does not damage it", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 1_500, y: minerAt.y })]);
+    expect(stepWith(s, [], build, 0).structHits).toEqual([]);
+    expect(build.structures.get(miner.id)?.hp).toBe(MINER.hp);
+  });
+
+  test("with no build state at all the sim behaves exactly as it did in M3", () => {
+    const s = stateWith([grunt("e1", { x: C.x + HOLD_EDGE, y: C.y })]);
+    const events = stepEnemies(s, [], [], 100).events;
+    expect(events.structHits).toEqual([]);
+    expect(events.removals).toEqual([]);
+    expect(only(s).target).toBeUndefined();
+  });
+});
+
+describe("M4-T4: structures are solid to the sim too", () => {
+  const WALL = BUILDABLES.wall as BuildableSpec;
+  const walls = (tiles: Tile[]) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 100_000;
+    return { build, placed: tiles.map((t) => placeStructure(build, "wall", t, WALL)) };
+  };
+
+  test("a wall between an enemy and its prey stops it dead — and it bashes the wall", () => {
+    const start = { x: C.x + 5_000, y: C.y };
+    const wallTile = tileOf({ x: start.x + 60, y: start.y - TILE }); // squarely in the path east
+    const { build, placed } = walls([wallTile]);
+    const s = stateWith([grunt("e1", { ...start })]);
+    const prey = [{ id: "p1", pos: { x: start.x + 800, y: start.y } }];
+
+    let last = only(s).pos.x;
+    for (let i = 0; i < 40; i++) {
+      stepEnemies(s, prey, [], 100, build);
+      last = only(s).pos.x;
+    }
+    expect(last).toBeLessThan(structureCenter(placed[0]).x); // never got through
+    expect(build.structures.get(placed[0].id)?.hp).toBeLessThan(WALL.hp); // chewed on it instead
+  });
+
+  test("a wave spawning on top of a wall is pushed clear of it", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5); // rng 0.5 → zero jitter, so every grunt
+    const nest = s.nests[0]; //                            spawns exactly on the nest
+    const { build } = walls([tileOf({ x: nest.pos.x - TILE, y: nest.pos.y - TILE })]);
+
+    const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS, build).events.spawns;
+    const onNest = spawns.filter((sp) => sp.sector === nest.sector);
+    expect(onNest.length).toBeGreaterThan(0);
+    for (const sp of onNest) {
+      expect(structureBlocking(build, sp.pos, enemyRadius(sp.kind))).toBeNull();
+    }
+  });
+
+  test("a nest sealed on all sides still emits — the sim never fails a spawn", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    const nest = s.nests[0];
+    // Blanket the nest's whole spawn scatter, so every spawn point starts inside a footprint.
+    const tiles: Tile[] = [];
+    const origin = tileOf({ x: nest.pos.x - 360, y: nest.pos.y - 360 });
+    for (let dy = 0; dy < 48; dy += 2) {
+      for (let dx = 0; dx < 48; dx += 2) tiles.push({ tx: origin.tx + dx, ty: origin.ty + dy });
+    }
+    const { build } = walls(tiles);
+
+    const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS, build).events.spawns;
+    // Deep inside a solid field one push lands in the neighbouring wall, and that is the
+    // deliberate trade: the sim pushes once and never searches for a free tile. What it must
+    // never do is drop the spawn — the enemies are there, and they will chew their way out.
+    expect(spawns.filter((sp) => sp.sector === nest.sector).length).toBe(2 + 1);
+  });
+
+  test("with nothing built, enemy motion is byte-for-byte what M3 produced", () => {
+    const start = { x: C.x + 5_000, y: C.y };
+    const prey = [{ id: "p1", pos: { x: start.x + 800, y: start.y } }];
+    const withEmptyBuild = stateWith([grunt("e1", { ...start })]);
+    const withNoBuild = stateWith([grunt("e1", { ...start })]);
+    for (let i = 0; i < 20; i++) {
+      stepEnemies(withEmptyBuild, prey, [], 100, freshBuildState(ARENA));
+      stepEnemies(withNoBuild, prey, [], 100);
+    }
+    expect(only(withEmptyBuild).pos).toEqual(only(withNoBuild).pos);
+  });
+});
+
+describe("M4-T8: a turret shoots the nearest enemy, through walls, and sieges nests", () => {
+  const TURRET = BUILDABLES.turret as BuildableSpec;
+  const WALL = BUILDABLES.wall as BuildableSpec;
+  // A build state with one turret whose footprint sits at `tile`.
+  const withTurret = (tile: Tile) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 100_000;
+    build.power.generation = 10_000; // ample headroom; the budget itself is #65's subject
+    return { build, turret: placeStructure(build, "turret", tile, TURRET) };
+  };
+  const fire = (s: EnemyState, build: BuildState, dtMs = TURRET_CADENCE_MS) =>
+    stepEnemies(s, [], [], dtMs, build).events;
+
+  test("the turret is a 2×2 placeable anywhere", () => {
+    expect(TURRET).toEqual({ footprint: 2, cost: 120, hp: 250, requires: null });
+  });
+
+  test("it picks the nearest of several enemies", () => {
+    const spot = tileOf({ x: C.x + 5_000, y: C.y });
+    const { build, turret } = withTurret(spot);
+    const from = structureCenter(turret);
+    const s = stateWith([
+      grunt("far", { x: from.x + 600, y: from.y }),
+      grunt("near", { x: from.x + 200, y: from.y }),
+    ]);
+
+    const events = fire(s, build, 0);
+    expect(events.hits).toEqual([{ id: "near", hp: GRUNT_HP - TURRET_DAMAGE }]);
+    expect(at(s, "far") === undefined || at(s, "far")?.hp === GRUNT_HP).toBe(true);
+  });
+
+  test("a wall between turret and target changes nothing — no line of sight is needed", () => {
+    const spot = tileOf({ x: C.x + 5_000, y: C.y });
+    const { build, turret } = withTurret(spot);
+    const from = structureCenter(turret);
+    placeStructure(build, "wall", tileOf({ x: from.x + 100, y: from.y - TILE }), WALL);
+    const s = stateWith([grunt("e1", { x: from.x + 300, y: from.y })]);
+
+    expect(fire(s, build, 0).hits).toEqual([{ id: "e1", hp: GRUNT_HP - TURRET_DAMAGE }]);
+  });
+
+  test("nothing in range is left alone", () => {
+    const spot = tileOf({ x: C.x + 5_000, y: C.y });
+    const { build, turret } = withTurret(spot);
+    const from = structureCenter(turret);
+    const s = stateWith([grunt("e1", { x: from.x + TURRET_RANGE + 100, y: from.y })]);
+    expect(fire(s, build, 0).hits).toEqual([]);
+  });
+
+  test("fire holds to its cadence rather than firing every tick", () => {
+    const spot = tileOf({ x: C.x + 5_000, y: C.y });
+    const { build, turret } = withTurret(spot);
+    const from = structureCenter(turret);
+    const s = stateWith([grunt("e1", { x: from.x + 200, y: from.y }, 10_000)]);
+
+    fire(s, build, 0); // the first shot: the cooldown starts at zero
+    expect(at(s, "e1")?.hp).toBe(10_000 - TURRET_DAMAGE);
+    fire(s, build, TURRET_CADENCE_MS - 1); // still cooling down
+    expect(at(s, "e1")?.hp).toBe(10_000 - TURRET_DAMAGE);
+    fire(s, build, 1); // cadence elapsed
+    expect(at(s, "e1")?.hp).toBe(10_000 - 2 * TURRET_DAMAGE);
+  });
+
+  test("a turret line left in front of a nest brings it down unattended", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    const nest = s.nests[0];
+    s.msUntilWave = Number.POSITIVE_INFINITY; // no waves; the turret is alone with the nest
+    const { build } = withTurret(tileOf({ x: nest.pos.x - 300, y: nest.pos.y }));
+
+    let silenced = false;
+    for (let i = 0; i < 5_000 && !silenced; i++) {
+      const events = fire(s, build, TURRET_CADENCE_MS);
+      silenced = events.nests.some((n) => n.id === nest.id && !n.alive);
+    }
+    expect(silenced).toBe(true);
+    expect(s.nests[0].hp).toBe(0);
+  });
+
+  test("with no turret standing, nothing fires", () => {
+    const build = freshBuildState(ARENA);
+    const s = stateWith([grunt("e1", { x: C.x + 5_000, y: C.y })]);
+    expect(fire(s, build, TURRET_CADENCE_MS).hits).toEqual([]);
+    expect(at(s, "e1")?.hp).toBe(GRUNT_HP);
+  });
+
+  test("a turret kill reports as a death, not a hit", () => {
+    const spot = tileOf({ x: C.x + 5_000, y: C.y });
+    const { build, turret } = withTurret(spot);
+    const from = structureCenter(turret);
+    const s = stateWith([grunt("e1", { x: from.x + 200, y: from.y }, TURRET_DAMAGE)]);
+    const events = fire(s, build, 0);
+    expect(events.deaths).toEqual(["e1"]);
+    expect(events.hits).toEqual([]);
+  });
+});
+
+describe("M4-T9: the power budget decides which turrets get to fire", () => {
+  const TURRET = BUILDABLES.turret as BuildableSpec;
+  const ORIGIN = { x: C.x + 5_000, y: C.y };
+
+  // `count` turrets in a row, all within range of the same spot, on a grid of `generation` energy.
+  function grid(count: number, generation: number) {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 1_000_000;
+    build.power.generation = generation;
+    const turrets = Array.from({ length: count }, (_, i) =>
+      placeStructure(build, "turret", tileOf({ x: ORIGIN.x + i * TILE * 3, y: ORIGIN.y }), TURRET),
+    );
+    return { build, turrets };
+  }
+  const firing = (turrets: Structure[]) => turrets.filter((t) => t.turret?.powered).length;
+  // A sponge parked in range of every turret, so nothing dies and the budget is the only variable.
+  const sponge = () => stateWith([grunt("e1", { x: ORIGIN.x + 100, y: ORIGIN.y }, 1_000_000)]);
+
+  // Exactly two of three fit: 3 × idle 10 = 30, plus 2 × active 100 = 230; a third would need 330.
+  const FITS_TWO = 3 * TURRET_IDLE_DRAW + 2 * TURRET_ACTIVE_DRAW;
+
+  test("idle draw is charged for merely existing, before anything activates", () => {
+    const { build } = grid(3, 0); // no generation at all, so nothing can activate
+    stepEnemies(sponge(), [], [], 50, build);
+    expect(build.power.consumption).toBe(0); // clamped at a zero ceiling
+  });
+
+  test("with a ceiling that fits N−1 of N turrets, exactly N−1 fire", () => {
+    const { build, turrets } = grid(3, FITS_TWO);
+    stepEnemies(sponge(), [], [], 50, build);
+    expect(firing(turrets)).toBe(2);
+    expect(build.power.consumption).toBe(FITS_TWO);
+  });
+
+  test("the odd turret out stays idle across many ticks without flickering", () => {
+    const { build, turrets } = grid(3, FITS_TWO);
+    const s = sponge();
+    const powered: string[] = [];
+    for (let i = 0; i < 200; i++) {
+      stepEnemies(s, [], [], 50, build);
+      powered.push(turrets.map((t) => (t.turret?.powered ? "1" : "0")).join(""));
+    }
+    // One stable pattern for the whole run: a flickering budget would show several.
+    expect(new Set(powered).size).toBe(1);
+    expect(firing(turrets)).toBe(2);
+  });
+
+  test("an already-firing turret keeps its power when a new turret asks for it", () => {
+    const { build, turrets } = grid(2, 2 * TURRET_IDLE_DRAW + TURRET_ACTIVE_DRAW);
+    const s = sponge();
+    stepEnemies(s, [], [], 50, build);
+    const first = turrets.findIndex((t) => t.turret?.powered);
+    expect(first).toBeGreaterThanOrEqual(0);
+    for (let i = 0; i < 50; i++) stepEnemies(s, [], [], 50, build);
+    expect(turrets[first].turret?.powered).toBe(true); // never bumped
+    expect(firing(turrets)).toBe(1);
+  });
+
+  test("power is released when the target dies", () => {
+    const { build, turrets } = grid(1, 1_000);
+    const s = stateWith([grunt("e1", { x: ORIGIN.x + 100, y: ORIGIN.y }, TURRET_DAMAGE)]);
+    stepEnemies(s, [], [], 50, build);
+    expect(turrets[0].turret?.powered).toBe(true);
+    stepEnemies(s, [], [], 50, build); // the grunt died to that first shot
+    expect(turrets[0].turret?.powered).toBe(false);
+    expect(build.power.consumption).toBe(TURRET_IDLE_DRAW);
+  });
+
+  test("power is released when the target leaves range", () => {
+    const { build, turrets } = grid(1, 1_000);
+    const s = stateWith([grunt("e1", { x: ORIGIN.x + 100, y: ORIGIN.y }, 1_000_000)]);
+    stepEnemies(s, [], [], 50, build);
+    expect(turrets[0].turret?.powered).toBe(true);
+
+    const runaway = only(s);
+    runaway.pos = { x: ORIGIN.x + TURRET_RANGE + 5_000, y: ORIGIN.y };
+    stepEnemies(s, [], [], 50, build);
+    expect(turrets[0].turret?.powered).toBe(false);
+  });
+
+  test("over-building clamps the display and blocks every activation — then a demolish recovers it", () => {
+    const generation = 4 * TURRET_IDLE_DRAW + TURRET_ACTIVE_DRAW; // one turret's worth of headroom
+    const { build, turrets } = grid(20, generation); // idle alone (200) exceeds the ceiling
+    const s = sponge();
+    stepEnemies(s, [], [], 50, build);
+    expect(firing(turrets)).toBe(0); // no headroom left for anything to activate
+    expect(build.power.consumption).toBe(generation); // clamped, not a runaway number
+
+    // Recoverable, and self-inflicted rather than a failure: tear turrets down and it comes back.
+    for (const t of turrets.slice(0, 17)) demolishStructure(build, t);
+    stepEnemies(s, [], [], 50, build);
+    expect(firing(turrets.slice(17))).toBe(1);
+  });
+
+  test("the activation queue serves several simultaneous requests against one free slot", () => {
+    // Five turrets, all unpowered, all with a target, and headroom for exactly one.
+    const { build, turrets } = grid(5, 5 * TURRET_IDLE_DRAW + TURRET_ACTIVE_DRAW);
+    stepEnemies(sponge(), [], [], 50, build);
+    // Check-and-reserve is one indivisible step, so exactly one wins — never two seeing the
+    // same free slot, never zero.
+    expect(firing(turrets)).toBe(1);
+    expect(turrets[0].turret?.powered).toBe(true); // whoever asked first
+  });
+
+  test("an unpowered turret does not fire, however long it stands there", () => {
+    const { build } = grid(1, 0);
+    const s = stateWith([grunt("e1", { x: ORIGIN.x + 100, y: ORIGIN.y })]);
+    for (let i = 0; i < 100; i++) stepEnemies(s, [], [], 50, build);
+    expect(at(s, "e1")?.hp).toBe(GRUNT_HP); // still untouched
+  });
+
+  test("with no turrets standing, consumption is zero", () => {
+    const build = freshBuildState(ARENA);
+    build.power.generation = 1_000;
+    stepEnemies(sponge(), [], [], 50, build);
+    expect(build.power.consumption).toBe(0);
   });
 });

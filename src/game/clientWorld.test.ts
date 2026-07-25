@@ -1,8 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import type { MapDelta, WorldInit } from "../lobby/protocol";
-import { ClientWorld, ENEMY_RENDER_DELAY_MS, RENDER_DELAY_MS } from "./clientWorld";
+import type { MapDelta, Vec2, WorldInit } from "../lobby/protocol";
+import {
+  BUILDABLES,
+  type BuildableSpec,
+  structureBlocking,
+  TILE,
+  tileOf,
+  tileOrigin,
+} from "./build";
+import {
+  ClientWorld,
+  ENEMY_RENDER_DELAY_MS,
+  RENDER_DELAY_MS,
+  RESPAWN_DELAY_MS,
+} from "./clientWorld";
 import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, NEST_COUNT } from "./enemies";
-import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS } from "./world";
+import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
 
 const STILL = { up: false, down: false, left: false, right: false };
 const held = (dir: keyof typeof STILL) => ({ ...STILL, [dir]: true });
@@ -14,6 +27,7 @@ const init = (): WorldInit => ({
     { id: "self", slot: 1, name: "Me", pos: { x: 400, y: 300 } },
     { id: "peer", slot: 2, name: "You", pos: { x: 500, y: 300 } },
   ],
+  oreSeed: 1,
 });
 
 // The render time a peer sample stamped at `arrival` is shown = arrival + RENDER_DELAY_MS.
@@ -49,7 +63,7 @@ describe("ClientWorld construction", () => {
 describe("ClientWorld self-sim (instant, never buffered)", () => {
   test("stepSelf integrates only the self avatar; peers hold still", () => {
     const w = new ClientWorld(init(), "self");
-    w.stepSelf(100, held("right"));
+    w.stepSelf(100, held("right"), 0);
     const snap = w.snapshot(0);
     expect(snap.players.find((p) => p.id === "self")?.pos.x).toBeGreaterThan(400);
     expect(snap.players.find((p) => p.id === "peer")?.pos).toEqual({ x: 500, y: 300 });
@@ -57,7 +71,7 @@ describe("ClientWorld self-sim (instant, never buffered)", () => {
 
   test("the self avatar is unaffected by the render delay", () => {
     const w = new ClientWorld(init(), "self");
-    w.stepSelf(100, held("right"));
+    w.stepSelf(100, held("right"), 0);
     const x = w.selfPos()?.x ?? 0;
     // Whatever `now` we sample, self is the live local position — no interpolation.
     expect(w.snapshot(0).players.find((p) => p.id === "self")?.pos.x).toBe(x);
@@ -303,5 +317,113 @@ describe("ClientWorld self-health (client-authoritative contact damage)", () => 
     const rebuilt = new ClientWorld(init(), "self", 40);
     expect(rebuilt.hp()).toBe(40);
     expect(new ClientWorld(init(), "self").hp()).toBe(PLAYER_MAX_HP); // fresh match defaults to full
+  });
+});
+
+describe("M4-T4: a wall clamps your own avatar", () => {
+  const WALL = BUILDABLES.wall as BuildableSpec;
+  const held = (dir: "up" | "down" | "left" | "right") => ({ ...STILL, [dir]: true });
+
+  // Put a wall directly east of the owner's spawn and mirror it into the client's build state,
+  // exactly as a `builds` delta would.
+  function walledWorld() {
+    const world = new ClientWorld(init(), "self");
+    const spawnPos = { x: 400, y: 300 };
+    const tile = tileOf({ x: spawnPos.x + PLAYER_RADIUS + 10, y: spawnPos.y - TILE });
+    world.applyMapDelta(
+      { tick: 1, moves: [], builds: [{ id: "w1", kind: "wall", tile, hp: WALL.hp }] },
+      0,
+    );
+    return { world, wall: { id: "w1", kind: "wall" as const, tile, hp: WALL.hp } };
+  }
+
+  test("running into a wall stops you outside it", () => {
+    const { world, wall } = walledWorld();
+    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right"), 0);
+    const self = world.snapshot(0).players.find((p) => p.id === "self");
+    expect(self?.pos.x).toBeLessThan(tileOrigin(wall.tile).x);
+    expect(structureBlocking(world.build, self?.pos as Vec2, PLAYER_RADIUS)).toBeNull();
+  });
+
+  test("you slide along the wall instead of sticking to it", () => {
+    const { world } = walledWorld();
+    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right"), 0); // press into it
+    const stuck = world.snapshot(0).players.find((p) => p.id === "self")?.pos as Vec2;
+    world.stepSelf(100, { ...STILL, right: true, down: true }, 0); // still pressing, now also down
+    const slid = world.snapshot(0).players.find((p) => p.id === "self")?.pos as Vec2;
+    expect(slid.y).toBeGreaterThan(stuck.y);
+  });
+
+  test("a demolished wall stops clamping immediately", () => {
+    const { world, wall } = walledWorld();
+    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right"), 0);
+    world.applyMapDelta({ tick: 2, moves: [], removals: [wall.id] }, 0);
+    for (let i = 0; i < 10; i++) world.stepSelf(100, held("right"), 0);
+    const self = world.snapshot(0).players.find((p) => p.id === "self");
+    expect(self?.pos.x).toBeGreaterThan(tileOrigin(wall.tile).x);
+  });
+});
+
+describe("M4-T6: you cannot walk through an enemy", () => {
+  // Spawn a grunt at `pos` and stream it one move, so it has a rendered position to collide with.
+  function withGrunt(pos: Vec2) {
+    const world = new ClientWorld(init(), "self");
+    world.applyMapDelta(
+      {
+        tick: 1,
+        moves: [["e1", pos.x, pos.y]],
+        spawns: [{ id: "e1", kind: "grunt", pos, hp: GRUNT_HP, sector: 0 }],
+      },
+      0,
+    );
+    return world;
+  }
+  const selfOf = (w: ClientWorld) => w.selfPos() as Vec2;
+
+  test("walking into a grunt pushes you back out instead of through it", () => {
+    const grunt = { x: 460, y: 300 }; // due east of the owner's spawn at (400, 300)
+    const world = withGrunt(grunt);
+    for (let i = 0; i < 30; i++) world.stepSelf(100, held("right"), 0);
+    const self = selfOf(world);
+    expect(Math.hypot(self.x - grunt.x, self.y - grunt.y)).toBeGreaterThanOrEqual(
+      PLAYER_RADIUS + GRUNT_RADIUS - 1e-6,
+    );
+    expect(self.x).toBeLessThan(grunt.x); // never made it past
+  });
+
+  test("peers are not solid — squadmates pass through each other", () => {
+    const world = new ClientWorld(init(), "self");
+    world.applyPeer("peer", { x: 460, y: 300 }, 1, 0); // a peer right in the way
+    for (let i = 0; i < 30; i++) world.stepSelf(100, held("right"), 0);
+    expect(selfOf(world).x).toBeGreaterThan(460); // walked straight through
+  });
+
+  test("with no enemies at all, motion is exactly the plain integration", () => {
+    const plain = new ClientWorld(init(), "self");
+    const withEnemy = withGrunt({ x: 20_000, y: 20_000 }); // far away
+    for (let i = 0; i < 10; i++) {
+      plain.stepSelf(100, held("right"), 0);
+      withEnemy.stepSelf(100, held("right"), 0);
+    }
+    expect(selfOf(withEnemy)).toEqual(selfOf(plain));
+  });
+});
+
+describe("M4-T10: dying costs 20 seconds", () => {
+  test("the respawn delay is 20 s — long enough that death is a real time penalty", () => {
+    expect(RESPAWN_DELAY_MS).toBe(20_000);
+  });
+
+  test("the downed countdown reads in whole seconds from 20", () => {
+    // The HUD shows `ceil(remaining / 1000)`, so the first tick after death reads "20".
+    expect(Math.ceil(RESPAWN_DELAY_MS / 1000)).toBe(20);
+  });
+
+  test("the walk back from centre is the real cost — the timer alone is a fraction of it", () => {
+    // Centre to the danger band is ~60 s at PLAYER_SPEED. The countdown is the down payment;
+    // the walk is the rest, which is what makes dying expensive without wiping the squad.
+    const walkBackMs = ((ARENA.width / 2) * 1000) / PLAYER_SPEED;
+    expect(RESPAWN_DELAY_MS).toBeLessThan(walkBackMs);
+    expect(RESPAWN_DELAY_MS).toBeGreaterThan(walkBackMs / 5);
   });
 });

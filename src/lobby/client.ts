@@ -1,15 +1,17 @@
 import { ClientWorld } from "../game/clientWorld";
 import { normalizeCode } from "./code";
 import {
+  type BuildableKind,
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
+  type MatchOutcome,
   type PlayerToken,
   PROTOCOL_VERSION,
   type Self,
   type ServerMessage,
+  type Tile,
   type Vec2,
-  type Weapon,
   WS_PATH,
 } from "./protocol";
 import { applyRoster } from "./roster";
@@ -22,6 +24,7 @@ export interface LobbyState {
   self?: Self;
   snapshot?: LobbySnapshot;
   world?: ClientWorld; // the live local world once the match starts; mutated in place
+  matchEnd?: { outcome: MatchOutcome; elapsedMs: number }; // set once the match is over
   error?: string;
 }
 
@@ -66,6 +69,9 @@ export class LobbyClient {
   private posSeq = 0; // monotonic across the client's whole life, so it survives reconnect
   private attackSeq = 0; // monotonic attack sequence, independent of posSeq
   private healthSeq = 0; // monotonic health sequence, independent of the others
+  private mineSeq = 0; // monotonic hand-mine sequence, independent of the others
+  private buildSeq = 0; // monotonic placement sequence, independent of the others
+  private demolishSeq = 0; // monotonic demolish sequence, independent of the others
 
   constructor(options: LobbyClientOptions = {}) {
     this.wsUrl = options.wsUrl ?? defaultWsUrl();
@@ -104,10 +110,28 @@ export class LobbyClient {
     this.send({ type: "game/pos", pos, seq: ++this.posSeq });
   }
 
-  // Report a swing/shot. The server validates (cadence/range/seq) and applies the damage —
+  // Report a shot. The server validates (cadence/range/seq) and applies the damage —
   // the client never writes enemy HP. `seq` is monotonic, like sendPos.
-  sendAttack(weapon: Weapon, pos: Vec2, dir: Vec2): void {
-    this.send({ type: "game/attack", weapon, pos, dir, seq: ++this.attackSeq });
+  sendAttack(pos: Vec2, dir: Vec2): void {
+    this.send({ type: "game/attack", pos, dir, seq: ++this.attackSeq });
+  }
+
+  // Ask to hand-mine the metal-ore tile under the cursor. The server decides what it is worth
+  // and credits the shared bank; the client never writes it. `seq` is monotonic, like sendPos.
+  sendMine(tile: Tile): void {
+    this.send({ type: "game/mine", tile, seq: ++this.mineSeq });
+  }
+
+  // Ask to place a buildable. The server re-runs the placement rule, debits the bank and mints
+  // the structure's id — the client never writes either. `seq` is monotonic, like sendPos.
+  sendBuild(kind: BuildableKind, tile: Tile): void {
+    this.send({ type: "game/build", kind, tile, seq: ++this.buildSeq });
+  }
+
+  // Ask to demolish a structure. Any player may demolish any structure; the server credits the
+  // refund. `seq` is monotonic, like sendPos.
+  sendDemolish(id: string): void {
+    this.send({ type: "game/demolish", id, seq: ++this.demolishSeq });
   }
 
   // Report the client's own HP (it owns it). `hp <= 0` declares death. The server stores and
@@ -128,6 +152,7 @@ export class LobbyClient {
       self: undefined,
       snapshot: undefined,
       world: undefined,
+      matchEnd: undefined,
       error: undefined,
     });
   }
@@ -201,6 +226,7 @@ export class LobbyClient {
           self: undefined,
           snapshot: undefined,
           world: undefined,
+          matchEnd: undefined,
           error: "This lobby was opened on another device.",
         });
         return;
@@ -232,6 +258,18 @@ export class LobbyClient {
         return;
       case "game/enemy-init":
         this.state.world?.initEnemies(msg);
+        return;
+      case "game/build-init":
+        this.state.world?.initBuild(msg);
+        return;
+      case "game/match-end":
+        // The run is over. The world stays put behind the end screen; nothing is persisted.
+        this.setState({
+          matchEnd: { outcome: msg.outcome, elapsedMs: msg.elapsedMs },
+          snapshot: this.state.snapshot
+            ? { ...this.state.snapshot, phase: msg.outcome }
+            : this.state.snapshot,
+        });
         return;
       case "lobby/player-left":
         this.state.world?.removePeer(msg.id);
