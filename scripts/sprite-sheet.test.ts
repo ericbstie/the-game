@@ -2,13 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildPage, entrySource, parseArgs, resolveHeadlessShell } from "./sprite-sheet";
+import { buildPage, resolveHeadlessShell } from "./headless";
+import { entrySource, parseArgs } from "./sprite-sheet";
 
 describe("parseArgs", () => {
-  test("puts the sheet next to the sprite module it renders", () => {
+  test("names the sheet after the module, so parallel agents cannot overwrite each other", () => {
     const request = parseArgs(["src/sprite/calibration.ts"]);
     expect(request.subject).toBe(join(process.cwd(), "src/sprite/calibration.ts"));
-    expect(request.out).toBe(join(process.cwd(), "src/sprite/sheet.png"));
+    expect(request.out).toBe(join(process.cwd(), "src/sprite/calibration.sheet.png"));
     expect(request.dpr).toBe(2);
     expect(request.json).toBe(false);
   });

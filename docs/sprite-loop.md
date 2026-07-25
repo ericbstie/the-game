@@ -11,11 +11,13 @@ between each other. So the loop ends in an image, and somebody looks at it.
 
 ## 1. Write the sprite
 
-One directory per sprite, `src/sprite/<name>/`, with a module that default-exports a
-`SpriteSubject`:
+One file per sprite, `src/sprite/<name>.ts`, default-exporting a `SpriteSubject`. The full
+contract an agent writes against — the name of every sprite in the set, the box each draws in, the
+facing index, and what `facing` and `frame` mean — is
+[`src/sprite/README.md`](../src/sprite/README.md):
 
 ```ts
-import type { SpriteSubject } from "../sheet";
+import type { SpriteSubject } from "./sheet";
 
 const grunt: SpriteSubject = {
   name: "grunt",
@@ -35,15 +37,19 @@ export default grunt;
 - **The module must import cleanly under Bun** — no `document` at module scope. The runner computes
   the sheet's size without a canvas, because Chromium crops a screenshot to the window it was given
   and never says so.
-- **`facing` and `frame` are indices.** What each facing points at is
-  [#73](https://github.com/ericbstie/the-game/issues/73)'s to settle; the sheet lays them out in
-  index order.
+- **`facing` is the variant axis and `frame` the animation axis.** For a character the variants
+  are the 8 compass directions, fixed at `angle = facing / 8 × 2π` on a y-down canvas: 0 E, 1 SE,
+  2 S, 3 SW, 4 W, 5 NW, 6 N, 7 NE. For everything else they are that sprite's own variants — the
+  egg sac's two states, the grass tufts. The sheet lays them out in index order.
+- **Nothing but that one file.** `registry.ts`, `draw.ts` and `cache.ts` are not yours to touch;
+  wiring a sprite into the game is one line, added when the file is merged. That is what lets a
+  dozen agents work at once without meeting in a shared file.
 
 ## 2. Render the review sheet
 
 ```sh
-bun run sprite:sheet src/sprite/grunt/grunt.ts            # → src/sprite/grunt/sheet.png
-bun run sprite:sheet src/sprite/grunt/grunt.ts --dpr 1    # check an ordinary, non-retina monitor
+bun run sprite:sheet src/sprite/grunt.ts            # → src/sprite/grunt.sheet.png
+bun run sprite:sheet src/sprite/grunt.ts --dpr 1    # check an ordinary, non-retina monitor
 ```
 
 About a second. It writes the PNG **and** prints pixel facts measured on a real canvas: ink and
@@ -64,7 +70,7 @@ them:
 
 Not optional. Give the subagent the sheet's path and this brief:
 
-> Look at `src/sprite/<name>/sheet.png` and report what is wrong with it. It shows one sprite four
+> Look at `src/sprite/<name>.sheet.png` and report what is wrong with it. It shows one sprite four
 > ways: **panel 1** every facing and frame at 2×, **panel 2** the sprite at real size on the floor,
 > **panel 3** magnified with smoothing off, **panel 4** the frames alternating.
 >
@@ -79,13 +85,19 @@ Not optional. Give the subagent the sheet's path and this brief:
 
 ## 4. Record the review, then look yourself
 
-The reviewer's findings go in `src/sprite/<name>/review.md`. They are **advisory**: nothing gates
+The reviewer's findings go in `src/sprite/<name>.review.md`. They are **advisory**: nothing gates
 on them, and a sprite ships with an unresolved note if its author decides it ships. The final call
 is made by looking at the work in the game.
 
-A sprite's deliverable is **three files in one directory** — the module, `sheet.png`, and
-`review.md` — committed together, so whoever opens the sheet already knows what its own reviewer
-flagged.
+A sprite's deliverable is **three files** — `<name>.ts`, `<name>.sheet.png` and
+`<name>.review.md` — committed together, so whoever opens the sheet already knows what its own
+reviewer flagged.
+
+Seeing it in a real frame of the game is a separate command, and needs no server or lobby:
+
+```sh
+bun run sprite:frame --sprite player=src/sprite/player.ts    # → sprite-frame.png
+```
 
 ## Do not "fix" the anti-aliasing
 
@@ -111,3 +123,6 @@ bun run sprite:sheet src/sprite/calibration.ts
 
 `calibration.ts` is a test pattern, not art — geometry chosen to exercise every panel. Use it to
 confirm the harness works, then delete the sheet it wrote. Only a real sprite's sheet is committed.
+
+`bun run sprite:frame` with no arguments does the same for the world frame, drawing the calibration
+pattern where the player sprite goes.

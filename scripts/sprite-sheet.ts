@@ -1,18 +1,13 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { type BakeMeasurement, layoutSheet, type SpriteSubject } from "../src/sprite/sheet";
+import { capture, measurementsIn } from "./headless";
 
 // Render a sprite module to a PNG review sheet an agent can look at.
 //
 //   bun run sprite:sheet src/sprite/player/player.ts
 //
-// Nothing here is new: Chromium and Bun are already installed, and one `headless_shell` launch
-// produces both channels at once — the screenshot, and a DOM dump carrying pixel facts measured on
-// a real canvas (#77 §1–2). Playwright is deliberately *not* used: only its browser binaries are
-// installed, and the raw binary does this in one flag.
+// The Chromium launch itself lives in `headless.ts`, which the world-frame renderer shares.
 
-const BROWSERS_ROOT = process.env.PLAYWRIGHT_BROWSERS_PATH ?? "/opt/pw-browsers";
 const SHEET_MODULE = join(import.meta.dir, "../src/sprite/sheet.ts");
 const DEFAULT_DPR = 2;
 
@@ -52,22 +47,15 @@ export function parseArgs(argv: string[]): SheetRequest {
     );
   }
   const path = resolve(subject);
-  return { subject: path, out: resolve(out ?? join(dirname(path), "sheet.png")), dpr, json };
-}
-
-// `/opt/pw-browsers/chromium` is the WRONG binary and fails silently: under `--headless` it writes
-// a PNG of the requested size but paints only the top ~40 px, because the window size it is given
-// includes browser chrome. It looks exactly like a broken sprite. Only `headless_shell` renders a
-// full page (#77 §1). Resolved by glob so a browser version bump does not break the harness, and
-// never by falling back to anything else.
-export function resolveHeadlessShell(root = BROWSERS_ROOT): string {
-  const pattern = "chromium_headless_shell-*/chrome-linux/headless_shell";
-  const found = existsSync(root)
-    ? [...new Bun.Glob(pattern).scanSync({ cwd: root, absolute: true })].sort()
-    : [];
-  const shell = found.at(-1);
-  if (!shell) throw new Error(`no ${pattern} under ${root} — set HEADLESS_SHELL to override`);
-  return shell;
+  // Named after the module, not "sheet.png": a dozen sprite agents render into this one directory
+  // in parallel, and a shared default would have each of them quietly overwrite the last.
+  const stem = basename(path, extname(path));
+  return {
+    subject: path,
+    out: resolve(out ?? join(dirname(path), `${stem}.sheet.png`)),
+    dpr,
+    json,
+  };
 }
 
 // The browser entry, generated per subject because a bundler has to see the import path. Sprite
@@ -104,17 +92,6 @@ document.getElementById("measurements").textContent = JSON.stringify({
 `;
 }
 
-export function buildPage(bundle: string): string {
-  return `<!doctype html>
-<meta charset="utf-8">
-<title>sprite review sheet</title>
-<style>html,body{margin:0;background:#d8d8d8}canvas{display:block}</style>
-<canvas id="sheet"></canvas>
-<pre id="measurements" hidden></pre>
-<script>${bundle.replaceAll("</script", "<\\/script")}</script>
-`;
-}
-
 export async function renderSheet(request: SheetRequest): Promise<SheetResult> {
   const subject: SpriteSubject = (await import(request.subject)).default;
   if (!subject?.draw) {
@@ -123,51 +100,18 @@ export async function renderSheet(request: SheetRequest): Promise<SheetResult> {
   // The runner needs the sheet's size before it launches: `--screenshot` captures the viewport, so
   // a sheet taller than `--window-size` is cropped without a word. Hence the pure layout.
   const layout = layoutSheet(subject);
-  const work = mkdtempSync(join(tmpdir(), "sprite-sheet-"));
-  try {
-    const entry = join(work, "entry.ts");
-    writeFileSync(entry, entrySource(request.subject, request.dpr));
-    const bundle = await Bun.build({ entrypoints: [entry], target: "browser" });
-    if (!bundle.success)
-      throw new AggregateError(bundle.logs, `could not bundle ${request.subject}`);
-    const page = join(work, "sheet.html");
-    writeFileSync(page, buildPage(await bundle.outputs[0].text()));
-
-    const shell = process.env.HEADLESS_SHELL ?? resolveHeadlessShell();
-    const width = Math.round(layout.width * request.dpr);
-    const height = Math.round(layout.height * request.dpr);
-    const run = Bun.spawnSync([
-      shell,
-      "--disable-gpu",
-      "--no-sandbox",
-      "--hide-scrollbars",
-      `--screenshot=${request.out}`,
-      "--dump-dom", // both channels come out of the same launch
-      `--window-size=${width},${height}`,
-      `file://${page}`,
-    ]);
-    const dom = run.stdout.toString();
-    const measured = measurementsIn(dom);
-    if (!measured) {
-      throw new Error(
-        `${shell} produced no measurements — the sheet may not have drawn.\n${run.stderr.toString()}`,
-      );
-    }
-    return { out: request.out, ...measured };
-  } finally {
-    rmSync(work, { recursive: true, force: true });
+  const dom = await capture({
+    entry: entrySource(request.subject, request.dpr),
+    out: request.out,
+    width: Math.round(layout.width * request.dpr),
+    height: Math.round(layout.height * request.dpr),
+    label: request.subject,
+  });
+  const measured = measurementsIn(dom) as Omit<SheetResult, "out"> | null;
+  if (!measured) {
+    throw new Error(`no measurements came back — ${request.subject} may not have drawn at all`);
   }
-}
-
-function measurementsIn(dom: string): Omit<SheetResult, "out"> | null {
-  const found = dom.match(/<pre id="measurements"[^>]*>([\s\S]*?)<\/pre>/);
-  if (!found) return null;
-  const json = found[1]
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&amp;", "&");
-  return json.trim() ? JSON.parse(json) : null;
+  return { out: request.out, ...measured };
 }
 
 function report(result: SheetResult): void {
