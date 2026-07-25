@@ -16,7 +16,8 @@ import type { Vec2 } from "../lobby/protocol";
 // filter solve both: incoherent jitter cancels vectorially, so the magnitude collapses and the
 // speed gate fires on exactly the frames whose direction is meaningless.
 
-export const SECTOR_DEG = 45; // 8 facings, so 45° wide — 22.5° is the half-sector, centre to edge
+export const FACINGS = 8; // matches `angle = facing / FACINGS * 2π` in src/sprite/calibration.ts
+export const SECTOR_DEG = 360 / FACINGS; // 45° wide; 22.5° is the half-sector, centre to edge
 
 // Overshoot required past a sector edge before the facing switches: ~2x the measured p95
 // per-tick bearing swing, and the largest value that still turns within 76 ms. At 0° the
@@ -41,7 +42,7 @@ const SWITCH_DEG = SECTOR_DEG / 2 + HYSTERESIS_DEG;
 // One entity's derived pose plus the state needed to derive it. Lives on the `ClientWorld`
 // record that already owns the entity, so it is evicted with it and cannot leak.
 export interface Gait {
-  facing: number; // 0 = E, 1 = SE, 2 = S, 3 = SW, 4 = W, 5 = NW, 6 = N, 7 = NE (src/sprite/calibration.ts)
+  facing: number; // 0 = E, 1 = SE, 2 = S, 3 = SW, 4 = W, 5 = NW, 6 = N, 7 = NE
   frame: number; // 0 = the stance frame
   vx: number;
   vy: number;
@@ -96,7 +97,7 @@ export function updateFacing(g: Gait, pos: Vec2, now: number): void {
 
 // A bearing landing exactly on an edge resolves to the higher sector: `Math.round` breaks ties
 // toward +Infinity. Only reachable on an entity's first suprathreshold sample.
-const quantize = (deg: number) => ((Math.round(deg / SECTOR_DEG) % 8) + 8) % 8;
+const quantize = (deg: number) => ((Math.round(deg / SECTOR_DEG) % FACINGS) + FACINGS) % FACINGS;
 
 const wrapDeg = (deg: number) => ((((deg + 180) % 360) + 360) % 360) - 180;
 
