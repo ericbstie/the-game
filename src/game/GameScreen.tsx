@@ -13,6 +13,7 @@ import {
 import { type Camera, computeCamera } from "./camera";
 import { RESPAWN_DELAY_MS } from "./clientWorld";
 import { type BuildGhost, drawWorld } from "./draw";
+import { RANGED_CADENCE_MS } from "./enemies";
 import { aimDir, keyToBuildSlot, keyToDirection, movesEqual, NO_MOVE } from "./input";
 import { PLAYER_MAX_HP } from "./world";
 
@@ -60,6 +61,10 @@ export function GameScreen({
   // When right-click went down, or null if it is up. A timestamp rather than a flag because
   // demolish only fires once the button has been held a while.
   const harvestingRef = useRef<number | null>(null);
+  // When the last shot actually went out. The weapon's cadence is enforced twice — here and in the
+  // server's `admitAttack` — because a fast-clicking player would otherwise send, and draw a line
+  // for, shots the server refused. A drawn line must never imply damage nobody applied.
+  const lastAttackRef = useRef(Number.NEGATIVE_INFINITY);
   const [selected, setSelected] = useState<BuildableKind | null>(null);
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
@@ -263,8 +268,13 @@ export function GameScreen({
       const kind = selectedRef.current;
       // Left-click is one button with two jobs: place the selected buildable, or shoot when
       // nothing is selected.
-      if (kind) onBuildRef.current(kind, cursorTile(pointerRef.current, camera));
-      else onAttackRef.current({ ...self }, aimDir(pointerRef.current, self, camera));
+      const now = Date.now();
+      if (kind) {
+        onBuildRef.current(kind, cursorTile(pointerRef.current, camera));
+      } else if (now - lastAttackRef.current >= RANGED_CADENCE_MS) {
+        lastAttackRef.current = now;
+        onAttackRef.current({ ...self }, aimDir(pointerRef.current, self, camera));
+      }
     } else if (e.button === 2) {
       harvestingRef.current = Date.now(); // right-click harvests for as long as it is held
     }
