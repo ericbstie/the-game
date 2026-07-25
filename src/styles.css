@@ -193,13 +193,15 @@ button:disabled {
 
 .game .hint {
   position: absolute;
-  bottom: 0.75rem;
-  left: 0;
-  right: 0;
+  bottom: 7rem; /* stacked above the build bar, clear of the HP bar and the banks */
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 1;
+  width: min(60ch, 90vw);
   text-align: center;
   color: #9a9aa8;
   font-size: 0.85rem;
+  line-height: 1.4;
   pointer-events: none;
 }
 
@@ -272,7 +274,7 @@ button:disabled {
    overlay that takes clicks — everything else in the HUD is read-only. */
 .build-bar {
   position: absolute;
-  bottom: 2.75rem;
+  bottom: 3.25rem;
   left: 50%;
   transform: translateX(-50%);
   z-index: 2;
