@@ -64,6 +64,7 @@ export function GameScreen({
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
   const [metal, setMetal] = useState(0); // the shared bank, mirrored into React for the HUD
+  const [power, setPower] = useState({ generation: 0, consumption: 0 }); // the live energy rate
   const [respawnIn, setRespawnIn] = useState(0); // seconds until respawn, shown while downed
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
   const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
@@ -203,6 +204,15 @@ export function GameScreen({
         onHealthRef.current(nextHp); // report it; hp <= 0 declares death, max declares the revive
       }
       setMetal(world.metal()); // React bails out when the whole-metal readout hasn't moved
+      const live = world.power();
+      // Over-building is legal, so the displayed draw is clamped at the ceiling: the consequence
+      // is that nothing has headroom left to activate, not a number that reads as broken.
+      setPower((shown) => {
+        const drawn = Math.min(live.consumption, live.generation);
+        return shown.generation === live.generation && shown.consumption === drawn
+          ? shown
+          : { generation: live.generation, consumption: drawn };
+      });
       // A downed player stops streaming position — peers hold its last pos as a corpse.
       if (!world.isDead()) {
         const pos = world.selfPos();
@@ -300,6 +310,9 @@ export function GameScreen({
       </div>
       <div className="banks" role="status" aria-label="Resources">
         <span className="bank metal">Metal {metal}</span>
+        <span className="bank energy">
+          Energy {power.consumption}/{power.generation}
+        </span>
       </div>
       <div className="build-bar" role="toolbar" aria-label="Buildables">
         {BUILD_SLOTS.map((kind, i) => (

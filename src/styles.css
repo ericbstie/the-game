@@ -264,6 +264,10 @@ button:disabled {
   color: #b9c2d0;
 }
 
+.banks .energy {
+  color: #7fd4c1;
+}
+
 /* The build bar sits bottom-centre, between the health bar and the banks. It is the only
    overlay that takes clicks — everything else in the HUD is read-only. */
 .build-bar {

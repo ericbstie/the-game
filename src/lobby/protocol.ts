@@ -194,6 +194,14 @@ export interface Bank {
   metal: number;
 }
 
+// Energy, which is deliberately *not* a bank. Generation is a live ceiling recomputed from the
+// standing generators; consumption is what the running structures draw against it. Nothing is
+// stored and no reserve carries between moments.
+export interface Power {
+  generation: number;
+  consumption: number;
+}
+
 // The per-tick enemy/combat delta: a full `moves` set plus sparse event arrays — only the
 // non-empty ones ride the wire. `tick` is monotonic per session; the client applies-if-newer.
 export interface MapDelta {
@@ -210,6 +218,7 @@ export interface MapDelta {
   builds?: StructureSpawn[];
   structHits?: StructureHit[];
   removals?: string[];
+  power?: Power;
 }
 
 // A render-model enemy the client assembles each frame (not a wire type). Its position is
@@ -355,7 +364,7 @@ export type GameEnemyInit = Envelope<
 // deliberately absent — this stays bounded by what the squad owns rather than by match length.
 export type GameBuildInit = Envelope<
   "game/build-init",
-  { tick: number; bank: Bank; structures: StructureSpawn[] }
+  { tick: number; bank: Bank; power: Power; structures: StructureSpawn[] }
 >;
 
 export type ServerMessage =

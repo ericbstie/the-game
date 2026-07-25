@@ -40,6 +40,7 @@ import {
   NAME_MAX,
   type PlayerId,
   type PlayerToken,
+  type Power,
   type Presence,
   type PublicPlayer,
   parseClientMessage,
@@ -97,6 +98,7 @@ interface SessionRecord {
   ore?: OreGrid; // derived from worldInit.oreSeed at start; identical to every client's copy
   build?: BuildState; // the squad's economy — bank and buildings, written only by this hub
   sentMetal: number; // the last whole-Metal figure broadcast; the bank rides only when it moves
+  sentPower: Power; // the last power figures broadcast; power rides only when they move
   pendingBuilds: StructureSpawn[]; // placements admitted since the last tick, awaiting broadcast
   mineGuards: Map<PlayerId, MineGuard>; // per-player hand-mine cadence/seq/accrual state
   buildGuards: Map<PlayerId, BuildGuard>; // per-player placement cadence/seq state
@@ -236,6 +238,7 @@ export class LobbyHub {
       attackGuards: new Map(),
       pendingAttacks: [],
       sentMetal: 0,
+      sentPower: { generation: 0, consumption: 0 },
       pendingBuilds: [],
       mineGuards: new Map(),
       buildGuards: new Map(),
@@ -434,6 +437,14 @@ export class LobbyHub {
         session.sentMetal = metal;
         delta.bank = { metal };
       }
+      const power = session.build.power;
+      if (
+        power.generation !== session.sentPower.generation ||
+        power.consumption !== session.sentPower.consumption
+      ) {
+        session.sentPower = { ...power };
+        delta.power = { ...power };
+      }
     }
     if (session.pendingBuilds.length > 0) {
       delta.builds = session.pendingBuilds;
@@ -598,6 +609,7 @@ export class LobbyHub {
         type: "game/build-init",
         tick: session.tickNo,
         bank: { metal: Math.floor(session.build.bank.metal) },
+        power: { ...session.build.power },
         structures: snapshotStructures(session.build),
       });
     }

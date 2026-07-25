@@ -9,6 +9,7 @@ import type {
   MoveInput,
   NestSnapshot,
   PlayerId,
+  Power,
   RenderedEnemy,
   RenderedNest,
   StructureSpawn,
@@ -240,6 +241,7 @@ export class ClientWorld {
       }
     }
     if (delta.bank) this.build.bank.metal = delta.bank.metal;
+    if (delta.power) this.build.power = { ...delta.power };
     for (const b of delta.builds ?? []) {
       if (!this.build.structures.has(b.id)) insertStructure(this.build, { ...b });
     }
@@ -252,15 +254,21 @@ export class ClientWorld {
 
   // Rebuild the economy from the reconnect keyframe: the bank and every building the squad has
   // standing. The ore grid needs nothing — it was derived from the seed when this world was built.
-  initBuild(msg: { bank: Bank; structures: StructureSpawn[] }): void {
+  initBuild(msg: { bank: Bank; power: Power; structures: StructureSpawn[] }): void {
     for (const id of [...this.build.structures.keys()]) removeStructure(this.build, id);
     for (const s of msg.structures) insertStructure(this.build, { ...s });
     this.build.bank.metal = msg.bank.metal;
+    this.build.power = { ...msg.power };
   }
 
   // The shared Metal readout. The server sends whole Metal, so this needs no rounding of its own.
   metal(): number {
     return this.build.bank.metal;
+  }
+
+  // The live energy rate: what the grid can generate, and what is drawing against it.
+  power(): Power {
+    return this.build.power;
   }
 
   // Rebuild live enemy/nest state from the reconnect keyframe — world-init only carries the

@@ -17,6 +17,7 @@ import {
   freshBuildState,
   freshDemolishGuard,
   freshMineGuard,
+  GENERATOR_OUTPUT,
   generateOre,
   HAND_MINE_RATE,
   INTERACT_REACH,
@@ -627,5 +628,88 @@ describe("demolish", () => {
 
   test("a single click cannot destroy anything — demolish is a hold", () => {
     expect(DEMOLISH_HOLD_MS).toBeGreaterThan(MINE_CADENCE_MS);
+  });
+});
+
+describe("the generator and the energy ceiling", () => {
+  const ore = generateOre(ARENA, SEED);
+  const GENERATOR = BUILDABLES.generator as BuildableSpec;
+  const powerTile = (() => {
+    for (const [key, kind] of ore) if (kind === "power") return untileKey(key);
+    throw new Error("no power ore");
+  })();
+  const metalTile = (() => {
+    for (const [key, kind] of ore) if (kind === "metal") return untileKey(key);
+    throw new Error("no metal ore");
+  })();
+  const funded = () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 10_000;
+    return build;
+  };
+
+  test("the generator is a 5×5 that only sits on power ore", () => {
+    expect(GENERATOR).toEqual({ footprint: 5, cost: 150, hp: 300, requires: "power" });
+  });
+
+  test("each standing generator raises the ceiling by exactly its output", () => {
+    const build = funded();
+    expect(build.power.generation).toBe(0);
+    placeStructure(build, "generator", powerTile, GENERATOR);
+    stepBuild(build, 50);
+    expect(build.power.generation).toBe(GENERATOR_OUTPUT);
+    placeStructure(build, "generator", { tx: powerTile.tx + 5, ty: powerTile.ty }, GENERATOR);
+    stepBuild(build, 50);
+    expect(build.power.generation).toBe(2 * GENERATOR_OUTPUT);
+  });
+
+  test("the ceiling drops the same tick a generator is destroyed — no reserve carries over", () => {
+    const build = funded();
+    const gen = placeStructure(build, "generator", powerTile, GENERATOR);
+    stepBuild(build, 50);
+    expect(build.power.generation).toBe(GENERATOR_OUTPUT);
+    removeStructure(build, gen.id); // destroyed by a wave
+    stepBuild(build, 50);
+    expect(build.power.generation).toBe(0);
+  });
+
+  test("demolishing a generator lowers the ceiling too", () => {
+    const build = funded();
+    const gen = placeStructure(build, "generator", powerTile, GENERATOR);
+    stepBuild(build, 50);
+    demolishStructure(build, gen);
+    stepBuild(build, 50);
+    expect(build.power.generation).toBe(0);
+  });
+
+  test("a generator is refused on metal ore and on bare ground", () => {
+    const build = funded();
+    expect(placementError("generator", metalTile, ore, build, null)).toBe("wrong-ore");
+    expect(placementError("generator", { tx: 0, ty: 0 }, ore, build, null)).toBe("wrong-ore");
+  });
+
+  test("a 5×5 straddling the edge of a patch is accepted — any one tile is enough", () => {
+    const build = funded();
+    // Anchor so only the bottom-right tile of the 5×5 lands on the known power tile.
+    const straddle = { tx: powerTile.tx - 4, ty: powerTile.ty - 4 };
+    expect(placementError("generator", straddle, ore, build, null)).toBeNull();
+  });
+
+  test("a 5×5 claims 25 tiles of occupancy", () => {
+    const build = funded();
+    placeStructure(build, "generator", powerTile, GENERATOR);
+    expect(build.occupancy.size).toBe(25);
+  });
+
+  test("energy is never stored — consumption stays at zero until something draws", () => {
+    const build = funded();
+    placeStructure(build, "generator", powerTile, GENERATOR);
+    for (let i = 0; i < 100; i++) stepBuild(build, 50);
+    expect(build.power.generation).toBe(GENERATOR_OUTPUT); // a rate, not an accumulating bank
+    expect(build.power.consumption).toBe(0);
+  });
+
+  test("power ore still cannot be hand-mined — there is nowhere to put it", () => {
+    expect(admitMine(freshMineGuard(), { tile: powerTile, seq: 1 }, null, ore, 1_000)).toBe(0);
   });
 });

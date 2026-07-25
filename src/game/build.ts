@@ -3,6 +3,7 @@ import type {
   Bank,
   BuildableKind,
   OreKind,
+  Power,
   StructureSpawn,
   Tile,
   Vec2,
@@ -242,10 +243,12 @@ export interface BuildableSpec {
 }
 
 export const MINER_TRICKLE = 4; // metal/s — half the hand rate, but it never stops and it stacks
+export const GENERATOR_OUTPUT = 400; // energy/s of ceiling each standing generator contributes
 
 export const BUILDABLES: Partial<Record<BuildableKind, BuildableSpec>> = {
   miner: { footprint: 2, cost: 50, hp: 200, requires: "metal" },
   wall: { footprint: 2, cost: 10, hp: 400, requires: null },
+  generator: { footprint: 5, cost: 150, hp: 300, requires: "power" },
 };
 
 // A placed building. `tile` is the top-left of its square footprint; `hp` is sim-owned.
@@ -263,11 +266,19 @@ export interface BuildState {
   structures: Map<string, Structure>;
   occupancy: Map<number, string>; // tileKey → structure id, so overlap is a lookup, not a scan
   bank: Bank;
+  power: Power;
   nextId: number;
 }
 
 export function freshBuildState(arena: Arena): BuildState {
-  return { arena, structures: new Map(), occupancy: new Map(), bank: { metal: 0 }, nextId: 1 };
+  return {
+    arena,
+    structures: new Map(),
+    occupancy: new Map(),
+    bank: { metal: 0 },
+    power: { generation: 0, consumption: 0 },
+    nextId: 1,
+  };
 }
 
 // Every tile a building of this kind at `tile` would cover.
@@ -401,12 +412,19 @@ export function removeStructure(build: BuildState, id: string): Structure | null
   return structure;
 }
 
-// Advance the economy one tick: every miner trickles Metal into the shared bank. Deterministic
-// in (state, dtMs) — no clock — so it steps as fast as a test wants.
+// Advance the economy one tick: miners trickle Metal into the shared bank, and the energy ceiling
+// is recomputed from the generators actually standing. Recomputing rather than accumulating is
+// what makes Energy a rate and not a bank — a generator destroyed or demolished drops the ceiling
+// the same tick, with no reserve left over. Deterministic in (state, dtMs); no clock.
 export function stepBuild(build: BuildState, dtMs: number): void {
   let miners = 0;
-  for (const s of build.structures.values()) if (s.kind === "miner") miners++;
+  let generators = 0;
+  for (const s of build.structures.values()) {
+    if (s.kind === "miner") miners++;
+    else if (s.kind === "generator") generators++;
+  }
   if (miners > 0) build.bank.metal += (miners * MINER_TRICKLE * dtMs) / 1000;
+  build.power.generation = generators * GENERATOR_OUTPUT;
 }
 
 // --- Solidity ------------------------------------------------------------------------------
