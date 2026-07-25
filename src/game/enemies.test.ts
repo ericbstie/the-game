@@ -10,6 +10,9 @@ import {
   structureBlocking,
   structureCenter,
   TILE,
+  TURRET_CADENCE_MS,
+  TURRET_DAMAGE,
+  TURRET_RANGE,
   tileOf,
 } from "./build";
 import {
@@ -552,5 +555,100 @@ describe("M4-T4: structures are solid to the sim too", () => {
       stepEnemies(withNoBuild, prey, [], 100);
     }
     expect(only(withEmptyBuild).pos).toEqual(only(withNoBuild).pos);
+  });
+});
+
+describe("M4-T8: a turret shoots the nearest enemy, through walls, and sieges nests", () => {
+  const TURRET = BUILDABLES.turret as BuildableSpec;
+  const WALL = BUILDABLES.wall as BuildableSpec;
+  // A build state with one turret whose footprint sits at `tile`.
+  const withTurret = (tile: Tile) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 100_000;
+    return { build, turret: placeStructure(build, "turret", tile, TURRET) };
+  };
+  const fire = (s: EnemyState, build: BuildState, dtMs = TURRET_CADENCE_MS) =>
+    stepEnemies(s, [], [], dtMs, build).events;
+
+  test("the turret is a 2×2 placeable anywhere", () => {
+    expect(TURRET).toEqual({ footprint: 2, cost: 120, hp: 250, requires: null });
+  });
+
+  test("it picks the nearest of several enemies", () => {
+    const spot = tileOf({ x: C.x + 5_000, y: C.y });
+    const { build, turret } = withTurret(spot);
+    const from = structureCenter(turret);
+    const s = stateWith([
+      grunt("far", { x: from.x + 600, y: from.y }),
+      grunt("near", { x: from.x + 200, y: from.y }),
+    ]);
+
+    const events = fire(s, build, 0);
+    expect(events.hits).toEqual([{ id: "near", hp: GRUNT_HP - TURRET_DAMAGE }]);
+    expect(at(s, "far") === undefined || at(s, "far")?.hp === GRUNT_HP).toBe(true);
+  });
+
+  test("a wall between turret and target changes nothing — no line of sight is needed", () => {
+    const spot = tileOf({ x: C.x + 5_000, y: C.y });
+    const { build, turret } = withTurret(spot);
+    const from = structureCenter(turret);
+    placeStructure(build, "wall", tileOf({ x: from.x + 100, y: from.y - TILE }), WALL);
+    const s = stateWith([grunt("e1", { x: from.x + 300, y: from.y })]);
+
+    expect(fire(s, build, 0).hits).toEqual([{ id: "e1", hp: GRUNT_HP - TURRET_DAMAGE }]);
+  });
+
+  test("nothing in range is left alone", () => {
+    const spot = tileOf({ x: C.x + 5_000, y: C.y });
+    const { build, turret } = withTurret(spot);
+    const from = structureCenter(turret);
+    const s = stateWith([grunt("e1", { x: from.x + TURRET_RANGE + 100, y: from.y })]);
+    expect(fire(s, build, 0).hits).toEqual([]);
+  });
+
+  test("fire holds to its cadence rather than firing every tick", () => {
+    const spot = tileOf({ x: C.x + 5_000, y: C.y });
+    const { build, turret } = withTurret(spot);
+    const from = structureCenter(turret);
+    const s = stateWith([grunt("e1", { x: from.x + 200, y: from.y }, 10_000)]);
+
+    fire(s, build, 0); // the first shot: the cooldown starts at zero
+    expect(at(s, "e1")?.hp).toBe(10_000 - TURRET_DAMAGE);
+    fire(s, build, TURRET_CADENCE_MS - 1); // still cooling down
+    expect(at(s, "e1")?.hp).toBe(10_000 - TURRET_DAMAGE);
+    fire(s, build, 1); // cadence elapsed
+    expect(at(s, "e1")?.hp).toBe(10_000 - 2 * TURRET_DAMAGE);
+  });
+
+  test("a turret line left in front of a nest brings it down unattended", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    const nest = s.nests[0];
+    s.msUntilWave = Number.POSITIVE_INFINITY; // no waves; the turret is alone with the nest
+    const { build } = withTurret(tileOf({ x: nest.pos.x - 300, y: nest.pos.y }));
+
+    let silenced = false;
+    for (let i = 0; i < 5_000 && !silenced; i++) {
+      const events = fire(s, build, TURRET_CADENCE_MS);
+      silenced = events.nests.some((n) => n.id === nest.id && !n.alive);
+    }
+    expect(silenced).toBe(true);
+    expect(s.nests[0].hp).toBe(0);
+  });
+
+  test("with no turret standing, nothing fires", () => {
+    const build = freshBuildState(ARENA);
+    const s = stateWith([grunt("e1", { x: C.x + 5_000, y: C.y })]);
+    expect(fire(s, build, TURRET_CADENCE_MS).hits).toEqual([]);
+    expect(at(s, "e1")?.hp).toBe(GRUNT_HP);
+  });
+
+  test("a turret kill reports as a death, not a hit", () => {
+    const spot = tileOf({ x: C.x + 5_000, y: C.y });
+    const { build, turret } = withTurret(spot);
+    const from = structureCenter(turret);
+    const s = stateWith([grunt("e1", { x: from.x + 200, y: from.y }, TURRET_DAMAGE)]);
+    const events = fire(s, build, 0);
+    expect(events.deaths).toEqual(["e1"]);
+    expect(events.hits).toEqual([]);
   });
 });

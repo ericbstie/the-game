@@ -21,6 +21,9 @@ import {
   structureBlocking,
   structureCenter,
   structureRadius,
+  TURRET_CADENCE_MS,
+  TURRET_DAMAGE,
+  TURRET_RANGE,
 } from "./build";
 import { DANGER_BAND_FRAC, PLAYER_RADIUS } from "./world";
 
@@ -298,7 +301,13 @@ export function stepEnemies(
   build: BuildState | null = null,
 ): { state: EnemyState; events: EnemyEvents } {
   const { spawns, wave } = tickWaves(state, dtMs, build);
-  const { hits, deaths, nests } = resolveAttacks(state, attacks);
+  // Player shots and turret fire land in the same damage pass, so a target struck by both this
+  // tick reports once. The sim stays the sole writer of enemy and nest HP either way.
+  const enemiesHit = new Set<string>();
+  const nestsHit = new Set<string>();
+  applyAttacks(state, attacks, enemiesHit, nestsHit);
+  fireTurrets(state, build, dtMs, enemiesHit, nestsHit);
+  const { hits, deaths, nests } = reapDamage(state, enemiesHit, nestsHit);
 
   const context: StepContext = {
     players,
@@ -396,14 +405,13 @@ function jitter(pos: Vec2, rng: () => number): Vec2 {
 }
 
 // Apply every admitted shot to enemy and nest HP — this sim is the sole writer. A shot strikes
-// the single nearest target (enemy or nest) along its ray. Damage accumulates across shots; an
-// enemy hit then killed reports only its death.
-function resolveAttacks(
+// the single nearest target (enemy or nest) along its ray.
+function applyAttacks(
   state: EnemyState,
   attacks: Attack[],
-): { hits: EnemyHit[]; deaths: string[]; nests: NestDelta[] } {
-  const enemiesHit = new Set<string>();
-  const nestsHit = new Set<string>();
+  enemiesHit: Set<string>,
+  nestsHit: Set<string>,
+): void {
   for (const attack of attacks) {
     const hit = nearestRayHit(state, attack);
     if (hit?.enemy) {
@@ -414,7 +422,77 @@ function resolveAttacks(
       nestsHit.add(hit.nest.id);
     }
   }
+}
 
+// Every turret on its own cadence strikes the nearest thing in range — enemy or nest, whichever
+// is closer, with no lowest-HP or elite priority.
+//
+// Hitscan straight through walls and structures: turrets need no line of sight and no firing
+// lane, so there is deliberately no ray-vs-structure test here and no lanes to leave open when
+// you build. Nests are legitimate targets, so a forward turret line sieges one unattended.
+function fireTurrets(
+  state: EnemyState,
+  build: BuildState | null,
+  dtMs: number,
+  enemiesHit: Set<string>,
+  nestsHit: Set<string>,
+): void {
+  if (!build) return;
+  for (const turret of build.structures.values()) {
+    if (turret.kind !== "turret") continue;
+    turret.cooldownMs = Math.max(0, turret.cooldownMs - dtMs);
+    if (turret.cooldownMs > 0) continue;
+    const target = nearestTarget(state, structureCenter(turret), TURRET_RANGE);
+    if (!target) continue;
+    turret.cooldownMs = TURRET_CADENCE_MS;
+    if (target.enemy) {
+      target.enemy.hp -= TURRET_DAMAGE;
+      enemiesHit.add(target.enemy.id);
+    } else if (target.nest) {
+      target.nest.hp -= TURRET_DAMAGE;
+      nestsHit.add(target.nest.id);
+    }
+  }
+}
+
+// The nearest live enemy or standing nest within `range` of a point, by centre distance.
+function nearestTarget(
+  state: EnemyState,
+  from: Vec2,
+  range: number,
+): { enemy?: Enemy; nest?: Nest } | null {
+  let bestDist = range;
+  let bestEnemy: Enemy | undefined;
+  let bestNest: Nest | undefined;
+  for (const enemy of state.enemies.values()) {
+    if (enemy.hp <= 0) continue;
+    const dist = Math.hypot(enemy.pos.x - from.x, enemy.pos.y - from.y);
+    if (dist <= bestDist) {
+      bestDist = dist;
+      bestEnemy = enemy;
+      bestNest = undefined;
+    }
+  }
+  for (const nest of state.nests) {
+    if (!nest.alive) continue;
+    const dist = Math.hypot(nest.pos.x - from.x, nest.pos.y - from.y);
+    if (dist <= bestDist) {
+      bestDist = dist;
+      bestNest = nest;
+      bestEnemy = undefined;
+    }
+  }
+  if (!bestEnemy && !bestNest) return null;
+  return { enemy: bestEnemy, nest: bestNest };
+}
+
+// Turn this tick's accumulated damage into wire events. An enemy hit and then killed reports
+// only its death.
+function reapDamage(
+  state: EnemyState,
+  enemiesHit: Set<string>,
+  nestsHit: Set<string>,
+): { hits: EnemyHit[]; deaths: string[]; nests: NestDelta[] } {
   const hits: EnemyHit[] = [];
   const deaths: string[] = [];
   for (const id of enemiesHit) {

@@ -245,18 +245,27 @@ export interface BuildableSpec {
 export const MINER_TRICKLE = 4; // metal/s — half the hand rate, but it never stops and it stacks
 export const GENERATOR_OUTPUT = 400; // energy/s of ceiling each standing generator contributes
 
+// Turret fire. Range matches the player's own reach, and ~20 dps kills a 30 HP grunt in ~1.5 s.
+export const TURRET_RANGE = 700;
+export const TURRET_DAMAGE = 4;
+export const TURRET_CADENCE_MS = 200;
+
 export const BUILDABLES: Partial<Record<BuildableKind, BuildableSpec>> = {
   miner: { footprint: 2, cost: 50, hp: 200, requires: "metal" },
   wall: { footprint: 2, cost: 10, hp: 400, requires: null },
   generator: { footprint: 5, cost: 150, hp: 300, requires: "power" },
+  turret: { footprint: 2, cost: 120, hp: 250, requires: null },
 };
 
 // A placed building. `tile` is the top-left of its square footprint; `hp` is sim-owned.
+// `cooldownMs` counts down to a turret's next shot — driven by the injected `dtMs` rather than a
+// clock, like an enemy's `biteMs`. Other kinds simply never read it.
 export interface Structure {
   id: string;
   kind: BuildableKind;
   tile: Tile;
   hp: number;
+  cooldownMs: number;
 }
 
 // Everything the squad owns. Both sides hold one: the server's is authoritative, and each
@@ -381,21 +390,22 @@ export function placeStructure(
   tile: Tile,
   spec: BuildableSpec,
 ): Structure {
-  const structure: Structure = { id: `b${build.nextId++}`, kind, tile, hp: spec.hp };
   build.bank.metal -= spec.cost;
-  insertStructure(build, structure);
-  return structure;
+  return insertStructure(build, { id: `b${build.nextId++}`, kind, tile, hp: spec.hp });
 }
 
 // Add a structure the server already minted an id for — the client's path when a `builds` event
-// or the reconnect keyframe arrives.
-export function insertStructure(build: BuildState, structure: Structure): void {
+// or the reconnect keyframe arrives, and the tail of `placeStructure` on the server.
+export function insertStructure(build: BuildState, spawn: StructureSpawn): Structure {
+  const structure: Structure = { ...spawn, tile: { ...spawn.tile }, cooldownMs: 0 };
   build.structures.set(structure.id, structure);
   const spec = BUILDABLES[structure.kind];
-  if (!spec) return;
-  for (const t of footprintTiles(structure.tile, spec.footprint)) {
-    build.occupancy.set(tileKey(t), structure.id);
+  if (spec) {
+    for (const t of footprintTiles(structure.tile, spec.footprint)) {
+      build.occupancy.set(tileKey(t), structure.id);
+    }
   }
+  return structure;
 }
 
 // Remove a structure and free its tiles immediately, so a rebuild on the same footprint is legal

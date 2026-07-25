@@ -306,8 +306,13 @@ describe("placementError — the one rule the ghost and the server both read", (
     expect(placementError("miner", metalTile, ore, rich(50), far)).toBe("out-of-reach");
   });
 
-  test("an unshipped buildable never places, so its bar slot is inert", () => {
-    expect(placementError("turret", bare, ore, rich(10_000), near(bare))).toBe("unknown-buildable");
+  test("every bar slot is registered, so none renders inert", () => {
+    for (const kind of BUILD_SLOTS) expect(BUILDABLES[kind]).toBeDefined();
+  });
+
+  test("a kind with no registry entry can never place", () => {
+    const bogus = "trebuchet" as unknown as (typeof BUILD_SLOTS)[number];
+    expect(placementError(bogus, bare, ore, rich(10_000), near(bare))).toBe("unknown-buildable");
   });
 
   test("a wall needs no ore — every tile in the arena is buildable", () => {
