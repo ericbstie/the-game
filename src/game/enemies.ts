@@ -15,8 +15,10 @@ import type {
 } from "../lobby/protocol";
 import {
   type BuildState,
+  pushOutOfSolids,
   removeStructure,
   type Structure,
+  structureBlocking,
   structureCenter,
   structureRadius,
 } from "./build";
@@ -295,7 +297,7 @@ export function stepEnemies(
   dtMs: number,
   build: BuildState | null = null,
 ): { state: EnemyState; events: EnemyEvents } {
-  const { spawns, wave } = tickWaves(state, dtMs);
+  const { spawns, wave } = tickWaves(state, dtMs, build);
   const { hits, deaths, nests } = resolveAttacks(state, attacks);
 
   const context: StepContext = {
@@ -352,25 +354,29 @@ function reapStructures(context: StepContext): { structHits: StructureHit[]; rem
 function tickWaves(
   state: EnemyState,
   dtMs: number,
+  build: BuildState | null,
 ): { spawns: EnemySpawn[]; wave: WaveDelta | null } {
   state.msUntilWave -= dtMs;
   if (state.msUntilWave > 0) return { spawns: [], wave: null };
   state.msUntilWave += WAVE_PERIOD_MS;
-  const spawns = spawnWave(state);
+  const spawns = spawnWave(state, build);
   return { spawns, wave: { index: state.waveIndex, clockMs: state.msUntilWave } };
 }
 
 // Every still-active nest emits `2 + w` grunts into its own sector, plus `max(0, w−2)` elites
 // spread across distinct nests (none before wave 3), all up to the concurrency cap. A nest that
 // would breach ENEMY_CAP holds its remainder rather than spawning it.
-function spawnWave(state: EnemyState): EnemySpawn[] {
+function spawnWave(state: EnemyState, build: BuildState | null): EnemySpawn[] {
   state.waveIndex += 1;
   const w = state.waveIndex;
   const active = state.nests.filter((n) => n.alive);
   const spawns: EnemySpawn[] = [];
   const emit = (kind: EnemyKind, nest: Nest): boolean => {
     if (state.enemies.size >= ENEMY_CAP) return false; // cap governor holds the remainder
-    spawns.push(addEnemy(state, kind, jitter(nest.pos, state.rng), nest.sector));
+    // A nest walled in is a legitimate strategy, so a wave that lands inside a footprint still
+    // spawns — the overlapping enemy is simply pushed clear.
+    const at = pushOutOfSolids(build, jitter(nest.pos, state.rng), enemyRadius(kind));
+    spawns.push(addEnemy(state, kind, at, nest.sector));
     return true;
   };
   for (const nest of active) {
@@ -477,14 +483,14 @@ function stepEnemy(enemy: Enemy, context: StepContext): void {
   const speed = enemySpeed(enemy.kind) * (context.dtMs / 1000);
   const engaged = acquire(enemy, context);
   if (engaged) {
-    stepToward(enemy, engaged.pos, speed); // ENGAGED
-    if (engaged.structure) bite(enemy, engaged, context);
+    stepToward(enemy, engaged.pos, speed, context); // ENGAGED
     return;
   }
   const { center, holdEdge } = context;
   const distFromCenter = Math.hypot(center.x - enemy.pos.x, center.y - enemy.pos.y);
   if (distFromCenter <= holdEdge) return; // HOLD
-  stepToward(enemy, center, Math.min(speed, distFromCenter - holdEdge)); // MARCH, capped at the edge
+  // MARCH, capped at the edge so it never floods the safe centre.
+  stepToward(enemy, center, Math.min(speed, distFromCenter - holdEdge), context);
 }
 
 interface Engagement {
@@ -543,11 +549,8 @@ function resolveTarget(
 
 // Chew on the structure in front of this enemy, on its own per-kind contact cadence. The sim is
 // the sole writer of structure HP, exactly as it is for enemy and nest HP.
-function bite(enemy: Enemy, engaged: Engagement, context: StepContext): void {
-  const structure = engaged.structure;
-  if (!structure || enemy.biteMs > 0) return;
-  const reach = enemyRadius(enemy.kind) + engaged.radius;
-  if (Math.hypot(engaged.pos.x - enemy.pos.x, engaged.pos.y - enemy.pos.y) > reach) return;
+function bite(enemy: Enemy, structure: Structure, context: StepContext): void {
+  if (enemy.biteMs > 0) return;
   structure.hp -= enemyContactDamage(enemy.kind);
   enemy.biteMs = enemyContactCadenceMs(enemy.kind);
   context.damaged.add(structure.id);
@@ -574,14 +577,27 @@ function nearestStructureWithin(
   return best;
 }
 
-// Move the enemy toward `to` by up to `maxTravel`, never past it.
-function stepToward(enemy: Enemy, to: Vec2, maxTravel: number): void {
+// Move the enemy toward `to` by up to `maxTravel`, never past it — unless a structure is in the
+// way, in which case it stops and bashes that structure instead.
+//
+// There is no pathfinding: at ENEMY_CAP 240 across a 31,200² arena a nav-grid costs more than the
+// behaviour is worth (#49). The accepted price is that an enemy will chew a stray open-field wall
+// rather than walk around its end. It is also what makes walling a nest in a real strategy — the
+// enemies inside attack the wall.
+function stepToward(enemy: Enemy, to: Vec2, maxTravel: number, context: StepContext): void {
   const dx = to.x - enemy.pos.x;
   const dy = to.y - enemy.pos.y;
   const len = Math.hypot(dx, dy);
-  if (len === 0 || maxTravel <= 0) return;
-  const t = Math.min(maxTravel, len);
-  enemy.pos = { x: enemy.pos.x + (dx / len) * t, y: enemy.pos.y + (dy / len) * t };
+  const travel = len === 0 ? 0 : Math.min(Math.max(maxTravel, 0), len);
+  // Probing from the enemy's own position when it cannot travel is deliberate: one already
+  // pressed against a structure keeps chewing rather than needing room to move first.
+  const next =
+    travel === 0
+      ? enemy.pos
+      : { x: enemy.pos.x + (dx / len) * travel, y: enemy.pos.y + (dy / len) * travel };
+  const blocker = structureBlocking(context.build, next, enemyRadius(enemy.kind));
+  if (blocker) bite(enemy, blocker, context);
+  else enemy.pos = next;
 }
 
 // The nearest player, but only if within `radius` — otherwise the enemy is un-aggroed.

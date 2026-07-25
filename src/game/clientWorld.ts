@@ -23,6 +23,7 @@ import {
   insertStructure,
   type OreGrid,
   removeStructure,
+  slidePos,
 } from "./build";
 import {
   enemyContactCadenceMs,
@@ -111,10 +112,14 @@ export class ClientWorld {
     }
   }
 
-  // Advance only the owner's Avatar — peers never move from local input.
+  // Advance only the owner's Avatar — peers never move from local input. Structures clamp the
+  // avatar exactly as the arena walls do; `slidePos` resolves the axes separately, so you slide
+  // along a wall instead of sticking to it and a corner is never a hard trap.
   stepSelf(dtMs: number, input: MoveInput): void {
     const self = this.avatars.get(this.selfId);
-    if (self) self.pos = stepPos(self.pos, input, dtMs, this.arena);
+    if (!self) return;
+    const stepped = stepPos(self.pos, input, dtMs, this.arena);
+    self.pos = slidePos(this.build, self.pos, stepped, PLAYER_RADIUS);
   }
 
   // Apply a relayed position, dropping a stale/duplicate frame by its per-peer seq. The

@@ -244,6 +244,7 @@ export const MINER_TRICKLE = 4; // metal/s — half the hand rate, but it never 
 
 export const BUILDABLES: Partial<Record<BuildableKind, BuildableSpec>> = {
   miner: { footprint: 2, cost: 50, hp: 200, requires: "metal" },
+  wall: { footprint: 2, cost: 10, hp: 400, requires: null },
 };
 
 // A placed building. `tile` is the top-left of its square footprint; `hp` is sim-owned.
@@ -405,6 +406,78 @@ export function stepBuild(build: BuildState, dtMs: number): void {
   let miners = 0;
   for (const s of build.structures.values()) if (s.kind === "miner") miners++;
   if (miners > 0) build.bank.metal += (miners * MINER_TRICKLE * dtMs) / 1000;
+}
+
+// --- Solidity ------------------------------------------------------------------------------
+// All four buildings are solid, and solidity is the one piece of structure state both sides of
+// the authority split need: the client clamps your avatar against it, the sim stops enemies with
+// it. One occupancy test, consumed by both, so the two can never disagree about what is passable.
+
+export function solidAt(build: BuildState, tile: Tile): boolean {
+  return build.occupancy.has(tileKey(tile));
+}
+
+// The structure a circle at `pos` overlaps, or null. Only the tiles under the circle's bounding
+// box are probed, so cost is fixed regardless of how much the squad has built.
+export function structureBlocking(
+  build: BuildState | null,
+  pos: Vec2,
+  radius: number,
+): Structure | null {
+  if (!build || build.occupancy.size === 0) return null;
+  const min = tileOf({ x: pos.x - radius, y: pos.y - radius });
+  const max = tileOf({ x: pos.x + radius, y: pos.y + radius });
+  for (let ty = min.ty; ty <= max.ty; ty++) {
+    for (let tx = min.tx; tx <= max.tx; tx++) {
+      const id = build.occupancy.get(tileKey({ tx, ty }));
+      if (id === undefined) continue;
+      if (circleTouchesTile(pos, radius, tx, ty)) return build.structures.get(id) ?? null;
+    }
+  }
+  return null;
+}
+
+// Move a circle from `from` toward `to`, refusing whichever axes would put it inside a structure.
+// Resolving the axes separately is what makes you slide along a wall rather than stick to it, and
+// what guarantees a corner is never a hard trap: the free axis always remains free.
+export function slidePos(build: BuildState | null, from: Vec2, to: Vec2, radius: number): Vec2 {
+  if (!build || build.occupancy.size === 0) return to;
+  let x = from.x;
+  if (!structureBlocking(build, { x: to.x, y: from.y }, radius)) x = to.x;
+  let y = from.y;
+  if (!structureBlocking(build, { x, y: to.y }, radius)) y = to.y;
+  return { x, y };
+}
+
+// Shove a circle clear of the structure it spawned inside, along whichever axis it is closest to
+// escaping. Deliberately one push and no search for a free tile: a wave spawning inside a walled
+// -in nest still spawns, it just does not stay stuck in the wall.
+export function pushOutOfSolids(build: BuildState | null, pos: Vec2, radius: number): Vec2 {
+  const blocker = structureBlocking(build, pos, radius);
+  if (!blocker) return pos;
+  const center = structureCenter(blocker);
+  const clear = structureRadius(blocker) + radius;
+  const dx = pos.x - center.x;
+  const dy = pos.y - center.y;
+  if (clear - Math.abs(dx) < clear - Math.abs(dy)) {
+    return { x: center.x + sign(dx) * clear, y: pos.y };
+  }
+  return { x: pos.x, y: center.y + sign(dy) * clear };
+}
+
+// A zero offset means the circle sits dead centre; break the tie consistently so the push is
+// deterministic rather than dependent on the sign of a floating-point zero.
+function sign(value: number): number {
+  return value < 0 ? -1 : 1;
+}
+
+// Circle-vs-tile overlap: clamp the circle's centre into the tile's rect and measure. Exact
+// tangency is deliberately *not* an overlap — that keeps this in step with the bounding-box tile
+// range `structureBlocking` probes, which would otherwise miss a tile the circle only grazes.
+function circleTouchesTile(pos: Vec2, radius: number, tx: number, ty: number): boolean {
+  const nearestX = Math.max(tx * TILE, Math.min(pos.x, (tx + 1) * TILE));
+  const nearestY = Math.max(ty * TILE, Math.min(pos.y, (ty + 1) * TILE));
+  return Math.hypot(pos.x - nearestX, pos.y - nearestY) < radius;
 }
 
 // Every structure, shaped for the reconnect keyframe. Tiles are copied so the snapshot never

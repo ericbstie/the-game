@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Vec2, WorldInit } from "../lobby/protocol";
+import type { Tile, Vec2, WorldInit } from "../lobby/protocol";
 import {
   BUILDABLES,
   type BuildableSpec,
@@ -7,6 +7,7 @@ import {
   freshBuildState,
   placeStructure,
   removeStructure,
+  structureBlocking,
   structureCenter,
   TILE,
   tileOf,
@@ -22,6 +23,7 @@ import {
   type EnemyState,
   enemyContactCadenceMs,
   enemyContactDamage,
+  enemyRadius,
   freshGuard,
   GRUNT_HP,
   GRUNT_RADIUS,
@@ -457,7 +459,7 @@ describe("M4-T3: enemies leave the front line to chew on your structures", () =>
     const { build, miner } = withMiner(minerAt);
     // Stand the grunt just inside contact range of the miner's true (tile-snapped) centre.
     const centre = structureCenter(miner);
-    const s = stateWith([grunt("e1", { x: centre.x + GRUNT_RADIUS + TILE, y: centre.y })]);
+    const s = stateWith([grunt("e1", { x: centre.x + GRUNT_RADIUS + TILE - 1, y: centre.y })]);
     const cadence = enemyContactCadenceMs("grunt");
 
     stepWith(s, [], build, 0); // first bite: the cooldown starts at zero
@@ -482,5 +484,73 @@ describe("M4-T3: enemies leave the front line to chew on your structures", () =>
     expect(events.structHits).toEqual([]);
     expect(events.removals).toEqual([]);
     expect(only(s).target).toBeUndefined();
+  });
+});
+
+describe("M4-T4: structures are solid to the sim too", () => {
+  const WALL = BUILDABLES.wall as BuildableSpec;
+  const walls = (tiles: Tile[]) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 100_000;
+    return { build, placed: tiles.map((t) => placeStructure(build, "wall", t, WALL)) };
+  };
+
+  test("a wall between an enemy and its prey stops it dead — and it bashes the wall", () => {
+    const start = { x: C.x + 5_000, y: C.y };
+    const wallTile = tileOf({ x: start.x + 60, y: start.y - TILE }); // squarely in the path east
+    const { build, placed } = walls([wallTile]);
+    const s = stateWith([grunt("e1", { ...start })]);
+    const prey = [{ id: "p1", pos: { x: start.x + 800, y: start.y } }];
+
+    let last = only(s).pos.x;
+    for (let i = 0; i < 40; i++) {
+      stepEnemies(s, prey, [], 100, build);
+      last = only(s).pos.x;
+    }
+    expect(last).toBeLessThan(structureCenter(placed[0]).x); // never got through
+    expect(build.structures.get(placed[0].id)?.hp).toBeLessThan(WALL.hp); // chewed on it instead
+  });
+
+  test("a wave spawning on top of a wall is pushed clear of it", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5); // rng 0.5 → zero jitter, so every grunt
+    const nest = s.nests[0]; //                            spawns exactly on the nest
+    const { build } = walls([tileOf({ x: nest.pos.x - TILE, y: nest.pos.y - TILE })]);
+
+    const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS, build).events.spawns;
+    const onNest = spawns.filter((sp) => sp.sector === nest.sector);
+    expect(onNest.length).toBeGreaterThan(0);
+    for (const sp of onNest) {
+      expect(structureBlocking(build, sp.pos, enemyRadius(sp.kind))).toBeNull();
+    }
+  });
+
+  test("a nest sealed on all sides still emits — the sim never fails a spawn", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    const nest = s.nests[0];
+    // Blanket the nest's whole spawn scatter, so every spawn point starts inside a footprint.
+    const tiles: Tile[] = [];
+    const origin = tileOf({ x: nest.pos.x - 360, y: nest.pos.y - 360 });
+    for (let dy = 0; dy < 48; dy += 2) {
+      for (let dx = 0; dx < 48; dx += 2) tiles.push({ tx: origin.tx + dx, ty: origin.ty + dy });
+    }
+    const { build } = walls(tiles);
+
+    const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS, build).events.spawns;
+    // Deep inside a solid field one push lands in the neighbouring wall, and that is the
+    // deliberate trade: the sim pushes once and never searches for a free tile. What it must
+    // never do is drop the spawn — the enemies are there, and they will chew their way out.
+    expect(spawns.filter((sp) => sp.sector === nest.sector).length).toBe(2 + 1);
+  });
+
+  test("with nothing built, enemy motion is byte-for-byte what M3 produced", () => {
+    const start = { x: C.x + 5_000, y: C.y };
+    const prey = [{ id: "p1", pos: { x: start.x + 800, y: start.y } }];
+    const withEmptyBuild = stateWith([grunt("e1", { ...start })]);
+    const withNoBuild = stateWith([grunt("e1", { ...start })]);
+    for (let i = 0; i < 20; i++) {
+      stepEnemies(withEmptyBuild, prey, [], 100, freshBuildState(ARENA));
+      stepEnemies(withNoBuild, prey, [], 100);
+    }
+    expect(only(withEmptyBuild).pos).toEqual(only(withNoBuild).pos);
   });
 });

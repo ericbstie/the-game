@@ -21,8 +21,12 @@ import {
   oreAt,
   placementError,
   placeStructure,
+  pushOutOfSolids,
   removeStructure,
+  slidePos,
+  solidAt,
   stepBuild,
+  structureBlocking,
   TILE,
   tileKey,
   tileOf,
@@ -295,7 +299,12 @@ describe("placementError — the one rule the ghost and the server both read", (
   });
 
   test("an unshipped buildable never places, so its bar slot is inert", () => {
-    expect(placementError("wall", bare, ore, rich(10_000), near(bare))).toBe("unknown-buildable");
+    expect(placementError("turret", bare, ore, rich(10_000), near(bare))).toBe("unknown-buildable");
+  });
+
+  test("a wall needs no ore — every tile in the arena is buildable", () => {
+    expect(placementError("wall", bare, ore, rich(10), near(bare))).toBeNull();
+    expect(placementError("wall", metalTile, ore, rich(10), near(metalTile))).toBeNull();
   });
 });
 
@@ -439,5 +448,83 @@ describe("admitBuild", () => {
         0,
       ),
     ).toBeNull();
+  });
+});
+
+describe("solidity — the one occupancy test both sides read", () => {
+  const WALL = BUILDABLES.wall as BuildableSpec;
+  const walled = (tile: Tile) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 1_000;
+    placeStructure(build, "wall", tile, WALL);
+    return build;
+  };
+  const anchor = { tx: 100, ty: 100 };
+  const RADIUS = 14; // PLAYER_RADIUS
+
+  test("the wall is a 2×2 placeable anywhere, cheap and tough", () => {
+    expect(WALL).toEqual({ footprint: 2, cost: 10, hp: 400, requires: null });
+  });
+
+  test("solidAt is true for every tile under the footprint and false just outside it", () => {
+    const build = walled(anchor);
+    for (const t of footprintTiles(anchor, 2)) expect(solidAt(build, t)).toBe(true);
+    expect(solidAt(build, { tx: anchor.tx + 2, ty: anchor.ty })).toBe(false);
+    expect(solidAt(build, { tx: anchor.tx - 1, ty: anchor.ty })).toBe(false);
+  });
+
+  test("a circle walking into the wall is stopped outside it", () => {
+    const build = walled(anchor);
+    const centre = footprintCenter(anchor, 2);
+    const from = { x: centre.x - 200, y: centre.y };
+    const into = { x: centre.x, y: centre.y }; // straight into the middle of the footprint
+    const landed = slidePos(build, from, into, RADIUS);
+    expect(landed.x).toBe(from.x); // the x move was refused
+    expect(structureBlocking(build, landed, RADIUS)).toBeNull();
+  });
+
+  test("you slide along a wall rather than sticking to it", () => {
+    const build = walled(anchor);
+    const centre = footprintCenter(anchor, 2);
+    // Pressed against the wall's left face, moving down-right: x is refused, y goes through.
+    const from = { x: centre.x - TILE - RADIUS, y: centre.y };
+    const landed = slidePos(build, from, { x: from.x + 10, y: from.y + 10 }, RADIUS);
+    expect(landed.x).toBe(from.x);
+    expect(landed.y).toBe(from.y + 10);
+  });
+
+  test("walled in on three sides, you still escape along the fourth — never hard-trapped", () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 1_000;
+    // A pocket open to the west: walls north, east and south of the gap at `anchor`.
+    placeStructure(build, "wall", { tx: anchor.tx, ty: anchor.ty - 2 }, WALL);
+    placeStructure(build, "wall", { tx: anchor.tx + 2, ty: anchor.ty }, WALL);
+    placeStructure(build, "wall", { tx: anchor.tx, ty: anchor.ty + 2 }, WALL);
+    const inside = footprintCenter(anchor, 2);
+    expect(structureBlocking(build, inside, RADIUS)).toBeNull(); // the pocket itself is free
+
+    const west = slidePos(build, inside, { x: inside.x - 10, y: inside.y }, RADIUS);
+    expect(west.x).toBe(inside.x - 10); // the open side lets you out
+  });
+
+  test("pushOutOfSolids shoves a spawn clear of the footprint it landed in", () => {
+    const build = walled(anchor);
+    const centre = footprintCenter(anchor, 2);
+    const pushed = pushOutOfSolids(build, { x: centre.x + 1, y: centre.y }, 16);
+    expect(structureBlocking(build, pushed, 16)).toBeNull();
+  });
+
+  test("pushOutOfSolids leaves a position that was never inside anything alone", () => {
+    const build = walled(anchor);
+    const clear = { x: footprintCenter(anchor, 2).x + 500, y: footprintCenter(anchor, 2).y };
+    expect(pushOutOfSolids(build, clear, 16)).toEqual(clear);
+  });
+
+  test("an empty grid never blocks and never slides", () => {
+    const build = freshBuildState(ARENA);
+    const to = { x: 500, y: 500 };
+    expect(slidePos(build, { x: 400, y: 400 }, to, RADIUS)).toEqual(to);
+    expect(structureBlocking(build, to, RADIUS)).toBeNull();
+    expect(structureBlocking(null, to, RADIUS)).toBeNull();
   });
 });

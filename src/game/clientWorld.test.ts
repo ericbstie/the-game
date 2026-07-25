@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { MapDelta, WorldInit } from "../lobby/protocol";
+import type { MapDelta, Vec2, WorldInit } from "../lobby/protocol";
+import {
+  BUILDABLES,
+  type BuildableSpec,
+  structureBlocking,
+  TILE,
+  tileOf,
+  tileOrigin,
+} from "./build";
 import { ClientWorld, ENEMY_RENDER_DELAY_MS, RENDER_DELAY_MS } from "./clientWorld";
 import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, NEST_COUNT } from "./enemies";
 import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS } from "./world";
@@ -304,5 +312,49 @@ describe("ClientWorld self-health (client-authoritative contact damage)", () => 
     const rebuilt = new ClientWorld(init(), "self", 40);
     expect(rebuilt.hp()).toBe(40);
     expect(new ClientWorld(init(), "self").hp()).toBe(PLAYER_MAX_HP); // fresh match defaults to full
+  });
+});
+
+describe("M4-T4: a wall clamps your own avatar", () => {
+  const WALL = BUILDABLES.wall as BuildableSpec;
+  const held = (dir: "up" | "down" | "left" | "right") => ({ ...STILL, [dir]: true });
+
+  // Put a wall directly east of the owner's spawn and mirror it into the client's build state,
+  // exactly as a `builds` delta would.
+  function walledWorld() {
+    const world = new ClientWorld(init(), "self");
+    const spawnPos = { x: 400, y: 300 };
+    const tile = tileOf({ x: spawnPos.x + PLAYER_RADIUS + 10, y: spawnPos.y - TILE });
+    world.applyMapDelta(
+      { tick: 1, moves: [], builds: [{ id: "w1", kind: "wall", tile, hp: WALL.hp }] },
+      0,
+    );
+    return { world, wall: { id: "w1", kind: "wall" as const, tile, hp: WALL.hp } };
+  }
+
+  test("running into a wall stops you outside it", () => {
+    const { world, wall } = walledWorld();
+    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right"));
+    const self = world.snapshot(0).players.find((p) => p.id === "self");
+    expect(self?.pos.x).toBeLessThan(tileOrigin(wall.tile).x);
+    expect(structureBlocking(world.build, self?.pos as Vec2, PLAYER_RADIUS)).toBeNull();
+  });
+
+  test("you slide along the wall instead of sticking to it", () => {
+    const { world } = walledWorld();
+    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right")); // press into it
+    const stuck = world.snapshot(0).players.find((p) => p.id === "self")?.pos as Vec2;
+    world.stepSelf(100, { ...STILL, right: true, down: true }); // still pressing, now also down
+    const slid = world.snapshot(0).players.find((p) => p.id === "self")?.pos as Vec2;
+    expect(slid.y).toBeGreaterThan(stuck.y);
+  });
+
+  test("a demolished wall stops clamping immediately", () => {
+    const { world, wall } = walledWorld();
+    for (let i = 0; i < 60; i++) world.stepSelf(100, held("right"));
+    world.applyMapDelta({ tick: 2, moves: [], removals: [wall.id] }, 0);
+    for (let i = 0; i < 10; i++) world.stepSelf(100, held("right"));
+    const self = world.snapshot(0).players.find((p) => p.id === "self");
+    expect(self?.pos.x).toBeGreaterThan(tileOrigin(wall.tile).x);
   });
 });
