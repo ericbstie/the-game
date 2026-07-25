@@ -4,7 +4,7 @@ description: >-
   Generate 2D sprites that draw straight onto an HTML5 canvas for a browser
   game. Auto-invoke when creating, drawing, or animating sprites, sprite
   sheets, or entity art (player, grunts, elites, nests, miners, walls, turrets,
-  mines, clusters, the door) for a canvas game, or when handling pixel-crisp
+  generators, ore, the door) for a canvas game, or when handling pixel-crisp
   rendering, sprite caching, atlases, or color variants. Produces procedural
   sprites in code — no external image assets required.
 ---
@@ -116,8 +116,8 @@ may be hundreds of grunts on screen, but only one grunt canvas:
 - **Player / squad** — recolor one base sprite per player so teammates are told apart at a glance.
 - **Grunt vs elite** — same silhouette, elite larger and a hotter palette; readability over detail (the design calls for readable enemies).
 - **Nest** — a distinct, larger structure; pulse it on the ~30s wave beat by blitting a cached "charging" frame rather than redrawing.
-- **Miner / wall / turret / mine** — simple geometric bakes; a turret can be a base sprite plus a separately-baked, rotatable barrel.
-- **Clusters (scrap / energy)** — two palettes of the same rock shape; density, not unique art, sells the field.
+- **Miner / wall / turret / generator** — simple geometric bakes on a 15-unit tile grid (2×2 tiles each, 5×5 for the generator); a turret can be a base sprite plus a separately-baked, rotatable barrel. There is no landmine.
+- **Ore (metal / power)** — ground texture, not entities: two palettes of the same tile, filling whole patches. Density, not unique art, sells the field — and a full screen of it can't be culled, so bake it in bulk rather than per tile.
 
 Keep sprites small (8–24px) and let scale do the rest — it's faster, and it
 matches the game's readable, watchable look.

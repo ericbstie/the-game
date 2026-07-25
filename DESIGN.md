@@ -13,7 +13,8 @@ Score is your escape time.
 
 - **Push outward.** Safety is the center; loot, the door, and danger are the edge.
 - **Emergent squad play.** Split to sweep faster (risky) or push as a pack (safe) — the map supports both.
-- **Sporting & watchable.** Short matches, a stopwatch, no hard fail — just a better or worse time.
+- **Sporting & watchable.** Short matches and a stopwatch — mostly a better or worse time, with
+  a squad wipe as the one real way to lose.
 
 ## The arena
 
@@ -32,17 +33,20 @@ Score is your escape time.
 
 ## Resources
 
-- **Two types: Metal + Energy.** Both flow into a **global bank — no wiring.**
-- **Clusters:** *scrap clusters* and *energy clusters*. Very clustered and rich toward the
-  dangerous edge; sparse in the safe center.
-- **Energy income gates turrets** — you must build/hold enough energy clusters to run them.
-  Metal builds structures.
+- **Two types: Metal + Energy**, shared by the whole squad — **no wiring.**
+- **Metal is a bank** you stockpile and spend. **Energy is not** — it is a live rate: generators
+  raise a ceiling and running turrets draw against it.
+- **Ore is tiles, not nodes.** A patch is a cluster of adjacent ore tiles on a 15-unit grid:
+  *metal ore* (common) and *power ore* (sparser). Both are infinite — a held patch pays forever.
+- **Energy income gates turrets** — hold enough power ore to run them. Metal builds structures.
 
 ## Building — miners & defense
 
-- **Build & defend miners:** drop a miner on a cluster; it trickles resources into the bank.
+- **Build & defend miners:** drop a miner on metal ore; it trickles Metal into the bank.
   Enemies target miners, so wall/turret them. This is the core factory tension.
-- Buildables: **auto-miner, wall, turret, mine.** Instant placement, spend from the bank.
+- Buildables: **miner, generator, wall, turret** — tile-snapped, instant, spent from the bank.
+  All four are solid, all four have HP, and demolishing refunds 20%. There is no repair.
+- **Hand-mining bootstraps the loop:** hold right-click on metal ore to fund your first miner.
 
 ## Enemies & bases
 
@@ -53,25 +57,30 @@ Score is your escape time.
 
 ## Weapons & combat
 
-- Both **melee and ranged** matter. Different weapons grant different bonuses:
-  - **Melee / tank** weapons → survivability + close-range power.
-  - **Range / damage** weapons → reach + DPS.
-- Squad naturally diversifies loadouts to cover both. *(Full roster: TODO.)*
+- **One attack: shoot** (left click), a ranged hitscan. Melee was tried and cut — right-click
+  belongs to hand-mining, and a single weapon keeps the fight readable.
+- Turrets shoot the nearest enemy through walls, so a forward line can siege a nest unattended.
+- *(A wider weapon roster stays open — see the TODO below.)*
 
 ## Win / lose & the clock
 
 - **Stopwatch — score = escape time.** No hard time limit; leaderboard by fastest run.
-- **Respawn on a timer at center.** Dying = the long walk back = a natural time penalty. No wipes, no rage.
-- **Escape requires the whole squad at the door.** Forces a final regroup — no one left behind.
+- **Respawn on a timer at center.** Dying = the long walk back = a real time penalty.
+- **Escape requires the whole squad at the door** — every connected, living player standing in
+  it at the same moment. Forces a final regroup; no one left behind.
+- **A simultaneous squad wipe ends the match in a loss.** It is the only hard fail, and it is
+  what punishes turtling.
 
 ## Scope & tech
 
 - **Platform:** browser — React on an HTML5 canvas, built and tested with Bun. Medium scope.
-- **Build order:** local/hotseat prototype first → online netcode (host-authoritative, 2–6 players) after.
+- **Netcode: client-owned players over a server relay.** Each client integrates its own avatar
+  (zero input lag) and interpolates peers a short delay behind; the server owns the shared world
+  — enemies, nests, structures, the banks — and streams it as deltas on a 20 Hz tick.
 
 ## Open questions / TODO
 
-- Full weapon & tool roster and exact bonus numbers.
-- Netcode approach (host-authoritative vs relay); lobby/join flow.
-- Elite enemy types and wave composition curve.
-- Map size, cluster density, and economy tuning.
+- Whether the roster ever grows past one weapon, and what a second one would be for.
+- Economy tuning: build costs, miner and generator rates, structure HP, ore-patch density.
+- Whether infinite ore needs teeth — nothing currently forces a squad to relocate outward.
+- Art direction for the sprites, and how much combat feedback the fight needs to read well.
