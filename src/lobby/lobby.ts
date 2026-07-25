@@ -651,8 +651,9 @@ export class LobbyHub {
     if (session.build) {
       // The economy keyframe. Ore is derived from the seed, so only the bank and the placed
       // buildings need rebuilding — bounded by what the squad owns, not by how long it has played.
-      // It must stay after `game/enemy-init`: its aims name enemies, so those ids have to be known
-      // by the time it lands.
+      // Sent after `game/enemy-init` deliberately: its aims name enemy ids, so this order is what
+      // makes the keyframe self-consistent on arrival. Nothing breaks if it is not — the client
+      // resolves those ids lazily, at draw time — so this is a kept invariant, not a dependency.
       this.transport.send(socketId, {
         type: "game/build-init",
         tick: session.tickNo,

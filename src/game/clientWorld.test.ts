@@ -9,11 +9,11 @@ import {
   tileOrigin,
 } from "./build";
 import {
-  BUFFER_MS,
   ClientWorld,
   ENEMY_RENDER_DELAY_MS,
   RENDER_DELAY_MS,
   RESPAWN_DELAY_MS,
+  SHOT_RETENTION_MS,
 } from "./clientWorld";
 import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, NEST_COUNT } from "./enemies";
 import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
@@ -495,10 +495,12 @@ describe("M5-I5: the client adopts streamed aims and shots, and refuses to draw 
     expect(w.peerShots()).toEqual([]);
   });
 
-  test("a shot older than the peer-history window is dropped", () => {
+  test("a shot older than the retention window is dropped, even on a tick with no shots", () => {
     const w = new ClientWorld(init(), "self");
     w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "peer", dir: { x: 1, y: 0 } }] }, 0);
-    w.applyMapDelta({ tick: 2, moves: [] }, BUFFER_MS + 1);
+    w.applyMapDelta({ tick: 2, moves: [] }, SHOT_RETENTION_MS - 1);
+    expect(w.peerShots()).toHaveLength(1); // still inside the window
+    w.applyMapDelta({ tick: 3, moves: [] }, SHOT_RETENTION_MS + 1);
     expect(w.peerShots()).toEqual([]);
   });
 

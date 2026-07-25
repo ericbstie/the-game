@@ -50,6 +50,10 @@ import { type Body, PLAYER_MAX_HP, PLAYER_RADIUS, pushOutOfBodies, stepPos } fro
 
 export const RENDER_DELAY_MS = 100; // render peers this far behind real time to smooth the relay
 export const BUFFER_MS = 500; // keep this much peer history; older samples are pruned
+// How long a squadmate's shot is kept. A memory bound, not the line's lifetime — that lives in the
+// render layer (#74 §5), which ages each shot itself. Deliberately clear of any lifetime it is
+// likely to pick, and short enough that the buffer stays a handful of entries.
+export const SHOT_RETENTION_MS = 250;
 export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their 20 Hz stream
 // Dead this long, then the client snaps back to center. With a stopwatch for a score and a base
 // to defend, the long walk back from centre is the penalty — at 3 s (M3) dying was free.
@@ -93,7 +97,7 @@ export class ClientWorld {
   private readonly nests: Nest[]; // static layout derived from the arena; hp/alive track the stream
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
   private readonly enemies = new Map<string, EnemyRecord>();
-  private readonly shots: ShotEvent[] = []; // squadmates' shots, pruned on the peer-history window
+  private readonly shots: ShotEvent[] = []; // squadmates' shots; the render layer ages them itself
   readonly build: BuildState; // server-owned; mirrored here so the ghost tests placement locally
   private lastTick = -1; // highest applied map-delta tick; guards apply-if-newer
   private selfHp: number; // client-authoritative: the owner judges its own contact damage
@@ -273,7 +277,7 @@ export class ClientWorld {
     }
     // Pruned every tick rather than only on arrival, so a squad that stops firing does not leave
     // stale events sitting in the buffer.
-    const cutoff = now - BUFFER_MS;
+    const cutoff = now - SHOT_RETENTION_MS;
     while (this.shots.length > 0 && this.shots[0].at < cutoff) this.shots.shift();
   }
 

@@ -281,9 +281,11 @@ export interface WorldSnapshot {
   nests: RenderedNest[];
   exit: Exit;
   ore: Map<number, OreKind>;
-  // A turret's streamed aim rides along so the render layer can draw its line and its
-  // unpowered lightning. Spelled out rather than importing `TurretRuntime`: `build.ts` already
-  // imports this module, so naming its type here would close a cycle.
+  // A turret's streamed aim rides along so the render layer can draw its line and its unpowered
+  // lightning. Spelled out rather than imported from `build.ts` because this module is the wire
+  // contract and deliberately names nothing in the sim. A `type`-only import would compile — it is
+  // erased, so there is no runtime cycle — but the structural shape keeps the dependency one-way
+  // while still failing tsc if `TurretRuntime` drifts away from it.
   structures: {
     id: string;
     kind: BuildableKind;
@@ -405,7 +407,8 @@ export type GameEnemyInit = Envelope<
 export type GameMatchEnd = Envelope<"game/match-end", { outcome: MatchOutcome; elapsedMs: number }>;
 // `aims` carries only the engaged turrets: transitions are sparse relative to how long a target
 // is held, so without it a turret sieging a nest could stay lineless on a reconnecter's screen
-// indefinitely. It references live enemy ids, which is why `game/enemy-init` must be sent first.
+// indefinitely. Those aims name live enemy ids, so `game/enemy-init` is sent first — an ordering
+// kept so the keyframe is self-consistent on arrival, not one the client's resolution depends on.
 export type GameBuildInit = Envelope<
   "game/build-init",
   { tick: number; bank: Bank; power: Power; structures: StructureSpawn[]; aims: TurretAim[] }
