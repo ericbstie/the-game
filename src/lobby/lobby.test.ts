@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { BUILDABLES, generateOre, MINE_CADENCE_MS, tileCenter, tileOf } from "../game/build";
-import { ATTACK_POS_TOLERANCE, NEST_COUNT } from "../game/enemies";
+import { ATTACK_POS_TOLERANCE, NEST_COUNT, RANGED_CADENCE_MS } from "../game/enemies";
 import { ARENA } from "../game/world";
 import { LobbyHub, livePlayers, type Transport } from "./lobby";
 import type { EnemySpawn, ServerMessage, Tile, Vec2 } from "./protocol";
@@ -1494,6 +1494,40 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     const far = { x: grunt.pos.x + ATTACK_POS_TOLERANCE + 1, y: grunt.pos.y };
     const dir = aimAt(far, grunt.pos);
     hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: far, dir, seq: 1 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]);
+  });
+
+  test("a shot refused for a stale seq produces no PeerShot", async () => {
+    const { t, hub, me, grunt } = await fighting();
+    const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 5 }));
+    await sleep(RANGED_CADENCE_MS + TICK); // let the cadence clear, so only the seq can refuse
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 4 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toHaveLength(1);
+    expect(deltas(t).flatMap((d) => d.shots ?? [])[0].id).toBe(me);
+  });
+
+  test("an absurd reported aim reaches the squad normalized, never as reported", async () => {
+    const { t, hub, grunt } = await fighting();
+    // `asVec2` only checks finiteness, so this is what a hostile client can actually send. Drawn
+    // raw it would blow up every other player's canvas path.
+    const dir = { x: 1e300, y: 0 };
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    const shots = deltas(t).flatMap((d) => d.shots ?? []);
+    expect(shots).toHaveLength(1);
+    expect(shots[0].dir).toEqual({ x: 1, y: 0 });
+  });
+
+  test("a zero-length aim produces no PeerShot — it would relay as a NaN line", async () => {
+    const { t, hub, grunt } = await fighting();
+    const dir = { x: 0, y: 0 };
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
     await sleep(TICK * 3);
     hub.dispose();
     expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]);

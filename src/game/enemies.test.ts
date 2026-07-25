@@ -346,11 +346,15 @@ describe("nests are attackable, and silencing one carves a safe lane", () => {
 });
 
 describe("admitAttack (server-side attack admission)", () => {
-  const report = (seq: number, pos: Vec2 = { x: 0, y: 0 }) => ({ pos, seq });
+  const report = (seq: number, pos: Vec2 = { x: 0, y: 0 }, dir: Vec2 = { x: 1, y: 0 }) => ({
+    pos,
+    dir,
+    seq,
+  });
 
   test("accepts a fresh in-cadence attack and records its seq + timestamp", () => {
     const g = freshGuard();
-    expect(admitAttack(g, report(1), null, 1000)).toBe(true);
+    expect(admitAttack(g, report(1), null, 1000)).toEqual({ x: 1, y: 0 });
     expect(g.seq).toBe(1);
     expect(g.lastAt).toBe(1000);
   });
@@ -358,23 +362,55 @@ describe("admitAttack (server-side attack admission)", () => {
   test("drops a stale or duplicate seq", () => {
     const g = freshGuard();
     admitAttack(g, report(5), null, 1000);
-    expect(admitAttack(g, report(5), null, 5000)).toBe(false); // equal seq
-    expect(admitAttack(g, report(3), null, 9000)).toBe(false); // older seq
+    expect(admitAttack(g, report(5), null, 5000)).toBeNull(); // equal seq
+    expect(admitAttack(g, report(3), null, 9000)).toBeNull(); // older seq
   });
 
   test("rate-limits a too-soon second shot, then allows once the cadence elapses", () => {
     const g = freshGuard();
     admitAttack(g, report(1), null, 1000);
-    expect(admitAttack(g, report(2), null, 1000 + RANGED_CADENCE_MS - 1)).toBe(false);
-    expect(admitAttack(g, report(3), null, 1000 + RANGED_CADENCE_MS)).toBe(true);
+    expect(admitAttack(g, report(2), null, 1000 + RANGED_CADENCE_MS - 1)).toBeNull();
+    expect(admitAttack(g, report(3), null, 1000 + RANGED_CADENCE_MS)).not.toBeNull();
   });
 
   test("rejects a teleport-far origin, accepts one within tolerance", () => {
     const last = { x: 0, y: 0 };
     const far = report(1, { x: ATTACK_POS_TOLERANCE + 1, y: 0 });
     const near = report(1, { x: ATTACK_POS_TOLERANCE - 1, y: 0 });
-    expect(admitAttack(freshGuard(), far, last, 1000)).toBe(false);
-    expect(admitAttack(freshGuard(), near, last, 1000)).toBe(true);
+    expect(admitAttack(freshGuard(), far, last, 1000)).toBeNull();
+    expect(admitAttack(freshGuard(), near, last, 1000)).not.toBeNull();
+  });
+
+  test("normalizes the reported aim rather than trusting its magnitude", () => {
+    const aim = admitAttack(
+      freshGuard(),
+      report(1, { x: 0, y: 0 }, { x: 0, y: 9_000 }),
+      null,
+      1000,
+    );
+    expect(aim).toEqual({ x: 0, y: 1 });
+  });
+
+  test("an absurd magnitude normalizes rather than reaching the wire", () => {
+    const huge = report(1, { x: 0, y: 0 }, { x: 1e300, y: 0 });
+    expect(admitAttack(freshGuard(), huge, null, 1000)).toEqual({ x: 1, y: 0 });
+  });
+
+  test("a zero-length aim is refused — it points nowhere and would relay as NaN", () => {
+    const none = report(1, { x: 0, y: 0 }, { x: 0, y: 0 });
+    expect(admitAttack(freshGuard(), none, null, 1000)).toBeNull();
+  });
+
+  test("an aim that overflows to a non-finite length is refused", () => {
+    const overflow = report(1, { x: 0, y: 0 }, { x: 1.5e308, y: 1.5e308 });
+    expect(admitAttack(freshGuard(), overflow, null, 1000)).toBeNull();
+  });
+
+  test("a refused aim still costs its cadence, so it is not a free retry", () => {
+    const g = freshGuard();
+    admitAttack(g, report(1, { x: 0, y: 0 }, { x: 0, y: 0 }), null, 1000);
+    expect(g.lastAt).toBe(1000);
+    expect(admitAttack(g, report(2), null, 1000 + RANGED_CADENCE_MS - 1)).toBeNull();
   });
 });
 

@@ -203,27 +203,37 @@ export function freshGuard(): AttackGuard {
   return { seq: -1, lastAt: Number.NEGATIVE_INFINITY };
 }
 
-// Decide whether to accept a reported attack, mutating `guard` as a side effect. Pure in its
+// Decide whether to accept a reported attack, returning the aim to use or null if it is refused,
+// and mutating `guard` as a side effect (the `admitBuild`/`admitDemolish` idiom). Pure in its
 // inputs (real time is the injected `now`), so the hub's anti-cheat is unit-tested without a
 // clock. Enemy HP is shared, so the cadence rate-limit is the real anti-nuke; the range-check
 // resists teleport-aim; the seq drops stale/duplicate reports (the `game/pos` idiom).
+//
+// The aim is normalized here rather than trusted. `asVec2` only rejects non-finite numbers, so a
+// hostile client can report `{x: 1e300, y: 0}` or a zero vector — and this vector is rebroadcast
+// to the whole squad as `PeerShot.dir`, where it would blow up or NaN out every other client's
+// canvas path. Normalizing at admission is what makes the protocol's "unit aim vector" true.
 export function admitAttack(
   guard: AttackGuard,
-  report: { pos: Vec2; seq: number },
+  report: { pos: Vec2; dir: Vec2; seq: number },
   lastPos: Vec2 | null,
   now: number,
-): boolean {
-  if (report.seq <= guard.seq) return false; // stale or duplicate
+): Vec2 | null {
+  if (report.seq <= guard.seq) return null; // stale or duplicate
   guard.seq = report.seq;
-  if (now - guard.lastAt < RANGED_CADENCE_MS) return false; // too soon
+  if (now - guard.lastAt < RANGED_CADENCE_MS) return null; // too soon
   if (
     lastPos &&
     Math.hypot(report.pos.x - lastPos.x, report.pos.y - lastPos.y) > ATTACK_POS_TOLERANCE
   ) {
-    return false; // teleport-aim
+    return null; // teleport-aim
   }
+  // Charged before the aim is judged, so a degenerate vector costs its cadence like any other shot
+  // rather than buying an immediate retry.
   guard.lastAt = now;
-  return true;
+  const len = Math.hypot(report.dir.x, report.dir.y);
+  if (len === 0 || !Number.isFinite(len)) return null; // points nowhere, or overflowed
+  return { x: report.dir.x / len, y: report.dir.y / len };
 }
 
 export interface EnemyState {

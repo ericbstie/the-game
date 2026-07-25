@@ -508,9 +508,9 @@ export class LobbyHub {
     const lastPos = session.positions.get(player.id)?.pos ?? null;
     // Nothing is broadcast here. The line that depicts this shot is emitted a tick later by the
     // sim, beside the HP it writes — so a refused attack has no path to the wire at all (#74 §4).
-    if (admitAttack(guard, { pos, seq }, lastPos, Date.now())) {
-      session.pendingAttacks.push({ pos, dir, by: player.id });
-    }
+    // The aim that rides on is the normalized one admission returned, never the reported vector.
+    const aim = admitAttack(guard, { pos, dir, seq }, lastPos, Date.now());
+    if (aim) session.pendingAttacks.push({ pos, dir: aim, by: player.id });
   }
 
   // A reported hand-mine: admit it (ore kind + loose reach + seq + cadence) and credit the
