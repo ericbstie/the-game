@@ -4,7 +4,7 @@ import type { LobbyState } from "../lobby/client";
 import type { WorldInit } from "../lobby/protocol";
 import { ClientWorld } from "./clientWorld";
 import { RANGED_CADENCE_MS } from "./enemies";
-import { GameScreen } from "./GameScreen";
+import { FIRE_CADENCE_MS, GameScreen } from "./GameScreen";
 import { ARENA } from "./world";
 
 const init: WorldInit = {
@@ -15,9 +15,10 @@ const init: WorldInit = {
 };
 
 // Real elapsed time rather than a mocked clock: happy-dom installs its own `Date`, which shadows
-// the one `setSystemTime` patches, so the component would never see a frozen clock.
+// the one `setSystemTime` patches, so the component would never see a frozen clock. Timers only
+// ever overshoot, so every gap below is asserted on rather than assumed — a slow machine must fail
+// the test rather than quietly stop exercising it.
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const AFTER_CADENCE = RANGED_CADENCE_MS + 20; // margin for timer imprecision
 
 // A live match with nothing selected on the build bar, so left-click means shoot.
 function inMatch(onAttack: () => void): HTMLElement {
@@ -45,10 +46,17 @@ function inMatch(onAttack: () => void): HTMLElement {
 afterEach(cleanup);
 
 describe("M5-I5: the client holds itself to the weapon's cadence before firing", () => {
+  test("the client's own cadence clears the server's, so honest shots survive jitter", () => {
+    // The server measures arrival-to-arrival; the client measures click-to-click. Sending at
+    // exactly the server's figure puts every shot on the rejection boundary.
+    expect(FIRE_CADENCE_MS).toBeGreaterThan(RANGED_CADENCE_MS);
+  });
+
   test("a second click inside the cadence is not sent — the server would refuse it anyway", () => {
     const onAttack = mock(() => {});
     const canvas = inMatch(onAttack);
     fireEvent.mouseDown(canvas, { button: 0 });
+    expect(onAttack).toHaveBeenCalledTimes(1);
     fireEvent.mouseDown(canvas, { button: 0 });
     expect(onAttack).toHaveBeenCalledTimes(1);
   });
@@ -57,7 +65,8 @@ describe("M5-I5: the client holds itself to the weapon's cadence before firing",
     const onAttack = mock(() => {});
     const canvas = inMatch(onAttack);
     fireEvent.mouseDown(canvas, { button: 0 });
-    await sleep(AFTER_CADENCE);
+    expect(onAttack).toHaveBeenCalledTimes(1);
+    await sleep(FIRE_CADENCE_MS + 20);
     fireEvent.mouseDown(canvas, { button: 0 });
     expect(onAttack).toHaveBeenCalledTimes(2);
   });
@@ -66,9 +75,13 @@ describe("M5-I5: the client holds itself to the weapon's cadence before firing",
     const onAttack = mock(() => {});
     const canvas = inMatch(onAttack);
     fireEvent.mouseDown(canvas, { button: 0 });
-    await sleep(RANGED_CADENCE_MS / 2);
-    fireEvent.mouseDown(canvas, { button: 0 }); // refused, and must not reset the clock
-    await sleep(AFTER_CADENCE - RANGED_CADENCE_MS / 2);
+    expect(onAttack).toHaveBeenCalledTimes(1);
+    // Refused. If it wrongly reset the clock, the third click below lands inside its window and
+    // the count stays at 2 — which is why each click is asserted rather than only the total.
+    await sleep(FIRE_CADENCE_MS / 2);
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(onAttack).toHaveBeenCalledTimes(1);
+    await sleep(FIRE_CADENCE_MS / 2 + 25);
     fireEvent.mouseDown(canvas, { button: 0 });
     expect(onAttack).toHaveBeenCalledTimes(2);
   });
