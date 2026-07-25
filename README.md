@@ -16,15 +16,18 @@ bun test
 bun test --watch
 bun run check
 bun run build
-bun run sprite:sheet src/sprite/<name>/<name>.ts
+bun run sprite:sheet src/sprite/<name>.ts
+bun run sprite:frame
 ```
 
 Both `bun dev` (hot reload) and `bun serve` run the unified server in `server.ts` — one
 process, one origin, serving the React app and the same-origin lobby WebSocket. `bun run
 compile` builds the standalone server binary.
 
-`bun run sprite:sheet` renders a sprite module to a PNG review sheet in headless Chromium — the
-loop every sprite goes through is [docs/sprite-loop.md](docs/sprite-loop.md).
+`bun run sprite:sheet` renders a sprite module to a PNG review sheet in headless Chromium, and
+`bun run sprite:frame` renders a real frame of the game through `drawWorld` — no server needed.
+The loop every sprite goes through is [docs/sprite-loop.md](docs/sprite-loop.md); the contract
+each one is written against is [src/sprite/README.md](src/sprite/README.md).
 
 To demo a lobby across two networks, see [docs/cross-network-demo.md](docs/cross-network-demo.md).
 
