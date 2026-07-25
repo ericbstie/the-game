@@ -82,3 +82,53 @@ describe("parseClientMessage", () => {
     ).toBeNull();
   });
 });
+
+describe("parseClientMessage: game/mine (M4)", () => {
+  const mine = (tile: unknown, seq: unknown = 1) =>
+    parseClientMessage(JSON.stringify({ type: "game/mine", tile, seq }));
+
+  test("accepts an integer tile with a finite seq", () => {
+    expect(mine({ tx: 4, ty: 7 })).toEqual({ type: "game/mine", tile: { tx: 4, ty: 7 }, seq: 1 });
+  });
+
+  test("rejects a fractional or non-numeric tile — it would index the ore grid into nonsense", () => {
+    expect(mine({ tx: 4.5, ty: 7 })).toBeNull();
+    expect(mine({ tx: "4", ty: 7 })).toBeNull();
+    expect(mine({ tx: Number.NaN, ty: 7 })).toBeNull();
+    expect(mine({ tx: 4 })).toBeNull();
+    expect(mine(null)).toBeNull();
+  });
+
+  test("rejects a missing or non-finite seq", () => {
+    expect(
+      parseClientMessage(JSON.stringify({ type: "game/mine", tile: { tx: 4, ty: 7 } })),
+    ).toBeNull();
+    expect(mine({ tx: 4, ty: 7 }, "1")).toBeNull();
+    expect(mine({ tx: 4, ty: 7 }, Number.NaN)).toBeNull();
+  });
+});
+
+describe("parseClientMessage: game/attack carries no weapon (M4 retired melee)", () => {
+  test("accepts a bare origin + aim shot", () => {
+    const raw = { type: "game/attack", pos: { x: 1, y: 2 }, dir: { x: 1, y: 0 }, seq: 3 };
+    expect(parseClientMessage(JSON.stringify(raw))).toEqual({
+      type: "game/attack",
+      pos: { x: 1, y: 2 },
+      dir: { x: 1, y: 0 },
+      seq: 3,
+    });
+  });
+
+  test("a stale client still sending weapon:'melee' gets the one weapon, not a rejection", () => {
+    const raw = {
+      type: "game/attack",
+      weapon: "melee",
+      pos: { x: 1, y: 2 },
+      dir: { x: 1, y: 0 },
+      seq: 3,
+    };
+    const parsed = parseClientMessage(JSON.stringify(raw));
+    expect(parsed).not.toBeNull();
+    expect(parsed).not.toHaveProperty("weapon");
+  });
+});

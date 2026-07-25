@@ -1,4 +1,11 @@
 import {
+  admitMine,
+  freshMineGuard,
+  generateOre,
+  type MineGuard,
+  type OreGrid,
+} from "../game/build";
+import {
   type Attack,
   type AttackGuard,
   admitAttack,
@@ -12,6 +19,7 @@ import {
 import { generateWorld, PLAYER_MAX_HP } from "../game/world";
 import { generateCode, normalizeCode } from "./code";
 import {
+  type Bank,
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
@@ -24,8 +32,8 @@ import {
   type PublicPlayer,
   parseClientMessage,
   type ServerMessage,
+  type Tile,
   type Vec2,
-  type Weapon,
   type WorldInit,
 } from "./protocol";
 
@@ -72,6 +80,10 @@ interface SessionRecord {
   tickNo: number; // monotonic map-delta tick counter (apply-if-newer on clients)
   attackGuards: Map<PlayerId, AttackGuard>; // per-player cadence/seq admission state
   pendingAttacks: Attack[]; // admitted attacks awaiting the next tick's resolution
+  ore?: OreGrid; // derived from worldInit.oreSeed at start; identical to every client's copy
+  bank: Bank; // the squad's shared Metal stockpile — written only here, never by a client
+  bankDirty: boolean; // the bank changed since the last delta, so the next one carries it
+  mineGuards: Map<PlayerId, MineGuard>; // per-player hand-mine cadence/seq/accrual state
 }
 
 // Server-authoritative hub over every Session. Owns the whole
@@ -118,10 +130,13 @@ export class LobbyHub {
         this.gamePos(socketId, msg.pos, msg.seq);
         return;
       case "game/attack":
-        this.gameAttack(socketId, msg.weapon, msg.pos, msg.dir, msg.seq);
+        this.gameAttack(socketId, msg.pos, msg.dir, msg.seq);
         return;
       case "game/health":
         this.gameHealth(socketId, msg.hp, msg.seq);
+        return;
+      case "game/mine":
+        this.gameMine(socketId, msg.tile, msg.seq);
         return;
     }
   }
@@ -194,6 +209,9 @@ export class LobbyHub {
       tickNo: 0,
       attackGuards: new Map(),
       pendingAttacks: [],
+      bank: { metal: 0 },
+      bankDirty: false,
+      mineGuards: new Map(),
     };
     this.sessions.set(code, session);
     this.sockets.set(socketId, { code, playerId: player.id });
@@ -338,6 +356,10 @@ export class LobbyHub {
     );
     this.broadcast(session, { type: "game/world-init", init: session.worldInit });
 
+    // The ore never rides the wire — the server expands the same seed every client does, so
+    // its admission checks read a grid byte-identical to the one under the player's cursor.
+    session.ore = generateOre(session.worldInit.arena, session.worldInit.oreSeed);
+
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
     session.sim = spawnEnemyState(session.worldInit);
     if (this.firstWaveMs !== undefined) session.sim.msUntilWave = this.firstWaveMs;
@@ -361,12 +383,17 @@ export class LobbyHub {
     if (events.deaths.length > 0) delta.deaths = events.deaths;
     if (events.nests.length > 0) delta.nests = events.nests;
     if (events.wave) delta.wave = events.wave;
+    // The bank is near-static next to enemy motion, so it rides only the ticks it changed on.
+    if (session.bankDirty) {
+      delta.bank = { metal: session.bank.metal };
+      session.bankDirty = false;
+    }
     this.broadcast(session, { type: "game/map-delta", ...delta });
   }
 
   // A reported attack: admit it (cadence + loose range + seq, all server-side) and queue the
   // valid ones for the next tick. The client never writes enemy HP — the sim resolves it.
-  private gameAttack(socketId: string, weapon: Weapon, pos: Vec2, dir: Vec2, seq: number): void {
+  private gameAttack(socketId: string, pos: Vec2, dir: Vec2, seq: number): void {
     const bind = this.sockets.get(socketId);
     if (!bind) return;
     const session = this.sessions.get(bind.code);
@@ -379,8 +406,30 @@ export class LobbyHub {
       session.attackGuards.set(player.id, guard);
     }
     const lastPos = session.positions.get(player.id)?.pos ?? null;
-    if (admitAttack(guard, { weapon, pos, seq }, lastPos, Date.now())) {
-      session.pendingAttacks.push({ weapon, pos, dir });
+    if (admitAttack(guard, { pos, seq }, lastPos, Date.now())) {
+      session.pendingAttacks.push({ pos, dir });
+    }
+  }
+
+  // A reported hand-mine: admit it (ore kind + loose reach + seq + cadence) and credit the
+  // shared bank here. The bank is server-owned — a client only ever asks.
+  private gameMine(socketId: string, tile: Tile, seq: number): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (!session.ore) return; // no economy before the match starts
+    let guard = session.mineGuards.get(player.id);
+    if (!guard) {
+      guard = freshMineGuard();
+      session.mineGuards.set(player.id, guard);
+    }
+    const lastPos = session.positions.get(player.id)?.pos ?? null;
+    const granted = admitMine(guard, { tile, seq }, lastPos, session.ore, Date.now());
+    if (granted > 0) {
+      session.bank.metal += granted;
+      session.bankDirty = true;
     }
   }
 
@@ -440,6 +489,13 @@ export class LobbyHub {
     if (session.sim) {
       const snap = snapshotEnemies(session.sim);
       this.transport.send(socketId, { type: "game/enemy-init", tick: session.tickNo, ...snap });
+      // The economy keyframe. Ore is derived from the seed, so only the bank needs rebuilding —
+      // which keeps this bounded by what the squad owns, not by how long the match has run.
+      this.transport.send(socketId, {
+        type: "game/build-init",
+        tick: session.tickNo,
+        bank: { metal: session.bank.metal },
+      });
     }
     for (const [id, sample] of session.health) {
       this.transport.send(socketId, {
@@ -479,6 +535,7 @@ export class LobbyHub {
     session.positions.delete(player.id);
     session.health.delete(player.id);
     session.attackGuards.delete(player.id);
+    session.mineGuards.delete(player.id);
     const timer = session.graceTimers.get(player.id);
     if (timer) {
       clearTimeout(timer);

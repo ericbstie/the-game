@@ -20,6 +20,10 @@ const EXIT_THICK = 98; // door depth ≈ 3.5× player diameter, readable against
 // The door length is a fraction of the arena, so it scales with the box instead of vanishing.
 const EXIT_LONG_FRAC = 0.03; // door length along its wall ≈ 936 u at 31,200
 
+// The outer ring where the danger lives: nests sit in it and ore thickens toward it. Shared
+// geometry, so the enemy sim and the ore generator agree on where "the edge" begins.
+export const DANGER_BAND_FRAC = 0.08;
+
 export interface SpawnPlayer {
   id: PlayerId;
   slot: number;
@@ -33,10 +37,14 @@ export interface WorldOptions {
 
 export function generateWorld(players: SpawnPlayer[], options: WorldOptions = {}): WorldInit {
   const arena = options.arena ?? ARENA;
+  const rng = options.rng ?? Math.random;
   return {
     arena,
-    exit: placeExit(arena, options.rng ?? Math.random),
+    exit: placeExit(arena, rng),
     spawns: players.map((p) => spawn(p, arena)),
+    // Only the seed travels: every client expands it into the same ore grid locally, so the
+    // ~7k ore tiles never touch the wire and never grow the reconnect keyframe.
+    oreSeed: Math.floor(rng() * 0x1_0000_0000),
   };
 }
 

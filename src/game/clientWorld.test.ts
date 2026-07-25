@@ -14,6 +14,7 @@ const init = (): WorldInit => ({
     { id: "self", slot: 1, name: "Me", pos: { x: 400, y: 300 } },
     { id: "peer", slot: 2, name: "You", pos: { x: 500, y: 300 } },
   ],
+  oreSeed: 1,
 });
 
 // The render time a peer sample stamped at `arrival` is shown = arrival + RENDER_DELAY_MS.

@@ -90,13 +90,24 @@ export interface Spawn {
   pos: Vec2;
 }
 
+// A whole-tile coordinate on the build grid (Milestone 4). One tile is `TILE` world units;
+// every buildable snaps to this grid and ore is made of tiles, not point-nodes.
+export interface Tile {
+  tx: number;
+  ty: number;
+}
+
+export type OreKind = "metal" | "power";
+
 // The immutable shared world the server generates once at match start and re-sends on
-// reconnect: the arena, the placed exit, and every player's spawn. Avatar motion is not here
-// (it flows as peer positions), and the enemy/nest layout is derived from the arena.
+// reconnect: the arena, the placed exit, every player's spawn, and the seed both sides expand
+// into the ore grid. Avatar motion is not here (it flows as peer positions), and the enemy/nest
+// layout — like the ore — is derived rather than streamed.
 export interface WorldInit {
   arena: Arena;
   exit: Exit;
   spawns: Spawn[];
+  oreSeed: number;
 }
 
 // --- Dynamic enemies & combat (Milestone 3) ---
@@ -158,6 +169,12 @@ export interface EnemyHit {
   hp: number;
 }
 
+// The squad's shared Metal stockpile. Server-owned and never client-writable; it rides a delta
+// only on the ticks it actually changed.
+export interface Bank {
+  metal: number;
+}
+
 // The per-tick enemy/combat delta: a full `moves` set plus sparse event arrays — only the
 // non-empty ones ride the wire. `tick` is monotonic per session; the client applies-if-newer.
 export interface MapDelta {
@@ -168,11 +185,8 @@ export interface MapDelta {
   deaths?: string[];
   nests?: NestDelta[];
   wave?: WaveDelta;
+  bank?: Bank;
 }
-
-// A player weapon. Melee is a close cleave wedge; ranged is a hitscan ray (added in #41).
-// Every player has both in M3's minimal model.
-export type Weapon = "melee" | "ranged";
 
 // A render-model enemy the client assembles each frame (not a wire type). Its position is
 // interpolated a short delay behind the stream, exactly like a peer avatar.
@@ -197,12 +211,14 @@ export interface RenderedNest {
 
 // The render model the client assembles each frame from world-init + local self-sim +
 // relayed peer positions + the enemy stream. Not a wire type — it never crosses the socket.
+// `ore` is the locally-derived grid, shared by reference (it never changes).
 export interface WorldSnapshot {
   arena: Arena;
   players: Avatar[]; // sorted by slot
   enemies: RenderedEnemy[];
   nests: RenderedNest[];
   exit: Exit;
+  ore: Map<number, OreKind>;
 }
 
 // The movement intent driving the client's own Avatar: which directions are held. The
@@ -232,16 +248,17 @@ export type LeaveLobby = Envelope<"lobby/leave">;
 // stale/out-of-order frame is dropped.
 export type StartGame = Envelope<"game/start">;
 export type GamePos = Envelope<"game/pos", { pos: Vec2; seq: number }>;
-// A reported player attack (M3): the client swings/fires and reports it; the server validates
-// (cadence + loose range + seq) and applies the damage — enemy HP is never client-writable.
-// `pos` is the swing origin (the player's own position); `dir` is a unit aim vector.
-export type GameAttack = Envelope<
-  "game/attack",
-  { weapon: Weapon; pos: Vec2; dir: Vec2; seq: number }
->;
+// A reported player shot (M3, single-weapon since M4): the client fires and reports it; the
+// server validates (cadence + loose range + seq) and applies the damage — enemy HP is never
+// client-writable. `pos` is the shot origin (the player's own position); `dir` is a unit aim
+// vector.
+export type GameAttack = Envelope<"game/attack", { pos: Vec2; dir: Vec2; seq: number }>;
 // The client owns its HP (it judges contact damage at its own true position) and reports the
 // result; `hp <= 0` declares death. The server never computes it — it stores and relays it.
 export type GameHealth = Envelope<"game/health", { hp: number; seq: number }>;
+// Hand-mining (M4): held right-click reports the metal-ore tile under the cursor. The server
+// admits it (ore kind + loose reach + seq + cadence) and credits the shared bank itself.
+export type GameMine = Envelope<"game/mine", { tile: Tile; seq: number }>;
 export type ClientMessage =
   | CreateLobby
   | JoinLobby
@@ -249,7 +266,8 @@ export type ClientMessage =
   | StartGame
   | GamePos
   | GameAttack
-  | GameHealth;
+  | GameHealth
+  | GameMine;
 
 export type LobbyErrorCode = "lobby-not-found" | "lobby-full" | "slot-released" | "invalid";
 
@@ -299,6 +317,10 @@ export type GameEnemyInit = Envelope<
   "game/enemy-init",
   { tick: number; enemies: EnemySnapshot[]; nests: NestSnapshot[]; wave: WaveDelta }
 >;
+// The economy keyframe (M4): the live shared bank a (re)joiner needs to rebuild. Ore is derived
+// from `WorldInit.oreSeed`, so it is deliberately absent — this stays bounded by what the squad
+// owns rather than growing with the match.
+export type GameBuildInit = Envelope<"game/build-init", { tick: number; bank: Bank }>;
 
 export type ServerMessage =
   | LobbyCreated
@@ -313,7 +335,8 @@ export type ServerMessage =
   | GamePeerPos
   | GameMapDelta
   | GamePeerHealth
-  | GameEnemyInit;
+  | GameEnemyInit
+  | GameBuildInit;
 
 // Hand-rolled inbound narrowing (no schema dep, per spec). Untrusted client input is
 // never assumed valid: every field is checked before the message is trusted.
@@ -359,22 +382,34 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     case "game/attack": {
       const pos = asVec2(msg.pos);
       const dir = asVec2(msg.dir);
-      if (pos === null || dir === null || !isWeapon(msg.weapon) || !isFiniteNumber(msg.seq)) {
-        return null;
-      }
-      return { type: "game/attack", weapon: msg.weapon, pos, dir, seq: msg.seq };
+      if (pos === null || dir === null || !isFiniteNumber(msg.seq)) return null;
+      return { type: "game/attack", pos, dir, seq: msg.seq };
     }
     case "game/health": {
       if (!isFiniteNumber(msg.hp) || !isFiniteNumber(msg.seq)) return null;
       return { type: "game/health", hp: msg.hp, seq: msg.seq };
+    }
+    case "game/mine": {
+      const tile = asTile(msg.tile);
+      if (tile === null || !isFiniteNumber(msg.seq)) return null;
+      return { type: "game/mine", tile, seq: msg.seq };
     }
     default:
       return null;
   }
 }
 
-function isWeapon(value: unknown): value is Weapon {
-  return value === "melee" || value === "ranged";
+// A tile coordinate must be a pair of integers — a fractional or NaN tile would index the ore
+// grid's packed key into nonsense, so it is rejected before the tile is trusted.
+function asTile(value: unknown): Tile | null {
+  if (typeof value !== "object" || value === null) return null;
+  const t = value as Record<string, unknown>;
+  if (!isInteger(t.tx) || !isInteger(t.ty)) return null;
+  return { tx: t.tx, ty: t.ty };
+}
+
+function isInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value);
 }
 
 // A streamed position must be a Vec2 of finite numbers — a client could send anything,

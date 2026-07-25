@@ -10,9 +10,9 @@ import type {
   PlayerId,
   Vec2,
   WaveDelta,
-  Weapon,
   WorldInit,
 } from "../lobby/protocol";
+import { DANGER_BAND_FRAC } from "./world";
 
 // The box world's dynamic side (Milestone 3): a pure, server-authoritative enemy simulation.
 // `spawnEnemyState` seeds the initial enemies from the immutable world-init; `stepEnemies`
@@ -65,17 +65,12 @@ export function enemyContactCadenceMs(kind: EnemyKind): number {
   return STATS[kind].contactCadenceMs;
 }
 
-// Player weapons (M3 minimal model). Melee is a cleave wedge; ranged (#41) is a hitscan ray.
-export const MELEE_RANGE = 70; // reach of the swing, measured origin → enemy edge
-export const MELEE_ARC = 120; // total wedge angle in degrees; half of this each side of `dir`
-export const MELEE_DAMAGE = 3;
-export const MELEE_CADENCE_MS = 400; // server-enforced min gap between melee swings (anti-nuke)
-
-// Ranged — a hitscan ray (no projectile entity, no per-tick wire state). Reach + DPS.
+// The player's one weapon (M4 retired M3's melee/ranged pair so right-click could become
+// hand-mining): a hitscan ray — no projectile entity, no per-tick wire state. Reach + DPS.
 export const RANGED_RANGE = 700; // how far the ray reaches from the origin
 export const RANGED_HALFWIDTH = 24; // the ray's half-thickness; an enemy within it is on-line
 export const RANGED_DAMAGE = 1;
-export const RANGED_CADENCE_MS = 180; // ranged fires faster than melee
+export const RANGED_CADENCE_MS = 180;
 
 // The server's loose anti-teleport-aim tolerance: a reported swing origin this far from the
 // player's last relayed position is rejected. Generous enough to survive relay lag (a player
@@ -97,13 +92,6 @@ const SPAWN_JITTER = 300; // grunts spawn within this radius of their nest, so t
 export const WAVE_PERIOD_MS = 30_000; // first wave at 0:30, then every 30 s
 export const WAVE_TELEGRAPH_MS = 3_000; // nest-pulse prep window before a wave (visuals deferred)
 export const ENEMY_CAP = 240; // hard concurrency governor; a nest holds its remainder at the cap
-
-// Danger-band geometry mirrors world.ts: nests and enemies live in the outer ring near the walls.
-const DANGER_BAND_FRAC = 0.08;
-
-function weaponCadence(weapon: Weapon): number {
-  return weapon === "melee" ? MELEE_CADENCE_MS : RANGED_CADENCE_MS;
-}
 
 // A point's bearing from arena center, in degrees normalized to [0, 360).
 export function angleOf(pos: Vec2, arena: Arena): number {
@@ -152,10 +140,9 @@ export interface PlayerRef {
   pos: Vec2;
 }
 
-// A server-validated attack the sim resolves against enemy HP. `pos` is the swing origin,
+// A server-validated shot the sim resolves against enemy HP. `pos` is the shot origin,
 // `dir` a unit aim vector. The hub admits it (cadence/range/seq) before it reaches the sim.
 export interface Attack {
-  weapon: Weapon;
   pos: Vec2;
   dir: Vec2;
 }
@@ -172,16 +159,15 @@ export interface EnemyEvents {
   wave: WaveDelta | null;
 }
 
-// Per-player attack admission state (server-side). `seq` guards apply-if-newer; the two
-// timestamps rate-limit each weapon independently.
+// Per-player attack admission state (server-side). `seq` guards apply-if-newer; `lastAt`
+// rate-limits the weapon.
 export interface AttackGuard {
   seq: number;
-  meleeAt: number;
-  rangedAt: number;
+  lastAt: number;
 }
 
 export function freshGuard(): AttackGuard {
-  return { seq: -1, meleeAt: Number.NEGATIVE_INFINITY, rangedAt: Number.NEGATIVE_INFINITY };
+  return { seq: -1, lastAt: Number.NEGATIVE_INFINITY };
 }
 
 // Decide whether to accept a reported attack, mutating `guard` as a side effect. Pure in its
@@ -190,22 +176,20 @@ export function freshGuard(): AttackGuard {
 // resists teleport-aim; the seq drops stale/duplicate reports (the `game/pos` idiom).
 export function admitAttack(
   guard: AttackGuard,
-  report: { weapon: Weapon; pos: Vec2; seq: number },
+  report: { pos: Vec2; seq: number },
   lastPos: Vec2 | null,
   now: number,
 ): boolean {
   if (report.seq <= guard.seq) return false; // stale or duplicate
   guard.seq = report.seq;
-  const lastAt = report.weapon === "melee" ? guard.meleeAt : guard.rangedAt;
-  if (now - lastAt < weaponCadence(report.weapon)) return false; // too soon
+  if (now - guard.lastAt < RANGED_CADENCE_MS) return false; // too soon
   if (
     lastPos &&
     Math.hypot(report.pos.x - lastPos.x, report.pos.y - lastPos.y) > ATTACK_POS_TOLERANCE
   ) {
     return false; // teleport-aim
   }
-  if (report.weapon === "melee") guard.meleeAt = now;
-  else guard.rangedAt = now;
+  guard.lastAt = now;
   return true;
 }
 
@@ -347,9 +331,9 @@ function jitter(pos: Vec2, rng: () => number): Vec2 {
   };
 }
 
-// Apply every admitted attack to enemy and nest HP — this sim is the sole writer. Melee cleaves
-// every enemy/nest in its wedge; ranged strikes the single nearest target (enemy or nest) along
-// its ray. Damage accumulates across attacks; an enemy hit then killed reports only its death.
+// Apply every admitted shot to enemy and nest HP — this sim is the sole writer. A shot strikes
+// the single nearest target (enemy or nest) along its ray. Damage accumulates across shots; an
+// enemy hit then killed reports only its death.
 function resolveAttacks(
   state: EnemyState,
   attacks: Attack[],
@@ -357,29 +341,13 @@ function resolveAttacks(
   const enemiesHit = new Set<string>();
   const nestsHit = new Set<string>();
   for (const attack of attacks) {
-    const damage = attack.weapon === "melee" ? MELEE_DAMAGE : RANGED_DAMAGE;
-    if (attack.weapon === "melee") {
-      for (const enemy of state.enemies.values()) {
-        if (enemy.hp > 0 && inMeleeWedge(attack, enemy.pos, enemyRadius(enemy.kind))) {
-          enemy.hp -= damage;
-          enemiesHit.add(enemy.id);
-        }
-      }
-      for (const nest of state.nests) {
-        if (nest.alive && inMeleeWedge(attack, nest.pos, NEST_RADIUS)) {
-          nest.hp -= damage;
-          nestsHit.add(nest.id);
-        }
-      }
-    } else {
-      const hit = nearestRayHit(state, attack);
-      if (hit?.enemy) {
-        hit.enemy.hp -= damage;
-        enemiesHit.add(hit.enemy.id);
-      } else if (hit?.nest) {
-        hit.nest.hp -= damage;
-        nestsHit.add(hit.nest.id);
-      }
+    const hit = nearestRayHit(state, attack);
+    if (hit?.enemy) {
+      hit.enemy.hp -= RANGED_DAMAGE;
+      enemiesHit.add(hit.enemy.id);
+    } else if (hit?.nest) {
+      hit.nest.hp -= RANGED_DAMAGE;
+      nestsHit.add(hit.nest.id);
     }
   }
 
@@ -407,19 +375,6 @@ function resolveAttacks(
     nests.push({ id: nest.id, hp: nest.hp, alive: nest.alive });
   }
   return { hits, deaths, nests };
-}
-
-// Is a circle at `pos` (of the given radius) inside the melee cleave wedge? Within reach of the
-// origin and inside the arc around `dir`. A degenerate zero-length aim skips the arc test.
-function inMeleeWedge(attack: Attack, pos: Vec2, radius: number): boolean {
-  const dx = pos.x - attack.pos.x;
-  const dy = pos.y - attack.pos.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist > MELEE_RANGE + radius) return false;
-  const dirLen = Math.hypot(attack.dir.x, attack.dir.y);
-  if (dist === 0 || dirLen === 0) return true;
-  const cos = (attack.dir.x * dx + attack.dir.y * dy) / (dirLen * dist);
-  return Math.acos(clampUnit(cos)) <= (MELEE_ARC / 2) * (Math.PI / 180);
 }
 
 // The single nearest target a hitscan ray reaches — an enemy or a nest, whichever is closer
@@ -451,10 +406,6 @@ function nearestRayHit(state: EnemyState, attack: Attack): { enemy?: Enemy; nest
     if (along !== null && (best === null || along < best.along)) best = { along, nest };
   }
   return best === null ? null : { enemy: best.enemy, nest: best.nest };
-}
-
-function clampUnit(value: number): number {
-  return Math.max(-1, Math.min(1, value));
 }
 
 // One enemy's pure geometric step — one of three states:

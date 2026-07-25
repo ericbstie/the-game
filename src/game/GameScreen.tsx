@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { LobbyState } from "../lobby/client";
-import type { Arena, MoveInput, Vec2, Weapon } from "../lobby/protocol";
+import type { Arena, MoveInput, Tile, Vec2 } from "../lobby/protocol";
+import { MINE_CADENCE_MS, resolveHarvest, tileOf } from "./build";
 import { type Camera, computeCamera } from "./camera";
 import { RESPAWN_DELAY_MS } from "./clientWorld";
 import { drawWorld } from "./draw";
@@ -14,8 +15,9 @@ interface GameScreenProps {
   state: LobbyState;
   onLeave: () => void;
   onPos: (pos: Vec2) => void;
-  onAttack: (weapon: Weapon, pos: Vec2, dir: Vec2) => void;
+  onAttack: (pos: Vec2, dir: Vec2) => void;
   onHealth: (hp: number) => void;
+  onMine: (tile: Tile) => void;
 }
 
 // The in-match screen: a fullscreen camera that follows your Avatar through the giant box.
@@ -25,7 +27,7 @@ interface GameScreenProps {
 // crisp on HiDPI). The owner's position streams out at a fixed ~20 Hz. Refs bridge React's
 // render into the loop so a world swapped on reconnect and a changed callback are picked up
 // without restarting it.
-export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameScreenProps) {
+export function GameScreen({ state, onLeave, onPos, onAttack, onHealth, onMine }: GameScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const heldRef = useRef<MoveInput>(NO_MOVE);
   const worldRef = useRef(state.world);
@@ -33,7 +35,10 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameSc
   const onPosRef = useRef(onPos);
   const onAttackRef = useRef(onAttack);
   const onHealthRef = useRef(onHealth);
+  const onMineRef = useRef(onMine);
+  const harvestingRef = useRef(false); // right-click held: harvest whatever is under the cursor
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
+  const [metal, setMetal] = useState(0); // the shared bank, mirrored into React for the HUD
   const [respawnIn, setRespawnIn] = useState(0); // seconds until respawn, shown while downed
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
   const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
@@ -46,6 +51,7 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameSc
   onPosRef.current = onPos;
   onAttackRef.current = onAttack;
   onHealthRef.current = onHealth;
+  onMineRef.current = onMine;
 
   // Keyboard → held MoveInput. It drives the local self-sim; nothing is sent per key.
   useEffect(() => {
@@ -146,6 +152,7 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameSc
         setHp(nextHp); // repaint the HUD (rare — only on a health change)
         onHealthRef.current(nextHp); // report it; hp <= 0 declares death, max declares the revive
       }
+      setMetal(world.metal()); // React bails out when the whole-metal readout hasn't moved
       // A downed player stops streaming position — peers hold its last pos as a corpse.
       if (!world.isDead()) {
         const pos = world.selfPos();
@@ -155,19 +162,47 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameSc
     return () => clearInterval(timer);
   }, []);
 
+  // Held right-click streams a harvest request for the tile under the cursor at a fixed cadence.
+  // The server decides what that tile is worth — the client only ever asks.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const world = worldRef.current;
+      if (!harvestingRef.current || !world || world.isDead()) return;
+      const target = resolveHarvest(
+        cursorTile(pointerRef.current, aimRef.current.camera),
+        world.ore,
+      );
+      if (target?.kind === "mine") onMineRef.current(target.tile);
+    }, MINE_CADENCE_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  // A right-click released outside the canvas (or with the tab hidden) must still stop the hold,
+  // or mining would continue with a stale cursor.
+  useEffect(() => {
+    const stop = () => {
+      harvestingRef.current = false;
+    };
+    window.addEventListener("mouseup", stop);
+    window.addEventListener("blur", stop);
+    return () => {
+      window.removeEventListener("mouseup", stop);
+      window.removeEventListener("blur", stop);
+    };
+  }, []);
+
   const trackPointer = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     pointerRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
   };
-  const fire = (weapon: Weapon) => {
-    const { camera, self } = aimRef.current;
-    onAttackRef.current(weapon, { ...self }, aimDir(pointerRef.current, self, camera));
-  };
   const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     trackPointer(e);
-    if (e.button === 0)
-      fire("melee"); // left-click swings
-    else if (e.button === 2) fire("ranged"); // right-click shoots
+    if (e.button === 0) {
+      const { camera, self } = aimRef.current;
+      onAttackRef.current({ ...self }, aimDir(pointerRef.current, self, camera)); // left-click shoots
+    } else if (e.button === 2) {
+      harvestingRef.current = true; // right-click harvests for as long as it is held
+    }
   };
 
   return (
@@ -205,8 +240,12 @@ export function GameScreen({ state, onLeave, onPos, onAttack, onHealth }: GameSc
           {hp > 0 ? `HP ${hp}` : `Downed — respawning in ${respawnIn}…`}
         </span>
       </div>
+      <div className="banks" role="status" aria-label="Resources">
+        <span className="bank metal">Metal {metal}</span>
+      </div>
       <p className="hint">
-        Move with WASD or the arrow keys. Left-click to swing, right-click to shoot.
+        Move with WASD or the arrow keys. Left-click to shoot, hold right-click on metal ore to
+        mine.
       </p>
     </main>
   );
@@ -238,6 +277,12 @@ function applyBackingStore(canvas: HTMLCanvasElement, w: number, h: number, dpr:
   const bh = Math.round(h * dpr);
   if (canvas.width !== bw) canvas.width = bw;
   if (canvas.height !== bh) canvas.height = bh;
+}
+
+// The tile under the pointer. The camera maps CSS pixels to world units 1:1, so the pointer's
+// world position is simply pointer + camera.
+function cursorTile(pointer: Vec2, camera: Camera): Tile {
+  return tileOf({ x: pointer.x + camera.x, y: pointer.y + camera.y });
 }
 
 function selfPos(players: { id: string; pos: Vec2 }[], selfId: string | undefined): Vec2 | null {

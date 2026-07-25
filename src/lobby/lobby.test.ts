@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { generateOre, MINE_CADENCE_MS, tileCenter } from "../game/build";
 import { NEST_COUNT } from "../game/enemies";
 import { ARENA } from "../game/world";
 import { LobbyHub, livePlayers, type Transport } from "./lobby";
-import type { ServerMessage } from "./protocol";
+import type { ServerMessage, Tile, Vec2 } from "./protocol";
 import type { LobbyServer } from "./server";
 import { expectMessage, makeClient, startServer, type TestClient } from "./testing";
 
@@ -775,5 +776,97 @@ describe("M3: enemy sim tick lifecycle", () => {
           (d.hits ?? []).some((h) => h.id === target.id) || (d.deaths ?? []).includes(target.id),
       );
     expect(struck).toBe(true);
+  });
+});
+
+describe("M4-T1: hand-mining fills the squad's shared Metal bank", () => {
+  // The tile a player standing at `pos` can legitimately mine: the nearest metal ore the
+  // generated grid actually holds, so the test exercises admission rather than dodging it.
+  function nearestMetalTile(oreSeed: number, to: Vec2): Tile {
+    const ore = generateOre(ARENA, oreSeed);
+    let best: Tile | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const [key, kind] of ore) {
+      if (kind !== "metal") continue;
+      const tile = { tx: Math.floor(key / 65_536), ty: key % 65_536 };
+      const c = tileCenter(tile);
+      const d = Math.hypot(c.x - to.x, c.y - to.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = tile;
+      }
+    }
+    if (!best) throw new Error("the generated grid holds no metal ore");
+    return best;
+  }
+
+  test("one player mining raises the Metal readout on every client", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    hostClient.send({ type: "game/start" });
+    const init = expectMessage(
+      await hostClient.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+
+    // Stand on the ore first: admission measures reach from the last relayed position.
+    const tile = nearestMetalTile(init.oreSeed, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    hostClient.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
+    hostClient.send({ type: "game/mine", tile, seq: 1 }); // starts the accrual clock
+    await new Promise((r) => setTimeout(r, MINE_CADENCE_MS + 20));
+    hostClient.send({ type: "game/mine", tile, seq: 2 });
+
+    const banked = (m: ServerMessage) => m.type === "game/map-delta" && (m.bank?.metal ?? 0) > 0;
+    const onHost = expectMessage(await hostClient.waitFor(banked), "game/map-delta");
+    const onBen = expectMessage(await ben.waitFor(banked), "game/map-delta");
+    expect(onHost.bank?.metal).toBeGreaterThan(0);
+    expect(onBen.bank?.metal).toBe(onHost.bank?.metal); // one shared bank, not a per-player purse
+  });
+
+  test("mining bare ground banks nothing", async () => {
+    const server = spawn();
+    const { client: hostClient } = await host(server, "Ana");
+    hostClient.send({ type: "game/start" });
+    await hostClient.waitFor((m) => m.type === "game/world-init");
+
+    const bare = { tx: 0, ty: 0 }; // the arena corner: outside every patch
+    hostClient.send({ type: "game/pos", pos: tileCenter(bare), seq: 1 });
+    for (let seq = 1; seq <= 4; seq++) hostClient.send({ type: "game/mine", tile: bare, seq });
+
+    // Four ticks with no bank field is the assertion — a credited mine would ride one of them.
+    const seen: ServerMessage[] = [];
+    for (let i = 0; i < 4; i++)
+      seen.push(await hostClient.waitFor((m) => m.type === "game/map-delta"));
+    expect(seen.every((m) => m.type === "game/map-delta" && m.bank === undefined)).toBe(true);
+  });
+
+  test("a reconnecter is handed the live bank in the economy keyframe", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const joinedFirst = (await joinLobby(server, code, "Ben")).joined;
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+    hostClient.send({ type: "game/start" });
+    const init = expectMessage(
+      await hostClient.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+
+    const tile = nearestMetalTile(init.oreSeed, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    hostClient.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
+    hostClient.send({ type: "game/mine", tile, seq: 1 });
+    await new Promise((r) => setTimeout(r, MINE_CADENCE_MS + 20));
+    hostClient.send({ type: "game/mine", tile, seq: 2 });
+    await hostClient.waitFor((m) => m.type === "game/map-delta" && (m.bank?.metal ?? 0) > 0);
+
+    const back = await connect(server);
+    back.send({ type: "lobby/join", code, name: "Ben", token: joinedFirst.you.token });
+    const keyframe = expectMessage(
+      await back.waitFor((m) => m.type === "game/build-init"),
+      "game/build-init",
+    );
+    expect(keyframe.bank.metal).toBeGreaterThan(0);
   });
 });

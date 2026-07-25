@@ -8,8 +8,8 @@ import {
   PROTOCOL_VERSION,
   type Self,
   type ServerMessage,
+  type Tile,
   type Vec2,
-  type Weapon,
   WS_PATH,
 } from "./protocol";
 import { applyRoster } from "./roster";
@@ -66,6 +66,7 @@ export class LobbyClient {
   private posSeq = 0; // monotonic across the client's whole life, so it survives reconnect
   private attackSeq = 0; // monotonic attack sequence, independent of posSeq
   private healthSeq = 0; // monotonic health sequence, independent of the others
+  private mineSeq = 0; // monotonic hand-mine sequence, independent of the others
 
   constructor(options: LobbyClientOptions = {}) {
     this.wsUrl = options.wsUrl ?? defaultWsUrl();
@@ -104,10 +105,16 @@ export class LobbyClient {
     this.send({ type: "game/pos", pos, seq: ++this.posSeq });
   }
 
-  // Report a swing/shot. The server validates (cadence/range/seq) and applies the damage —
+  // Report a shot. The server validates (cadence/range/seq) and applies the damage —
   // the client never writes enemy HP. `seq` is monotonic, like sendPos.
-  sendAttack(weapon: Weapon, pos: Vec2, dir: Vec2): void {
-    this.send({ type: "game/attack", weapon, pos, dir, seq: ++this.attackSeq });
+  sendAttack(pos: Vec2, dir: Vec2): void {
+    this.send({ type: "game/attack", pos, dir, seq: ++this.attackSeq });
+  }
+
+  // Ask to hand-mine the metal-ore tile under the cursor. The server decides what it is worth
+  // and credits the shared bank; the client never writes it. `seq` is monotonic, like sendPos.
+  sendMine(tile: Tile): void {
+    this.send({ type: "game/mine", tile, seq: ++this.mineSeq });
   }
 
   // Report the client's own HP (it owns it). `hp <= 0` declares death. The server stores and
@@ -232,6 +239,9 @@ export class LobbyClient {
         return;
       case "game/enemy-init":
         this.state.world?.initEnemies(msg);
+        return;
+      case "game/build-init":
+        this.state.world?.initBuild(msg);
         return;
       case "lobby/player-left":
         this.state.world?.removePeer(msg.id);
