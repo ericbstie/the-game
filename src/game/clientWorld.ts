@@ -219,6 +219,10 @@ export class ClientWorld {
     if (delta.tick <= this.lastTick) return;
     this.lastTick = delta.tick;
     for (const s of delta.spawns ?? []) {
+      // A duplicate spawn must not reset the record, because the record now carries derived
+      // facing state. That is only safe because `addEnemy` never recycles an id (`enemies.ts`
+      // increments `nextId` for the life of the session) — if allocation ever stops being
+      // monotonic, a repeat id is a different enemy and this guard has to reseed the gait.
       if (!this.enemies.has(s.id)) {
         this.enemies.set(s.id, {
           id: s.id,
@@ -322,8 +326,11 @@ export class ClientWorld {
 
   // Assemble the render model. The owner is drawn at its live position; peers are sampled
   // RENDER_DELAY_MS behind `now` from their buffers. Each entity's facing and walk frame are
-  // advanced here, where its rendered position has just been computed — `updateFacing` is a
-  // no-op for a repeated `now`, so a second call in one frame cannot double-advance them.
+  // advanced here, where its rendered position has just been computed — so this is a command as
+  // much as a query. Calling it twice with the *same* `now` is a no-op; calling it twice with
+  // different `now` in one frame splits the EMA step and biases the speed ~1% low. The render
+  // loop is the single caller, once per frame; a second consumer wants `advance`/`snapshot`
+  // split apart rather than caller discipline.
   snapshot(now: number): WorldSnapshot {
     return {
       arena: this.arena,
