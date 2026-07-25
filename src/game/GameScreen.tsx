@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { LobbyState } from "../lobby/client";
 import type { Arena, BuildableKind, MoveInput, Tile, Vec2 } from "../lobby/protocol";
+import { createSpriteCache } from "../sprite/cache";
+import { SPRITES } from "../sprite/registry";
 import {
   BUILD_SLOTS,
   BUILDABLES,
@@ -18,6 +20,11 @@ import { PLAYER_MAX_HP } from "./world";
 
 const POS_SEND_MS = 50; // ~20 Hz position stream, independent of the render frame rate
 const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the avatar on resume
+
+// One cache for the app: a baked sprite depends on the display, not on which screen is mounted.
+// It bakes nothing until something is drawn, so importing this costs nothing under `bun test`,
+// where there is no canvas to bake into.
+const spriteCache = createSpriteCache(SPRITES);
 
 interface GameScreenProps {
   state: LobbyState;
@@ -169,7 +176,17 @@ export function GameScreen({
                   ) === null,
               }
             : undefined;
-          drawWorld(ctx, snapshot, { selfId: selfIdRef.current, camera, viewport, ghost });
+          // Asking the cache for this frame's DPR is also what re-bakes the set when the window
+          // moves to a display of a different density: every bake in hand is then the wrong
+          // resolution, and the cache empties itself rather than being told to.
+          drawWorld(ctx, snapshot, {
+            selfId: selfIdRef.current,
+            camera,
+            viewport,
+            ghost,
+            dpr,
+            sprites: spriteCache.source(dpr),
+          });
         }
       }
       raf = requestAnimationFrame(frame);

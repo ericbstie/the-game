@@ -23,16 +23,20 @@ export function computeCamera(self: Vec2, viewport: Viewport, arena: Arena): Cam
   };
 }
 
-// Does an entity at `pos` with the given half-extent (radius, plus an optional margin for
-// labels drawn above it) overlap the camera's viewport? Off-screen entities are culled.
+// Does an entity at `pos` reach into the camera's viewport? Off-screen entities are culled.
+//
+// `halfExtent` is how far the entity's *drawing* reaches from `pos`, which is not its radius once
+// it is a sprite: an upright sprite is anchored at its feet and stands a whole box-height above
+// them, so a caller passes the sprite's box rather than the circle it replaced. `margin` covers
+// anything drawn further out still, like the name label above an avatar.
 export function isVisible(
   pos: Vec2,
-  radius: number,
+  halfExtent: number,
   camera: Camera,
   viewport: Viewport,
   margin = 0,
 ): boolean {
-  const pad = radius + margin;
+  const pad = halfExtent + margin;
   return (
     pos.x + pad >= camera.x &&
     pos.x - pad <= camera.x + viewport.width &&

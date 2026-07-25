@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { WorldSnapshot } from "../lobby/protocol";
+import type { BakedSprite, SpriteSource } from "../sprite/cache";
+import type { SpriteName } from "../sprite/registry";
 import type { Camera, Viewport } from "./camera";
 import { drawWorld } from "./draw";
 
@@ -26,9 +28,34 @@ function spyCtx() {
     fill: record("fill"),
     stroke: record("stroke"),
     fillText: record("fillText"),
+    drawImage: record("drawImage"),
   };
   return ctx as unknown as CanvasRenderingContext2D & { calls: Call[] };
 }
+
+// A sprite source standing in for baked art: every requested name resolves, and each image is
+// tagged so a call log says *which* sprite was blitted and in what order. Sprites the game has
+// not been given fall through to the shapes it has drawn since M2, which is what a name left out
+// of `boxes` reproduces.
+function stubSprites(boxes: Partial<Record<SpriteName, number>>): SpriteSource {
+  return (name, facing, frame) => {
+    const size = boxes[name];
+    if (size === undefined) return null;
+    const image = { tag: `${name}/${facing}/${frame}` } as unknown as CanvasImageSource;
+    return { image, size } satisfies BakedSprite;
+  };
+}
+
+const blits = (ctx: { calls: Call[] }) =>
+  ctx.calls
+    .filter((c) => c.fn === "drawImage")
+    .map((c) => ({
+      tag: (c.args[0] as { tag: string }).tag,
+      x: c.args[1] as number,
+      y: c.args[2] as number,
+      width: c.args[3] as number,
+      height: c.args[4] as number,
+    }));
 
 const world: WorldSnapshot = {
   arena: { width: 31_200, height: 31_200 },
@@ -127,5 +154,153 @@ describe("drawWorld", () => {
     drawWorld(ctx, withDeadNest, { camera, viewport });
     // The dead nest still draws (one arc) — the colour change is what reads as "silenced".
     expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(3); // 2 avatars + the dead nest
+  });
+});
+
+// Everything above pins the shapes the game has drawn since M2, and it all still holds: a sprite
+// that has not landed falls back to its circle or rectangle. What follows pins the sprite path
+// itself. A blit is the one thing a call log records perfectly — which image, where, in what
+// order — so the Y-sort and the foot anchor are asserted the same way, against a stub source.
+describe("drawWorld with sprites", () => {
+  const standing: WorldSnapshot = {
+    ...world,
+    players: [
+      { id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 100 },
+      { id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14, hp: 100 },
+    ],
+    enemies: [{ id: "e1", kind: "grunt", pos: { x: 1150, y: 1200 }, radius: 16, hp: 30 }],
+    nests: [{ id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, hp: 600, alive: true, sector: 0 }],
+  };
+  const everything = { nest: 96, player: 28, grunt: 32, elite: 48, miner: 30, generator: 75 };
+
+  test("paints in Y order, so whatever is lower on screen paints in front", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, standing, { camera, viewport, sprites: stubSprites(everything) });
+    // By category — the old order — this would be nest, grunt, player, player. By floor line it
+    // is nest 1090, player 1100, player 1150, grunt 1200.
+    expect(blits(ctx).map((b) => b.tag)).toEqual([
+      "nest/0/0",
+      "player/0/0",
+      "player/0/0",
+      "grunt/0/0",
+    ]);
+  });
+
+  test("anchors an upright sprite at its feet, not at its centre", () => {
+    const ctx = spyCtx();
+    const one: WorldSnapshot = {
+      ...standing,
+      players: [standing.players[0]],
+      enemies: [],
+      nests: [],
+    };
+    drawWorld(ctx, one, { camera, viewport, sprites: stubSprites(everything) });
+    // The avatar stands at (1100, 1100): its 28 px box is centred on x and sits *above* y.
+    expect(blits(ctx)[0]).toEqual({ tag: "player/0/0", x: 1086, y: 1072, width: 28, height: 28 });
+  });
+
+  test("blits into the logical box, leaving the bake's device pixels to the DPR transform", () => {
+    const ctx = spyCtx();
+    const one: WorldSnapshot = {
+      ...standing,
+      players: [standing.players[0]],
+      enemies: [],
+      nests: [],
+    };
+    drawWorld(ctx, one, { camera, viewport, dpr: 3, sprites: stubSprites(everything) });
+    const blit = blits(ctx)[0];
+    expect([blit.width, blit.height]).toEqual([28, 28]); // never 28 × 3
+  });
+
+  test("snaps a blit to whole device pixels, so a fractional position cannot resample it", () => {
+    const ctx = spyCtx();
+    const drifting: WorldSnapshot = {
+      ...standing,
+      players: [
+        { id: "p1", slot: 1, name: "Ana", pos: { x: 1100.4, y: 1100.7 }, radius: 14, hp: 100 },
+      ],
+      enemies: [],
+      nests: [],
+    };
+    drawWorld(ctx, drifting, { camera, viewport, dpr: 2, sprites: stubSprites(everything) });
+    const blit = blits(ctx)[0];
+    expect((blit.x - camera.x) * 2).toBe(173);
+    expect((blit.y - camera.y) * 2).toBe(145);
+  });
+
+  test("turns image smoothing off, every frame, because resizing the canvas resets it", () => {
+    const ctx = spyCtx();
+    ctx.imageSmoothingEnabled = true; // what a freshly resized backing store leaves behind
+    drawWorld(ctx, standing, { camera, viewport, sprites: stubSprites(everything) });
+    expect(ctx.imageSmoothingEnabled).toBe(false);
+  });
+
+  test("a building's box is exactly its footprint", () => {
+    const ctx = spyCtx();
+    const built: WorldSnapshot = {
+      ...standing,
+      players: [],
+      enemies: [],
+      nests: [],
+      structures: [{ id: "b1", kind: "miner", tile: { tx: 74, ty: 74 }, hp: 200 }],
+    };
+    drawWorld(ctx, built, { camera, viewport, sprites: stubSprites(everything) });
+    expect(blits(ctx)[0]).toEqual({ tag: "miner/0/0", x: 1110, y: 1110, width: 30, height: 30 });
+  });
+
+  test("the flat generator stays under everything that stands, whatever its floor line", () => {
+    const ctx = spyCtx();
+    const powered: WorldSnapshot = {
+      ...standing,
+      players: [],
+      enemies: [],
+      // The nest's floor line (1010) is far above the generator's (1125), so a single sorted pass
+      // would paint the generator over it. Drawn flat, it belongs to the floor instead.
+      nests: [{ id: "n1", pos: { x: 1100, y: 1010 }, radius: 48, hp: 600, alive: true, sector: 0 }],
+      structures: [{ id: "b1", kind: "generator", tile: { tx: 70, ty: 70 }, hp: 300 }],
+    };
+    drawWorld(ctx, powered, { camera, viewport, sprites: stubSprites(everything) });
+    expect(blits(ctx).map((b) => b.tag)).toEqual(["generator/0/0", "nest/0/0"]);
+  });
+
+  test("a silenced nest asks for the destroyed variant of the one egg-sac sprite", () => {
+    const ctx = spyCtx();
+    const silenced: WorldSnapshot = {
+      ...standing,
+      players: [],
+      enemies: [],
+      nests: [{ id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, hp: 0, alive: false, sector: 0 }],
+    };
+    drawWorld(ctx, silenced, { camera, viewport, sprites: stubSprites(everything) });
+    expect(blits(ctx)[0].tag).toBe("nest/1/0");
+  });
+
+  test("an entity whose sprite has not landed keeps the shape it has had since M2", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, standing, { camera, viewport, sprites: stubSprites({ player: 28 }) });
+    expect(blits(ctx).map((b) => b.tag)).toEqual(["player/0/0", "player/0/0"]);
+    expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(2); // the nest and the grunt
+  });
+
+  test("keeps drawing a sprite whose feet have left the viewport but whose body has not", () => {
+    const reaching: WorldSnapshot = {
+      ...standing,
+      players: [],
+      nests: [],
+      // 20 below the bottom edge (1600). A 32 px grunt anchored at its feet still covers 1588—1600,
+      // so culling on the radius alone — 16 — would pop it out while it is a third on screen.
+      enemies: [{ id: "e1", kind: "grunt", pos: { x: 1400, y: 1620 }, radius: 16, hp: 30 }],
+    };
+    const ctx = spyCtx();
+    drawWorld(ctx, reaching, { camera, viewport, sprites: stubSprites(everything) });
+    expect(blits(ctx).length).toBe(1);
+
+    const gone = spyCtx();
+    drawWorld(
+      gone,
+      { ...reaching, enemies: [{ ...reaching.enemies[0], pos: { x: 1400, y: 1640 } }] },
+      { camera, viewport, sprites: stubSprites(everything) },
+    );
+    expect(blits(gone).length).toBe(0);
   });
 });
