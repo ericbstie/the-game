@@ -22,23 +22,72 @@ them automatically: `feat` bumps the minor, `fix`/`perf` the patch, and a `!` or
 
 Work is tracked **per version**. Each version has its own tracking issue, and that issue
 is the root — it is not nested under anything. **Every issue created in this repo must be
-a sub-issue of the current version's tracking issue** — milestone breakdowns, feature
-tickets, and bugs alike. The one exception is a deferred issue, below.
+a sub-issue of the current version's tracking issue** — feature tickets, investigations
+and bugs alike. The one exception is a deferred issue, below.
 
 - **Current: [TRACKING] Breakout Box — Version 2.0**
   ([#91](https://github.com/ericbstie/the-game/issues/91)), label `version-2.0`.
 - [#3](https://github.com/ericbstie/the-game/issues/3) is the **historical record for
   v1** — milestones 1–5, closed and complete. Read it for how the game got here; never
-  file new work under it.
+  file new work under it. A closed tracker cannot carry open work.
 
 When a version ships, close its tracking issue and open the next one. That new issue
-becomes the root for everything after it.
+becomes the root for everything after it. Fold anything deliberately left behind into
+the new tracker, saying why it was left.
 
-Work advances one milestone at a time, in order. Each `/wayfinder` → `/implement`
-loop targets only the next open milestone and goes no further. Before advancing to
-the next milestone, close **all** issues for the current milestone and **refine every
-remaining milestone** to reflect how the scope changed while implementing the current
-one.
+### Claiming an issue
+
+**Before writing any code for an issue, do all three:**
+
+1. **Comment on the issue saying you are taking it.**
+2. **State the branch you are working on** in that same comment.
+3. **Assign `ericbstie` to the issue.**
+
+One comment covers 1 and 2. Do it the moment you pick the task up, not when you
+finish — the point is that anyone reading the issue can tell it is claimed and where
+the work is happening.
+
+### Labels
+
+Every issue carries **one type**, **one size**, and the label of the version it belongs
+to (`version-2.0`, …).
+
+| Type | When |
+| --- | --- |
+| `feature` | A capability that does not exist yet. |
+| `improvement` | Something that already works, made better — tuning, legibility, ergonomics. |
+| `bug` | Behaviour that is wrong against its own spec. |
+| `investigation` | Produces a decision or a measurement, not shipped behaviour. |
+| `spec` · `decision` · `chore` · `performance` | Use where one of them fits better than the four above. |
+
+`deferred` is orthogonal: it marks work that is wanted but not chartered, and sits
+*alongside* a type rather than replacing one. It also changes where the issue lives —
+see **Deferred issues** below.
+
+Version tracking issues take **no type and no size**. They are containers, and a
+container has no blast radius of its own.
+
+### Sizing — never in time
+
+Sizes are **XS · S · M · L · XL**. They measure **blast radius and unknowns**: how many
+places have to change together, and how much you cannot see from outside the work when
+you start it.
+
+| Size | Shape |
+| --- | --- |
+| `XS` | One constant, one call site. The diff explains itself. |
+| `S` | One module, one behaviour. Existing tests stretch to cover it. |
+| `M` | Several modules, or one module plus the wire shape it implies. New tests, no new architecture. |
+| `L` | An assumption baked into many call sites, or a new subsystem with its own state. Needs a measurement or a recorded decision before it can close. |
+| `XL` | Spans client, server and wire at once, or still carries an open design question. Look for the split first; if it genuinely cannot be split, say why in the body. |
+
+**Never estimate in time.** Not hours, days, sittings, sessions or sprints — not in an
+issue, a comment, a plan, a commit message, or a reply. A size is a claim about the
+shape of the work, and the code can confirm or refute it. A duration is a claim about
+the future that nobody can check and everybody remembers.
+
+If the work turns out bigger than its label, **change the label and say so on the issue**.
+A size that is only ever set once is decoration.
 
 ### Deferred issues
 

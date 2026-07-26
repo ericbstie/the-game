@@ -16,7 +16,7 @@ A spec is one big thing; tickets are the order you actually build it. Slice for
 ## What makes a good ticket
 
 - **A tracer bullet, not a layer.** Each ticket delivers a thin slice that works end to end (one enemy that spawns, moves, and can die) rather than a layer (all rendering, then all AI). Something runs early, so you learn early.
-- **Small.** Finishable in one focused sitting. If you can't state its "done when" in a sentence, split it.
+- **Small.** `XS` or `S` — one module, one behaviour (CLAUDE.md, *Sizing*). If you can't state its "done when" in a sentence, split it. A ticket that sizes `L` or larger is usually two tickets wearing one title.
 - **Independently verifiable.** It has an observable result you can check — not "set up the state machine" but "a grunt walks toward the nearest miner."
 - **Named in the domain's language** (`domain-modeling`).
 
@@ -30,5 +30,7 @@ A spec is one big thing; tickets are the order you actually build it. Slice for
 
 Publish tickets to the issue tracker (GitHub issues here), each with its "done
 when" and its blocking tickets listed (sub-issues, or a `blocked-by:` line for
-the edges). Fall back to a checklist in `TICKETS.md` if there's no tracker. Then
-build in dependency order — `/implement` per ticket.
+the edges). Label each with a type, a size and its version (CLAUDE.md,
+*Labels*) — size by blast radius, **never** by time. Fall back to a checklist in
+`TICKETS.md` if there's no tracker. Then build in dependency order —
+`/implement` per ticket.
