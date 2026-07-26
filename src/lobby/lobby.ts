@@ -534,6 +534,10 @@ export class LobbyHub {
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
     if (!this.inPlay(session)) return; // no combat before the match starts or after it ends
+    // A corpse does not shoot. Nothing else was checking: a dead player has not moved, so
+    // `admitAttack`'s anti-teleport position check passes and the shot would be applied and
+    // drawn. The client gates this too, but the client is a courtesy and this is the rule (#85).
+    if (!isAlive(session, player.id)) return;
     let guard = session.attackGuards.get(player.id);
     if (!guard) {
       guard = freshGuard();

@@ -315,7 +315,10 @@ export function GameScreen({
       const now = Date.now();
       if (kind) {
         onBuildRef.current(kind, cursorTile(pointerRef.current, camera));
-      } else if (now - lastAttackRef.current >= RANGED_CADENCE_MS) {
+        // A downed player holds still and cannot mine; it does not shoot either. Death is read
+        // first, so waiting to respawn never spends the cadence and costs the first shot back on
+        // your feet — and no line is drawn for a shot the server now refuses (#85).
+      } else if (!worldRef.current?.isDead() && now - lastAttackRef.current >= RANGED_CADENCE_MS) {
         lastAttackRef.current = now;
         const dir = aimDir(pointerRef.current, self, camera);
         ownShotRef.current = { at: now, from: { ...self }, dir };
