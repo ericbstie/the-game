@@ -36,10 +36,11 @@ top catches the light, a vertical face is in shadow. Solid ink with white knocke
 already the 30 px family's idiom (`generator.ts` names it: *"solid black masses with white windows cut
 out"*), so the wall now belongs to the same set of nibs as the miner and the turret.
 
-**The top is joints and nothing else — no tone.** Open paper alone was tried first and fails one test
-that matters: the floor is white paper too, so a ring of walls came out as two concentric brick bands
-with white on both sides of them, and nothing said which side was the wall. A halftone was not an
-option in the other direction: at the value that reads it lands on the room wall's hatched face, and
+**The top is joints and nothing else — no tone**, and it is bounded on both sides. Bare paper is not
+enough, because the floor is bare paper too: a closed ring would come out as two concentric brick
+bands with white on both sides of them and nothing saying which side was the wall. That case is the
+reason the marks exist at all, and it is why the ring is in the harness. A halftone is not an option
+in the other direction: at the value that reads as tone it lands on the room wall's hatched face, and
 those two are on screen together.
 
 ## The three faces are three depths
