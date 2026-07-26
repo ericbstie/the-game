@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { BUILDABLES, generateOre, MINE_CADENCE_MS, tileCenter } from "../game/build";
-import { NEST_COUNT } from "../game/enemies";
+import { BUILDABLES, generateOre, MINE_CADENCE_MS, tileCenter, tileOf } from "../game/build";
+import { ATTACK_POS_TOLERANCE, NEST_COUNT, RANGED_CADENCE_MS } from "../game/enemies";
 import { ARENA } from "../game/world";
 import { LobbyHub, livePlayers, type Transport } from "./lobby";
-import type { ServerMessage, Tile, Vec2 } from "./protocol";
+import type { EnemySpawn, ServerMessage, Tile, Vec2 } from "./protocol";
 import type { LobbyServer } from "./server";
 import { expectMessage, makeClient, startServer, type TestClient } from "./testing";
 
@@ -1419,5 +1419,180 @@ describe("M4 review: a finished match stays finished", () => {
     hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: { x: 2, y: 2 }, seq: 2 }));
     expect(sentTo(t, "s2", "game/peer-pos")).toHaveLength(1); // still 1: the guard held
     hub.dispose();
+  });
+});
+
+describe("M5-I5: shots and turret aims reach the client, and only the ones the sim applied", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+  const TICK = 10;
+  const deltas = (t: Capture) =>
+    t.sent
+      .filter((m) => m.msg.type === "game/map-delta")
+      .map((m) => m.msg as Extract<ServerMessage, { type: "game/map-delta" }>);
+  const created = (t: Capture) =>
+    t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+  const buildInit = (t: Capture, socketId: string) => {
+    const found = t.sent.find((m) => m.socketId === socketId && m.msg.type === "game/build-init");
+    if (!found) throw new Error("no build-init reached that socket");
+    return found.msg as Extract<ServerMessage, { type: "game/build-init" }>;
+  };
+
+  // A solo match already one wave in, with a grunt to shoot at and metal to build with.
+  async function fighting(): Promise<{ t: Capture; hub: LobbyHub; me: string; grunt: EnemySpawn }> {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: TICK, firstWaveMs: 5, startingMetal: 1_000 });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
+    const me = created(t).you.id;
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    await sleep(TICK * 3);
+    const grunt = deltas(t).flatMap((d) => d.spawns ?? [])[0];
+    if (!grunt) throw new Error("the first wave spawned nothing");
+    // Stand on it, so the server's anti-teleport-aim check passes and the ray reaches it.
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: grunt.pos, seq: 1 }));
+    return { t, hub, me, grunt };
+  }
+
+  const aimAt = (from: Vec2, to: Vec2): Vec2 => {
+    const len = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+    return { x: (to.x - from.x) / len, y: (to.y - from.y) / len };
+  };
+
+  test("an admitted shot rides the delta as a PeerShot", async () => {
+    const { t, hub, me, grunt } = await fighting();
+    const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([{ id: me, dir, hit: grunt.id }]);
+  });
+
+  test("a shot refused for cadence produces no PeerShot at all", async () => {
+    const { t, hub, me, grunt } = await fighting();
+    const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    // Two clicks in the same instant: the second is inside RANGED_CADENCE_MS, so the hub refuses
+    // it. A refused attack never enters `pendingAttacks`, so it never becomes a line.
+    for (const seq of [1, 2]) {
+      hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq }));
+    }
+    await sleep(TICK * 3);
+    hub.dispose();
+    expect(
+      deltas(t)
+        .flatMap((d) => d.shots ?? [])
+        .filter((s) => s.id === me),
+    ).toHaveLength(1);
+  });
+
+  test("a shot refused for teleport-aim produces no PeerShot", async () => {
+    const { t, hub, grunt } = await fighting();
+    const far = { x: grunt.pos.x + ATTACK_POS_TOLERANCE + 1, y: grunt.pos.y };
+    const dir = aimAt(far, grunt.pos);
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: far, dir, seq: 1 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]);
+  });
+
+  test("a shot refused for a stale seq produces no PeerShot", async () => {
+    const { t, hub, me, grunt } = await fighting();
+    const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 5 }));
+    await sleep(RANGED_CADENCE_MS + TICK); // let the cadence clear, so only the seq can refuse
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 4 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toHaveLength(1);
+    expect(deltas(t).flatMap((d) => d.shots ?? [])[0].id).toBe(me);
+  });
+
+  test("an absurd reported aim reaches the squad normalized, never as reported", async () => {
+    const { t, hub, grunt } = await fighting();
+    // `asVec2` only checks finiteness, so this is what a hostile client can actually send. Drawn
+    // raw it would blow up every other player's canvas path.
+    const dir = { x: 1e300, y: 0 };
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    const shots = deltas(t).flatMap((d) => d.shots ?? []);
+    expect(shots).toHaveLength(1);
+    expect(shots[0].dir).toEqual({ x: 1, y: 0 });
+  });
+
+  test("a zero-length aim produces no PeerShot — it would relay as a NaN line", async () => {
+    const { t, hub, grunt } = await fighting();
+    const dir = { x: 0, y: 0 };
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]);
+  });
+
+  test("nothing fired means no shots field on the wire at all", async () => {
+    const { t, hub } = await fighting();
+    await sleep(TICK * 3);
+    hub.dispose();
+    expect(deltas(t).every((d) => d.shots === undefined)).toBe(true);
+  });
+
+  test("a turret that engages with no grid behind it streams the unpowered aim", async () => {
+    const { t, hub, grunt } = await fighting();
+    const spot = tileOf({ x: grunt.pos.x + 100, y: grunt.pos.y });
+    hub.handleMessage(
+      "s1",
+      JSON.stringify({ type: "game/build", kind: "turret", tile: spot, seq: 1 }),
+    );
+    await sleep(TICK * 4);
+    hub.dispose();
+    const placed = deltas(t).flatMap((d) => d.builds ?? [])[0];
+    expect(placed?.kind).toBe("turret");
+    const aim = deltas(t)
+      .flatMap((d) => d.aims ?? [])
+      .find(([id]) => id === placed?.id);
+    expect(aim?.[1]).toBeTruthy(); // holding a target
+    expect(aim?.[2]).toBe(0); // no generator standing, so it draws the lightning instead of firing
+  });
+
+  test("the reconnect keyframe sends enemy-init before build-init, since aims name enemy ids", async () => {
+    const { t, hub } = await fighting();
+    const { code, you } = created(t);
+    hub.handleClose("s1");
+    hub.handleMessage(
+      "s2",
+      JSON.stringify({ type: "lobby/join", code, name: "Solo", token: you.token }),
+    );
+    hub.dispose();
+    const order = t.sent.filter((m) => m.socketId === "s2").map((m) => m.msg.type);
+    expect(order).toContain("game/enemy-init");
+    expect(order.indexOf("game/enemy-init")).toBeLessThan(order.indexOf("game/build-init"));
+  });
+
+  test("build-init carries aims, so a reconnecter sees the lines already in flight", async () => {
+    const { t, hub, grunt } = await fighting();
+    const { code, you } = created(t);
+    hub.handleMessage(
+      "s1",
+      JSON.stringify({
+        type: "game/build",
+        kind: "turret",
+        tile: tileOf({ x: grunt.pos.x + 100, y: grunt.pos.y }),
+        seq: 1,
+      }),
+    );
+    await sleep(TICK * 4);
+    hub.handleClose("s1");
+    hub.handleMessage(
+      "s2",
+      JSON.stringify({ type: "lobby/join", code, name: "Solo", token: you.token }),
+    );
+    hub.dispose();
+    const keyframe = buildInit(t, "s2");
+    expect(keyframe.aims).toHaveLength(1);
+    expect(keyframe.aims[0][2]).toBe(0);
   });
 });

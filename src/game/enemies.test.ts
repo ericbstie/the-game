@@ -81,7 +81,7 @@ const stateWith = (enemies: Enemy[]): EnemyState => ({
 const only = (state: EnemyState) => [...state.enemies.values()][0];
 const at = (state: EnemyState, id: string) => state.enemies.get(id);
 const player = (pos: Vec2) => [{ id: "p1", pos }];
-const shot = (pos: Vec2, dir: Vec2): Attack => ({ pos, dir });
+const shot = (pos: Vec2, dir: Vec2, by = "p1"): Attack => ({ pos, dir, by });
 const step = (state: EnemyState, attacks: Attack[]) => stepEnemies(state, [], attacks, 0).events;
 
 describe("spawnEnemyState", () => {
@@ -346,11 +346,15 @@ describe("nests are attackable, and silencing one carves a safe lane", () => {
 });
 
 describe("admitAttack (server-side attack admission)", () => {
-  const report = (seq: number, pos: Vec2 = { x: 0, y: 0 }) => ({ pos, seq });
+  const report = (seq: number, pos: Vec2 = { x: 0, y: 0 }, dir: Vec2 = { x: 1, y: 0 }) => ({
+    pos,
+    dir,
+    seq,
+  });
 
   test("accepts a fresh in-cadence attack and records its seq + timestamp", () => {
     const g = freshGuard();
-    expect(admitAttack(g, report(1), null, 1000)).toBe(true);
+    expect(admitAttack(g, report(1), null, 1000)).toEqual({ x: 1, y: 0 });
     expect(g.seq).toBe(1);
     expect(g.lastAt).toBe(1000);
   });
@@ -358,23 +362,55 @@ describe("admitAttack (server-side attack admission)", () => {
   test("drops a stale or duplicate seq", () => {
     const g = freshGuard();
     admitAttack(g, report(5), null, 1000);
-    expect(admitAttack(g, report(5), null, 5000)).toBe(false); // equal seq
-    expect(admitAttack(g, report(3), null, 9000)).toBe(false); // older seq
+    expect(admitAttack(g, report(5), null, 5000)).toBeNull(); // equal seq
+    expect(admitAttack(g, report(3), null, 9000)).toBeNull(); // older seq
   });
 
   test("rate-limits a too-soon second shot, then allows once the cadence elapses", () => {
     const g = freshGuard();
     admitAttack(g, report(1), null, 1000);
-    expect(admitAttack(g, report(2), null, 1000 + RANGED_CADENCE_MS - 1)).toBe(false);
-    expect(admitAttack(g, report(3), null, 1000 + RANGED_CADENCE_MS)).toBe(true);
+    expect(admitAttack(g, report(2), null, 1000 + RANGED_CADENCE_MS - 1)).toBeNull();
+    expect(admitAttack(g, report(3), null, 1000 + RANGED_CADENCE_MS)).not.toBeNull();
   });
 
   test("rejects a teleport-far origin, accepts one within tolerance", () => {
     const last = { x: 0, y: 0 };
     const far = report(1, { x: ATTACK_POS_TOLERANCE + 1, y: 0 });
     const near = report(1, { x: ATTACK_POS_TOLERANCE - 1, y: 0 });
-    expect(admitAttack(freshGuard(), far, last, 1000)).toBe(false);
-    expect(admitAttack(freshGuard(), near, last, 1000)).toBe(true);
+    expect(admitAttack(freshGuard(), far, last, 1000)).toBeNull();
+    expect(admitAttack(freshGuard(), near, last, 1000)).not.toBeNull();
+  });
+
+  test("normalizes the reported aim rather than trusting its magnitude", () => {
+    const aim = admitAttack(
+      freshGuard(),
+      report(1, { x: 0, y: 0 }, { x: 0, y: 9_000 }),
+      null,
+      1000,
+    );
+    expect(aim).toEqual({ x: 0, y: 1 });
+  });
+
+  test("an absurd magnitude normalizes rather than reaching the wire", () => {
+    const huge = report(1, { x: 0, y: 0 }, { x: 1e300, y: 0 });
+    expect(admitAttack(freshGuard(), huge, null, 1000)).toEqual({ x: 1, y: 0 });
+  });
+
+  test("a zero-length aim is refused — it points nowhere and would relay as NaN", () => {
+    const none = report(1, { x: 0, y: 0 }, { x: 0, y: 0 });
+    expect(admitAttack(freshGuard(), none, null, 1000)).toBeNull();
+  });
+
+  test("an aim that overflows to a non-finite length is refused", () => {
+    const overflow = report(1, { x: 0, y: 0 }, { x: 1.5e308, y: 1.5e308 });
+    expect(admitAttack(freshGuard(), overflow, null, 1000)).toBeNull();
+  });
+
+  test("a refused aim still costs its cadence, so it is not a free retry", () => {
+    const g = freshGuard();
+    admitAttack(g, report(1, { x: 0, y: 0 }, { x: 0, y: 0 }), null, 1000);
+    expect(g.lastAt).toBe(1000);
+    expect(admitAttack(g, report(2), null, 1000 + RANGED_CADENCE_MS - 1)).toBeNull();
   });
 });
 
@@ -774,5 +810,84 @@ describe("M4-T9: the power budget decides which turrets get to fire", () => {
     build.power.generation = 1_000;
     stepEnemies(sponge(), [], [], 50, build);
     expect(build.power.consumption).toBe(0);
+  });
+});
+
+describe("M5-I5: a turret's aim streams as a transition, a player's shot as an event", () => {
+  const TURRET = BUILDABLES.turret as BuildableSpec;
+  const SPOT = tileOf({ x: C.x + 5_000, y: C.y });
+  // One turret on a grid of `generation` energy, so the powered flag can be starved on demand.
+  const withTurret = (generation: number) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 100_000;
+    build.power.generation = generation;
+    const turret = placeStructure(build, "turret", SPOT, TURRET);
+    return { build, turret, from: structureCenter(turret) };
+  };
+  // A sponge parked in range, so the target is held rather than killed between ticks.
+  const inRange = (from: Vec2) => stateWith([grunt("e1", { x: from.x + 200, y: from.y }, 10_000)]);
+
+  test("acquiring a target emits one aim, and holding it emits none", () => {
+    const { build, turret, from } = withTurret(10_000);
+    const s = inRange(from);
+    expect(stepEnemies(s, [], [], 0, build).events.aims).toEqual([[turret.id, "e1", 1]]);
+    expect(stepEnemies(s, [], [], TURRET_CADENCE_MS, build).events.aims).toEqual([]);
+  });
+
+  test("losing the target emits the release that takes the line down", () => {
+    const { build, turret, from } = withTurret(10_000);
+    const s = inRange(from);
+    stepEnemies(s, [], [], 0, build);
+    s.enemies.delete("e1");
+    expect(stepEnemies(s, [], [], 0, build).events.aims).toEqual([[turret.id, null, 0]]);
+  });
+
+  test("a turret holding a target on a starved grid reports powered 0 — the lightning case", () => {
+    const { build, turret, from } = withTurret(0);
+    expect(stepEnemies(inRange(from), [], [], 0, build).events.aims).toEqual([
+      [turret.id, "e1", 0],
+    ]);
+  });
+
+  test("winning power later is its own transition, on the tick the grid can carry it", () => {
+    const { build, turret, from } = withTurret(0);
+    const s = inRange(from);
+    stepEnemies(s, [], [], 0, build);
+    build.power.generation = 10_000;
+    expect(stepEnemies(s, [], [], 0, build).events.aims).toEqual([[turret.id, "e1", 1]]);
+  });
+
+  test("turret fire emits no PeerShot — a turret's line is state, not an event per shot", () => {
+    const { build, from } = withTurret(10_000);
+    expect(stepEnemies(inRange(from), [], [], 0, build).events.shots).toEqual([]);
+  });
+
+  test("an admitted shot emits a PeerShot naming the shooter, its aim, and what it hit", () => {
+    const s = stateWith([grunt("e1", { x: C.x + 200, y: C.y }, 10_000)]);
+    expect(step(s, [shot({ ...C }, { x: 1, y: 0 }, "ana")]).shots).toEqual([
+      { id: "ana", dir: { x: 1, y: 0 }, hit: "e1" },
+    ]);
+  });
+
+  test("a shot into empty air still emits, with no hit", () => {
+    expect(step(stateWith([]), [shot({ ...C }, { x: 1, y: 0 })]).shots).toEqual([
+      { id: "p1", dir: { x: 1, y: 0 } },
+    ]);
+  });
+
+  test("a shot at a nest names the nest it damaged", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    s.msUntilWave = Number.POSITIVE_INFINITY; // no wave; the nest is the only thing on the ray
+    const nest = s.nests[0];
+    expect(step(s, [shot({ x: nest.pos.x - 300, y: nest.pos.y }, { x: 1, y: 0 })]).shots).toEqual([
+      { id: "p1", dir: { x: 1, y: 0 }, hit: nest.id },
+    ]);
+  });
+
+  test("a killing shot names an enemy the same tick reports dead — the window the client closes", () => {
+    const s = stateWith([grunt("e1", { x: C.x + 200, y: C.y }, RANGED_DAMAGE)]);
+    const events = step(s, [shot({ ...C }, { x: 1, y: 0 })]);
+    expect(events.shots).toEqual([{ id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }]);
+    expect(events.deaths).toEqual(["e1"]);
   });
 });

@@ -15,6 +15,7 @@ import {
 import { type Camera, computeCamera } from "./camera";
 import { RESPAWN_DELAY_MS } from "./clientWorld";
 import { type BuildGhost, drawWorld } from "./draw";
+import { RANGED_CADENCE_MS } from "./enemies";
 import { aimDir, keyToBuildSlot, keyToDirection, movesEqual, NO_MOVE } from "./input";
 import { PLAYER_MAX_HP } from "./world";
 
@@ -25,6 +26,17 @@ const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the a
 // It bakes nothing until something is drawn, so importing this costs nothing under `bun test`,
 // where there is no canvas to bake into.
 const spriteCache = createSpriteCache(SPRITES);
+// How often this client will fire — deliberately a little slower than the cadence the server
+// enforces. Both gate the same `RANGED_CADENCE_MS`, but the server measures arrival-to-arrival
+// against its last admission while the client measures click-to-click, so shots sent at exactly
+// the cadence arrive `RANGED_CADENCE_MS + (latency₂ − latency₁)` apart and any negative jitter
+// puts them under the bar. Clicking at the exact limit would get roughly half of them refused.
+//
+// The margin is paid here rather than by relaxing the server's floor because that floor is the
+// real anti-nuke on shared enemy HP — widening it would let a cheating client out-damage an honest
+// one, while this costs an honest player a sliver of a DPS ceiling nobody clicks fast enough to
+// reach. The 30 ms covers ordinary jitter; it is chosen, not measured.
+export const FIRE_CADENCE_MS = RANGED_CADENCE_MS + 30;
 
 interface GameScreenProps {
   state: LobbyState;
@@ -67,6 +79,10 @@ export function GameScreen({
   // When right-click went down, or null if it is up. A timestamp rather than a flag because
   // demolish only fires once the button has been held a while.
   const harvestingRef = useRef<number | null>(null);
+  // When the last shot actually went out. The cadence is enforced here as well as in the server's
+  // `admitAttack` because a fast-clicking player would otherwise send, and draw a line for, shots
+  // the server refused. A drawn line must never imply damage nobody applied.
+  const lastAttackRef = useRef(Number.NEGATIVE_INFINITY);
   const [selected, setSelected] = useState<BuildableKind | null>(null);
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
@@ -280,8 +296,13 @@ export function GameScreen({
       const kind = selectedRef.current;
       // Left-click is one button with two jobs: place the selected buildable, or shoot when
       // nothing is selected.
-      if (kind) onBuildRef.current(kind, cursorTile(pointerRef.current, camera));
-      else onAttackRef.current({ ...self }, aimDir(pointerRef.current, self, camera));
+      const now = Date.now();
+      if (kind) {
+        onBuildRef.current(kind, cursorTile(pointerRef.current, camera));
+      } else if (now - lastAttackRef.current >= FIRE_CADENCE_MS) {
+        lastAttackRef.current = now;
+        onAttackRef.current({ ...self }, aimDir(pointerRef.current, self, camera));
+      }
     } else if (e.button === 2) {
       harvestingRef.current = Date.now(); // right-click harvests for as long as it is held
     }

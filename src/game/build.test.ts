@@ -31,6 +31,7 @@ import {
   removeStructure,
   resolveHarvest,
   slidePos,
+  snapshotAims,
   solidAt,
   stepBuild,
   structureBlocking,
@@ -716,5 +717,33 @@ describe("the generator and the energy ceiling", () => {
 
   test("power ore still cannot be hand-mined — there is nowhere to put it", () => {
     expect(admitMine(freshMineGuard(), { tile: powerTile, seq: 1 }, null, ore, 1_000)).toBe(0);
+  });
+});
+
+describe("M5-I5: the reconnect keyframe carries the engaged turrets' aims", () => {
+  const TURRET = BUILDABLES.turret as BuildableSpec;
+  const funded = () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 100_000;
+    return build;
+  };
+
+  test("a turret with nothing to shoot is omitted — a fresh client mints it un-aimed anyway", () => {
+    const build = funded();
+    placeStructure(build, "turret", { tx: 100, ty: 100 }, TURRET);
+    placeStructure(build, "wall", { tx: 110, ty: 110 }, BUILDABLES.wall as BuildableSpec);
+    expect(snapshotAims(build)).toEqual([]);
+  });
+
+  test("an engaged turret carries its target and whether it won power", () => {
+    const build = funded();
+    const turret = placeStructure(build, "turret", { tx: 100, ty: 100 }, TURRET);
+    const starved = placeStructure(build, "turret", { tx: 110, ty: 110 }, TURRET);
+    Object.assign(turret.turret ?? {}, { targetId: "e7", powered: true });
+    Object.assign(starved.turret ?? {}, { targetId: "n2", powered: false });
+    expect(snapshotAims(build)).toEqual([
+      [turret.id, "e7", 1],
+      [starved.id, "n2", 0],
+    ]);
   });
 });

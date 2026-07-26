@@ -14,6 +14,7 @@ import {
   type MineGuard,
   type OreGrid,
   placeStructure,
+  snapshotAims,
   snapshotStructures,
   stepBuild,
 } from "../game/build";
@@ -439,6 +440,8 @@ export class LobbyHub {
     if (events.deaths.length > 0) delta.deaths = events.deaths;
     if (events.nests.length > 0) delta.nests = events.nests;
     if (events.structHits.length > 0) delta.structHits = events.structHits;
+    if (events.aims.length > 0) delta.aims = events.aims;
+    if (events.shots.length > 0) delta.shots = events.shots;
     const removals = [...events.removals, ...session.pendingRemovals];
     session.pendingRemovals = [];
     if (removals.length > 0) delta.removals = removals;
@@ -503,9 +506,11 @@ export class LobbyHub {
       session.attackGuards.set(player.id, guard);
     }
     const lastPos = session.positions.get(player.id)?.pos ?? null;
-    if (admitAttack(guard, { pos, seq }, lastPos, Date.now())) {
-      session.pendingAttacks.push({ pos, dir });
-    }
+    // Nothing is broadcast here. The line that depicts this shot is emitted a tick later by the
+    // sim, beside the HP it writes — so a refused attack has no path to the wire at all (#74 §4).
+    // The aim that rides on is the normalized one admission returned, never the reported vector.
+    const aim = admitAttack(guard, { pos, dir, seq }, lastPos, Date.now());
+    if (aim) session.pendingAttacks.push({ pos, dir: aim, by: player.id });
   }
 
   // A reported hand-mine: admit it (ore kind + loose reach + seq + cadence) and credit the
@@ -646,12 +651,16 @@ export class LobbyHub {
     if (session.build) {
       // The economy keyframe. Ore is derived from the seed, so only the bank and the placed
       // buildings need rebuilding — bounded by what the squad owns, not by how long it has played.
+      // Sent after `game/enemy-init` deliberately: its aims name enemy ids, so this order is what
+      // makes the keyframe self-consistent on arrival. Nothing breaks if it is not — the client
+      // resolves those ids lazily, at draw time — so this is a kept invariant, not a dependency.
       this.transport.send(socketId, {
         type: "game/build-init",
         tick: session.tickNo,
         bank: { metal: Math.floor(session.build.bank.metal) },
         power: { ...session.build.power },
         structures: snapshotStructures(session.build),
+        aims: snapshotAims(session.build),
       });
     }
     for (const [id, sample] of session.health) {

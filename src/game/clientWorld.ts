@@ -8,11 +8,13 @@ import type {
   MapDelta,
   MoveInput,
   NestSnapshot,
+  PeerShot,
   PlayerId,
   Power,
   RenderedEnemy,
   RenderedNest,
   StructureSpawn,
+  TurretAim,
   Vec2,
   WorldInit,
   WorldSnapshot,
@@ -49,6 +51,10 @@ import { type Body, PLAYER_MAX_HP, PLAYER_RADIUS, pushOutOfBodies, stepPos } fro
 
 export const RENDER_DELAY_MS = 100; // render peers this far behind real time to smooth the relay
 export const BUFFER_MS = 500; // keep this much peer history; older samples are pruned
+// How long a squadmate's shot is kept. A memory bound, not the line's lifetime — that lives in the
+// render layer (#74 §5), which ages each shot itself. Deliberately clear of any lifetime it is
+// likely to pick, and short enough that the buffer stays a handful of entries.
+export const SHOT_RETENTION_MS = 250;
 export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their 20 Hz stream
 // Dead this long, then the client snaps back to center. With a stopwatch for a score and a base
 // to defend, the long walk back from centre is the penalty — at 3 s (M3) dying was free.
@@ -79,6 +85,14 @@ interface EnemyRecord {
   gait: Gait; // dies with the record, so 240 enemies a wave cost nothing to track
 }
 
+// A squadmate's shot as the client holds it: the wire event plus the client-clock instant it
+// landed. How long the line then stays up is the render layer's call — no duration ever rides the
+// wire and the server holds no line state.
+export interface ShotEvent {
+  shot: PeerShot;
+  at: number;
+}
+
 export class ClientWorld {
   readonly arena: Arena;
   readonly ore: OreGrid; // derived from the world's seed, byte-identical to the server's copy
@@ -86,6 +100,7 @@ export class ClientWorld {
   private readonly nests: Nest[]; // static layout derived from the arena; hp/alive track the stream
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
   private readonly enemies = new Map<string, EnemyRecord>();
+  private readonly shots: ShotEvent[] = []; // squadmates' shots; the render layer ages them itself
   readonly build: BuildState; // server-owned; mirrored here so the ghost tests placement locally
   private lastTick = -1; // highest applied map-delta tick; guards apply-if-newer
   private selfHp: number; // client-authoritative: the owner judges its own contact damage
@@ -260,16 +275,66 @@ export class ClientWorld {
       const structure = this.build.structures.get(h.id);
       if (structure) structure.hp = h.hp;
     }
+    // After `builds`: a turret placed this tick can already be holding a target in the same delta.
+    this.applyAims(delta.aims ?? []);
     for (const id of delta.removals ?? []) removeStructure(this.build, id);
+    // The delta goes to the whole squad, shooter included, but an owner's line is drawn locally at
+    // fire time from its own live position — buffering the round-trip too would double it, a tick
+    // late and from the wrong origin.
+    for (const shot of delta.shots ?? []) {
+      if (shot.id !== this.selfId) this.shots.push({ shot, at: now });
+    }
+    // Pruned every tick rather than only on arrival, so a squad that stops firing does not leave
+    // stale events sitting in the buffer.
+    const cutoff = now - SHOT_RETENTION_MS;
+    while (this.shots.length > 0 && this.shots[0].at < cutoff) this.shots.shift();
+  }
+
+  // Adopt streamed turret aims. Only turrets carry a runtime, and an id for a structure this
+  // client has never seen is ignored — the same unknown-id guard `moves` already applies.
+  private applyAims(aims: TurretAim[]): void {
+    for (const [id, target, powered] of aims) {
+      const turret = this.build.structures.get(id)?.turret;
+      if (!turret) continue;
+      turret.targetId = target;
+      turret.powered = powered === 1;
+    }
+  }
+
+  // Where a shot line ends, or null if it must not be drawn at all.
+  //
+  // This is the authority guard: a line may only depict damage the server applied, and a target id
+  // outlives its target by one tick in two places — a turret still names the enemy it just killed
+  // until it re-targets, and a killing `PeerShot` rides the same delta as the death it caused.
+  // Resolving against live state closes both windows to zero, with nothing added to the wire.
+  // Enemies resolve on the delayed interpolation they render on, so the line lands on the sprite.
+  shotTargetPos(id: string, now: number): Vec2 | null {
+    const enemy = this.enemies.get(id);
+    if (enemy) return interpolateAt(enemy.buffer, now - ENEMY_RENDER_DELAY_MS) ?? { ...enemy.pos };
+    const nest = this.nests.find((n) => n.id === id);
+    return nest?.alive ? { ...nest.pos } : null;
+  }
+
+  // The squad's recent shots, newest last. The render layer picks how long each line lives.
+  peerShots(): readonly ShotEvent[] {
+    return this.shots;
   }
 
   // Rebuild the economy from the reconnect keyframe: the bank and every building the squad has
   // standing. The ore grid needs nothing — it was derived from the seed when this world was built.
-  initBuild(msg: { bank: Bank; power: Power; structures: StructureSpawn[] }): void {
+  initBuild(msg: {
+    bank: Bank;
+    power: Power;
+    structures: StructureSpawn[];
+    aims: TurretAim[];
+  }): void {
     for (const id of [...this.build.structures.keys()]) removeStructure(this.build, id);
     for (const s of msg.structures) insertStructure(this.build, { ...s });
     this.build.bank.metal = msg.bank.metal;
     this.build.power = { ...msg.power };
+    // Rebuilding a turret mints it un-aimed, so the keyframe's aims are what restore the lines and
+    // the lightning a reconnecter would otherwise never be told about.
+    this.applyAims(msg.aims);
   }
 
   // The shared Metal readout. The server sends whole Metal, so this needs no rounding of its own.

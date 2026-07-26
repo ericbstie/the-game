@@ -13,6 +13,7 @@ import {
   ENEMY_RENDER_DELAY_MS,
   RENDER_DELAY_MS,
   RESPAWN_DELAY_MS,
+  SHOT_RETENTION_MS,
 } from "./clientWorld";
 import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, NEST_COUNT } from "./enemies";
 import { SEED_FACING } from "./facing";
@@ -515,5 +516,124 @@ describe("M5-I4: facing and the walk cycle ride the snapshot, never the wire", (
     );
     for (let i = 1; i <= 60; i++) w.snapshot(i * 50);
     expect(enemyIn(w, 3050, "e1")).toMatchObject({ facing: SEED_FACING, frame: 0 });
+  });
+});
+
+describe("M5-I5: the client adopts streamed aims and shots, and refuses to draw what died", () => {
+  const TURRET = BUILDABLES.turret as BuildableSpec;
+  const TILE_AT = { tx: 100, ty: 100 };
+  const spawned = (id: string, pos: Vec2): MapDelta => ({
+    tick: 1,
+    moves: [],
+    spawns: [{ id, kind: "grunt", pos, hp: GRUNT_HP, sector: 0 }],
+  });
+  // The aim as the render layer reads it, off the snapshot rather than out of the world's guts.
+  const aimOf = (w: ClientWorld, id: string) => {
+    const turret = w.snapshot(0).structures.find((s) => s.id === id)?.turret;
+    return turret && { targetId: turret.targetId, powered: turret.powered };
+  };
+  const placed = (id: string) => ({ id, kind: "turret" as const, tile: TILE_AT, hp: TURRET.hp });
+
+  test("a streamed aim lands on the mirrored turret, target and power together", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], builds: [placed("b1")] }, 0);
+    w.applyMapDelta({ tick: 2, moves: [], aims: [["b1", "e9", 1]] }, 0);
+    expect(aimOf(w, "b1")).toEqual({ powered: true, targetId: "e9" });
+  });
+
+  test("a turret placed and engaged in one delta still gets its aim", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], builds: [placed("b1")], aims: [["b1", "e9", 0]] }, 0);
+    expect(aimOf(w, "b1")).toEqual({ powered: false, targetId: "e9" });
+  });
+
+  test("a release takes the aim back off, so the line stops being drawable", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], builds: [placed("b1")], aims: [["b1", "e9", 1]] }, 0);
+    w.applyMapDelta({ tick: 2, moves: [], aims: [["b1", null, 0]] }, 0);
+    expect(aimOf(w, "b1")).toEqual({ powered: false, targetId: null });
+  });
+
+  test("an aim for a structure this client never saw is ignored rather than thrown", () => {
+    const w = new ClientWorld(init(), "self");
+    expect(() =>
+      w.applyMapDelta({ tick: 1, moves: [], aims: [["ghost", "e1", 1]] }, 0),
+    ).not.toThrow();
+  });
+
+  test("the reconnect keyframe restores the aims a joiner missed", () => {
+    const w = new ClientWorld(init(), "self");
+    w.initBuild({
+      bank: { metal: 0 },
+      power: { generation: 0, consumption: 0 },
+      structures: [placed("b1")],
+      aims: [["b1", "n3", 0]],
+    });
+    expect(aimOf(w, "b1")).toEqual({ powered: false, targetId: "n3" });
+  });
+
+  test("peer shots buffer with the instant they landed", () => {
+    const w = new ClientWorld(init(), "self");
+    const shot = { id: "peer", dir: { x: 1, y: 0 }, hit: "e1" };
+    w.applyMapDelta({ tick: 1, moves: [], shots: [shot] }, 4_000);
+    expect(w.peerShots()).toEqual([{ shot, at: 4_000 }]);
+  });
+
+  test("the owner's own shot is not buffered — it is drawn locally at fire time instead", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "self", dir: { x: 1, y: 0 } }] }, 0);
+    expect(w.peerShots()).toEqual([]);
+  });
+
+  test("a shot older than the retention window is dropped, even on a tick with no shots", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "peer", dir: { x: 1, y: 0 } }] }, 0);
+    w.applyMapDelta({ tick: 2, moves: [] }, SHOT_RETENTION_MS - 1);
+    expect(w.peerShots()).toHaveLength(1); // still inside the window
+    w.applyMapDelta({ tick: 3, moves: [] }, SHOT_RETENTION_MS + 1);
+    expect(w.peerShots()).toEqual([]);
+  });
+
+  test("a live enemy's target id resolves to where it is rendered", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(spawned("e1", { x: 900, y: 800 }), 0);
+    expect(w.shotTargetPos("e1", 0)).toEqual({ x: 900, y: 800 });
+  });
+
+  test("an enemy killed in the same delta that named it resolves to nothing", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(spawned("e1", { x: 900, y: 800 }), 0);
+    // The one-tick death window: the sim reports the shot and the death it caused together.
+    w.applyMapDelta(
+      {
+        tick: 2,
+        moves: [],
+        deaths: ["e1"],
+        shots: [{ id: "peer", dir: { x: 1, y: 0 }, hit: "e1" }],
+      },
+      0,
+    );
+    expect(w.shotTargetPos("e1", 0)).toBeNull();
+  });
+
+  test("a turret still naming the enemy it just killed resolves to nothing", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(spawned("e1", { x: 900, y: 800 }), 0);
+    w.applyMapDelta({ tick: 2, moves: [], builds: [placed("b1")], aims: [["b1", "e1", 1]] }, 0);
+    w.applyMapDelta({ tick: 3, moves: [], deaths: ["e1"] }, 0);
+    expect(aimOf(w, "b1")?.targetId).toBe("e1"); // the sim re-targets next tick, not this one
+    expect(w.shotTargetPos("e1", 0)).toBeNull(); // so the line is refused here instead
+  });
+
+  test("a standing nest resolves, and a silenced one does not", () => {
+    const w = new ClientWorld(init(), "self");
+    const nest = w.snapshot(0).nests[0];
+    expect(w.shotTargetPos(nest.id, 0)).toEqual(nest.pos);
+    w.applyMapDelta({ tick: 1, moves: [], nests: [{ id: nest.id, hp: 0, alive: false }] }, 0);
+    expect(w.shotTargetPos(nest.id, 0)).toBeNull();
+  });
+
+  test("an id this client has never heard of resolves to nothing", () => {
+    expect(new ClientWorld(init(), "self").shotTargetPos("nobody", 0)).toBeNull();
   });
 });
