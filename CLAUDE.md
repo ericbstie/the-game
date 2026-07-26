@@ -20,16 +20,36 @@ them automatically: `feat` bumps the minor, `fix`/`perf` the patch, and a `!` or
 
 ## Issue tracking
 
-All work lives under a single umbrella issue: **[TRACKING] Breakout Box — Multiplayer
-Milestones** ([#3](https://github.com/ericbstie/the-game/issues/3)). **Every issue
-created in this repo must be a sub-issue of the TRACKING issue** — milestone
-breakdowns, feature tickets, and bugs alike. Nothing is created as a top-level issue.
+Work is tracked **per version**. Each version has its own tracking issue, and that issue
+is the root — it is not nested under anything. **Every issue created in this repo must be
+a sub-issue of the current version's tracking issue** — milestone breakdowns, feature
+tickets, and bugs alike. The one exception is a deferred issue, below.
+
+- **Current: [TRACKING] Breakout Box — Version 2.0**
+  ([#91](https://github.com/ericbstie/the-game/issues/91)), label `version-2.0`.
+- [#3](https://github.com/ericbstie/the-game/issues/3) is the **historical record for
+  v1** — milestones 1–5, closed and complete. Read it for how the game got here; never
+  file new work under it.
+
+When a version ships, close its tracking issue and open the next one. That new issue
+becomes the root for everything after it.
 
 Work advances one milestone at a time, in order. Each `/wayfinder` → `/implement`
 loop targets only the next open milestone and goes no further. Before advancing to
 the next milestone, close **all** issues for the current milestone and **refine every
 remaining milestone** to reflect how the scope changed while implementing the current
 one.
+
+### Deferred issues
+
+A **deferred** issue is one that has been captured but not prioritised into a version —
+an idea worth keeping, with no commitment to build it. It is the one exception to the
+sub-issue rule: **a deferred issue is an orphan — top-level, no parent — until it is
+prioritised.** Being prioritised is exactly what gives it a parent, so attach it to the
+version tracking issue that picks it up at that moment and not before.
+
+This keeps a version's tree an honest picture of what that version is actually doing.
+Parking an unscheduled idea under a version implies a commitment that has not been made.
 
 ## Skills — use these when relevant
 
