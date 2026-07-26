@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { BuildableKind, WorldSnapshot } from "../lobby/protocol";
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
+import { wallBit } from "../sprite/wall";
 import { tileKey } from "./build";
 import type { Camera, Viewport } from "./camera";
 import { drawWorld, grassAt, type ShotSource } from "./draw";
@@ -669,16 +670,20 @@ describe("drawWorld with sprites", () => {
   });
 });
 
-// A buildable wall is drawn from a 4-bit mask of which sides another wall abuts — 1 north, 2 east,
-// 4 south, 8 west — carried on the sprite's facing axis. The sprite draws a cut masonry face on
-// every side the mask leaves clear and nothing at all on the others, so a mask that is wrong by one
-// bit is a seam, or a brick face buried inside a solid mass. It is pinned here rather than looked
-// at, because sixteen variants is exactly the size of set where an eye stops checking.
-describe("a wall's neighbour mask", () => {
-  const NORTH = 1;
-  const EAST = 2;
-  const SOUTH = 4;
-  const WEST = 8;
+// A buildable wall is drawn from the occupancy of the twelve tiles ringing its 2×2 footprint,
+// carried on the sprite's facing axis. The sprite draws a cut masonry face over every stretch the
+// mask leaves clear and nothing at all over the rest, so a mask wrong by one bit is a seam, a brick
+// face buried inside a solid mass, or a corner left open. It is pinned here rather than looked at:
+// what an eye can check on a run is the drawing, not which tiles it was derived from.
+describe("a wall's neighbour occupancy", () => {
+  // Expectations name the tiles that should read as wall, offset from the wall's own top-left —
+  // per tile, because a wall is two tiles to a side and a neighbour can cover one of them.
+  const mask = (...tiles: readonly (readonly [number, number])[]) =>
+    tiles.reduce((m, [dx, dy]) => m | (1 << wallBit(dx, dy)), 0);
+  const NORTH = mask([0, -1], [1, -1]);
+  const EAST = mask([2, 0], [2, 1]);
+  const SOUTH = mask([0, 2], [1, 2]);
+  const WEST = mask([-1, 0], [-1, 1]);
   // Tile-space, not world-space: a wall is 2×2 tiles, so a butted neighbour is two tiles away.
   const at = (tx: number, ty: number, kind: BuildableKind = "wall") =>
     ({ id: `${kind}-${tx}-${ty}`, kind, tile: { tx, ty }, hp: 400 }) as const;
@@ -722,25 +727,40 @@ describe("a wall's neighbour mask", () => {
   });
 
   test("gives an L's corner both its neighbours and keeps the other two faces bricked", () => {
-    // The corner is at (70,70) with an arm running east and an arm running south.
+    // The corner is at (70,70) with an arm running east and an arm running south. Each arm also
+    // sees the other diagonally, one tile past the corner it shares.
     expect(facings([at(70, 70), at(72, 70), at(70, 72)])).toEqual({
       "70-70": EAST | SOUTH,
-      "72-70": WEST,
-      "70-72": NORTH,
+      "72-70": WEST | mask([-1, 2]),
+      "70-72": NORTH | mask([2, -1]),
     });
+  });
+
+  test("leaves an inner corner's diagonal clear, so the sprite knows the angle is open", () => {
+    // The L's corner has a neighbour east and a neighbour south and nothing in the angle between
+    // them. That empty diagonal is the whole of the inner corner: without it in the mask the corner
+    // draws no face at all and comes out as a white bite (#90 §1).
+    const corner = facings([at(70, 70), at(72, 70), at(70, 72)])["70-70"];
+    expect(corner & mask([2, 2])).toBe(0);
+    // Fill the angle and the diagonal is set — a solid block has no inner corner to close.
+    const filled = facings([at(70, 70), at(72, 70), at(70, 72), at(72, 72)])["70-70"];
+    expect(filled).toBe(EAST | SOUTH | mask([2, 2]));
   });
 
   test("buries a wall with a neighbour on every side", () => {
     const ring = [at(70, 70), at(68, 70), at(72, 70), at(70, 68), at(70, 72)];
+    // A plus, so all four sides are covered and all four diagonals are open: the middle is the
+    // meeting point of four inner corners, not a tile buried in a mass.
     expect(facings(ring)["70-70"]).toBe(NORTH | EAST | SOUTH | WEST);
   });
 
-  test("counts a neighbour a tile out of step, which per-tile placement allows", () => {
-    // Nothing snaps a wall to its own footprint: these two butt along part of a face while their
-    // origins are one tile apart, and the join is real even though `tx ± 2` would not find it.
+  test("reads a side a neighbour covers half of as half covered", () => {
+    // Nothing snaps a wall to its own footprint: these two butt along one tile of a two-tile side
+    // while their origins sit one tile apart. Calling the whole side covered is what left the
+    // exposed half with no contour at all (#90 §2) — each tile answers for itself instead.
     expect(facings([at(70, 70), at(72, 71)])).toEqual({
-      "70-70": EAST,
-      "72-71": WEST,
+      "70-70": mask([2, 1], [2, 2]), // covered on its south half, and diagonally past it
+      "72-71": mask([-1, 0], [-1, -1]),
     });
   });
 
@@ -775,7 +795,7 @@ describe("a wall's neighbour mask", () => {
       },
     );
     // The standing wall paints first and keeps all four faces — the ghost is not a structure and
-    // does not change one. The ghost, drawn last, bares the face it will join along.
+    // does not change one. The ghost, drawn last, bares the side it will join along.
     expect(blits(ctx).map((b) => b.tag)).toEqual(["wall/0/0", `wall/${EAST}/0`]);
   });
 

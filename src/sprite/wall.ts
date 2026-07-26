@@ -7,11 +7,23 @@ import type { SpriteSubject } from "./sheet";
 // mass is *cut* — on the vertical faces a neighbour is not covering. So the drawing is a pale top
 // held inside dark faces, and which faces exist is a property of the run, not of the tile.
 //
-// **`facing` is a 4-bit neighbour mask**, not an orientation: bit 1 north, 2 east, 4 south, 8 west,
-// set when another wall abuts that side. 0 is a wall standing alone with all four faces cut; 15 is
-// a wall buried inside a mass with none. `drawWorld` derives it from the structure list once per
-// frame (src/game/draw.ts). A face with a neighbour is drawn as nothing at all — no band, no
-// keyline — which is what lets two tops merge instead of showing a seam every 30 px.
+// **`facing` is neighbour occupancy, not an orientation**: which of the twelve tiles ringing this
+// wall's 2×2 footprint hold another wall. `drawWorld` derives it from the structure list once per
+// frame (src/game/draw.ts) through `packWall`. A face with a neighbour behind it is drawn as
+// nothing at all — no band, no keyline — which is what lets two tops merge instead of showing a
+// seam every 30 px.
+//
+// It is read **per tile rather than per side**, and that is the whole of #90:
+//
+// - **A side is two tiles long and a neighbour can cover one of them.** Placement is per tile
+//   (`cursorTile` → `tileOf`), so two walls butt while sitting one tile out of step. A per-side bit
+//   has to call that half covered or cut and is wrong either way — covered suppresses a face that
+//   is genuinely exposed, cut draws masonry into the middle of a solid mass. Each half is resolved
+//   on its own instead.
+// - **The four diagonals are in it because a concave corner has no face of its own.** At the inner
+//   corner of an L or a ring the two neighbours' faces stop at their own box edges and meet only at
+//   a point; the tile in the angle draws neither of them, because it has a neighbour on both of
+//   those sides. The diagonal is what tells it the angle is empty and the corner wants closing.
 //
 // **Top against side is carried by value, because there is no colour to carry it** (#76 §1). The
 // top is open paper ruled with the hairline joints of its own slabs; a cut face is a solid ink mass
@@ -51,15 +63,58 @@ import type { SpriteSubject } from "./sheet";
 
 const SIZE = 30; // 2×2 tiles at TILE 15 (src/game/build.ts)
 
+// The wall's footprint, in tiles, which is what the box and the mask are both cut into. It is
+// `BUILDABLES.wall.footprint`, and the drawing would have to be redrawn if that ever moved.
+export const WALL_TILES = 2;
+
 const INK = "#000";
 const PAPER = "#fff";
 
-// The mask bits, in the same compass order `room` numbers its four unfolded edges in. Mirrored in
-// `src/game/draw.ts`, which is the only caller that builds one.
-const NORTH = 1;
-const EAST = 2;
-const SOUTH = 4;
-const WEST = 8;
+// The tiles the mask carries, offset in tiles from the footprint's top-left: the 4×4 block the
+// footprint sits in the middle of, minus the footprint itself, in reading order. Bit n is
+// `NEIGHBOURS[n]`. This is the one definition — `drawWorld` builds a mask through `packWall` and
+// reads none of it itself.
+const NEIGHBOURS: readonly (readonly [number, number])[] = [
+  [-1, -1],
+  [0, -1],
+  [1, -1],
+  [2, -1],
+  [-1, 0],
+  [2, 0],
+  [-1, 1],
+  [2, 1],
+  [-1, 2],
+  [0, 2],
+  [1, 2],
+  [2, 2],
+];
+
+// 4,096 — a variant per neighbourhood. Bakes are lazy and per variant (src/sprite/cache.ts), so a
+// base pays for the arrangements it actually stands in, which is a couple of dozen.
+export const WALL_FACINGS = 1 << NEIGHBOURS.length;
+
+// The bit carrying the tile at `(dx, dy)`, or -1 for the footprint's own tiles and anything outside
+// the block.
+export function wallBit(dx: number, dy: number): number {
+  return NEIGHBOURS.findIndex(([x, y]) => x === dx && y === dy);
+}
+
+export function packWall(occupied: (dx: number, dy: number) => boolean): number {
+  let mask = 0;
+  for (let bit = 0; bit < NEIGHBOURS.length; bit++) {
+    const [dx, dy] = NEIGHBOURS[bit];
+    if (occupied(dx, dy)) mask |= 1 << bit;
+  }
+  return mask;
+}
+
+// Whether the tile at `(dx, dy)` holds wall. The footprint's own tiles always do, which is what
+// keeps a face or a corner from ever being drawn inside the mass this sprite is part of.
+export function wallAt(mask: number, dx: number, dy: number): boolean {
+  if (dx >= 0 && dx < WALL_TILES && dy >= 0 && dy < WALL_TILES) return true;
+  const bit = wallBit(dx, dy);
+  return bit >= 0 && (mask & (1 << bit)) !== 0;
+}
 
 const JOINT = 1; // every mortar line; below 1 px at real size a stroke is a grey smear, not a line
 
@@ -114,13 +169,12 @@ const FLANK_BED = 6;
 const wall: SpriteSubject = {
   name: "wall",
   size: SIZE,
-  facings: 16, // the neighbour mask, whole
+  facings: WALL_FACINGS,
   frames: 1,
   draw(ctx, size, facing) {
-    const cutN = (facing & NORTH) === 0;
-    const cutE = (facing & EAST) === 0;
-    const cutS = (facing & SOUTH) === 0;
-    const cutW = (facing & WEST) === 0;
+    const cell = size / WALL_TILES;
+    const last = WALL_TILES - 1;
+    const cut = (dx: number, dy: number): boolean => !wallAt(facing, dx, dy);
 
     ctx.fillStyle = PAPER;
     ctx.fillRect(0, 0, size, size);
@@ -129,26 +183,77 @@ const wall: SpriteSubject = {
     // Order is the projection: the near face lies in front of the far one, and the cut ends of a run
     // lie in front of both. Drawn the other way round, a flank's mortar eats a notch out of the
     // corner of the band it crosses.
-    if (cutN) {
-      ctx.fillStyle = INK;
-      ctx.fillRect(0, 0, size, FAR);
+    //
+    // Every face walks its side a tile at a time. With the side wholly cut the pieces butt into
+    // exactly the band the whole-side version drew — every phase is taken in box coordinates, so
+    // nothing shifts — and with half of it covered only the exposed half is drawn.
+    ctx.fillStyle = INK;
+    for (let i = 0; i < WALL_TILES; i++) {
+      if (cut(i, -1)) ctx.fillRect(i * cell, 0, cell, FAR);
     }
-    if (cutS) nearFace(ctx, size);
-    const top = cutN ? FAR : 0;
-    const bottom = size - (cutS ? NEAR : 0);
-    if (cutW) flank(ctx, size, true, top, bottom);
-    if (cutE) flank(ctx, size, false, top, bottom);
+    for (let i = 0; i < WALL_TILES; i++) {
+      if (cut(i, WALL_TILES)) nearFace(ctx, size, i * cell, (i + 1) * cell);
+    }
+    for (const west of [true, false]) {
+      const column = west ? 0 : last;
+      const beside = west ? -1 : WALL_TILES;
+      for (let j = 0; j < WALL_TILES; j++) {
+        if (!cut(beside, j)) continue;
+        // Where the near and far bands already are, so a corner is a butt joint between two faces
+        // of different depth. Only the row that runs alongside one of them has to give way.
+        const top = j === 0 && cut(column, -1) ? FAR : j * cell;
+        const bottom = j === last && cut(column, WALL_TILES) ? size - NEAR : (j + 1) * cell;
+        flank(ctx, size, west, top, bottom);
+      }
+    }
+    innerCorners(ctx, cell, facing);
 
     // The hard outline, last of everything, because a white mortar line running out to a box edge
     // would otherwise leave a hole in the silhouette at a corner. Only cut edges get one: an edge
     // with a neighbour behind it is interior to the mass and must carry no mark whatever.
     ctx.fillStyle = INK;
-    if (cutN) ctx.fillRect(0, 0, size, JOINT);
-    if (cutS) ctx.fillRect(0, size - JOINT, size, JOINT);
-    if (cutW) ctx.fillRect(0, 0, JOINT, size);
-    if (cutE) ctx.fillRect(size - JOINT, 0, JOINT, size);
+    for (let i = 0; i < WALL_TILES; i++) {
+      if (cut(i, -1)) ctx.fillRect(i * cell, 0, cell, JOINT);
+      if (cut(i, WALL_TILES)) ctx.fillRect(i * cell, size - JOINT, cell, JOINT);
+      if (cut(-1, i)) ctx.fillRect(0, i * cell, JOINT, cell);
+      if (cut(WALL_TILES, i)) ctx.fillRect(size - JOINT, i * cell, JOINT, cell);
+    }
   },
 };
+
+// The mass's concave corners. Two neighbours meeting with nothing in the angle between them leave a
+// corner no face reaches: theirs stop at their own box edges, and the tile in the angle draws
+// neither, because it has a neighbour on both of those sides. Unfilled it is a white bite out of the
+// silhouette — and since every enclosure has four inner corners, it was in essentially every base a
+// player built (#90 §1).
+//
+// The patch is the two faces butted, so it takes its width from the flank and its depth from
+// whichever of the near and far bands it is closing against. Solid: at five pixels by eight there is
+// nothing to knock mortar out of. It can only fire where the diagonal tile is outside the footprint,
+// so a corner interior to this sprite's own 2×2 never draws one.
+function innerCorners(ctx: CanvasRenderingContext2D, cell: number, facing: number): void {
+  ctx.fillStyle = INK;
+  for (let i = 0; i < WALL_TILES; i++) {
+    for (let j = 0; j < WALL_TILES; j++) {
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          const concave =
+            wallAt(facing, i + sx, j) &&
+            wallAt(facing, i, j + sy) &&
+            !wallAt(facing, i + sx, j + sy);
+          if (!concave) continue;
+          const depth = sy < 0 ? FAR : NEAR;
+          ctx.fillRect(
+            sx < 0 ? i * cell : (i + 1) * cell - FLANK,
+            sy < 0 ? j * cell : (j + 1) * cell - depth,
+            FLANK,
+            depth,
+          );
+        }
+      }
+    }
+  }
+}
 
 // The top surface's own joints. Courses are indexed from -1 so the one straddling the top box edge
 // is drawn here too: it is the same course the wall above ends with, and drawing it from the same
@@ -167,26 +272,29 @@ function slabs(ctx: CanvasRenderingContext2D, size: number): void {
   }
 }
 
-// The near face: solid ink with the mortar knocked out of it. The arris at the top and the ground
-// line at the bottom stay unbroken — a head joint reaching either would dash the silhouette at the
-// brick pitch, which is a seam by another name.
-function nearFace(ctx: CanvasRenderingContext2D, size: number): void {
+// The near face over one stretch of the south side. The arris at the top and the ground line at the
+// bottom stay unbroken — a head joint reaching either would dash the silhouette at the brick pitch,
+// which is a seam by another name. `from` and `to` bound the stretch; every joint keeps its phase in
+// box coordinates and is simply withheld outside it, so two stretches butt into one bond.
+function nearFace(ctx: CanvasRenderingContext2D, size: number, from: number, to: number): void {
   const top = size - NEAR;
   ctx.fillStyle = INK;
-  ctx.fillRect(0, top, size, NEAR);
+  ctx.fillRect(from, top, to - from, NEAR);
   ctx.fillStyle = PAPER;
-  ctx.fillRect(0, top + NEAR_BED, size, JOINT);
+  ctx.fillRect(from, top + NEAR_BED, to - from, JOINT);
   const upper = NEAR_BED - JOINT; // rows between the arris and the bed joint
   const lower = NEAR - NEAR_BED - 2 * JOINT; // and between the bed joint and the ground line
-  for (let x = NEAR_PHASE; x < size; x += BRICK) ctx.fillRect(x, top + JOINT, JOINT, upper);
+  for (let x = NEAR_PHASE; x < size; x += BRICK) {
+    if (x >= from && x < to) ctx.fillRect(x, top + JOINT, JOINT, upper);
+  }
   for (let x = NEAR_PHASE + BRICK / 2; x < size; x += BRICK) {
-    ctx.fillRect(x, top + NEAR_BED + JOINT, JOINT, lower);
+    if (x >= from && x < to) ctx.fillRect(x, top + NEAR_BED + JOINT, JOINT, lower);
   }
 }
 
-// One cut end of a run, mirrored for the two sides. `top` and `bottom` are where the near and far
-// bands already are, so a corner is a butt joint between two faces of different depth rather than
-// two bonds crossing each other into mush.
+// One stretch of a cut end of a run, mirrored for the two sides. `top` and `bottom` bound it clear
+// of wherever the near and far bands already are, so a corner is a butt joint between two faces of
+// different depth rather than two bonds crossing each other into mush.
 function flank(
   ctx: CanvasRenderingContext2D,
   size: number,

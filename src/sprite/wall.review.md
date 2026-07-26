@@ -1,13 +1,19 @@
 # wall — review
 
 The buildable wall was redrawn. It was an **elevation of a brick face**, one drawing, `facings: 1`;
-it is now a **wall top seen from above**, sixteen drawings on a neighbour mask. What follows is why,
-what the change cost, and what is now load-bearing about it.
+it is now a **wall top seen from above**, drawn from the occupancy of the tiles around it. What
+follows is why, what the change cost, and what is now load-bearing about it.
 
 The per-sprite review loop is deliberately short here — one reviewer pass at the end, not the three
 rounds the first version had. What replaced the rounds is the run harness: every judgement below was
 made on a line, a column, an L, a closed ring and a solid block of real walls painted through the
 shipped `drawWorld`, at dpr 1 and dpr 2, rather than on a tile.
+
+The mask went from four bits to twelve after that pass — #90, and the whole of *The mask* and *The
+inner corner* below. Both defects it fixes are **absences**, invisible on a single tile and invisible
+in a call log, so they are pinned in `wall.test.ts` as well as looked at: every fill this sprite makes
+is an axis-aligned integer rect, which means replaying them into a grid reproduces a bake exactly and
+"is this corner white?" has an answer under `bun test`.
 
 ## What changed, and why the old one had to go
 
@@ -61,18 +67,31 @@ white capital I every five pixels, a chain of marks rather than a wall.
 
 ## The mask
 
-`facing` is a 4-bit neighbour mask: 1 north, 2 east, 4 south, 8 west, set where another **wall** abuts.
-0 is a wall standing alone with all four faces cut; 15 is a wall buried in a mass with none. Sixteen
-variants covers every case exactly, corners included — an L's corner is `EAST | SOUTH`, and the two
-faces it does not draw are precisely the two that are interior.
+`facing` is **neighbour occupancy**: which of the twelve tiles ringing the 2×2 footprint hold another
+**wall**. 0 is a wall standing alone with all four faces cut; all twelve set is a wall buried in a
+mass with none. 4,096 variants, of which 47 are reachable — a bit is only meaningful in combination
+with its neighbours — and bakes are lazy per variant, so a base pays for the arrangements it actually
+stands in.
+
+It began as four bits, one per side. That could not express two things, both of which shipped as
+defects and are the subject of #90:
+
+- **A side is two tiles long and a neighbour can cover one of them.** Walls are placed per tile
+  (`cursorTile` is `tileOf`, snapping to no footprint), so two walls butt while their origins sit one
+  tile out of step. A per-side bit has to call that half covered or cut and is wrong either way:
+  covered suppresses a face that is genuinely exposed — 15 CSS px of side drawing nothing at all —
+  and cut draws masonry into the middle of a solid mass. Per tile, each half answers for itself.
+- **A concave corner has no face of its own.** At the inner corner of an L or a ring the two
+  neighbours' faces stop at their own box edges and meet only at a point; the tile in the angle draws
+  neither, because it has a neighbour on both of those sides. The four diagonals are what tell it the
+  angle is empty. See *The inner corner* below.
 
 Derived in `drawWorld` (`wallFacing`), off a set of the tiles walls cover, built **once per frame**
 before the structure loop. Three things about it are deliberate:
 
-- **The set holds every tile a wall covers, and a face counts as covered when any tile of the strip
-  alongside it is in the set.** A `tx ± 2` test would be wrong: nothing snaps a wall to its own
-  footprint — `cursorTile` is `tileOf`, per tile — so two walls can butt while their origins sit one
-  tile out of step. That join is real, and the strip test is the one that sees it.
+- **The set holds every tile a wall covers**, and occupancy is asked one tile at a time. A `tx ± 2`
+  test would be wrong — it assumes an alignment nothing enforces — and so, for the same reason, is
+  any test that answers for a whole side at once.
 - **Off-screen walls are in the set.** A run does not stop at the viewport edge, and a wall whose
   neighbour was culled would grow a brick face that is not there, which pops as the camera moves.
 - **Only walls count.** A miner butted against a wall does not cover it — different building, and the
@@ -80,6 +99,22 @@ before the structure loop. Three things about it are deliberate:
 
 Nothing about this reaches the wire, the sim, or the `SpriteSubject` contract. It is the `facing` axis
 used for what a wall actually has instead of an orientation it does not.
+
+## The inner corner
+
+Where two neighbours meet with nothing in the angle between them, the sprite fills the corner: a
+solid patch, the flank's width by the depth of whichever band it closes against — 5×3 against the far
+band, 5×8 against the near one. It is the two faces butted, and at that size there is nothing to
+knock mortar out of.
+
+The rule is per tile of the footprint and identical for all sixteen tile-corners: **both flanking
+tiles wall, the diagonal not**. It cannot fire on a corner interior to the sprite's own 2×2, because
+that diagonal is always the wall itself, and it does not fire inside a solid mass, because there the
+diagonal is occupied. It also closes the corner a half-overlap turns through, which is the same
+concave angle arriving mid-side rather than at a box corner.
+
+Unfilled, this was a white bite out of every enclosure a player built — four per courtyard — and it
+was the more visible of #90's two defects by a wide margin.
 
 **The ghost takes the mask too**, so laying a wall onto the end of a run previews the join it will
 make. The run it joins keeps its own faces until the placement lands — the ghost is a preview of the
@@ -113,14 +148,20 @@ the faces, which are what the eye actually finds.
 
 ## Measurements
 
-- **Zero anti-aliasing, at dpr 1 and dpr 2.** All sixteen bakes contain exactly two values — 0 and 255
-  — at full alpha, measured off the real bakes. Every edge is an integer and axis-aligned; nothing
-  curves.
-- **Ink is 35% of the covered pixels across all sixteen**, from 55% on the isolated wall down to 11%
-  on the fully enclosed one. That gradient is the point: a wall that is all cut faces is heavy, and one
-  buried in a mass is nearly all top.
-- The harness reports *16 bake(s) touch the edge of their box* on every render. That is the point:
+- **Zero anti-aliasing, at dpr 1 and dpr 2.** Every edge is an integer and axis-aligned; nothing
+  curves. Re-measured on a rendered scene rather than on the bakes, where the harness's `grey` count
+  cannot tell paper from a softened edge: across the wall boxes of a ring at dpr 1, **0 pixels are
+  anything but 0 or 255 at full alpha**.
+- **Ink is 42% of the covered pixels across all 4,096**, from 55% on the isolated wall down to 11% on
+  the fully enclosed one. That gradient is the point: a wall that is all cut faces is heavy, and one
+  buried in a mass is nearly all top. The average rose from 35% with the mask, because a half-covered
+  side and a filled inner corner both add ink to variants that had none.
+- The harness reports *4096 bake(s) touch the edge of their box* on every render. That is the point:
   a wall that stopped short of its box would leave a gap between neighbours in a run.
+- **4,096 bakes at dpr 2 render in 2.3 s**, so the sheet stayed usable when the variant count went up
+  by 256×. The sheet itself samples 48 of them (`MAX_PANELS`), as it already did for ore.
+- **The frame budget did not move**: 6.19 ms, 37.1% of a 16.67 ms frame at the M5 worst case, against
+  6.19 ms before. `wallFacing` went from eight set lookups per wall to twelve, once per frame.
 - The whole box is filled with paper, so the harness's `grey` count is the white top and not
   anti-aliasing — the two are indistinguishable to `measurePixels`. A wall occludes the ore under it,
   which is why the fill is there.
@@ -139,12 +180,17 @@ the faces, which are what the eye actually finds.
 
 - **Judge a run, not a tile.** The scratch harness that butts walls into a line, a column, an L, a ring
   and a solid block is what caught every defect in this drawing; the contact grid caught none of them.
+  Add **two walls one tile out of step** to that set: it is the arrangement a per-side mask got wrong,
+  it is placeable in the shipped game, and nothing else in the harness produces it.
 - **Do not put a mark on an edge that has a neighbour.** Not an outline, not a joint, nothing. That is
   the entire mechanism by which two tops merge instead of showing a seam.
 - **Keep every phase clear of columns 0 and 29 and rows 0 and 29**, and every pitch a divisor of 30.
 - **Do not let a flank joint land on a top bed joint.** They coincided at row 12 once, and the result
   was a white notch at each end of a black hairline — a rule broken into three pieces.
-- **Keep every edge on an integer.** It is what buys 0% anti-aliasing, and it is checked on every render.
+- **Keep every edge on an integer.** It is what buys 0% anti-aliasing, it is checked on every render,
+  and it is also what makes `wall.test.ts`'s rect rasteriser an exact stand-in for a bake.
+- **Ask occupancy per tile.** Any answer given for a whole side at once has to guess at a half-overlap,
+  and any corner drawn without consulting the diagonal fills one that should have stayed open.
 - **Do not add tone to the top surface.** It is the largest thing in the sprite and has to stay the
   lightest, or the contrast that carries top-against-side goes with it.
 
@@ -157,8 +203,10 @@ the faces, which are what the eye actually finds.
   elevation tile reaches it. The miner and the turret are untouched and remain true elevations, so the
   wall is now the one 2×2 building drawn top-dominant. Worth an explicit ruling.
 - **#76 §5 / #81 "structures do not change appearance"** is about *damage*, and still holds — there are
-  no damage states here and the health bar still carries damage. Sixteen variants are a property of
-  where a wall stands, not of its condition.
-- **#87** is the same class of problem for ore and stays open. This solves it for walls only, through
-  the variant index, with no change to the `SpriteSubject` contract — an ore tile would need the same
-  derivation against a different occupancy source and a different number of variants.
+  no damage states here and the health bar still carries damage. The variants are a property of where a
+  wall stands, not of its condition.
+- **#87** was the same class of problem for ore and is now closed too. Both solve it through the
+  variant index, with no change to the `SpriteSubject` contract — but ore's mask is four bits against a
+  patch that is one tile per cell, and this one is twelve against a footprint two tiles to a side. The
+  generalisation, if a third ever wants it, is that a sprite covering *n* tiles needs occupancy for the
+  4n + 4 tiles around it, and four bits is only ever enough at n = 1.

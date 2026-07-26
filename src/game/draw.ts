@@ -19,6 +19,7 @@ import {
   SOUTH as TILE_SOUTH,
   WEST as TILE_WEST,
 } from "../sprite/tiled";
+import { packWall } from "../sprite/wall";
 import {
   BUILDABLES,
   footprintCenter,
@@ -151,19 +152,6 @@ const ROOM_WEST = 3;
 // flip, and no vflip-invariant tile can match both an asymmetric wall's ends. That is arithmetic,
 // not taste, so the edge is resolved here rather than designed around in the sprite.
 const ROOM_DOOR = 4;
-
-// A buildable wall's variant is a 4-bit mask of which sides another wall abuts, one bit per compass
-// point, so 0 is a wall standing alone and 15 is one buried inside a mass. The sprite draws a cut
-// masonry face on every side the mask leaves clear and nothing at all on the others, which is what
-// turns a row of tiles into one continuous top surface instead of a seam every 30 px.
-//
-// The mask is a render-layer derivation and nothing else: it never rides the wire, never reaches the
-// sim, and adds nothing to the `SpriteSubject` contract — it is the `facing` axis, used for what a
-// wall actually has instead of an orientation it does not.
-const WALL_NORTH = 1;
-const WALL_EAST = 2;
-const WALL_SOUTH = 4;
-const WALL_WEST = 8;
 
 // One stable colour per slot (1..6), so a player keeps their colour across the match.
 const SLOT_COLORS = ["#4f8cff", "#ff5d5d", "#40c463", "#f2c14e", "#c77dff", "#4dd0e1"];
@@ -326,15 +314,7 @@ export function drawWorld(
     if (!isVisible(footprintCenter(s.tile, spec.footprint), side / 2, camera, viewport)) continue;
     // A building's box *is* its footprint, so its floor line is the front edge of that square.
     const paint = () => {
-      paintStructure(
-        ctx,
-        s.kind,
-        s.tile,
-        side,
-        sprites,
-        blit,
-        wallFacing(s.kind, s.tile, spec.footprint, walls),
-      );
+      paintStructure(ctx, s.kind, s.tile, side, sprites, blit, wallFacing(s.kind, s.tile, walls));
       // A turret holding a target it has no power to fire on. `powered` alone cannot say it — an
       // idle turret is unpowered too, and has nothing to complain about (#74).
       if (s.turret?.targetId != null && !s.turret.powered) {
@@ -401,7 +381,7 @@ export function drawWorld(
       ghostSpec.footprint * TILE,
       sprites,
       blit,
-      wallFacing(ghost.kind, ghost.tile, ghostSpec.footprint, walls),
+      wallFacing(ghost.kind, ghost.tile, walls),
     );
     ctx.globalAlpha = 1;
   }
@@ -771,34 +751,20 @@ function wallTiles(structures: WorldSnapshot["structures"]): Set<number> {
   return tiles;
 }
 
-// A wall's neighbour mask, and 0 for everything else — the miner, the turret and the generator each
-// have one drawing and take the facing axis for nothing.
+// A wall's neighbour occupancy, and 0 for everything else — the miner, the turret and the generator
+// each have one drawing and take the facing axis for nothing.
 //
-// A face counts as covered when **any** tile of the strip alongside it carries a wall, rather than
-// when a wall's own tile sits exactly a footprint away. Placement is per tile and not snapped to the
-// footprint (`cursorTile` → `tileOf`, GameScreen.tsx), so two walls can butt while sitting a single
-// tile out of step with each other; the strip test sees that join and a `tx ± 2` test would miss it
-// and draw a masonry face into the middle of a solid mass.
-function wallFacing(
-  kind: BuildableKind,
-  tile: Tile,
-  footprint: number,
-  walls: Set<number>,
-): number {
+// Occupancy is read a tile at a time, which is the granularity walls are placed at: `cursorTile` is
+// `tileOf` and snaps to no footprint, so two walls butt while sitting one tile out of step and cover
+// half of each other's side. What the sprite makes of each tile is `src/sprite/wall.ts`'s; this only
+// answers, for the twelve tiles around the footprint, whether a wall stands there.
+//
+// It is a render-layer derivation and nothing else: it never rides the wire, never reaches the sim,
+// and adds nothing to the `SpriteSubject` contract — it is the `facing` axis, used for what a wall
+// actually has instead of an orientation it does not.
+function wallFacing(kind: BuildableKind, tile: Tile, walls: Set<number>): number {
   if (kind !== "wall") return 0;
-  const strip = (tx: number, ty: number, alongX: boolean): boolean => {
-    for (let i = 0; i < footprint; i++) {
-      if (walls.has(tileKey({ tx: alongX ? tx + i : tx, ty: alongX ? ty : ty + i }))) return true;
-    }
-    return false;
-  };
-  const { tx, ty } = tile;
-  return (
-    (strip(tx, ty - 1, true) ? WALL_NORTH : 0) |
-    (strip(tx + footprint, ty, false) ? WALL_EAST : 0) |
-    (strip(tx, ty + footprint, true) ? WALL_SOUTH : 0) |
-    (strip(tx - 1, ty, false) ? WALL_WEST : 0)
-  );
+  return packWall((dx, dy) => walls.has(tileKey({ tx: tile.tx + dx, ty: tile.ty + dy })));
 }
 
 function paintStructure(
