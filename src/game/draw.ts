@@ -84,13 +84,19 @@ const ROOM_DOOR = 4;
 // One stable colour per slot (1..6), so a player keeps their colour across the match.
 const SLOT_COLORS = ["#4f8cff", "#ff5d5d", "#40c463", "#f2c14e", "#c77dff", "#4dd0e1"];
 
-const BG = "#0e0e14";
+// The floor is white paper (#76 §3). Not decoration: the whole set is black ink, so on M2's
+// near-black ground the spiders were invisible and every white-bodied sprite — the egg sac, the
+// generator, the miner — read inverted. Pure white rather than an off-white, because a tinted
+// paper is a colour and #76 grants exactly two of those, neither of them this.
+const PAPER = "#ffffff";
 const WALL = "#2a2a35";
 const EXIT = "#39d353";
 const NEST = "#8e44ad"; // spawner nests
 const NEST_DEAD = "#3a2d44"; // a silenced (destroyed) nest
-const LABEL = "#e8e8ee";
-const SELF_RING = "#ffffff";
+// Ink, matching what the sprite modules draw with, so a label or a ring reads as part of the same
+// drawing. Both were near-white when the floor was dark and would now be invisible on it.
+const LABEL = "#000";
+const SELF_RING = "#000";
 const CORPSE_ALPHA = 0.35; // a downed player fades to this
 const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
 
@@ -134,7 +140,7 @@ export function drawWorld(
 
   // Clear and repaint only the visible slice of the world, not the whole 31,200² arena.
   ctx.clearRect(camera.x, camera.y, viewport.width, viewport.height);
-  ctx.fillStyle = BG;
+  ctx.fillStyle = PAPER;
   ctx.fillRect(camera.x, camera.y, viewport.width, viewport.height);
 
   // An upright sprite occupies a point on the floor and extends above it, so its box hangs off
