@@ -67,8 +67,8 @@ describe("resolveHeadlessShell", () => {
 
 describe("entrySource", () => {
   test("imports the sprite module and the sheet by absolute path, and bakes at the given dpr", () => {
-    const source = entrySource("/repo/src/sprite/player/player.ts", 3, "/repo/src/sprite/sheet.ts");
-    expect(source).toContain('from "/repo/src/sprite/player/player.ts"');
+    const source = entrySource("/repo/src/sprite/player.ts", 3, "/repo/src/sprite/sheet.ts");
+    expect(source).toContain('from "/repo/src/sprite/player.ts"');
     expect(source).toContain('from "/repo/src/sprite/sheet.ts"');
     expect(source).toContain("const dpr = 3;");
     expect(source).toContain("bakeSubject(subject, dpr)");
