@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import type { LobbyState } from "../lobby/client";
 import type { Arena, BuildableKind, MoveInput, Tile, Vec2 } from "../lobby/protocol";
 import { createSpriteCache } from "../sprite/cache";
+import reconnectingIcon from "../sprite/reconnecting";
 import { SPRITES } from "../sprite/registry";
+import { SpriteIcon } from "../sprite/SpriteIcon";
+import warningIcon from "../sprite/warning";
 import {
   BUILD_SLOTS,
   BUILDABLES,
@@ -21,6 +24,11 @@ import { PLAYER_MAX_HP } from "./world";
 
 const POS_SEND_MS = 50; // ~20 Hz position stream, independent of the render frame rate
 const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the avatar on resume
+// How long after the last bite a structure still counts as under attack. Comfortably longer than a
+// spider's bite cadence, so a base being chewed holds the warning steady rather than strobing it
+// between bites, and short enough that the bell stops soon after the last spider is off it.
+const UNDER_ATTACK_MS = 2000;
+const BUILD_ICON_PX = 26; // the buildable's own sprite, shrunk to fit a slot
 
 // One cache for the app: a baked sprite depends on the display, not on which screen is mounted.
 // It bakes nothing until something is drawn, so importing this costs nothing under `bun test`,
@@ -82,7 +90,7 @@ export function GameScreen({
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
   const [metal, setMetal] = useState(0); // the shared bank, mirrored into React for the HUD
   const [power, setPower] = useState({ generation: 0, consumption: 0 }); // the live energy rate
-  const [respawnIn, setRespawnIn] = useState(0); // seconds until respawn, shown while downed
+  const [underAttack, setUnderAttack] = useState(false); // drives the HUD's warning bell
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
   const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
   const aimRef = useRef<{ camera: Camera; self: Vec2 }>({
@@ -213,18 +221,18 @@ export function GameScreen({
       const world = worldRef.current;
       if (!world) return;
       const now = Date.now();
-      // Client-run respawn: after the delay, snap back to center at full HP.
+      // Client-run respawn: after the delay, snap back to center at full HP. The countdown is no
+      // longer shown — ADR 0001 took the text and granted it no icon — but the timer still runs.
       if (world.isDead()) {
         deadSince ??= now;
-        const remaining = Math.max(0, RESPAWN_DELAY_MS - (now - deadSince));
-        setRespawnIn(Math.ceil(remaining / 1000));
-        if (remaining === 0) {
+        if (now - deadSince >= RESPAWN_DELAY_MS) {
           world.reviveSelf();
           deadSince = null;
         }
       } else {
         deadSince = null;
       }
+      setUnderAttack(world.structureUnderAttack(now, UNDER_ATTACK_MS));
       const nextHp = world.hp();
       if (nextHp !== lastHp) {
         lastHp = nextHp;
@@ -306,15 +314,21 @@ export function GameScreen({
   return (
     <main className="game">
       <header className="game-header">
-        <span className="code">
-          Lobby <strong>{state.code}</strong>
-        </span>
-        {state.status === "reconnecting" && (
-          <span className="banner" role="status">
-            Reconnecting…
-          </span>
-        )}
-        <button type="button" onClick={onLeave}>
+        {/* The lobby code header is gone (ADR 0001) — it is on the lobby screen, where it is
+            needed to share, and repeating it mid-match was scaffolding nobody asked for. */}
+        <div className="signals" role="status" aria-live="polite">
+          {state.status === "reconnecting" && (
+            <span className="signal" role="img" aria-label="Reconnecting">
+              <SpriteIcon subject={reconnectingIcon} px={24} />
+            </span>
+          )}
+          {underAttack && (
+            <span className="signal" role="img" aria-label="A structure is under attack">
+              <SpriteIcon subject={warningIcon} px={24} />
+            </span>
+          )}
+        </div>
+        <button type="button" className="leave" onClick={onLeave}>
           Leave
         </button>
       </header>
@@ -326,6 +340,8 @@ export function GameScreen({
         onMouseDown={onMouseDown}
         onContextMenu={(e) => e.preventDefault()}
       />
+      {/* The bar stays and its written HP reading goes: #76 signals health with an ink bar, and
+          ADR 0001 removed the label beside it. */}
       <div className="hud" role="status" aria-label="Health">
         <div className="hp-bar">
           <div
@@ -334,37 +350,42 @@ export function GameScreen({
             data-low={hp <= 30}
           />
         </div>
-        <span className="hp-label">
-          {hp > 0 ? `HP ${hp}` : `Downed — respawning in ${respawnIn}…`}
-        </span>
       </div>
+      {/* Metal and Energy are named on the in-match allowlist, so these two readouts are the only
+          words the match itself renders outside the name labels over players' heads. */}
       <div className="banks" role="status" aria-label="Resources">
-        <span className="bank metal">Metal {metal}</span>
-        <span className="bank energy">
-          Energy {power.consumption}/{power.generation}
+        <span className="bank">
+          <span className="bank-label">Metal</span>
+          <strong>{metal}</strong>
+        </span>
+        <span className="bank">
+          <span className="bank-label">Energy</span>
+          <strong>
+            {power.consumption}/{power.generation}
+          </strong>
         </span>
       </div>
+      {/* The slot names and their number keys are gone. What a slot builds is now said by the
+          buildable's own sprite — the icon ADR 0001 asks for in place of the words it removed. */}
       <div className="build-bar" role="toolbar" aria-label="Buildables">
-        {BUILD_SLOTS.map((kind, i) => (
-          <button
-            key={kind}
-            type="button"
-            className="build-slot"
-            aria-pressed={selected === kind}
-            // A kind with no registry entry has not shipped: the slot shows, but is not usable.
-            disabled={!BUILDABLES[kind]}
-            onClick={() => setSelected(selected === kind ? null : kind)}
-          >
-            <span className="build-key">{i + 1}</span>
-            <span className="build-name">{kind}</span>
-          </button>
-        ))}
+        {BUILD_SLOTS.map((kind) => {
+          const icon = SPRITES[kind];
+          return (
+            <button
+              key={kind}
+              type="button"
+              className="build-slot"
+              aria-label={kind}
+              aria-pressed={selected === kind}
+              // A kind with no registry entry has not shipped: the slot shows, but is not usable.
+              disabled={!BUILDABLES[kind]}
+              onClick={() => setSelected(selected === kind ? null : kind)}
+            >
+              {icon && <SpriteIcon subject={icon} px={BUILD_ICON_PX} />}
+            </button>
+          );
+        })}
       </div>
-      <p className="hint">
-        Move with WASD or the arrow keys. Left-click to shoot. Hold right-click to mine metal ore —
-        or to demolish a structure for some of its metal back. Press 1–4 to pick a buildable and
-        left-click to place it; Escape cancels.
-      </p>
     </main>
   );
 }

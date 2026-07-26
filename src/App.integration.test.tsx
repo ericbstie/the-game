@@ -26,7 +26,10 @@ test("clicking Host opens the WS and renders the Squad roster with a shareable c
   await waitFor(() => expect(screen.getByText(/share code/i)).not.toBeNull());
   expect(screen.getByText("Ana")).not.toBeNull();
   expect(screen.getByText(/host/i)).not.toBeNull(); // host badge
-  const code = screen.getByText(/share code/i).querySelector("strong")?.textContent ?? "";
+  // The label and the code are separate elements now that the code is set as a headline number,
+  // so the code is read from the block the label sits in rather than from the label itself.
+  const code =
+    screen.getByText(/share code/i).parentElement?.querySelector("strong")?.textContent ?? "";
   expect(code).toHaveLength(4);
 });
 
@@ -42,5 +45,8 @@ test("the host can Start the match and lands in the canvas game screen", async (
 
   // Once the first game/state arrives, the roster is replaced by the arena canvas.
   await waitFor(() => expect(screen.getByLabelText(/game arena/i)).not.toBeNull());
-  expect(screen.getByText(/WASD/i)).not.toBeNull();
+  // The HUD came up with it. Asserted on the build bar because the controls hint that used to
+  // stand in for "the match is on screen" is gone — ADR 0001 removed it.
+  expect(screen.getByRole("toolbar", { name: /buildables/i })).not.toBeNull();
+  expect(screen.queryByText(/WASD/i)).toBeNull();
 });
