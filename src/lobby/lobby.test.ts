@@ -696,10 +696,26 @@ describe("M3: player health relay and aggro-gating", () => {
       // "a" never reported → defaults to alive → included
     ]);
     expect(
-      livePlayers(positions, health)
+      livePlayers(positions, health, new Set(["a", "b", "c"]))
         .map((p) => p.id)
         .sort(),
     ).toEqual(["a", "c"]);
+  });
+
+  // A player in the disconnect grace window is alive and still has a position — peers hold it
+  // as a stand-in and the reconnect burst replays it — but there is no body in the arena for
+  // an enemy to chase (#75).
+  test("livePlayers drops the disconnected from aggro even though they are alive", () => {
+    const positions = new Map([
+      ["here", { pos: { x: 1, y: 1 }, seq: 1 }],
+      ["gone", { pos: { x: 2, y: 2 }, seq: 1 }],
+    ]);
+    const health = new Map([
+      ["here", { hp: 100, seq: 1 }],
+      ["gone", { hp: 100, seq: 1 }], // full health, simply absent
+    ]);
+    expect(livePlayers(positions, health, new Set(["here"])).map((p) => p.id)).toEqual(["here"]);
+    expect(positions.has("gone")).toBe(true); // and the position is still held for the peers
   });
 });
 
@@ -860,6 +876,128 @@ describe("M3: enemy sim tick lifecycle", () => {
           (d.hits ?? []).some((h) => h.id === target.id) || (d.deaths ?? []).includes(target.id),
       );
     expect(struck).toBe(true);
+  });
+});
+
+// #75: the slot is held for the whole grace window so a reconnect can reclaim it, and the
+// player's last position stays in `session.positions` because peers hold it as a stand-in.
+// The enemy sim must not read that frozen point as a body to chase.
+describe("#75: a disconnected player stops pulling aggro at once", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+
+  const CENTRE = { x: ARENA.width / 2, y: ARENA.height / 2 };
+  const dist = (a: Vec2, b: Vec2) => Math.hypot(a.x - b.x, a.y - b.y);
+
+  // The first captured message of a type, narrowed — with a real error if it never arrived.
+  function firstOf<T extends ServerMessage["type"]>(
+    t: Capture,
+    type: T,
+  ): Extract<ServerMessage, { type: T }> {
+    const found = t.sent.find((m) => m.msg.type === type)?.msg;
+    if (!found) throw new Error(`no ${type} was sent`);
+    return expectMessage(found, type);
+  }
+
+  // Two players in a started match, with the first wave already on the floor.
+  function matchWithWave() {
+    const t = new Capture();
+    const clock = new ManualScheduler();
+    const hub = new LobbyHub(t, { tickMs: 50, firstWaveMs: 1, scheduler: clock });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));
+    const { code } = firstOf(t, "lobby/created");
+    hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "Ben" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    clock.advance(50); // one tick: the wave fires
+    return { t, hub, clock, code };
+  }
+
+  // The first grunt of the opening wave, straight off the stream.
+  function firstSpawn(t: Capture): EnemySpawn {
+    const spawned = t.sent
+      .flatMap(({ msg }) => (msg.type === "game/map-delta" ? (msg.spawns ?? []) : []))
+      .at(0);
+    if (!spawned) throw new Error("the first wave spawned nothing");
+    return spawned;
+  }
+
+  const enemyPos = (t: Capture, id: string): Vec2 | undefined => {
+    let at: Vec2 | undefined;
+    for (const { msg } of t.sent) {
+      if (msg.type !== "game/map-delta") continue;
+      for (const s of msg.spawns ?? []) if (s.id === id) at = s.pos;
+      for (const [mid, x, y] of msg.moves) if (mid === id) at = { x, y };
+    }
+    return at;
+  };
+
+  test("an enemy chasing a player that drops turns away from the frozen point", () => {
+    const { t, hub, clock } = matchWithWave();
+    const spawned = firstSpawn(t);
+
+    // Ben stands just *outward* of the grunt — away from centre — so chasing him and marching
+    // to centre move the grunt in opposite directions and the two are never confusable.
+    const outward = {
+      x: (spawned.pos.x - CENTRE.x) / dist(spawned.pos, CENTRE),
+      y: (spawned.pos.y - CENTRE.y) / dist(spawned.pos, CENTRE),
+    };
+    const benAt = { x: spawned.pos.x + outward.x * 400, y: spawned.pos.y + outward.y * 400 };
+    hub.handleMessage("s2", JSON.stringify({ type: "game/pos", pos: benAt, seq: 1 }));
+    hub.handleMessage(
+      "s1",
+      JSON.stringify({ type: "game/pos", pos: CENTRE, seq: 1 }), // Ana is far away at spawn
+    );
+
+    clock.advance(150);
+    const chasing = enemyPos(t, spawned.id);
+    if (!chasing) throw new Error("the grunt never moved");
+    expect(dist(chasing, benAt)).toBeLessThan(dist(spawned.pos, benAt)); // closing on Ben
+
+    hub.handleClose("s2"); // Ben's socket drops; his slot and position are held for grace
+    clock.advance(500);
+    const after = enemyPos(t, spawned.id);
+    if (!after) throw new Error("the grunt stopped reporting");
+    expect(dist(after, benAt)).toBeGreaterThan(dist(chasing, benAt)); // turned away, not parked
+
+    hub.dispose();
+  });
+
+  test("and it resumes the chase when they reconnect inside the window", () => {
+    const { t, hub, clock, code } = matchWithWave();
+    const spawned = firstSpawn(t);
+    const joined = firstOf(t, "lobby/joined");
+    const benAt = { x: spawned.pos.x, y: spawned.pos.y };
+    hub.handleMessage("s2", JSON.stringify({ type: "game/pos", pos: benAt, seq: 1 }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: CENTRE, seq: 1 }));
+    clock.advance(100);
+
+    hub.handleClose("s2");
+    clock.advance(300);
+    const drifted = enemyPos(t, spawned.id);
+    if (!drifted) throw new Error("the grunt stopped reporting");
+
+    // Same token, fresh socket, inside the grace window.
+    hub.handleMessage(
+      "s3",
+      JSON.stringify({
+        type: "lobby/join",
+        code,
+        name: "Ben",
+        token: joined.you.token,
+      }),
+    );
+    hub.handleMessage("s3", JSON.stringify({ type: "game/pos", pos: benAt, seq: 2 }));
+    clock.advance(300);
+    const back = enemyPos(t, spawned.id);
+    if (!back) throw new Error("the grunt stopped reporting");
+    expect(dist(back, benAt)).toBeLessThan(dist(drifted, benAt)); // chasing him again
+
+    hub.dispose();
   });
 });
 
