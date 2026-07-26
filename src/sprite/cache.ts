@@ -1,5 +1,5 @@
 import type { SpriteName } from "./registry";
-import { bakedPixels, bakeSubject, type SpriteSubject } from "./sheet";
+import { bakedPixels, bakeOne, type SpriteSubject } from "./sheet";
 
 // The draw-time side of the sprite pipeline: baked offscreen canvases the render loop blits
 // instead of drawing shapes.
@@ -44,30 +44,41 @@ export interface SpriteCache {
   source(dpr: number): SpriteSource;
 }
 
-type Bake = (subject: SpriteSubject, dpr: number) => CanvasImageSource[][];
+type Bake = (
+  subject: SpriteSubject,
+  dpr: number,
+  facing: number,
+  frame: number,
+) => CanvasImageSource;
 
 // `bake` is injected so the bookkeeping can be tested under `bun test`, where happy-dom has no
-// canvas at all and a real bake is impossible. It defaults to the harness's own `bakeSubject`,
-// which is what already encodes the bake-at-`size × dpr` rule.
+// canvas at all and a real bake is impossible. It defaults to the harness's own `bakeOne`, which
+// is what already encodes the bake-at-`size × dpr` rule.
+//
+// Baking is lazy per **variant**, not per sprite. That matters from #87 on: an ore tile's variant
+// index is a product — its position cell times its neighbour-occupancy mask — so it declares
+// thousands of combinations while any one frame asks for a few hundred. Baking a sprite's whole
+// grid on first use would have made the first ore tile on screen cost every combination that could
+// ever exist. This way the bill tracks what is actually drawn.
 export function createSpriteCache(
   subjects: Partial<Record<SpriteName, SpriteSubject>>,
-  bake: Bake = bakeSubject,
+  bake: Bake = bakeOne,
 ): SpriteCache {
-  let baked = new Map<SpriteName, CanvasImageSource[][]>();
+  let baked = new Map<string, CanvasImageSource>();
   let bakedDpr = 0;
 
   const source: SpriteSource = (name, facing, frame) => {
     const subject = subjects[name];
     if (!subject) return null;
-    let frames = baked.get(name);
-    if (!frames) {
-      frames = bake(subject, bakedDpr);
-      baked.set(name, frames);
+    const f = wrap(facing, subject.facings);
+    const n = wrap(frame, subject.frames);
+    const key = `${name}/${f}/${n}`;
+    let image = baked.get(key);
+    if (!image) {
+      image = bake(subject, bakedDpr, f, n);
+      baked.set(key, image);
     }
-    return {
-      image: frames[wrap(frame, subject.frames)][wrap(facing, subject.facings)],
-      size: bakedPixels(subject.size, bakedDpr) / bakedDpr,
-    };
+    return { image, size: bakedPixels(subject.size, bakedDpr) / bakedDpr };
   };
 
   return {

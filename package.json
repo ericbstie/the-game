@@ -18,7 +18,8 @@
     "sprite:sheet": "bun run scripts/sprite-sheet.ts",
     "sprite:frame": "bun run scripts/world-frame.ts",
     "frame:budget": "bun run scripts/frame-budget.ts",
-    "delta:size": "bun run scripts/delta-size.ts"
+    "delta:size": "bun run scripts/delta-size.ts",
+    "ore:seams": "bun run scripts/ore-seams.ts"
   },
   "dependencies": {
     "react": "^19.2.7",

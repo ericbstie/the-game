@@ -99,6 +99,61 @@ You may derive facings from fewer drawings — mirroring E to get W costs one `c
 and halves the work. Whether that reads as the same character from both sides is a judgement your
 reviewer makes, not a rule here.
 
+### The facing index — tiled sprites
+
+**This applies to `ore-metal` and `ore-power`, and to anything else later drawn once per tile
+across a field.** A tiled sprite has two requirements that pull in opposite directions, and one
+number cannot satisfy both ([#87](https://github.com/ericbstie/the-game/issues/87)):
+
+1. **Inside a patch, ink must cross tile seams.** Otherwise every mark is boxed in its own cell
+   and a white lattice appears on the grid pitch — measured at an **8.08× centre-to-seam ink
+   deficit** before this landed.
+2. **At a patch boundary, ink must not reach the edge.** Otherwise the deposit ends in hard
+   axis-aligned steps and the field reads as made of squares.
+
+Your `draw` is handed `(size, facing, frame)` and nothing else, so on its own it cannot tell an
+interior edge from a boundary one — it must pick one behaviour for all four and be wrong on one.
+
+So the facing carries **both** facts, packed: which cell of a repeating 12×12 grid this tile is,
+and which of its four neighbours hold the same thing. Do not unpack it by hand — call
+[`drawTiled`](tiled.ts):
+
+```ts
+import { drawTiled, TILED_FACINGS } from "./tiled";
+
+const oreMetal: SpriteSubject = {
+  name: "ore-metal",
+  size: 15,
+  facings: TILED_FACINGS, // 16 masks × 12 × 12 cells
+  frames: 1,
+  draw(ctx, size, facing) {
+    ctx.scale(size / 15, size / 15);
+    drawTiled(ctx, 15, facing, paintCell);
+  },
+};
+```
+
+`drawTiled` calls your `paintCell(ctx, cx, cy)` **nine times** — for this cell and each of its
+eight neighbours, translated into place — and clips everything to the tile's box. That is what
+makes ink continuous across a seam: a mark near a cell boundary is generated identically by both
+tiles, and each keeps its own half. On a boundary edge the clip pulls back and jags, so the patch
+ends on an irregular line rather than on the tile grid.
+
+Two rules follow, and both are measurable:
+
+- **Derive your content from `cx` *and* `cy`.** Indexing on one alone stripes the field into
+  identical rows. That shipped once and went unnoticed until it was measured at **37.5% of
+  adjacent tile pairs drawing the identical stamp**.
+- **Put marks on your east and south edges.** A field composed entirely inside its box contributes
+  nothing to its neighbour, and the lattice survives every amount of machinery above it. East and
+  south only — each seam belongs to exactly one of the two cells that share it, or you get two
+  marks on every seam.
+
+Check your work with `bun run ore:seams --kind metal --dpr 2`. It folds ink density modulo the
+tile pitch over real accretion patches from `generateOre`, on a real canvas. A flat fold (≈1.00×)
+means no lattice; a boundary edge far darker than an interior one means the patch still squares
+off.
+
 ## The set, and the box each one draws in
 
 The box is in CSS px, which is world units, because the zoom is 1:1 and does not change. Every

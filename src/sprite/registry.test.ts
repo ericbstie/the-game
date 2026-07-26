@@ -49,7 +49,9 @@ describe("SPRITES", () => {
   // what makes that state loud instead: the file existing is the claim, and the entry is the
   // proof. Infrastructure modules are excluded by name because they are not sprites.
   test("every sprite module in this directory is wired into the game", () => {
-    const infrastructure = new Set(["sheet", "cache", "registry", "calibration"]);
+    // `tiled` is the contract a tiled sprite reads (#87), not a sprite — it draws no art of
+    // its own and has no registry key.
+    const infrastructure = new Set(["sheet", "cache", "registry", "calibration", "tiled"]);
     const modules = [...new Bun.Glob("*.ts").scanSync({ cwd: import.meta.dir })]
       .map((file) => file.replace(/\.ts$/, ""))
       .filter((name) => !name.endsWith(".test") && !infrastructure.has(name));

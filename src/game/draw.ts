@@ -13,8 +13,16 @@ import type {
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
 import {
+  packTile,
+  EAST as TILE_EAST,
+  NORTH as TILE_NORTH,
+  SOUTH as TILE_SOUTH,
+  WEST as TILE_WEST,
+} from "../sprite/tiled";
+import {
   BUILDABLES,
   footprintCenter,
+  type OreGrid,
   oreAt,
   TILE,
   TURRET_CADENCE_MS,
@@ -593,7 +601,7 @@ function drawOre(
       for (let tx = Math.max(0, first.tx); tx <= last.tx; tx++) {
         const kind = oreAt(world.ore, { tx, ty });
         if (kind === null) continue;
-        const sprite = sprites(ORE_SPRITES[kind], oreCell(tx, ty), 0);
+        const sprite = sprites(ORE_SPRITES[kind], oreVariant(world.ore, tx, ty, kind), 0);
         if (sprite) blit(sprite, tx * TILE + sprite.size / 2, ty * TILE + sprite.size);
         else {
           ctx.fillStyle = ORE_COLORS[kind];
@@ -639,23 +647,22 @@ const ORE_SPRITES: Record<OreKind, SpriteName> = {
 // so every client derives the same field with nothing on the wire — the same derive-don't-stream
 // idiom the ore grid itself uses. The cache wraps whatever comes out into the sprite's range, so
 // this never has to know how many variants an agent drew.
-// How many tiles an ore sprite's variant grid repeats over. An ore tile's variant is its *position*
-// modulo this, not a hash of its position, which is what lets a tile derive its neighbours' cells
-// and draw a mark that straddles a seam identically from both sides. A hash cannot do that: it is
-// measurably uniform (χ²=84 on 95 df at N=96) but tells a tile nothing about who it sits next to,
-// so every mark stays boxed in its own cell and a 4–7× ink deficit forms on the grid pitch.
-//
-// Twelve is the smallest period past `METAL_PATCH_MAX` (80 tiles, ~11 across), so no patch the
-// generator can grow contains the same cell twice and no two adjacent tiles are ever identical —
-// the repetition is closed outright rather than made unlikely. An ore sprite therefore declares
-// `facings: ORE_CELLS * ORE_CELLS`.
-const ORE_CELLS = 12;
 
-function oreCell(tx: number, ty: number): number {
-  return (
-    (((tx % ORE_CELLS) + ORE_CELLS) % ORE_CELLS) * ORE_CELLS +
-    (((ty % ORE_CELLS) + ORE_CELLS) % ORE_CELLS)
-  );
+// Which of a tile's four sides have the same ore beyond them, packed with the tile's cell into the
+// one variant index a sprite is handed. This is the fact a tiled sprite cannot derive and cannot
+// do without (#87): a patch has to be *seamless inside* — ink crossing every interior seam, or a
+// white lattice forms on the grid pitch — and *ragged at its edge* — ink held back, or the deposit
+// ends in hard axis-aligned steps. Those are opposite instructions for the same four edges, and
+// only occupancy tells them apart. The packing itself lives in `sprite/tiled.ts`, beside the
+// sprites that unpack it.
+export function oreVariant(ore: OreGrid, tx: number, ty: number, kind: OreKind): number {
+  const same = (x: number, y: number) => (oreAt(ore, { tx: x, ty: y }) === kind ? 1 : 0);
+  const mask =
+    same(tx, ty - 1) * TILE_NORTH +
+    same(tx + 1, ty) * TILE_EAST +
+    same(tx, ty + 1) * TILE_SOUTH +
+    same(tx - 1, ty) * TILE_WEST;
+  return packTile(mask, tx, ty);
 }
 
 function tileVariant(tx: number, ty: number): number {

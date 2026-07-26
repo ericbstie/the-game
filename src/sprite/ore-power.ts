@@ -1,4 +1,5 @@
 import type { SpriteSubject } from "./sheet";
+import { drawTiled, TILED_FACINGS } from "./tiled";
 
 // Power ore: one 15 px tile of the glowing seam, drawn flat and straight down like the floor it is
 // part of (#76 §2). Ten to twenty tiles make a patch and the game picks a variant from the tile's
@@ -148,38 +149,69 @@ function drawBody(ctx: CanvasRenderingContext2D, body: Body): void {
   ctx.fill();
 }
 
+// One cell's deposit, in its own box. Seeded from **both** grid axes, so the field cannot stripe
+// into identical rows the way it did before #87 measured it. Called nine times per tile by
+// `drawTiled` — this cell plus its eight neighbours, translated into place — so a body whose glow
+// or silhouette overruns the box is completed by the tile next door rather than cut off on the
+// grid pitch.
+// Two bodies per cell sitting *astride* its east and south edges. Without them the deposit has no
+// ink on a seam: the fan that places the rest reaches out from the tile centre and rarely crosses,
+// so drawing a neighbour's cell contributes nothing to mine and the lattice survives.
+//
+// East and south only, because each seam belongs to exactly one of the two cells that share it.
+// `drawTiled` draws the neighbouring cells too, so the tile across a seam draws this same body
+// translated and keeps the other half — the halves meet because both come from one cell
+// coordinate.
+function seamBodies(rand: () => number): Body[] {
+  return [
+    { x: SIZE, y: 2 + rand() * (SIZE - 4) },
+    { x: 2 + rand() * (SIZE - 4), y: SIZE },
+  ].map(({ x, y }) => {
+    const r = 1.6 + rand() * 1.2;
+    return { x, y, r, rotation: rand() * TAU, outline: outlineOf(rand, r) };
+  });
+}
+
+function paintCell(ctx: CanvasRenderingContext2D, cx: number, cy: number): void {
+  const rand = seeded(Math.imul(cx * VARIANTS + cy + 1, 0x9e3779b1) ^ 0x51ed2701);
+
+  // `rand` is already seeded from this cell, so the seam bodies are as cell-specific as the rest.
+  const bodies = [...bodiesOf(rand, 2 + Math.floor(rand() * 2), true), ...seamBodies(rand)];
+  // Unlit fragments: the only pure ink on the tile, and the reason a patch still belongs to a
+  // black-and-white game rather than reading as the one coloured thing on the floor.
+  const chips = bodiesOf(rand, Math.floor(rand() * 2.4), false);
+
+  for (const body of bodies) drawRadiance(ctx, rand, body);
+  for (const body of bodies) drawBody(ctx, body);
+
+  const [lit] = bodies;
+  ctx.fillStyle = EMBER;
+  blob(
+    ctx,
+    lit.x - lit.r * 0.18,
+    lit.y - lit.r * 0.18,
+    outlineOf(rand, lit.r * EMBER_OF_R),
+    lit.rotation + 0.7,
+  );
+  ctx.fill();
+
+  ctx.fillStyle = INK;
+  for (const chip of chips) {
+    blob(ctx, chip.x, chip.y, chip.outline, chip.rotation);
+    ctx.fill();
+  }
+}
+
 const orePower: SpriteSubject = {
   name: "ore-power",
   size: SIZE,
-  facings: VARIANTS,
+  // The tiled contract (#87): the tile's cell in the repeating grid, packed with a 4-bit mask of
+  // which neighbours hold power ore too. `drawTiled` unpacks both.
+  facings: TILED_FACINGS,
   frames: 1,
-  draw(ctx, _size, facing) {
-    const rand = seeded(Math.imul(facing + 1, 0x9e3779b1) ^ 0x51ed2701);
-
-    const bodies = bodiesOf(rand, 2 + Math.floor(rand() * 2), true);
-    // Unlit fragments: the only pure ink on the tile, and the reason a patch still belongs to a
-    // black-and-white game rather than reading as the one coloured thing on the floor.
-    const chips = bodiesOf(rand, Math.floor(rand() * 2.4), false);
-
-    for (const body of bodies) drawRadiance(ctx, rand, body);
-    for (const body of bodies) drawBody(ctx, body);
-
-    const [lit] = bodies;
-    ctx.fillStyle = EMBER;
-    blob(
-      ctx,
-      lit.x - lit.r * 0.18,
-      lit.y - lit.r * 0.18,
-      outlineOf(rand, lit.r * EMBER_OF_R),
-      lit.rotation + 0.7,
-    );
-    ctx.fill();
-
-    ctx.fillStyle = INK;
-    for (const chip of chips) {
-      blob(ctx, chip.x, chip.y, chip.outline, chip.rotation);
-      ctx.fill();
-    }
+  draw(ctx, size, facing) {
+    ctx.scale(size / SIZE, size / SIZE);
+    drawTiled(ctx, SIZE, facing, paintCell);
   },
 };
 

@@ -1,4 +1,5 @@
 import type { SpriteSubject } from "./sheet";
+import { drawTiled, TILED_FACINGS } from "./tiled";
 
 // Metal ore is ground, not an object: drawn flat and straight down, sorted with the floor rather
 // than with the things that stand on it. It is also the ore that stays **pure ink** — power ore
@@ -285,30 +286,80 @@ const FIELDS: readonly Field[] = [
   },
 ];
 
+// Which hand-cut field a cell of the repeating grid draws. Both axes matter: indexing on one alone
+// is what striped the field into identical rows before #87 measured it (37.5% of adjacent tile
+// pairs drew the identical stamp).
+function fieldOf(cx: number, cy: number): Field {
+  return FIELDS[(cx * 5 + cy * 7) % FIELDS.length];
+}
+
+// One cell's marks, in its own 15-unit box. Called nine times per tile by `drawTiled` — once for
+// this cell and once for each neighbour, translated into place — so a chip whose silhouette
+// overruns the box is completed by the tile next door instead of being clipped into a straight
+// line on the grid pitch.
+function chip(ctx: CanvasRenderingContext2D, spec: Chip): void {
+  const angle = spec.turn * Math.PI * 2;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  ctx.beginPath();
+  for (const [px, py] of SHARDS[spec.shard]) {
+    ctx.lineTo(spec.x + (px * cos - py * sin) * spec.r, spec.y + (px * sin + py * cos) * spec.r);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+const noise = (cx: number, cy: number, salt: number): number => {
+  const mixed = Math.imul((cx * 73_856_093) ^ (cy * 19_349_663) ^ (salt * 83_492_791), 0x45d9f3b);
+  return ((mixed ^ (mixed >>> 15)) >>> 0) / 4_294_967_296;
+};
+
+// Two chips per cell sitting *astride* its east and south edges. Without them the field has no
+// ink on a seam at all: the hand-cut fields are composed inside their boxes, so drawing a
+// neighbour's cell contributes nothing to mine and the lattice survives every amount of
+// machinery. Measured at an 8.08x centre-to-seam deficit before these went in.
+//
+// East and south only, because each seam belongs to exactly one of the two cells that share it —
+// claiming both ends would put two chips on every seam. `drawTiled` draws the neighbouring cells
+// too, so the tile on the far side of a seam draws this same chip translated and keeps the other
+// half of it. The halves meet because both are generated from the same cell coordinate.
+function seamChips(cx: number, cy: number): Chip[] {
+  return [
+    {
+      shard: Math.floor(noise(cx, cy, 1) * SHARDS.length),
+      x: SIZE,
+      y: 2 + noise(cx, cy, 2) * (SIZE - 4),
+      r: 2.1 + noise(cx, cy, 3) * 1.5,
+      turn: noise(cx, cy, 4),
+    },
+    {
+      shard: Math.floor(noise(cx, cy, 5) * SHARDS.length),
+      x: 2 + noise(cx, cy, 6) * (SIZE - 4),
+      y: SIZE,
+      r: 2.1 + noise(cx, cy, 7) * 1.5,
+      turn: noise(cx, cy, 8),
+    },
+  ];
+}
+
+function paintCell(ctx: CanvasRenderingContext2D, cx: number, cy: number): void {
+  const field = fieldOf(cx, cy);
+  ctx.fillStyle = "#000";
+  for (const spec of field.chips) chip(ctx, spec);
+  for (const spec of seamChips(cx, cy)) chip(ctx, spec);
+  for (const [x, y, width, height] of field.grit) ctx.fillRect(x, y, width, height);
+}
+
 const oreMetal: SpriteSubject = {
   name: "ore-metal",
   size: SIZE,
-  facings: FIELDS.length,
+  // The tiled contract (#87): the tile's cell in the repeating grid, packed with a 4-bit mask of
+  // which neighbours hold metal too. `drawTiled` unpacks both.
+  facings: TILED_FACINGS,
   frames: 1,
   draw(ctx, size, facing) {
     ctx.scale(size / SIZE, size / SIZE);
-    ctx.fillStyle = "#000";
-    const field = FIELDS[facing % FIELDS.length];
-    for (const chip of field.chips) {
-      const angle = chip.turn * Math.PI * 2;
-      const cos = Math.cos(angle);
-      const sin = Math.sin(angle);
-      ctx.beginPath();
-      for (const [px, py] of SHARDS[chip.shard]) {
-        ctx.lineTo(
-          chip.x + (px * cos - py * sin) * chip.r,
-          chip.y + (px * sin + py * cos) * chip.r,
-        );
-      }
-      ctx.closePath();
-      ctx.fill();
-    }
-    for (const [x, y, width, height] of field.grit) ctx.fillRect(x, y, width, height);
+    drawTiled(ctx, SIZE, facing, paintCell);
   },
 };
 

@@ -93,9 +93,23 @@ const FLOOR_LABEL = "2 · real size on the floor, 1 world unit = 1 CSS px. Judge
 const MAGNIFIED_LABEL = "3 · magnified, smoothing off — real baked pixels. Judge artefacts here";
 const FLIP_LABEL = "4 · flip strip, 2× — the frames alternating. Judge movement here";
 
+// How many variants a sheet will show. A tiled sprite (#87) declares its cell grid times its
+// neighbour mask — 2,304 for ore — and a sheet with a panel each is 11 MB of PNG that no reviewer
+// can read. Sampling evenly keeps the artefact reviewable and still crosses the whole range,
+// which is what the eye is being asked about.
+const MAX_PANELS = 48;
+
+// The variants a sheet draws: all of them when there are few, an even spread when there are many.
+export function sheetFacings(facings: number): number[] {
+  if (facings <= MAX_PANELS) return Array.from({ length: facings }, (_, i) => i);
+  const step = facings / MAX_PANELS;
+  return Array.from({ length: MAX_PANELS }, (_, i) => Math.floor(i * step));
+}
+
 export function layoutSheet(subject: SpriteSubject): SheetLayout {
   assertSubject(subject);
-  const { size, facings, frames } = subject;
+  const { size, frames } = subject;
+  const facings = sheetFacings(subject.facings).length;
   const inner = SHEET_WIDTH - 2 * MARGIN;
 
   const contactCell = size * CONTACT_SCALE;
@@ -167,15 +181,17 @@ export function drawSheet(ctx: CanvasRenderingContext2D, render: SheetRender): v
     MARGIN + 14,
   );
 
+  // A tiled sprite declares thousands of variants; the sheet shows an even spread of them.
+  const shown = sheetFacings(subject.facings);
   const cell = size * CONTACT_SCALE;
-  const rowsPerFrame = Math.ceil(subject.facings / layout.contactColumns);
+  const rowsPerFrame = Math.ceil(shown.length / layout.contactColumns);
   panel(ctx, layout.contact);
   for (let frame = 0; frame < subject.frames; frame++) {
-    for (let facing = 0; facing < subject.facings; facing++) {
-      const column = facing % layout.contactColumns;
-      const row = frame * rowsPerFrame + Math.floor(facing / layout.contactColumns);
+    for (let i = 0; i < shown.length; i++) {
+      const column = i % layout.contactColumns;
+      const row = frame * rowsPerFrame + Math.floor(i / layout.contactColumns);
       ctx.drawImage(
-        bakes[frame][facing],
+        bakes[frame][shown[i]],
         layout.contact.x + column * (cell + CELL_GAP),
         layout.contact.y + row * (cell + CELL_GAP),
         cell,
@@ -192,14 +208,15 @@ export function drawSheet(ctx: CanvasRenderingContext2D, render: SheetRender): v
   ctx.translate(layout.floor.x, layout.floor.y);
   (render.floor ?? whitePaper)(ctx, layout.floor.width, layout.floor.height);
   const floorColumns = gridFit(
-    subject.facings,
+    shown.length,
     size,
     FLOOR_GAP,
     layout.floor.width - 2 * FLOOR_PAD,
   ).columns;
-  for (let facing = 0; facing < subject.facings; facing++) {
-    const column = facing % floorColumns;
-    const row = Math.floor(facing / floorColumns);
+  for (let i = 0; i < shown.length; i++) {
+    const facing = shown[i];
+    const column = i % floorColumns;
+    const row = Math.floor(i / floorColumns);
     // Real size is the whole point of this panel: one bake pixel per device pixel, exactly as
     // `drawWorld` will blit it.
     ctx.drawImage(
@@ -258,19 +275,31 @@ export function bakedPixels(size: number, dpr: number): number {
 // under, so the harness owns it rather than asking a dozen agents to remember it (#77 §5).
 export function bakeSubject(subject: SpriteSubject, dpr: number): HTMLCanvasElement[][] {
   assertSubject(subject);
-  const pixels = bakedPixels(subject.size, dpr);
   return Array.from({ length: subject.frames }, (_, frame) =>
-    Array.from({ length: subject.facings }, (_, facing) => {
-      const canvas = document.createElement("canvas");
-      canvas.width = pixels;
-      canvas.height = pixels;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("no 2d context: sprites can only be baked in a real browser");
-      ctx.scale(dpr, dpr);
-      subject.draw(ctx, subject.size, facing, frame);
-      return canvas;
-    }),
+    Array.from({ length: subject.facings }, (_, facing) => bakeOne(subject, dpr, facing, frame)),
   );
+}
+
+// One variant, baked on its own. Sprites whose variant count is a *product* — an ore tile's
+// position cell times its neighbour mask — declare thousands of combinations while a single frame
+// ever asks for a few hundred, so baking the whole grid up front would cost far more memory and
+// far more stall than the sprite is worth. Baking one at a time makes the bill track what is
+// actually drawn.
+export function bakeOne(
+  subject: SpriteSubject,
+  dpr: number,
+  facing: number,
+  frame: number,
+): HTMLCanvasElement {
+  const pixels = bakedPixels(subject.size, dpr);
+  const canvas = document.createElement("canvas");
+  canvas.width = pixels;
+  canvas.height = pixels;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("no 2d context: sprites can only be baked in a real browser");
+  ctx.scale(dpr, dpr);
+  subject.draw(ctx, subject.size, facing, frame);
+  return canvas;
 }
 
 // The harness's second channel: pixel facts a spy context can never see, read off a real canvas
