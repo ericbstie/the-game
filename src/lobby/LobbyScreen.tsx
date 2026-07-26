@@ -18,11 +18,14 @@ export function LobbyScreen({ state, onLeave, onStart }: LobbyScreenProps) {
   const isHost = snapshot.host === state.self?.id;
 
   return (
-    <main className="lobby">
+    <main className="lobby sheet">
       <header className="lobby-header">
         <h1>Squad</h1>
+        {/* The join code is the one thing on this screen the allowlist names outright — it cannot
+            be shared without being read, so it is set as the headline number it is. */}
         <p className="code">
-          Share code <strong>{state.code}</strong>
+          <span className="code-label">Share code</span>
+          <strong>{state.code}</strong>
         </p>
       </header>
       {state.status === "reconnecting" && (

@@ -104,6 +104,8 @@ export class ClientWorld {
   readonly build: BuildState; // server-owned; mirrored here so the ghost tests placement locally
   private lastTick = -1; // highest applied map-delta tick; guards apply-if-newer
   private selfHp: number; // client-authoritative: the owner judges its own contact damage
+  // Client clock, stamped when a `structHits` entry last landed. See `structureUnderAttack`.
+  private lastStructHitAt = Number.NEGATIVE_INFINITY;
 
   // `initialHp` carries the owner's HP across a reconnect rebuild (a fresh world defaults to full).
   // Without it, a mid-match reconnect would reset to full and the report loop could relay that heal
@@ -273,7 +275,9 @@ export class ClientWorld {
     }
     for (const h of delta.structHits ?? []) {
       const structure = this.build.structures.get(h.id);
-      if (structure) structure.hp = h.hp;
+      if (!structure) continue; // an id this client has never seen says nothing about our base
+      structure.hp = h.hp;
+      this.lastStructHitAt = now;
     }
     // After `builds`: a turret placed this tick can already be holding a target in the same delta.
     this.applyAims(delta.aims ?? []);
@@ -313,6 +317,20 @@ export class ClientWorld {
     if (enemy) return interpolateAt(enemy.buffer, now - ENEMY_RENDER_DELAY_MS) ?? { ...enemy.pos };
     const nest = this.nests.find((n) => n.id === id);
     return nest?.alive ? { ...nest.pos } : null;
+  }
+
+  // Whether something the squad built has been bitten within the last `windowMs`.
+  //
+  // This is the state #76 asks the HUD's warning icon to show, and no snapshot carries it: the
+  // wire reports *damage*, an edge, while the icon reports *being attacked*, a condition. The gap
+  // between them is the window — a spider bites on a cadence, so a base actually under attack
+  // refreshes this every bite and one that has been left alone lets it lapse.
+  //
+  // Derived from `structHits` alone. `removals` looks like the same signal and is not: it also
+  // carries a structure the squad demolished on purpose, which would flash an attack warning at a
+  // player tidying up their own base.
+  structureUnderAttack(now: number, windowMs: number): boolean {
+    return now - this.lastStructHitAt < windowMs;
   }
 
   // The squad's shots from the last `maxAgeMs`, oldest first.

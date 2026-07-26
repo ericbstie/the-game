@@ -16,8 +16,12 @@ export function Menu({ state, onHost, onJoin }: MenuProps) {
   const busy = state.status === "connecting";
 
   return (
-    <main className="menu">
-      <h1>Breakout Box</h1>
+    <main className="menu sheet">
+      <header className="masthead">
+        <p className="kicker">Co-operative Arena Survival</p>
+        <h1>Breakout Box</h1>
+        <p className="standfirst">Six to a squad · One way out</p>
+      </header>
       {state.error && (
         <p className="error" role="alert">
           {state.error}
@@ -47,11 +51,12 @@ export function Menu({ state, onHost, onJoin }: MenuProps) {
         <label className="field">
           Lobby code
           <input
+            className="code-input"
             value={code}
             onChange={(e) => setCode(e.target.value)}
             maxLength={4}
             autoCapitalize="characters"
-            placeholder="e.g. AB3K"
+            placeholder="AB3K"
           />
         </label>
         <button type="submit" disabled={busy || code.trim() === ""}>

@@ -26,7 +26,11 @@ const COPY: Record<MatchOutcome, { title: string; detail: string; timeLabel: str
 export function EndScreen({ outcome, elapsedMs, onLeave }: EndScreenProps) {
   const copy = COPY[outcome];
   return (
-    <main className="end" data-outcome={outcome}>
+    // #81 settled that the end screen is a *screen*, not the match: the in-match allowlist grants
+    // the running escape countdown, not this. So the verdict, the detail and the button all stay,
+    // set as magazine typography like the menu and the lobby.
+    <main className="end sheet" data-outcome={outcome}>
+      <p className="kicker">The Verdict</p>
       <h1>{copy.title}</h1>
       <p className="end-detail">{copy.detail}</p>
       <p className="end-time">
