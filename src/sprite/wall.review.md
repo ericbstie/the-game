@@ -1,178 +1,164 @@
 # wall — review
 
-Three rounds. The reviewer is advisory (ADR 0002 §3); what it asked for is recorded here whether or
-not it was taken, and the two places where it was overruled say why.
+The buildable wall was redrawn. It was an **elevation of a brick face**, one drawing, `facings: 1`;
+it is now a **wall top seen from above**, sixteen drawings on a neighbour mask. What follows is why,
+what the change cost, and what is now load-bearing about it.
 
-## What was decided, and why
+The per-sprite review loop is deliberately short here — one reviewer pass at the end, not the three
+rounds the first version had. What replaced the rounds is the run harness: every judgement below was
+made on a line, a column, an L, a closed ring and a solid block of real walls painted through the
+shipped `drawWorld`, at dpr 1 and dpr 2, rather than on a tile.
 
-**`facings: 1`.** `README.md` leaves the count to me. A wall has no variants: #76 §5 cut structure
-damage states, so a health bar carries damage, and there is no orientation to pick — the sprite is
-symmetric about its vertical axis and its box is exactly its footprint.
+## What changed, and why the old one had to go
 
-**Elevation inside a footprint-sized box.** A true elevation of a 30-deep, 30-tall wall would be 60
-px tall; the box is 30. So the top surface is foreshortened into a band and the front face takes the
-rest. Every other 2×2 building has the same constraint.
+The old sprite was a good brick elevation and the wrong object. Drawn face-on, a run of them was a
+row of brick *walls* standing shoulder to shoulder — you never saw a top, so nothing said the run was
+one mass, and nothing could say where a mass ended. The author's reference is a top-down colony sim:
+the top surface dominates, brick appears only where the mass is cut, and a shared face shows nothing
+at all. That last clause is what the old sprite could not express, because it had no way to know its
+neighbours.
 
-**Ink reaches all four edges of the box**, so `sprite:sheet` reports `1 bake(s) touch the edge of
-their box` on every render. That is the point: a wall that stopped short of its box would leave a
-gap between neighbours in a run.
+## Top against side, without colour
 
-## The tiling problem, which drove the whole design
+The reference carries top-vs-face in colour — pale stone above, brick red on the cut faces. #76 §1
+grants two colours and neither is one of those, so the contrast is carried by **value and mark
+density** instead:
 
-Players lay these edge to edge, and `draw` cannot see its neighbours — so seamlessness has to come
-out of the sprite alone. Two failure modes had to be avoided at once: a **seam** every 30 px, and an
-**obviously identical stamp**.
+| | ink | marks |
+|---|---|---|
+| **top surface** | ~10% | 1 px hairlines: two bed joints at a pitch of 15 and short head joints between them |
+| **cut face** | ~80% | solid ink with the mortar knocked out white |
+| **outline** | solid | 1 px, on cut edges only |
 
-The resolution is that nothing in the drawing has a period of 30:
+That is an order of magnitude apart in coverage, which is what makes them read as different surfaces
+of the same object before any detail resolves — and it is the natural top-down convention anyway: the
+top catches the light, a vertical face is in shadow. Solid ink with white knocked out of it is also
+already the 30 px family's idiom (`generator.ts` names it: *"solid black masses with white windows cut
+out"*), so the wall now belongs to the same set of nibs as the miner and the turret.
 
-- The courses, the cap and the base run the **full width**, so they continue straight through a join.
-- The bond repeats every **10 px**, which divides the box.
-- The bond phases (2 and 7) sit **clear of both box edges** — no vertical ink in column 0 or column
-  29. Two neighbours therefore never double a head joint into a thicker line at the seam, and never
-  leave a gap either. The brick straddling a join is a full-length brick like every other.
+**The top is joints and nothing else — no tone**, and it is bounded on both sides. Bare paper is not
+enough, because the floor is bare paper too: a closed ring would come out as two concentric brick
+bands with white on both sides of them and nothing saying which side was the wall. That case is the
+reason the marks exist at all, and it is why the ring is in the harness. A halftone is not an option
+in the other direction: at the value that reads as tone it lands on the room wall's hatched face, and
+those two are on screen together.
 
-The cost is that the left and right silhouette is inked only where a bed joint reaches it. There is
-**no phase that both tiles invisibly and closes both sides**: inking the edges puts a doubled 2 px
-vertical at every join, which is a worse artefact than a dashed edge. Round 1 confirmed the trade
-was made the right way round.
+## The three faces are three depths
 
-Verified by rendering runs of 8 at dpr 1 and dpr 2, and an L, rather than by argument. The reviewer
-independently built its own butted row and reached the same conclusion.
+Near 8 px, flanks 5, far 3. That does three jobs at once:
 
-## Round 1 — the staggered bond
+- **It is the light and the projection.** You see a lot of the face turned toward you, a strip of each
+  flank, and barely anything of the far side. A tile with four equal faces reads as an elevation of a
+  box, not as a top.
+- **It is the line-weight hierarchy** the style wants; one width everywhere is CAD linework.
+- **It resolves corners.** Where two cut faces meet they butt at a step rather than crossing bonds
+  into mush, and the deeper face wins, which is the correct occlusion.
 
-Reviewed the first version that got past two rejected attempts: a **stacked** bond read as a
-**six-pane window** at 30 px, and tightening it to three columns turned it into a **noughts-and-
-crosses grid**. Both were thrown away. The half-pitch offset between courses is what made it read as
-masonry.
+The far face carries **no brick at all** — from up here it is a shadow under the arris. The flanks
+carry bed joints only: five pixels holds a silhouette, one course and an arris and nothing more. A
+head joint was drawn across them and had to come out — crossing a bed joint in a 3 px face it made a
+white capital I every five pixels, a chain of marks rather than a wall.
 
-**Verdict: pass, nothing must change.**
+## The mask
 
-- First impression, stated blind: *"a low brick wall, seen face-on, with a heavy black capstone
-  across the top."* Not a window (a window needs a frame on four sides and 2–3 large panes; this has
-  12 small cells in offset rows), not a grid (every vertical is a 5 px stub, not a full-length
-  lattice line), not a barcode (the dominant lines are horizontal), not a crate.
-- **Seam: none.** Measured off the bake — head joints at x = 2, 12, 22 on odd courses and 7, 17, 27
-  on even, period exactly 10, offset exactly half a brick, no ink at x = 0 or x = 29. In a 6-wide
-  render it could not locate the joins by eye while knowing where they were.
-- **Artefacts: none.** Zero anti-aliased pixels in the whole 60×60 bake — the only one of the three
-  buildings with no grey fringing (the miner has AA on the funnel diagonals, the turret on the
-  dome). Cap, courses and joints all measured exact, not one band a pixel off.
-- **Distinct from the miner and the turret: no risk either way.** The miner has a triangular hopper
-  breaking its top edge and a large black circle low down; the turret is narrow, vertical and domed
-  and does not fill its box. The wall is the only one of the three that is a plain full-width
-  rectangle with a straight top, and the only one that is a light field rather than a solid ink
-  mass.
-- **Caveat it raised about panel 3:** the magnifier scales 60 px by 7.97, so some lines land on 8
-  display pixels and some on 7. Apparent unevenness in joint thickness there is the fractional zoom,
-  not the sprite.
+`facing` is a 4-bit neighbour mask: 1 north, 2 east, 4 south, 8 west, set where another **wall** abuts.
+0 is a wall standing alone with all four faces cut; 15 is a wall buried in a mass with none. Sixteen
+variants covers every case exactly, corners included — an L's corner is `EAST | SOUTH`, and the two
+faces it does not draw are precisely the two that are interior.
 
-**Its ranked nice-to-have, and what happened:**
+Derived in `drawWorld` (`wallFacing`), off a set of the tiles walls cover, built **once per frame**
+before the structure loop. Three things about it are deliberate:
 
-1. *Thicken the base to 2 px* — the outer contour was 1 px, the same weight as an interior bed
-   joint, so the wall had no line-weight hierarchy and did not sit on the floor. **Taken.** Paid for
-   by taking the cap from 6 px to 5 rather than by robbing a course.
-2. *Give the cap's lower edge more weight* — **not taken.** The cap is a 5 px solid band, already
-   five times a bed joint; there is no pixel to find that would not come out of a course.
-3. *Leave the ragged sides and the perfect regularity alone* — the sides were left alone. The
-   regularity was not; see round 3.
+- **The set holds every tile a wall covers, and a face counts as covered when any tile of the strip
+  alongside it is in the set.** A `tx ± 2` test would be wrong: nothing snaps a wall to its own
+  footprint — `cursorTile` is `tileOf`, per tile — so two walls can butt while their origins sit one
+  tile out of step. That join is real, and the strip test is the one that sees it.
+- **Off-screen walls are in the set.** A run does not stop at the viewport edge, and a wall whose
+  neighbour was culled would grow a brick face that is not there, which pops as the camera moves.
+- **Only walls count.** A miner butted against a wall does not cover it — different building, and the
+  wall's face is still a cut face where it meets one.
 
-## Round 2 — the base
+Nothing about this reaches the wire, the sim, or the `SpriteSubject` contract. It is the `facing` axis
+used for what a wall actually has instead of an orientation it does not.
 
-Same reviewer, shown only the changed sheet, asked whether the change bought what it predicted and
-whether losing a pixel off the cap cost anything.
+**The ghost takes the mask too**, so laying a wall onto the end of a run previews the join it will
+make. The run it joins keeps its own faces until the placement lands — the ghost is a preview of the
+tile under the cursor, not of a structure list the server has not agreed to.
 
-**Verdict: ship it. Nothing must change.**
+## The period rule, which now binds in two directions
 
-- **The hierarchy now exists and is legible: cap 5 > base 2 > bed joint 1.** Previously the base and
-  the bed joints were both 1 px and indistinguishable, so the bottom edge was not readable as the
-  outer contour. In a butted row the base now reads as a continuous ground line across the whole
-  span — the gain shows up most where walls are actually used.
-- **Losing a pixel off the cap cost nothing, and the reason is worth recording.** Total ink on the
-  left/right silhouette is *unchanged* at 10 of 30 rows: it was 6 (cap) + 4 joint terminations, and
-  is now 5 (cap) + 3 joints + 2 (base). The pixel was not spent, it was **relocated** from the top
-  anchor to the bottom, where the rectangle was weakest. The cap still outweighs any joint 5:1 and
-  is still the only full-bleed black mass, so the sprite stayed top-anchored.
-- **No regressions.** Bake still contains exactly two values, 0 and 255 — zero anti-aliased pixels.
-  Bond, phases and period untouched and re-audited from the bitmap. Columns 0 and 29 confirmed
-  inked only on full-width rows. Six butted edge to edge: no seam, no stamp, one continuous wall.
-- **Distinctness unchanged.** It noted the wall's identifying cue is being the only one of the three
-  that is **full-bleed at both top and bottom**, which the heavier base reinforced.
-- **Explicit warning: do not shave the cap further.** At 4 px it would come within striking distance
-  of the base and flatten the hierarchy. Recorded so nobody reclaims that pixel later.
+Nothing in the drawing has a period of 30. That was the whole design of the old sprite and it binds
+harder now, because a run can go *down* the screen as well as across:
 
-## Round 3 — putting a hand in it
+| feature | pitch | phases | clear of |
+|---|---|---|---|
+| near-face head joints | 10 | 2 and 7 | columns 0, 29 |
+| flank bed joints | 10 | 6 | rows 0, 29 |
+| top bed joints | 15 | 12 | rows 0, 29 |
+| top head joints | 15 across | 3/18 and 10/25 | columns 0, 29 |
 
-A cross-cutting warning reached this sprite between rounds: exact regularity and uniform stroke
-width are the tell-tale artefacts of generated imagery, and axis-aligned regular fields read as mesh
-rather than material. The courses were made unequal (4/5/5/6, deepening toward the floor) and the
-head joints were given alternating weight (1 px and 2 px). **It was also tried on the bed joints and
-reverted** — they run the full width, so a 2 px bed reads as a second cap band across the middle and
-competes with the real one.
+Every phase sits clear of both box edges, so two neighbours never double a joint into a thicker line
+at the seam and never leave a gap either. Verified by rendering rather than by argument: in a six-wide
+butted run and a four-deep butted column the joins cannot be located by eye while knowing where they
+are.
 
-Reviewed by a **fresh** reviewer rather than the one from rounds 1–2, because the question was now a
-style judgement and the previous reviewer had already praised the even rhythm it was being asked to
-re-examine.
+**One period of 30 is spent deliberately.** The top's bond staggers over two courses, and two courses
+of 15 are the box — so the top surface repeats every 30 down the screen. The alternatives were both
+worse: three courses at a pitch of 10 closes over the box without a 30-period but puts two full-width
+rules across every top at the weight and spacing of the near face's own courses, and a run then reads
+as a brick wall seen face-on, which is the exact thing this drawing exists to stop being; two courses
+at a pitch of 10 repeats every 20, which does not divide 30 and breaks a vertical run at every join.
+The 30 is spent on the three faintest marks in the sprite, against a bond at 10 and a course at 10 on
+the faces, which are what the eye actually finds.
 
-**Verdict: nothing must change, and nothing is even worth acting on.**
+## Measurements
 
-- **Blind first impression at real size: "a brick wall."** Immediate, no second guess. Not a window,
-  grid, waffle, barcode or crate. What kills all of those is the running bond — no vertical ever
-  runs through more than one course, and a window or a grid needs continuous mullions.
-- **The symmetry charge fails on measurement.** The sprite has **no axis of symmetry at all**: not
-  mirrored (course 1's left stub is 2 px, its right stub 7 px) and not vertically symmetric (cap 5 vs
-  base 2, courses 4/5/5/6).
-- **The periodicity is real, and it is forced.** For the bond to run unbroken through a join the
-  horizontal period must divide 30, which allows 10, 15 or 30. One hand-drawn quirk per box is a
-  period of 30 — in a row of six that is **six identical "accidents" in a straight line**, a far
-  louder machine tell than the regularity. There is no third option at this pitch, so the hand has
-  to live in the vertical profile, and the reviewer judged that budget correctly spent.
-- **Stroke taper is not available and should not be chased.** The minimum stroke is 1 CSS px; a
-  taper would have to happen inside 2 device px, would be invisible at real size, and would put an
-  odd-coordinate edge into a bake that is currently 100% even-aligned — trading dpr 1 crispness for
-  nothing. The 1/2 px alternation between courses is the substitute.
-- **Material, not mesh.** Perforation reads as perforation because its holes sit on a square
-  lattice; the half-brick offset is what makes the eye read masonry instead. The solid cap anchors it
-  as a built object rather than a swatch of pattern.
-- **Artefacts: none.** Two tones only (0 and 255) at uniform alpha, and **every run boundary lands on
-  an even device coordinate**, so it stays hard-edged at dpr 1 as well as dpr 2. Ink coverage 43.7%
-  — the lightest of the three buildings, which is right, since a wall should recede next to a
-  machine.
-- **Tiling re-confirmed by rendering** 4-, 5- and 6-wide butted rows: the joint pitch divides the
-  tile exactly, so a run is mathematically periodic at the brick pitch and the joins cannot be
-  located by eye. The end stubs pair correctly across a join (7 + 2 and 1 + 7, each matching that
-  course's interior brick).
-- **An accident worth keeping.** In courses 2 and 4 the rightmost head joint stops 1 px short of the
-  edge, so against the white floor it becomes a black edge tick. The right side therefore carries two
-  edge ticks the left side does not — the reviewer called this "the single most *drawn* thing in the
-  image", and it falls out of the tiling offset for free.
-- **One measured oddity that is not a bug:** the wide head joints sit 0.5 CSS px right of a true
-  half-bond (centre 8.0 where a perfect stagger wants 7.5). Even-coordinate placement offers only
-  x = 12 or 14 device px and both miss by 1; it is forced by the crispness constraint and invisible.
+- **Zero anti-aliasing, at dpr 1 and dpr 2.** All sixteen bakes contain exactly two values — 0 and 255
+  — at full alpha, measured off the real bakes. Every edge is an integer and axis-aligned; nothing
+  curves.
+- **Ink is 35% of the covered pixels across all sixteen**, from 55% on the isolated wall down to 11%
+  on the fully enclosed one. That gradient is the point: a wall that is all cut faces is heavy, and one
+  buried in a mass is nearly all top.
+- The harness reports *16 bake(s) touch the edge of their box* on every render. That is the point:
+  a wall that stopped short of its box would leave a gap between neighbours in a run.
+- The whole box is filled with paper, so the harness's `grey` count is the white top and not
+  anti-aliasing — the two are indistinguishable to `measurePixels`. A wall occludes the ore under it,
+  which is why the fill is there.
 
-## Distinguishable from the miner and the turret
+## Distinguishable from the miner, the turret and the room wall
 
-Asked at every round, and answered by putting the three side by side at real size rather than by
-argument. **No confusion with either, in any round.**
-
-- **vs miner** — the miner is inset from its box and floats, with a hopper triangle and stack
-  breaking its top edge and a bold ring low down. The wall has no curve anywhere, an unbroken flat
-  top, and touches both side edges of its box.
-- **vs turret** — the turret is a solid black dome on a centred vertical neck and plinth, and does
-  not fill its box horizontally. The wall has no vertical axis, no curve and a flat top.
-
-The wall is also the only one of the three with a **repeating interior field**; the other two are
-single silhouettes with one or two interior marks. That classifies it at a glance, even out of
-focus. Its identifying cue is being **full-bleed at both top and bottom**.
+- **vs miner and turret** — both are solid ink masses standing clear of their box edges with a curve in
+  them. This is a light field with no curve anywhere that bleeds to whichever edges are cut. Tone and
+  silhouette separate them before any detail resolves.
+- **vs the room perimeter**, which shares the 30 px box *and* the subject — that one is a diagonal grey
+  hatch, "different frequency, different value, different material", and it is an unfolded elevation
+  whose cap always points away from the middle of the arena. This one has no orientation beyond its
+  neighbours.
 
 ## Standing notes for whoever touches this next
 
-- **Do not shave the cap below 5 px.** It would come within striking distance of the base and
-  flatten the cap > base > joint hierarchy.
-- **Do not ink the left and right box edges** to tidy the dashed silhouette. It puts a doubled
-  vertical at every 30 px join, which is a worse artefact than a dashed edge, and both reviewers
-  independently confirmed the trade is the right way round.
-- **Do not add a hand-drawn quirk to the face.** Any variation across the box has a period of 30 and
-  becomes a repeating stamp in a run.
-- **Keep every edge on an integer.** It is what buys 0% anti-aliasing, and it is checked on every
-  render by the harness's grey count.
+- **Judge a run, not a tile.** The scratch harness that butts walls into a line, a column, an L, a ring
+  and a solid block is what caught every defect in this drawing; the contact grid caught none of them.
+- **Do not put a mark on an edge that has a neighbour.** Not an outline, not a joint, nothing. That is
+  the entire mechanism by which two tops merge instead of showing a seam.
+- **Keep every phase clear of columns 0 and 29 and rows 0 and 29**, and every pitch a divisor of 30.
+- **Do not let a flank joint land on a top bed joint.** They coincided at row 12 once, and the result
+  was a white notch at each end of a black hairline — a rule broken into three pieces.
+- **Keep every edge on an integer.** It is what buys 0% anti-aliasing, and it is checked on every render.
+- **Do not add tone to the top surface.** It is the largest thing in the sprite and has to stay the
+  lightest, or the contrast that carries top-against-side goes with it.
+
+## Contradicts, and what it means
+
+- **#76 §2 and #81 both list the wall as "elevation — top surface and front face both visible."** It is
+  still both, and it is still orthographic and identical everywhere on screen — but the *balance* has
+  inverted: the top now dominates and the front face is a band. A run of the old drawing could not read
+  as one mass, which is what the author's reference asks for, and no amount of redrawing a single
+  elevation tile reaches it. The miner and the turret are untouched and remain true elevations, so the
+  wall is now the one 2×2 building drawn top-dominant. Worth an explicit ruling.
+- **#76 §5 / #81 "structures do not change appearance"** is about *damage*, and still holds — there are
+  no damage states here and the health bar still carries damage. Sixteen variants are a property of
+  where a wall stands, not of its condition.
+- **#87** is the same class of problem for ore and stays open. This solves it for walls only, through
+  the variant index, with no change to the `SpriteSubject` contract — an ore tile would need the same
+  derivation against a different occupancy source and a different number of variants.
