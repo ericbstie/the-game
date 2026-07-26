@@ -5,8 +5,11 @@ import type { BuildableKind } from "../lobby/protocol";
 import elite from "./elite";
 import generator from "./generator";
 import grunt from "./grunt";
+import halo from "./halo";
 import miner from "./miner";
 import nest from "./nest";
+import oreMetal from "./ore-metal";
+import orePower from "./ore-power";
 import player from "./player";
 import type { SpriteSubject } from "./sheet";
 import turret from "./turret";
@@ -75,6 +78,9 @@ export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
   wall,
   turret,
   generator,
+  halo,
+  "ore-metal": oreMetal,
+  "ore-power": orePower,
 };
 
 function footprintBox(kind: BuildableKind): number | undefined {

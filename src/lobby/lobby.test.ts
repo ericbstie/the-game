@@ -1487,6 +1487,9 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     expect(shot.dir.y).toBeCloseTo(dir.y, 12);
     // Whatever the ray reached first, the same delta has to show the sim writing that thing's HP.
     // Asserting the invariant rather than the geometry keeps this honest about which target won.
+    // `hit` is optional because a miss carries none, so pin that this shot connected at all —
+    // without it a shot that hit nothing would satisfy the membership check vacuously.
+    if (shot.hit === undefined) throw new Error("the admitted shot reported no target");
     expect([
       ...(struck?.hits ?? []).map((h) => h.id),
       ...(struck?.deaths ?? []),
