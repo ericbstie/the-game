@@ -36,18 +36,19 @@ async function connect(server: LobbyServer): Promise<TestClient> {
   return client;
 }
 
-// Host a lobby and return the client plus its shareable code.
+// Host a lobby and return the client plus its shareable code. The token comes back too, so a
+// test can drop this socket and reconnect as the same player.
 async function host(
   server: LobbyServer,
   name = "Host",
-): Promise<{ client: TestClient; code: string; id: string }> {
+): Promise<{ client: TestClient; code: string; id: string; token: string }> {
   const client = await connect(server);
   client.send({ type: "lobby/create", name });
   const created = expectMessage(
     await client.waitFor((m) => m.type === "lobby/created"),
     "lobby/created",
   );
-  return { client, code: created.code, id: created.you.id };
+  return { client, code: created.code, id: created.you.id, token: created.you.token };
 }
 
 describe("T1: host a lobby", () => {
@@ -303,6 +304,67 @@ describe("T4: disconnect greys the slot; reconnect reclaims it", () => {
     );
     expect(backOnline.presence.status).toBe("connected");
   });
+
+  // A dropped host must hand the badge on immediately, not at grace expiry: Start is gated on
+  // `session.host`, so a host held by an absent player is a lobby nobody can start (#22).
+  test("a dropped host hands the badge to the lowest connected slot at once", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben, joined: benJoined } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    await hostClient.close(); // the host closes the tab — no explicit leave
+
+    const hostChanged = expectMessage(
+      await ben.waitFor((m) => m.type === "lobby/host-changed"),
+      "lobby/host-changed",
+    );
+    expect(hostChanged.host).toBe(benJoined.you.id);
+  });
+
+  test("and the new host can start the match without waiting out the grace window", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    await hostClient.close();
+    await ben.waitFor((m) => m.type === "lobby/host-changed");
+
+    ben.send({ type: "game/start" });
+    const init = await ben.waitFor((m) => m.type === "game/world-init");
+    expect(init.type).toBe("game/world-init"); // the squad is not stuck for 45s
+  });
+
+  test("the host badge stays put if the dropped player was not the host", async () => {
+    const server = spawn();
+    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    await ben.close();
+    await hostClient.waitFor((m) => m.type === "lobby/presence-changed");
+    expect(hostClient.peek((m) => m.type === "lobby/host-changed")).toBeNull(); // Ana keeps it
+  });
+
+  test("a reconnecting host does not take the badge back", async () => {
+    const server = spawn();
+    const { client: hostClient, code, token } = await host(server, "Ana");
+    const { client: ben, joined: benJoined } = await joinLobby(server, code, "Ben");
+    await hostClient.waitFor((m) => m.type === "lobby/player-joined");
+
+    await hostClient.close();
+    await ben.waitFor((m) => m.type === "lobby/host-changed");
+
+    const back = await connect(server);
+    back.send({ type: "lobby/join", code, name: "Ana", token });
+    const rejoined = expectMessage(
+      await back.waitFor((m) => m.type === "lobby/joined"),
+      "lobby/joined",
+    );
+    expect(rejoined.reclaimed).toBe(true);
+    expect(rejoined.snapshot.host).toBe(benJoined.you.id); // Ben keeps it; no ping-pong
+  });
 });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -342,9 +404,12 @@ describe("T5: grace expiry, takeover, and empty-session teardown", () => {
     expect(err.code).toBe("slot-released");
   });
 
-  test("host-gone-by-grace reassigns the host like an explicit leave", async () => {
+  // The badge moves the instant the socket drops (T4); this covers the rest of the journey —
+  // the seat is still released when the grace window then expires, and the badge does not
+  // travel a second time on the way out.
+  test("a host who drops and never returns hands over once, then loses the seat", async () => {
     const server = spawn(40);
-    const { client: hostClient, code } = await host(server, "Ana");
+    const { client: hostClient, code, id: anaId } = await host(server, "Ana");
     const { client: ben, joined } = await joinLobby(server, code, "Ben");
     await hostClient.waitFor((m) => m.type === "lobby/player-joined");
 
@@ -354,6 +419,14 @@ describe("T5: grace expiry, takeover, and empty-session teardown", () => {
       "lobby/host-changed",
     );
     expect(hostChanged.host).toBe(joined.you.id); // Ben, the lowest occupied slot
+
+    const left = expectMessage(
+      await ben.waitFor((m) => m.type === "lobby/player-left"),
+      "lobby/player-left",
+    );
+    expect(left.id).toBe(anaId);
+    expect(left.reason).toBe("grace-expired");
+    expect(ben.peek((m) => m.type === "lobby/host-changed" && m.host !== joined.you.id)).toBeNull();
   });
 
   test("an explicit leave that empties the session frees the code for reuse", async () => {

@@ -230,6 +230,11 @@ export class LobbyHub {
     const timer = setTimeout(() => this.expireGrace(session.code, player.id), this.graceMs);
     timer.unref?.();
     session.graceTimers.set(player.id, timer);
+
+    // The badge cannot sit on an absent player. Starting the match is gated on `session.host`,
+    // so a host held through the grace window is a lobby nobody can start — for 45s, on the
+    // most ordinary way to leave a lobby: closing the tab.
+    if (session.host === player.id) this.reassignHost(session);
   }
 
   // Clear all pending timers so a stopped server leaves nothing running.
@@ -752,14 +757,21 @@ export class LobbyHub {
       return;
     }
 
-    if (session.host === player.id) {
-      session.host = this.nextHost(session).id;
-      this.broadcast(session, {
-        type: "lobby/host-changed",
-        host: session.host,
-        rev: ++session.rev,
-      });
-    }
+    if (session.host === player.id) this.reassignHost(session);
+  }
+
+  // Hand the badge to the lowest connected slot and tell the squad. A no-op when the current
+  // host is still the best candidate — a solo player keeps it through their own grace window,
+  // so reconnecting alone resumes a lobby rather than finding it hostless.
+  private reassignHost(session: SessionRecord): void {
+    const next = this.nextHost(session);
+    if (next.id === session.host) return;
+    session.host = next.id;
+    this.broadcast(session, {
+      type: "lobby/host-changed",
+      host: session.host,
+      rev: ++session.rev,
+    });
   }
 
   private nextOpenSlot(session: SessionRecord): number | null {
