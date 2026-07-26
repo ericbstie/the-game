@@ -15,7 +15,8 @@
     "ci": "biome ci .",
     "version:next": "bun run scripts/next-version.ts",
     "sprite:sheet": "bun run scripts/sprite-sheet.ts",
-    "sprite:frame": "bun run scripts/world-frame.ts"
+    "sprite:frame": "bun run scripts/world-frame.ts",
+    "frame:budget": "bun run scripts/frame-budget.ts"
   },
   "dependencies": {
     "react": "^19.2.7",

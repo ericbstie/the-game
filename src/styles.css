@@ -168,7 +168,9 @@ button:disabled {
   display: block;
   width: 100vw;
   height: 100vh;
-  background: #0e0e14;
+  /* The floor's own colour, so a resize or the frame before the first paint shows paper rather
+     than flashing the old dark ground. */
+  background: #ffffff;
   touch-action: none;
 }
 
