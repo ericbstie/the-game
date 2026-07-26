@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { WorldSnapshot } from "../lobby/protocol";
+import type { BuildableKind, WorldSnapshot } from "../lobby/protocol";
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
 import { tileKey } from "./build";
@@ -637,6 +637,129 @@ describe("drawWorld with sprites", () => {
       { camera, viewport, sprites: stubSprites(everything) },
     );
     expect(blits(gone).length).toBe(0);
+  });
+});
+
+// A buildable wall is drawn from a 4-bit mask of which sides another wall abuts — 1 north, 2 east,
+// 4 south, 8 west — carried on the sprite's facing axis. The sprite draws a cut masonry face on
+// every side the mask leaves clear and nothing at all on the others, so a mask that is wrong by one
+// bit is a seam, or a brick face buried inside a solid mass. It is pinned here rather than looked
+// at, because sixteen variants is exactly the size of set where an eye stops checking.
+describe("a wall's neighbour mask", () => {
+  const NORTH = 1;
+  const EAST = 2;
+  const SOUTH = 4;
+  const WEST = 8;
+  // Tile-space, not world-space: a wall is 2×2 tiles, so a butted neighbour is two tiles away.
+  const at = (tx: number, ty: number, kind: BuildableKind = "wall") =>
+    ({ id: `${kind}-${tx}-${ty}`, kind, tile: { tx, ty }, hp: 400 }) as const;
+
+  // Keyed by the tile a blit landed on rather than by collection order: buildings paint in Y order,
+  // so the sorted pass reorders them and an index would quietly pair a facing with the wrong wall.
+  const facings = (structures: WorldSnapshot["structures"]) => {
+    const ctx = spyCtx();
+    drawWorld(
+      ctx,
+      { ...world, players: [], nests: [], structures },
+      {
+        camera,
+        viewport,
+        sprites: stubSprites({ wall: 30, miner: 30, turret: 30, generator: 75 }),
+      },
+    );
+    return Object.fromEntries(
+      blits(ctx).map((b) => [`${b.x / 15}-${b.y / 15}`, Number(b.tag.split("/")[1])]),
+    );
+  };
+
+  test("leaves a wall standing on its own with all four faces cut", () => {
+    expect(facings([at(70, 70)])).toEqual({ "70-70": 0 });
+  });
+
+  test("bares only the faces a run covers", () => {
+    expect(facings([at(70, 70), at(72, 70), at(74, 70)])).toEqual({
+      "70-70": EAST,
+      "72-70": EAST | WEST,
+      "74-70": WEST,
+    });
+  });
+
+  test("runs down the screen as well as across", () => {
+    expect(facings([at(70, 70), at(70, 72), at(70, 74)])).toEqual({
+      "70-70": SOUTH,
+      "70-72": NORTH | SOUTH,
+      "70-74": NORTH,
+    });
+  });
+
+  test("gives an L's corner both its neighbours and keeps the other two faces bricked", () => {
+    // The corner is at (70,70) with an arm running east and an arm running south.
+    expect(facings([at(70, 70), at(72, 70), at(70, 72)])).toEqual({
+      "70-70": EAST | SOUTH,
+      "72-70": WEST,
+      "70-72": NORTH,
+    });
+  });
+
+  test("buries a wall with a neighbour on every side", () => {
+    const ring = [at(70, 70), at(68, 70), at(72, 70), at(70, 68), at(70, 72)];
+    expect(facings(ring)["70-70"]).toBe(NORTH | EAST | SOUTH | WEST);
+  });
+
+  test("counts a neighbour a tile out of step, which per-tile placement allows", () => {
+    // Nothing snaps a wall to its own footprint: these two butt along part of a face while their
+    // origins are one tile apart, and the join is real even though `tx ± 2` would not find it.
+    expect(facings([at(70, 70), at(72, 71)])).toEqual({
+      "70-70": EAST,
+      "72-71": WEST,
+    });
+  });
+
+  test("counts only walls — another building butted against one is not a neighbour", () => {
+    expect(facings([at(70, 70), at(72, 70, "miner")])).toEqual({ "70-70": 0, "72-70": 0 });
+  });
+
+  test("leaves every other buildable on facing 0, walled in or not", () => {
+    const drawn = facings([
+      at(70, 70, "turret"),
+      at(68, 70),
+      at(72, 70),
+      at(70, 68),
+      at(70, 72),
+      at(80, 80, "generator"),
+      at(78, 80),
+    ]);
+    expect(drawn["70-70"]).toBe(0); // the turret, walled in on all four sides
+    expect(drawn["80-80"]).toBe(0); // the generator, with a wall against its west face
+  });
+
+  test("gives the ghost the mask too, so it previews the join it will make", () => {
+    const ctx = spyCtx();
+    drawWorld(
+      ctx,
+      { ...world, players: [], nests: [], structures: [at(72, 70)] },
+      {
+        camera,
+        viewport,
+        sprites: stubSprites({ wall: 30 }),
+        ghost: { kind: "wall", tile: { tx: 70, ty: 70 }, valid: true },
+      },
+    );
+    // The standing wall paints first and keeps all four faces — the ghost is not a structure and
+    // does not change one. The ghost, drawn last, bares the face it will join along.
+    expect(blits(ctx).map((b) => b.tag)).toEqual(["wall/0/0", `wall/${EAST}/0`]);
+  });
+
+  test("sees a neighbour the camera culled, so a run does not grow a face at the viewport edge", () => {
+    const ctx = spyCtx();
+    // The second wall is thousands of units off screen to the east of the first — but they are
+    // butted, and the drawn one must still know its east face is covered.
+    drawWorld(
+      ctx,
+      { ...world, players: [], nests: [], structures: [at(120, 70), at(122, 70)] },
+      { camera, viewport, sprites: stubSprites({ wall: 30 }) },
+    );
+    expect(blits(ctx).map((b) => b.tag)).toEqual([`wall/${EAST}/0`]);
   });
 });
 
