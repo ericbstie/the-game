@@ -20,6 +20,7 @@ bun run build
 bun run sprite:sheet src/sprite/<name>.ts
 bun run sprite:frame
 bun run delta:size
+bun run ore:seams
 ```
 
 `bun run check` is lint, format **and** types — Bun strips types without checking them, so
@@ -33,6 +34,11 @@ compile` builds the standalone server binary.
 `bun run sprite:frame` renders a real frame of the game through `drawWorld` — no server needed.
 The loop every sprite goes through is [docs/sprite-loop.md](docs/sprite-loop.md); the contract
 each one is written against is [src/sprite/README.md](src/sprite/README.md).
+
+`bun run ore:seams` measures whether an ore patch is seamless inside and ragged at its edge — the
+two requirements a tiled sprite has to satisfy at once
+([#87](https://github.com/ericbstie/the-game/issues/87)); the contract is in
+[src/sprite/README.md](src/sprite/README.md).
 
 `bun run delta:size` measures `game/map-delta` — the only message that rides continuously, and so
 the game's bandwidth — at the caps the game supports. The baseline is

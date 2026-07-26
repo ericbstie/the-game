@@ -13,23 +13,18 @@ function subject(name: string, size: number, facings = 8, frames = 2): SpriteSub
 }
 
 // Stands in for a baked canvas: enough to tell one bake apart from another in an assertion.
-function fakeBakes(s: SpriteSubject, dpr: number) {
-  return Array.from({ length: s.frames }, (_, frame) =>
-    Array.from(
-      { length: s.facings },
-      (_, facing) =>
-        ({ tag: `${s.name}/${facing}/${frame}@${dpr}` }) as unknown as CanvasImageSource,
-    ),
-  );
-}
-
+// Baking is per **variant** from #87 on, not per sprite — an ore tile's variant index is its
+// position cell times its neighbour mask, so it declares thousands of combinations while any one
+// frame asks for a few hundred, and baking the grid up front would cost every combination that
+// could ever exist.
 function counting() {
   const baked: string[] = [];
   return {
     baked,
-    bake: (s: SpriteSubject, dpr: number) => {
-      baked.push(`${s.name}@${dpr}`);
-      return fakeBakes(s, dpr);
+    bake: (s: SpriteSubject, dpr: number, facing: number, frame: number) => {
+      const tag = `${s.name}/${facing}/${frame}@${dpr}`;
+      baked.push(tag);
+      return { tag } as unknown as CanvasImageSource;
     },
   };
 }
@@ -52,14 +47,25 @@ describe("createSpriteCache", () => {
     expect(baked).toEqual([]);
   });
 
-  test("bakes a sprite once and serves every later facing and frame from the cache", () => {
+  test("bakes each variant once and serves every repeat from the cache", () => {
     const { baked, bake } = counting();
     const cache = createSpriteCache({ player: subject("player", 28) }, bake);
     const sprites = cache.source(2);
     sprites("player", 0, 0);
     sprites("player", 5, 1);
     sprites("player", 3, 0);
-    expect(baked).toEqual(["player@2"]);
+    sprites("player", 5, 1); // already in hand
+    sprites("player", 0, 0);
+    expect(baked).toEqual(["player/0/0@2", "player/5/1@2", "player/3/0@2"]);
+  });
+
+  // The point of baking per variant: a sprite may declare far more combinations than a frame ever
+  // draws, and only the drawn ones may cost anything.
+  test("never bakes a variant nothing asked for, however many the sprite declares", () => {
+    const { baked, bake } = counting();
+    const cache = createSpriteCache({ "ore-metal": subject("ore-metal", 15, 2304, 1) }, bake);
+    cache.source(2)("ore-metal", 1_800, 0);
+    expect(baked).toEqual(["ore-metal/1800/0@2"]);
   });
 
   test("bakes at the device pixel ratio it was asked for", () => {
@@ -78,7 +84,7 @@ describe("createSpriteCache", () => {
     cache.source(2)("grunt", 0, 0);
     const moved = cache.source(3);
     expect(tagOf(moved("player", 0, 0))).toBe("player/0/0@3");
-    expect(baked).toEqual(["player@2", "grunt@2", "player@3"]);
+    expect(baked).toEqual(["player/0/0@2", "grunt/0/0@2", "player/0/0@3"]);
   });
 
   test("a pixel ratio that has not moved does not throw the bakes away", () => {
@@ -86,7 +92,7 @@ describe("createSpriteCache", () => {
     const cache = createSpriteCache({ player: subject("player", 28) }, bake);
     cache.source(2)("player", 0, 0);
     cache.source(2)("player", 0, 0);
-    expect(baked).toEqual(["player@2"]);
+    expect(baked).toEqual(["player/0/0@2"]);
   });
 
   test("reports the logical box, not the device-pixel size the sprite was baked at", () => {

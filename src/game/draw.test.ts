@@ -538,28 +538,57 @@ describe("drawWorld with sprites", () => {
     expect(new Set(variants()).size).toBeGreaterThan(1); // and not all the same tile
   });
 
-  test("an ore tile's variant is its position, so no two neighbours draw the same cell", () => {
-    // The variant is `(tx mod 12) * 12 + (ty mod 12)`, not a hash. A hash is uniform but tells a
-    // tile nothing about who it sits next to, so every mark stays boxed in its own cell and a
-    // measurable ink deficit forms on the grid pitch. Position lets a tile derive its neighbours'
-    // cells and draw a mark that straddles a seam identically from both sides. 12 is past the
-    // widest patch the generator can grow, so no patch can contain a cell twice.
-    const ore = new Map<number, "metal" | "power">();
-    for (let ty = 70; ty < 78; ty++)
-      for (let tx = 70; tx < 78; tx++) ore.set(tileKey({ tx, ty }), "metal");
-    const ctx = spyCtx();
-    drawWorld(
-      ctx,
-      { ...standing, players: [], enemies: [], nests: [], ore },
-      { camera, viewport, sprites: stubSprites({ ...everything, "ore-metal": 15 }) },
-    );
-    const at = (tx: number, ty: number) =>
-      blits(ctx).find((b) => b.x === tx * 15 && b.y === ty * 15)?.tag;
-    // The exact formula, not merely "distinct" — a hash also gives distinct values here, so an
-    // assertion about distinctness would pass with the property this indexing exists for removed.
-    expect(at(72, 73)).toBe(`ore-metal/${(72 % 12) * 12 + (73 % 12)}/0`);
-    expect(at(72, 73)).not.toBe(at(73, 73)); // neighbours never share a cell
-    expect(at(72, 73)).not.toBe(at(72, 74));
+  // The variant packs two facts (#87). The **cell** is `(tx mod 12) * 12 + (ty mod 12)`, not a
+  // hash: a hash is uniform but tells a tile nothing about who it sits next to, so every mark
+  // stays boxed in its own cell and a measurable ink deficit forms on the grid pitch. Position
+  // lets a tile derive its neighbours' cells and draw a mark that straddles a seam identically
+  // from both sides. The **mask** says which of the four neighbours hold the same ore, which is
+  // the only thing that distinguishes an interior edge — where ink must cross — from a boundary
+  // one, where it must be held back.
+  describe("an ore tile's variant", () => {
+    const patch = (from: number, to: number) => {
+      const ore = new Map<number, "metal" | "power">();
+      for (let ty = from; ty < to; ty++)
+        for (let tx = from; tx < to; tx++) ore.set(tileKey({ tx, ty }), "metal");
+      return ore;
+    };
+    const tagsFor = (ore: Map<number, "metal" | "power">) => {
+      const ctx = spyCtx();
+      drawWorld(
+        ctx,
+        { ...standing, players: [], enemies: [], nests: [], ore },
+        { camera, viewport, sprites: stubSprites({ ...everything, "ore-metal": 15 }) },
+      );
+      return (tx: number, ty: number) =>
+        blits(ctx).find((b) => b.x === tx * 15 && b.y === ty * 15)?.tag;
+    };
+    const packed = (mask: number, tx: number, ty: number) =>
+      `ore-metal/${mask * 144 + (tx % 12) * 12 + (ty % 12)}/0`;
+
+    test("carries its position cell, by the exact formula rather than merely distinctly", () => {
+      const at = tagsFor(patch(70, 78));
+      expect(at(72, 73)).toBe(packed(15, 72, 73)); // buried: all four neighbours present
+      expect(at(72, 73)).not.toBe(at(73, 73)); // neighbours never share a cell
+      expect(at(72, 73)).not.toBe(at(72, 74));
+    });
+
+    test("carries which neighbours hold the same ore, so an edge knows which kind it is", () => {
+      const at = tagsFor(patch(70, 78));
+      expect(at(70, 70)).toBe(packed(2 | 4, 70, 70)); // north-west corner: east and south only
+      expect(at(77, 77)).toBe(packed(1 | 8, 77, 77)); // south-east corner: north and west only
+      expect(at(74, 70)).toBe(packed(2 | 4 | 8, 74, 70)); // north edge: everything but north
+    });
+
+    test("a lone tile is all boundary, and reads as mask 0", () => {
+      const ore = new Map<number, "metal" | "power">([[tileKey({ tx: 72, ty: 73 }), "metal"]]);
+      expect(tagsFor(ore)(72, 73)).toBe(packed(0, 72, 73));
+    });
+
+    test("a neighbour of the other ore kind is not a neighbour", () => {
+      const ore = patch(70, 78);
+      ore.set(tileKey({ tx: 73, ty: 73 }), "power"); // punch a hole of the wrong kind
+      expect(tagsFor(ore)(72, 73)).toBe(packed(15 & ~2, 72, 73)); // east is open again
+    });
   });
 
   test("tiles the room's wall along the edges the camera can see, and nowhere else", () => {
