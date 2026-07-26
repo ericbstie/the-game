@@ -303,6 +303,43 @@ describe("stepEnemies shot resolution (hitscan ray)", () => {
   });
 });
 
+// #84: the wire carries far more coordinate precision than the fixed M4 zoom can show. Trimming
+// it is a serialisation concern only — the sim keeps every bit it had.
+describe("#84: the delta ships display precision, not float64", () => {
+  test("move coordinates ride as whole world units", () => {
+    const s = stateWith([grunt("e1", { x: C.x + 1_000.418_23, y: C.y + 12.900_1 })]);
+    const [move] = stepEnemies(s, [], [], 100).events.moves;
+    expect(move).toEqual(["e1", Math.round(only(s).pos.x), Math.round(only(s).pos.y)]);
+    expect(Number.isInteger(move[1])).toBe(true);
+    expect(Number.isInteger(move[2])).toBe(true);
+  });
+
+  test("but the sim keeps its own sub-unit position — rounding is the wire's, not the world's", () => {
+    const start = { x: C.x + 1_000.418_23, y: C.y };
+    const s = stateWith([grunt("e1", { ...start })]);
+    // A chase step of 100 ms cannot land on a whole number from this start.
+    stepEnemies(s, [{ id: "p1", pos: { x: start.x + 500, y: start.y } }], [], 100);
+    expect(Number.isInteger(only(s).pos.x)).toBe(false);
+  });
+
+  test("a shot's direction rides at three decimals", () => {
+    const s = stateWith([grunt("e1", { x: 300, y: 100 })]);
+    const dir = { x: 0.987_654_321, y: 0.156_789_012 };
+    const [fired] = step(s, [shot({ x: 100, y: 100 }, dir)]).shots;
+    expect(fired.dir).toEqual({ x: 0.988, y: 0.157 });
+  });
+
+  test("and the server still raycasts on the direction it was given, not the rounded one", () => {
+    // A grunt placed just inside the ray's half-width for the *exact* aim. If the sim resolved
+    // against the rounded vector instead, this ray would miss.
+    const dir = { x: 0.999_999, y: 0.001_414 };
+    const s = stateWith([grunt("e1", { x: 100 + 600 * dir.x, y: 100 + 600 * dir.y })]);
+    const events = step(s, [shot({ x: 100, y: 100 }, dir)]);
+    expect(events.hits).toEqual([{ id: "e1", hp: GRUNT_HP - RANGED_DAMAGE }]);
+    expect(events.shots[0].hit).toBe("e1"); // and the wire agrees about what it struck
+  });
+});
+
 describe("nests are attackable, and silencing one carves a safe lane", () => {
   const nestAt = (s: EnemyState, sector: number): Nest => {
     const n = s.nests.find((x) => x.sector === sector);

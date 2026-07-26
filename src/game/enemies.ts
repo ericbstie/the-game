@@ -346,7 +346,11 @@ export function stepEnemies(
   for (const enemy of state.enemies.values()) stepEnemy(enemy, context);
 
   const moves: EnemyMove[] = [];
-  for (const enemy of state.enemies.values()) moves.push([enemy.id, enemy.pos.x, enemy.pos.y]);
+  // Whole world units on the wire. 1 unit = 1 CSS px at the fixed M4 zoom, so the discarded
+  // precision is strictly sub-pixel — and not even sub-pixel *motion*, since the client
+  // interpolates between samples. `enemy.pos` itself keeps every bit (#84).
+  for (const enemy of state.enemies.values())
+    moves.push([enemy.id, Math.round(enemy.pos.x), Math.round(enemy.pos.y)]);
   return {
     state,
     events: { moves, spawns, hits, deaths, nests, wave, aims, shots, ...reapStructures(context) },
@@ -437,6 +441,15 @@ function jitter(pos: Vec2, rng: () => number): Vec2 {
 // the hub admitted the report. That is what makes the authority invariant structural instead of a
 // rule to remember: a refused attack never reaches `pendingAttacks`, never reaches this loop, and
 // so has no path to the wire.
+// A shot's aim, trimmed to what the line can show: three decimals on a unit vector is under half
+// a world unit of lateral drift at RANGED_RANGE, and one unit is one CSS px.
+//
+// A copy, deliberately. `attack.dir` is the vector `nearestRayHit` resolves against, and rounding
+// the authoritative input would be a gameplay change wearing a bandwidth ticket's clothes (#84).
+function wireDir(dir: Vec2): Vec2 {
+  return { x: Math.round(dir.x * 1000) / 1000, y: Math.round(dir.y * 1000) / 1000 };
+}
+
 function applyAttacks(
   state: EnemyState,
   attacks: Attack[],
@@ -446,7 +459,7 @@ function applyAttacks(
 ): void {
   for (const attack of attacks) {
     const hit = nearestRayHit(state, attack);
-    const shot: PeerShot = { id: attack.by, dir: attack.dir };
+    const shot: PeerShot = { id: attack.by, dir: wireDir(attack.dir) };
     if (hit?.enemy) {
       hit.enemy.hp -= RANGED_DAMAGE;
       enemiesHit.add(hit.enemy.id);

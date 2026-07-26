@@ -1703,10 +1703,13 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     const shot = struck?.shots?.[0];
     if (!shot) throw new Error("the admitted shot never reached the wire");
     expect(shot.id).toBe(me);
-    // Compared per component: admission re-normalizes, and dividing an already-unit vector through
-    // its own length moves it by up to an ULP. Meaningless at render scale, fatal to `toEqual`.
-    expect(shot.dir.x).toBeCloseTo(dir.x, 12);
-    expect(shot.dir.y).toBeCloseTo(dir.y, 12);
+    // The wire carries three decimals (#84) — under half a world unit of lateral drift at
+    // RANGED_RANGE, and it swallows whole the ULP wobble admission's re-normalisation adds
+    // (dividing an already-unit vector through its own length moves it by up to an ULP).
+    expect(shot.dir.x).toBe(Math.round(shot.dir.x * 1000) / 1000); // quantised on the way out
+    expect(shot.dir.y).toBe(Math.round(shot.dir.y * 1000) / 1000);
+    expect(shot.dir.x).toBeCloseTo(dir.x, 2); // and still the aim that was sent
+    expect(shot.dir.y).toBeCloseTo(dir.y, 2);
     // Whatever the ray reached first, the same delta has to show the sim writing that thing's HP.
     // Asserting the invariant rather than the geometry keeps this honest about which target won.
     // `hit` is optional because a miss carries none, so pin that this shot connected at all —
