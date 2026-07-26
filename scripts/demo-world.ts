@@ -1,5 +1,17 @@
 import { type OreGrid, TILE, tileKey } from "../src/game/build";
-import type { WorldSnapshot } from "../src/lobby/protocol";
+import type { Tile, WorldSnapshot } from "../src/lobby/protocol";
+
+// A local copy rather than exporting the sim's: this is a fixture, and widening `build.ts`'s
+// surface so a screenshot script can borrow a private helper is the wrong trade.
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 // A hand-built world for `sprite:frame` to paint. Not a fixture for `bun test` and not the real
 // game's state: a scene arranged so that the two things Milestone 5 changed about the draw order
@@ -108,26 +120,29 @@ export function demoWorld(): WorldSnapshot {
   };
 }
 
-// Two patches under the camera, so the floor the sprites stand on is the floor the game draws and
-// not a flat colour. The real grid is derived from the world seed; this only has to look like it.
+// Patches under the camera, grown the way the game grows them. These used to be hand-painted
+// rectangles, which quietly lied: `generateOre` accretes a patch outward from a seed tile, so a
+// real deposit is a blob with a ragged edge. A rectangular fixture makes every ore sprite look
+// like it ends in a hard axis-aligned border and sends its agent chasing a defect the game does
+// not have — it cost one round before anyone noticed the fixture was the problem.
 function demoOre(): OreGrid {
   const grid: OreGrid = new Map();
-  paint(grid, "metal", 1027, 1032, 1027, 1034);
-  paint(grid, "metal", 1058, 1064, 1046, 1050);
-  paint(grid, "power", 1044, 1049, 1038, 1041);
+  grow(grid, "metal", { tx: 1029, ty: 1030 }, 90, 1);
+  grow(grid, "metal", { tx: 1061, ty: 1048 }, 70, 2);
+  grow(grid, "power", { tx: 1046, ty: 1039 }, 60, 3);
   return grid;
 }
 
-function paint(
-  grid: OreGrid,
-  kind: "metal" | "power",
-  fromTx: number,
-  toTx: number,
-  fromTy: number,
-  toTy: number,
-): void {
-  for (let ty = fromTy; ty <= toTy; ty++) {
-    for (let tx = fromTx; tx <= toTx; tx++) grid.set(tileKey({ tx, ty }), kind);
+// The same random-walk accretion `generateOre` uses, kept local because the real one seeds from
+// the whole arena and would put nothing under this camera.
+function grow(grid: OreGrid, kind: "metal" | "power", from: Tile, tiles: number, seed: number) {
+  const rng = mulberry32(seed);
+  let { tx, ty } = from;
+  for (let i = 0; i < tiles; i++) {
+    grid.set(tileKey({ tx, ty }), kind);
+    const step = Math.floor(rng() * 4);
+    tx += step === 0 ? 1 : step === 1 ? -1 : 0;
+    ty += step === 2 ? 1 : step === 3 ? -1 : 0;
   }
 }
 
