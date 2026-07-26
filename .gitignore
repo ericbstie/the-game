@@ -5,3 +5,4 @@ dist/
 
 # review artefacts a sprite agent renders locally; only a sprite's own sheet is committed
 sprite-frame.png
+src/sprite/calibration.sheet.png

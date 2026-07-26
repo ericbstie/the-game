@@ -10,13 +10,15 @@ The loop you work in (produce → sheet → reviewer → look) is
 [#81](https://github.com/ericbstie/the-game/issues/81). This file is the seam between them and the
 game.
 
-## You write exactly one file
+## You write exactly one *module*
 
-`src/sprite/<name>.ts`, default-exporting a `SpriteSubject`. **Nothing else.** Not `draw.ts`, not
-`registry.ts`, not `cache.ts` — wiring your sprite in is the integrator's job, and it is one line.
-Fifteen agents editing one file is fifteen conflicts; that is the whole reason this rule exists.
+`src/sprite/<name>.ts`, default-exporting a `SpriteSubject`. It is the only **code** you write:
+not `draw.ts`, not `registry.ts`, not `cache.ts` — wiring your sprite in is the integrator's job,
+and it is two lines. Fifteen agents editing one file is fifteen conflicts; that is the whole
+reason this rule exists.
 
-Alongside it you commit your sheet and your review, which is three files in the directory:
+You also commit two artefacts that are not code — your review sheet and your reviewer's notes —
+so a finished sprite is three files:
 
 ```
 src/sprite/grunt.ts          the module
@@ -60,7 +62,10 @@ Three rules about `draw`:
 - **It works in logical units.** The context is already scaled by `dpr` and the canvas is already
   `size × dpr`. Never multiply by `dpr` yourself, and never read `devicePixelRatio`.
 - **The box is square and the same for every facing and frame.** One `size` covers your whole
-  sprite. A variant that needs more room sets `size` for all of them.
+  sprite, so it has to be the size of your *largest* facing or frame. Where the table below fixes
+  a number, that number is the box and a test fails if you disagree with it — if your sprite
+  genuinely cannot fit, raise it rather than widening `size`, because the game blits into that box
+  and the entity's collision size is derived from the same constant.
 - **The module must import cleanly under Bun.** No `document`, no canvas, no drawing at module
   scope — the runner imports your module without a DOM to compute the sheet's size. All of it
   happens inside `draw`.
@@ -74,10 +79,15 @@ Three rules about `draw`:
 | `facing` | **The variant.** For a character, the 8 compass directions below. For everything else, whichever variants that sprite has — the egg sac's two states, the grass tufts, the room's four edges. |
 | `frame` | **The animation.** Characters walk in 2. Everything static uses `frames: 1`, and the sheet then skips its flip panel. |
 
-### The facing index
+### The facing index — characters only
 
-Fixed, and not yours to change. It is what [`calibration.ts`](calibration.ts) already encodes:
-`angle = facing / 8 × 2π`, on a canvas whose y axis points **down**.
+**This applies to `player`, `grunt` and `elite`, and to nothing else.** If your sprite has
+`facings: 8` and a body that turns, these are your indices. If it is the egg sac, the ore, the
+grass or the room, your facings are your own variants and the table below does not bind you — see
+the per-sprite meanings in the set table.
+
+For characters it is fixed and not yours to change. It is what [`calibration.ts`](calibration.ts)
+already encodes: `angle = facing / 8 × 2π`, on a canvas whose y axis points **down**.
 
 | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -96,28 +106,47 @@ size below is **derived** from the size that thing already is in the simulation,
 the collision it stands for cannot drift apart. They are in code as `SPRITE_BOX` in
 [`registry.ts`](registry.ts), and a test fails if your `size` disagrees.
 
-| `<name>` | Covers | Box | facings | frames |
-| --- | --- | --- | --- | --- |
-| `player` | the player sprite | **28** | 8 | 2 |
-| `grunt` | the long-legged spider | **32** | 8 | 2 |
-| `elite` | the big-bodied spider | **48** | 8 | 2 |
-| `nest` | the egg sac — **facing 0 intact, facing 1 destroyed** | **96** | 2 | 1 |
-| `miner` | in elevation | **30** | your call | 1 |
-| `wall` | in elevation | **30** | your call | 1 |
-| `turret` | in elevation | **30** | your call | 1 |
-| `generator` | **flat, from above** | **75** | your call | 1 |
-| `ore-metal` | tile + patch variants, pure ink | **15** | variants | 1 |
-| `ore-power` | tile + patch variants, glowing red | **15** | variants | 1 |
-| `grass` | the tufts scattered on the floor | your call | variants | 1 |
-| `room` | the perimeter wall unfolded outward on all four edges, and the escape door | your call | variants | 1 |
-| `halo` | the self marker over your own avatar | your call | 1 | your call |
-| `warning` | HUD: a structure is under attack | your call | 1 | your call |
-| `unpowered` | the hollow lightning over a turret with no energy | your call | 1 | your call |
+| `<name>` | Covers | Box | facings | frames | Drawn by the game? |
+| --- | --- | --- | --- | --- | --- |
+| `player` | the player sprite | **28** | 8 compass | 2 walk | yes |
+| `grunt` | the long-legged spider | **32** | 8 compass | 2 walk | yes |
+| `elite` | the big-bodied spider | **48** | 8 compass | 2 walk | yes |
+| `nest` | the egg sac — **0 intact, 1 destroyed** | **96** | 2 | 1 | yes |
+| `miner` | in elevation | **30** | 1 | 1 | yes |
+| `wall` | in elevation | **30** | 1 | 1 | yes |
+| `turret` | in elevation | **30** | 1 | 1 | yes |
+| `generator` | **flat, from above** | **75** | 1 | 1 | yes |
+| `ore-metal` | one tile, pure ink — several variants scattered across a patch | **15** | variants | 1 | yes |
+| `ore-power` | one tile, glowing red — several variants | **15** | variants | 1 | yes |
+| `room` | the perimeter wall unfolded outward: **0 N, 1 E, 2 S, 3 W**, and **4 the door** the run switches to where it crosses the exit | **30** | 5 | 1 | yes |
+| `halo` | the self marker. Drawn **behind** your avatar and centred on its body, so make it wider than the player's 28 or it will not show | your call | 1 | your call | yes |
+| `unpowered` | the hollow lightning over a turret holding a target it has no power to fire on | your call | 1 | **2+ — it flashes**, one frame per 400 ms | yes |
+| `grass` | the tufts scattered on the white floor | your call | variants | 1 | **not yet — see below** |
+| `warning` | HUD: a structure is under attack | your call | 1 | 2+ (flashes) | **not yet — see below** |
 
 "Your call" means #81 does not fix it and neither does this file. Choose, and say why in your
 `review.md`.
 
-**Anchoring.** Anything upright stands on the **bottom centre** of its box: the game puts that
+### Two sprites the game does not draw yet
+
+Be told this before you start, not after you finish. Thirteen of the fifteen are blitted by
+`drawWorld` the moment their entry lands. Two are not, and neither is waiting on you:
+
+- **`grass`** needs a **density** — how many tufts per tile of white floor — and that number is
+  [#72](https://github.com/ericbstie/the-game/issues/72)'s to decide, because it is the same
+  question as whether the frame holds with 240 enemies running over it. Nothing here will invent
+  it. Draw the tufts; #72 wires them and chooses how thickly they fall.
+- **`warning`** lives in the **HUD**, not the world, so `drawWorld` never sees it. It also needs a
+  "something is under attack" state that no snapshot currently carries. It belongs with the UI
+  agent's work.
+
+Their modules still land in this directory and still go in the registry — the wiring test requires
+it — they just have no call site yet. Your review sheet is the real feedback either way.
+
+
+**Anchoring.** Overlays — `halo`, `unpowered` — hang off the **centre** of their box, because they
+mark something rather than stand on the floor. Everything else is upright and stands on the
+**bottom centre** of its box: the game puts that
 point on the floor and the rest of the sprite reaches up from it. Draw with your sprite's feet at
 the bottom edge. A building's box is exactly its footprint square, bottom edge on the front edge
 of the footprint. The flat generator and the ore fill their box edge to edge.
@@ -148,12 +177,21 @@ The one rule behind everything else here, measured in
 
 The render loop paints through `setTransform(dpr, …)`, so a sprite baked at its logical size is
 **upscaled by that transform** before it reaches the screen: at 28 px it comes out visibly soft.
-Sprites are therefore baked at `size × dpr` and blitted into a `size`-CSS-px box, one device pixel
-per baked pixel, and the cache re-bakes the set when the display's ratio changes.
+Sprites are therefore baked at `size × dpr` and blitted into a box **exactly that many device
+pixels wide**, one device pixel per baked pixel, and the cache re-bakes the set when the display's
+ratio changes.
+
+That is deliberately not the same as "blitted into a `size`-CSS-px box". A canvas cannot be 22.5
+pixels wide, so the bake is `round(size × dpr)`; where `size × dpr` is fractional — a 15 px ore
+tile or a 75 px generator at Windows' **1.25× or 1.5×** scaling — the nominal box would land the
+destination half a device pixel off its source, and every edge would resample. The cache hands the
+corrected box to `drawWorld` instead, so a sprite can draw up to half a device pixel larger than
+its nominal size. That is invisible, and it is the cheaper of the two errors.
 
 The harness and the cache both do this for you. What it means for you is only this: **check your
 sprite at `--dpr 1` as well as the default 2**, because that is a real monitor and it is where
-your sprite has the fewest pixels to work with.
+your sprite has the fewest pixels to work with. **`--dpr 1.5` is worth a look too** if your box is
+15, 30 or 75 — 1 and 2 are precisely the two ratios where the fractional case cannot show.
 
 ## Do not "fix" the anti-aliasing
 
@@ -198,3 +236,16 @@ export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = { grunt };
 Until then the game draws that entity as the coloured circle or rectangle it has drawn since M2,
 and the suite stays green. That is deliberate: sprites land one at a time and nothing waits for
 all of them.
+
+The wiring is not optional, though, and it is not on the honour system: `registry.test.ts` globs
+this directory and fails on any module without an entry. Without that check, a forgotten line is
+indistinguishable from a sprite nobody has drawn yet — your work would merge green and never
+appear.
+
+To see yours in a real frame of the game, with no server and no lobby:
+
+```sh
+bun run sprite:frame                                  # the game as the registry has it
+bun run sprite:frame --sprite grunt=src/sprite/grunt.ts   # layer a module over it
+bun run sprite:frame --at 0,0                         # against the arena corner, for `room`
+```

@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { DEMO_VIEWPORT } from "./demo-world";
 import { capture, measurementsIn } from "./headless";
 
 // Render a real frame of the game — the shipped `drawWorld`, a hand-built world, the same DPR
@@ -17,14 +18,18 @@ import { capture, measurementsIn } from "./headless";
 
 const DRAW_MODULE = join(import.meta.dir, "../src/game/draw.ts");
 const CACHE_MODULE = join(import.meta.dir, "../src/sprite/cache.ts");
+const REGISTRY_MODULE = join(import.meta.dir, "../src/sprite/registry.ts");
 const WORLD_MODULE = join(import.meta.dir, "./demo-world.ts");
-const CALIBRATION = join(import.meta.dir, "../src/sprite/calibration.ts");
 const DEFAULT_DPR = 2;
 
 export interface FrameRequest {
   sprites: Record<string, string>; // sprite name → absolute path of its module
   out: string;
   dpr: number;
+  // Where to put the camera, or null for the scene's own vantage. `--at 0,0` is how the room
+  // wall gets looked at: it only draws along an edge the camera can actually see, so from the
+  // middle of a 31,200² arena there is correctly nothing to show.
+  at: { x: number; y: number } | null;
 }
 
 export interface Blit {
@@ -45,12 +50,19 @@ export function parseArgs(argv: string[]): FrameRequest {
   const sprites: Record<string, string> = {};
   let out: string | null = null;
   let dpr = DEFAULT_DPR;
+  let at: { x: number; y: number } | null = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--out") out = argv[++i] ?? "";
     else if (arg === "--dpr") {
       dpr = Number(argv[++i]);
       if (!Number.isFinite(dpr) || dpr <= 0) throw new Error("--dpr must be a positive number");
+    } else if (arg === "--at") {
+      const pair = (argv[++i] ?? "").split(",").map(Number);
+      if (pair.length !== 2 || pair.some((n) => !Number.isFinite(n))) {
+        throw new Error("--at wants x,y");
+      }
+      at = { x: pair[0], y: pair[1] };
     } else if (arg === "--sprite") {
       const pair = argv[++i] ?? "";
       const split = pair.indexOf("=");
@@ -58,10 +70,10 @@ export function parseArgs(argv: string[]): FrameRequest {
       sprites[pair.slice(0, split)] = resolve(pair.slice(split + 1));
     } else throw new Error(`unknown argument ${arg}`);
   }
-  // With nothing asked for, stand the harness's own test pattern where the player sprite goes.
-  // It is not art and never ships as art — it is what proves the machinery without drawing any.
-  if (Object.keys(sprites).length === 0) sprites.player = CALIBRATION;
-  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr };
+  // With nothing asked for, the frame is simply the game as the registry has it. `--sprite` layers
+  // a module over that: art under review, or a name nothing has drawn yet. `calibration` is the
+  // harness's own test pattern and is never art — pass it explicitly to check the machinery.
+  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr, at };
 }
 
 export function entrySource(request: FrameRequest, modules = MODULES): string {
@@ -74,9 +86,11 @@ export function entrySource(request: FrameRequest, modules = MODULES): string {
   return `${imports}
 import { drawWorld } from ${JSON.stringify(modules.draw)};
 import { createSpriteCache } from ${JSON.stringify(modules.cache)};
+import { SPRITES } from ${JSON.stringify(modules.registry)};
 import { DEMO_CAMERA, DEMO_SELF, DEMO_VIEWPORT, demoWorld } from ${JSON.stringify(modules.world)};
 
 const dpr = ${request.dpr};
+const camera = ${JSON.stringify(request.at)} ?? DEMO_CAMERA;
 const viewport = DEMO_VIEWPORT;
 const canvas = document.getElementById("sheet");
 canvas.width = Math.round(viewport.width * dpr);
@@ -90,33 +104,46 @@ const ctx = canvas.getContext("2d");
 // Every blit, measured on a real canvas rather than inferred from a spy.
 const blits = [];
 const drawImage = ctx.drawImage.bind(ctx);
-ctx.drawImage = (image, x, y, width, height) => {
+// Variadic on purpose: drawImage also takes a 9-argument source-rect form, and a 5-arg-only
+// wrapper would silently drop the extra arguments — mis-drawing the frame as well as mismeasuring
+// it. The destination is the last four either way.
+ctx.drawImage = (...args) => {
+  const [x, y, width, height] = args.slice(-4);
   blits.push({ x, y, width, height });
-  drawImage(image, x, y, width, height);
+  drawImage(...args);
 };
 
 // The transform GameScreen paints the world through, unchanged.
-ctx.setTransform(dpr, 0, 0, dpr, -DEMO_CAMERA.x * dpr, -DEMO_CAMERA.y * dpr);
+ctx.setTransform(dpr, 0, 0, dpr, -camera.x * dpr, -camera.y * dpr);
 drawWorld(ctx, demoWorld(), {
   selfId: DEMO_SELF,
-  camera: DEMO_CAMERA,
+  camera,
   viewport,
   dpr,
-  sprites: createSpriteCache({ ${table} }).source(dpr),
+  // The real registry, so the frame is the game as it actually stands. Anything named on the
+  // command line is layered over it — a sprite under review, or one nobody has wired yet.
+  sprites: createSpriteCache({ ...SPRITES, ${table} }).source(dpr),
 });
 
 document.getElementById("measurements").textContent = JSON.stringify({ dpr, viewport, blits });
 `;
 }
 
-const MODULES = { draw: DRAW_MODULE, cache: CACHE_MODULE, world: WORLD_MODULE };
+const MODULES = {
+  draw: DRAW_MODULE,
+  cache: CACHE_MODULE,
+  world: WORLD_MODULE,
+  registry: REGISTRY_MODULE,
+};
 
 export async function renderFrame(request: FrameRequest): Promise<FrameResult> {
   const dom = await capture({
     entry: entrySource(request),
     out: request.out,
-    width: Math.round(800 * request.dpr),
-    height: Math.round(600 * request.dpr),
+    // From the scene itself, never a second copy of the numbers: `--screenshot` crops to the
+    // window it was given and says nothing, which is the trap #77 §1 documented.
+    width: Math.round(DEMO_VIEWPORT.width * request.dpr),
+    height: Math.round(DEMO_VIEWPORT.height * request.dpr),
     label: "the world frame",
   });
   const measured = measurementsIn(dom) as Omit<FrameResult, "out"> | null;
