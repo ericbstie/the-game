@@ -100,6 +100,19 @@ version tracking issue that picks it up at that moment and not before.
 This keeps a version's tree an honest picture of what that version is actually doing.
 Parking an unscheduled idea under a version implies a commitment that has not been made.
 
+### Labels
+
+Every ticket carries a **type** and a **size**:
+
+- **Type** — `bug`, `feature`, `improvement`, or `investigation`.
+- **Size** — `XS`–`XL`, measured by **blast radius, never by time**. If the work turns
+  out bigger than its label, relabel it and say so on the issue.
+
+Two others are used sparingly. `deferred` marks an unprioritised orphan, per above. A
+version label (`version-2.0`, …) belongs to **that version's tracking issue only** — a
+ticket's version is its parent, not a label, so duplicating it on every ticket only
+creates a second source of truth that can disagree with the tree.
+
 ## Skills — use these when relevant
 
 This repo ships engineering skills in `.claude/skills/`. Two of them are
