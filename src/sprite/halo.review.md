@@ -117,6 +117,72 @@ as well as the sheet.
 | **Do not break:** the ring sits outside the avatar's silhouette, so enemies cannot erase the marker | Preserved, with more margin |
 | **Do not break:** the nib width variation is convincing hand-work; the tint is load-bearing at distance | Both kept |
 
-## Round 2
+## Round 2 — after the floor turned white
 
-_(recorded below)_
+The floor landed as white paper mid-flight, and it inverted the constraint. A "barely yellow,
+mostly white" glow had value contrast against the old near-black ground and has almost none against
+paper. The warmth stopped being able to carry the mark at all; the ink had to.
+
+This round was judged on a **real frame of the game** (`sprite:frame`, the shipped renderer, the
+real floor, the real sprites, three players in a cluster) as well as the dense crowd test. The
+reviewer measured the sprite rather than eyeballing it, and the measurements are why the fixes are
+what they are.
+
+| Finding | Action |
+| --- | --- |
+| **Must-fix.** The ink circle was only **35 px across in a 52 px box** — the box was sized for the glow, not the mark. Inner diameter ~30 around a 28 px avatar is ~1 px of clearance: no moat, so neighbours land *on and inside* the ring and it survives as a broken C rather than a closed circle | Radius grown from 0.315 to 0.385 of the box, and the glow pulled in to hug the stroke, so the box is now sized for the ink |
+| **Must-fix.** Time-to-find in a real frame was **bad** — the reviewer's eye went to the ore, the nest and the egg sac, and could not name the marked player without magnifying. "A 2 px hairline loop loses to every large black mass" | Stroke weight raised from 2.9/1.45 to 4.2/2.1. Ink per bake went 468 → 1185 px: it is now an ink *mass* rather than a line, which is what competes on a field of black masses |
+| The lower-left crossing did not read as one — the thin start was **absorbed** into the full-weight finish, with no open paper between them | Drift and hook deepened so the tail runs clearly inside the head and then swings clearly outside it, leaving paper on both sides |
+| Thin spot at ~300° dropped to 1.0 px and rendered mid-grey at dpr 1 | The raised floor (2.1) removes it |
+| The glow reached 30% wider than the ink and read as a smudge attached to the *neighbouring* figure | Tightened to hug the stroke |
+| The glow's chroma measured 5/11/18 out of 255 — "safely barely yellow, no risk of reading as yellow", but contributing nothing; ceiling before it tips is ~24–26 | Alphas raised one step, to a measured peak near the middle of that range. Not cut: it is the print gag and the only warm thing on the field |
+| **Not this sprite's to fix.** In the real frame a *neighbour's* name label falls inside the ring while the marked player's own label sits outside it — a player glancing at that reads the wrong name | Reported. Label offset and z-order belong to the HUD/integrator; no ring size fixes it while labels sit above heads and players can stand 12 px apart |
+| **Do not break:** blurred to peripheral vision it is *the only shape on the field with a bright enclosed interior* — every other mark blurs to a solid dark blob. That empty light core is the entire signal | Preserved; the centre is bare paper and the enclosure is now stronger |
+| **Do not break:** it reads as a pen mark — not a glow, bloom, drop shadow, selection ring or CAD circle. Width measured 1.0 → 3.0 px around the arc, a 3:1 range: genuine nib behaviour, no symmetry, no axis-aligned fields, no moiré | Kept; the range widens rather than flattens |
+| **Do not break:** not confusable with the egg sac — that is a filled cracked shell with a jagged rim and a ground shadow; this is a thin loop with light inside | Kept |
+
+## Round 3 — the pen was going down in the wrong place
+
+The specification passed on the round-2 build: *"blurred, every figure and spider collapses to an
+identical amorphous blob and the marked figure is the only thing that survives as a recognisable
+ring."* That is the whole job, and everything after it was protecting it.
+
+Three faults remained, and they turned out to be one. The pen went down at the **bottom** of the
+circle, near both the y axis and the nib's own heaviest angle, so the finishing stroke ran at full
+weight straight along the bottom on top of its own start:
+
+- the crossing was an absorbed lump rather than an X — a whisker on a slab, with no open paper
+  between the tail and the finish;
+- the bottom-left measured 4.1–5.6 px against 1.7–3.0 px elsewhere: the extra weight had been
+  dumped where the two runs overlap;
+- and the overlap left a dead-horizontal ~11 px edge along the inner side of the stroke, which is a
+  machine tell however good the rest of the mark is.
+
+Moving the touch-down to the **upper-left diagonal** — where the nib's weighting is naturally
+lightest, and off both axes — fixes all three at once. The overshoot was also shortened so the tail
+cuts *across* its own head steeply instead of running parallel to it, and the stroke now thins
+through the whole overshoot, so the finish crosses as a whisker over a line instead of pooling.
+
+Two things were separate: the weight modulation read as a monotonic thin-top-to-fat-bottom
+gradient, so it gained a third-harmonic tremor and now has three separated heavy lobes; and the
+oval was flattened for clearance.
+
+Verdict: **ship it**, no must-fixes. Measured on the final build:
+
+| | |
+| --- | --- |
+| Stroke width by clock | 1.2 px at 10 o'clock to 4.1 px at 7 o'clock, three heavy lobes with thin zones between |
+| Crossing | four limbs from one node at 10:30, tail projecting 3.5 px past it with open paper on **both** sides |
+| Clearance | tightest inner radius 15.1 px against the avatar's ~14 — outside the silhouette everywhere |
+| Warmth | peak `255,251,232`, R−B = 23, ~9% saturation; zero inside r=9 and outside r=25, so it hugs the stroke rather than filling the circle |
+| Artefacts | one connected component at both thresholds — no detached specks, no axis-aligned edge, no moiré, no symmetry |
+| dpr 1 | holds; the whisker and tail go grey but neither vanishes, and neither carries findability |
+
+Two notes recorded rather than acted on, because they are not this sprite's:
+
+- **A neighbour's name label can fall inside the ring** while the marked player's own label sits
+  outside it — in a real frame that reads as the wrong name at exactly the moment a player is
+  hunting for themselves. Label offset and z-order are the HUD's; no ring size fixes it while
+  labels sit above heads and players can stand 12 px apart.
+- In a tight three-body cluster the ring overlaps both neighbours and costs a beat to resolve which
+  figure it encloses. Inherent to a ring large enough to clear its own avatar.
