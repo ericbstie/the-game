@@ -1,7 +1,7 @@
 # room — review
 
-The arena's perimeter wall and the escape door. Seven drawings of the wall, four of the door, and
-three review rounds (ADR 0002 §3). The reviewer is advisory; what it said is recorded whether or not
+The arena's perimeter wall and the escape door. Nine drawings of the wall, six of the door, and
+five review rounds (ADR 0002 §3). The reviewer is advisory; what it said is recorded whether or not
 it was taken, and the places where it was overruled say why.
 
 ## What was decided, and why
@@ -197,6 +197,114 @@ diagonals, no moiré, no bleed outside the box; and clearly distinct from the bu
 each was meant to fix, and by looking at butted runs on white paper at both ratios, but they have not
 had a fresh pair of eyes. That is the first thing to do if this sprite is picked up again.
 
+## Round 4 — the confirming round, and it found two more
+
+A **fresh** reviewer, given the drawing that came out of round 3 and told plainly that its job was to
+say whether the sprite now reads. Blind: ***"an ornamental printed border around a blank page — a
+certificate frame"***, the run alone ***"a strip of 35 mm film — identical grey frames between
+sprocket bars"***, the door ***"a scale bar with major and minor graduations."*** **Verdict: do not
+ship, and both primary failures are in the drawing, not the caller.**
+
+1. ***The pier closes each bay into a box.*** The measurement was right and the reviewer verified it
+   independently — the hatch is phase-continuous and the 30 px seam is genuinely unfindable — but a
+   27 × 18 grey field **enclosed on all four sides in solid black** is a closed region, gestalt
+   closure fires before anything else, and the eye counts twenty-four objects rather than one wall.
+   Its squint test made it brutal: blurred, the hatch collapses to flat grey and all that survives is
+   a bar divided into identical cells by evenly spaced ticks. **Taken, in the strongest form it
+   offered: the pier is deleted.** A run now has *no 30 px event whatever* — measured, every column
+   of a butted run carries 18 units of ink, without exception.
+   This reverses round 1 §2, which demanded the beat. Both are right: the featureless version round 1
+   condemned had a face that was 73% white paper, so the wall had nothing *but* the beat. With the
+   face carrying a real tone, the beat is no longer load-bearing and is only harmful. Rhythm, if it
+   is wanted, belongs at a longer period in variants the caller cycles.
+2. ***The gate is a grille, not a gate*** — 4 px black to 2 px white in full-height slots is **33%
+   white**, "a gap you can see through, and you cannot escape through something you can see through".
+   The ledger was white, so it was a void the joints ran straight through rather than a brace. And a
+   10 px black block every 30 px, from two half-stiles meeting at the seam, kept the graduation beat
+   alive. **All three taken:** 1 px joints on a 10 px pitch (**10% white**), a **solid ink** ledger
+   painted over the joints so it interrupts them the way a real brace crosses boards, and a phase
+   that makes every board exactly 9 px wide including the one straddling a join — so there is no
+   stile and no beat.
+3. ***The base group reads as a printed double rule*** — 2 px black, 2 px white, 3 px black running
+   for 936 units was "the single strongest certificate-border cue". **Taken:** collapsed to one solid
+   5 px base.
+4. ***The hatch tone is not scale-invariant*** — 33% ink at dpr 1 against 50% at dpr 2, because a
+   1 px stroke is one device pixel at dpr 1 and two at dpr 2, and the rasteriser drops far more of
+   the first. Retina players got a wall half again as dark. **Taken:** the stroke went to 1.5 px on a
+   5 px pitch, which puts both ratios above a device pixel and lands the face at **42% at dpr 1 and
+   42% at dpr 2** — the stated target, hit at both scales for the first time.
+5. ***The pier's silhouette is ragged*** where the hatch merged into it. Moot; the pier is gone.
+6. ***No jamb at the ends of the door run*** — the opening's edge was weaker than its internal
+   divisions, which is backwards. **Not taken:** needs door-start and door-end variants. Caller.
+7. ***The door head is a 1 px thickening of the cap, so there is no lintel.*** **Taken:** the head is
+   8 px against the wall's 5 px cap.
+8. ***The corner.*** Neither cap turns; the west segment wins the overlap. Judged "ugly but not fatal
+   — maybe 5% of the read". **Not taken:** caller. It noted one artefact worth passing on — the west
+   wall's ground line runs up past the north wall's floor line to the top of the screen, which reads
+   as a printer's crop mark and feeds the page-border impression.
+
+**Checked and found fine:** no colour, verified numerically at zero chroma; the seam is genuinely
+invisible and the reviewer called it "a real achievement, credit where due"; baked pixels clean, with
+anti-aliasing confined to the diagonal strokes as allowed and no generated-imagery tells; wall-to-door
+depth registration exact, splicing in with no step; rotations correct and drift-free, with the four
+edges reading as one drawing unfolded; and no competition with the buildable wall — "different
+frequency, different value, different material".
+
+**Round 5 has not run.** Round 4's fixes were applied exactly as it prescribed them and each was
+verified by measurement against the defect it was meant to cure, but the drawing that came out of
+them has not been looked at. That is the outstanding item.
+
+## Round 5 — the confirming round, and the deciding question passed
+
+A **fresh** reviewer, given the drawing round 4 produced. Blind: ***"a hatched rule mitred around the
+edge of a blank sheet — an engraved certificate border."*** It was explicit that this is one of the
+named failure modes but that every other one had been escaped: *"no film strip, no sprocket bars, no
+measuring tape, no hazard tape, no knurled edging. The door is not a chocolate bar, not a ladder, not
+a vent grille."* **Verdict: fix one thing, then ship.**
+
+**The deciding question passed.** *"Does a butted run read as one continuous wall? Yes. Cleanly,
+unambiguously yes. This one is fixed."* Blurred, the run collapses to a flat even grey bar between two
+rules with no beat and nothing repeating; measured, all 144 stripes of a 720 px run start at
+x ≡ 3 (mod 5) with a gap of exactly 5 and **zero exceptions**. *"Deleting the pier bought the thing it
+was supposed to buy."*
+
+Its one blocker, and the best single observation any reviewer made about this sprite:
+
+1. ***The cap and the base are interchangeable, so the unfolded box is asserted and never drawn.***
+   At 5 px each the tile was symmetric about its own middle — nothing said which edge was coping and
+   which was floor, and the north and south drawings were structurally identical but for hatch phase.
+   *"A wall standing in a room is not symmetric top-to-bottom; a printed rule is. That symmetry is the
+   single thing generating the border read."* **Taken, both halves of its fix:** the cap went to 6 and
+   the base to 4, and a 1 px white reveal now runs under the cap — a projecting coping throws a line of
+   light and a skirting does not. It costs two pixels, runs the full length so it cannot reintroduce a
+   tile beat, and it is the only thing in the wall that tells a player which way is up.
+2. ***The gate's ledger is invisible as a member*** — solid ink painted on a solid ink gate, so all it
+   did was interrupt the joints, which left the boarding reading as two rows of ticks rather than
+   planks. **Taken, as it proposed:** the ledger is now hatched at the wall's own value, so it is a
+   timber lying across the boards instead of a gap in them. Measured, the gate now reads 90% ink with
+   a 43% band through it.
+3. ***The hatch mitres at the corners*** — N/S lean one way, E/W the other, which is honest for an
+   unfolded carton but is also the literal signature of a picture-frame moulding. It asked that this be
+   revisited only if the symmetry fix did not move the read. **Not taken**, on its own advice.
+4. ***The corner*** — explicitly ranked **fourth**, not the biggest remaining problem: the inner corner
+   where the two base rules meet *"forms a clean continuous L and reads well"*, and the damage is 30 px
+   of outer silhouette at the extreme edge of the viewport. **Not taken:** caller.
+5. Cosmetic and below threshold: a row of lost trailing anti-aliasing next to the base, and a 2-column
+   pair 8/255 lighter at each butt joint from clipped stroke ends.
+
+**Checked and found fine:** the seam is not findable at 8× — *"the only period-30 signal is 8 levels
+out of 255 across 2 columns, far below threshold"*; artefacts clean, with only the diagonal
+anti-aliasing and cap, base and the entire door pure 0 and 255; **zero colour in any file, max chroma
+0**; ink parity 41.3% at dpr 1 against 41.0% at dpr 2, *"the 33/50 split is gone"*; the door's joint
+pitch divides the box and its ledger runs continuous across every tile; the wall-to-door junction
+keeps the outer silhouette unbroken through the door; and it is clearly distinct from the buildable
+wall.
+
+**Round 6 has not run.** Round 5's two fixes were applied exactly as prescribed and both are confirmed
+by measurement — the wall's profile is now asymmetric (cap 6, reveal 1, face 19, base 4) and the
+ledger measures as a distinct value. Its verdict was "fix one thing, then ship", and that thing is
+done.
+
 ## Standing notes for whoever touches this next
 
 - **Two findings are still open and both are the caller's, not the art's.**
@@ -212,14 +320,12 @@ had a fresh pair of eyes. That is the first thing to do if this sprite is picked
 - **Do not put a row of marks along the run in the face.** Three attempts, three failures, all the
   same family — sprocket holes, a comb, a measuring tape. Tone is what works there; the beat belongs
   in the pier, which is one mark per box.
-- **Do not flank the pier with white.** It was tried to make it stand out and it closed every bay into
-  a discrete cell — the sprocket-hole failure returning by another route.
 - **Do not give the hatch a cycle.** Cycling weight or length reads as a stamped cluster, not as a
   hand. A hatch is a uniform family and its irregularity comes from the rasteriser.
 - **Keep the hatch strokes far longer than their pitch.** Strokes one pitch long close each box into
   its own cell and make the seam findable; that is measurable in the per-column ink profile.
 - **Keep the mass in the face, not the cap.** A face at the floor's value is not a wall.
-- **Do not take the 2 px white out of the floor group**, and **the door's floor group must stay
-  byte-identical to the wall's** — that is what stops the door reading as a hole.
+- **The door's base must stay byte-identical to the wall's** — that is what stops the door reading as
+  a hole.
 - **Keep every band boundary on an integer.** It is what holds 0% anti-aliasing everywhere except the
   hatch, at every ratio.

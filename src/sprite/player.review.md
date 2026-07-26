@@ -103,6 +103,44 @@ Author's own pass before the first reviewer, recorded because it changed the spr
 - **Two buttons merged into a light band across the hips** on the three-quarter facings, reading as a
   slot cut through the body. Drops to a single button once foreshortening closes the gap.
 
+## Round 5
+
+- **The limbs were single tapered arcs, and a single arc reads as a tentacle** however well it
+  tapers. Each limb is now two hoses meeting at a joint 58% of the way down — thigh carrying
+  outward, shin dropping back in. Still rubber hose, so the joint is a bend in a continuous tube
+  rather than a hinge.
+- **The eye read as a hollow ring with a white pupil.** The wedge's apex had been moved *below* the
+  eye's centre, so it cut a channel straight through the middle and out of the top instead of
+  notching the top. Apex back on the centre: the bottom half of the oval is now solid and the bite
+  comes out of the top only. This one matters — "without pupils" is part of what the design is.
+- **A sealed pale pocket between the legs in profile frame 0** read as a flame or a check mark —
+  the pareidolia failure two other sprites hit independently. Caused by the new knee bowing the
+  profile legs apart while the overlapping shoes sealed the bottom. Reduced the resting fore-and-aft
+  offset and the profile bend; the pocket is down from 17 baked pixels to 11 and now reads as the
+  gap between two legs.
+- **The figure read as a dark blob at real size in the actual game frame.** The cause was measurable:
+  every gap in the silhouette was about 1.5 logical px, which is 1.5 device pixels at dpr 1 and so
+  antialiases to grey rather than reading as a hole. The armpit gap in particular was *sealed*,
+  because the hanging arm grazed the hip. Arms moved further out, elbow bend increased, hips
+  narrowed and the arm tapers thinned — the gap is now about 3 logical px and open on one side.
+  Negative space, not outline weight, is what makes a small silhouette read.
+
+## Round 6
+
+Both findings were the same two numbers, and both were measurable rather than matters of taste.
+
+- **The arm was invisible in every profile and three-quarter facing** — E, SE, SW and W read as an
+  armless bowling pin, which was also why those facings read worst at real size and why the walk
+  had no counter-swing. The arm was not actually inside the body: its elbow cleared the hip's front
+  edge by 0.5 logical px, which at this resolution antialiases straight back into the silhouette.
+  The whole limb now carries further forward in profile and the elbow bows with the swing rather
+  than by a fixed amount, so the arm breaks the contour along its length instead of only at the
+  hand. The "detached hand blob" on SW was the same defect seen from one facing over.
+- **A white hole punched into the leg in profile frame 0.** The knee added in round 5 was bowing the
+  two profile legs apart while the overlapping shoes sealed the bottom. The bend now flattens as the
+  figure turns side-on — legs seen from the side should overlap — and the pocket is down from 11
+  baked pixels to 4.
+
 ## Measured, not eyeballed
 
 Two checks that the picture hides, run against the real baked pixels:
@@ -115,6 +153,10 @@ Two checks that the picture hides, run against the real baked pixels:
 - **Frame-to-frame movement above the hips is real.** The bake's bounds put the top of the head at
   device row 2 in frame 0 and row 4 in frame 1, and both frames share a bottom row, so the figure
   bobs without leaving the floor.
+- **Enclosed pale pockets are counted, not guessed at.** Flood-filling the background from the
+  border and counting what it cannot reach finds every hole sealed inside the ink — which is the
+  shape a reviewer's eye turns into a letter or a face. It is what located the flame between the
+  legs, and it is also the honest measure of whether the armpit gap is a gap or a slot.
 
 ## Known and accepted
 

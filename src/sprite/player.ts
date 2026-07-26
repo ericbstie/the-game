@@ -28,54 +28,58 @@ const PAPER = "#fff";
 // with its bottom edge on the player's position, so the soles belong on that edge. The proportions
 // are the era's: head plus ears is over a third of the height, shoulders are narrower than the
 // hips, and the hose limbs are long enough to hang clear of the body.
-const EAR_Y = 3.8;
-const EAR_R = 2.5;
-const EAR_DX = 3.9;
-const HEAD_Y = 7.8;
-const HEAD_R = 5.15;
-const SHOULDER_Y = 13.4;
-const SHOULDER_DX = 2.4;
-const TORSO_Y = 14.6;
-const TORSO_RX = 2.8;
-const TORSO_RY = 3;
-const HIP_Y = 17.9;
-const HIP_RX = 3.85;
-const HIP_RY = 2.8;
-const HAND_Y = 21.6;
-const HAND_DX = 5.45;
-const HAND_R = 1.35;
-const ARM_BOW = 6.7;
-const ARM_REST = 2.2; // a relaxed arm hangs forward of the hip, which is what keeps it readable in
-const ARM_SWING = 2.6; // profile instead of buried inside the body's silhouette
+const EAR_Y = 3.4;
+const EAR_R = 2.4;
+const EAR_R_RIGHT = 2.28;
+const EAR_DX = 3.7;
+const HEAD_Y = 7;
+const HEAD_R = 4.9;
+const SHOULDER_Y = 12.2;
+const SHOULDER_DX = 2.2;
+const TORSO_Y = 13.3;
+const TORSO_RX = 2.7;
+const TORSO_RY = 2.8;
+const HIP_Y = 16.3;
+const HIP_RX = 3.3;
+const HIP_RY = 2.45;
+const HAND_Y = 20.3;
+const HAND_DX = 6.2;
+const HAND_R = 1.45;
+const ARM_BEND = 1.9;
+const ARM_REST = 2; // a relaxed arm hangs forward of the hip, which is what keeps it readable in
+const ARM_SWING = 3.6; // profile instead of buried inside the body's silhouette
 // Even at rest the two arms sit at different points fore and aft. Squared up they stack into one
 // shape in profile, and the near hand lands on the far leg — a lump where two limbs should read.
-const ARM_REST_SWING = 0.5;
+const ARM_REST_SWING = 0.65;
 // A body is wider across the shoulders and hips than it is deep, so turning to profile shows a
 // narrower torso. Drawing one width for every facing is what buries the arms in the side views.
-const PROFILE_NARROW = 0.28;
+const PROFILE_NARROW = 0.15;
 // Rubber hose is stroke modulation: a limb is thick where it leaves the body and tapers to the
 // extremity, with a swell through the belly of the curve. A constant width reads as CAD linework.
-const ARM_W_TOP = 1.95;
-const ARM_W_END = 1.25;
-const LEG_W_TOP = 2.15;
-const LEG_W_END = 1.45;
+const ARM_W_TOP = 1.55;
+const ARM_W_MID = 1.25;
+const ARM_W_END = 0.95;
+const LEG_W_TOP = 1.95;
+const LEG_W_MID = 1.6;
+const LEG_W_END = 1.3;
 // Feet are never quite level in a standing pose, and squared up in profile the two legs stack into
 // one black pillar. This is the fore-and-aft offset frame 0 rests at, opened out to `STRIDE` in
 // frame 1.
-const LEG_REST = 0.45;
-const HIP_JOINT_DX = 1.7;
-const FOOT_Y = 25.5;
+const LEG_REST = 0.8;
+const HIP_JOINT_DX = 1.9;
+const FOOT_Y = 25.2;
 const FOOT_DX = 2.6;
-const SHOE_RY = 1.6;
+const SHOE_RY = 1.5;
 const STRIDE = 3;
 // A whole logical pixel. A fractional bob resamples the face against a different sub-pixel grid in
 // each frame, so the head appears to change shape rather than to move.
 const BOB = 1;
 const FACE_HIDDEN_BELOW = -0.45; // fy at which the head has turned far enough to show only its back
+const SNOUT_BREAKS_OUT_ABOVE = 0.25; // profile at which the snout leaves the head and needs a contour
 // A drawn figure is never exactly symmetrical, and exact symmetry is the tell a reviewer is asked
-// to hunt for. The head carries a slight lean and the two ears differ, on every facing.
+// to hunt for. Straight-on facings have no `fx` to break it, so the asymmetry is carried by the
+// parts themselves: the head leans, the ears differ, and the two sides of the body do not match.
 const LEAN = 0.2;
-const EAR_R_RIGHT = 2.42;
 
 const player: SpriteSubject = {
   name: "player",
@@ -95,12 +99,17 @@ const player: SpriteSubject = {
     ctx.fillStyle = INK;
 
     const hipY = HIP_Y + bob * 0.7;
+    const narrow = 1 - PROFILE_NARROW * profile;
+    const hipRX = HIP_RX * narrow;
 
     const feet = [-1, 1].map((side) => {
       // The leg that leads is the one already on the leading side, so its lateral offset and its
       // stride add rather than cancel. Squared up they land on top of each other in profile.
       const lead = side;
-      const spread = FOOT_DX * (1 - 0.85 * profile) * (1 + 0.55 * (1 - profile) * step);
+      // The right foot rests fractionally narrower than the left. Straight-on facings have no `fx`
+      // to break the mirror, and a figure standing in exact bilateral symmetry reads as a toy.
+      const spread =
+        FOOT_DX * (side < 0 ? 1 : 0.93) * (1 - 0.85 * profile) * (1 + 0.55 * (1 - profile) * step);
       // A foot stepping away from the viewer rises; the near foot keeps the ground line, so the
       // sprite's contact point never leaves the bottom of the box.
       const away = Math.max(0, -fy * lead);
@@ -108,64 +117,85 @@ const player: SpriteSubject = {
         side,
         lead,
         x: CX + side * spread + fx * lead * (LEG_REST + (STRIDE - LEG_REST) * step),
-        y: FOOT_Y - away * 1.1 * step,
+        // Side-on, the trailing foot is the far one. Lifting it puts a step in the silhouette,
+        // which is the only thing separating two shoes that necessarily overlap in a side view.
+        y: FOOT_Y - away * 1.1 * step - (lead < 0 ? profile * 0.55 : 0),
       };
     });
 
     for (const foot of depthSorted(feet)) {
-      hose(
+      limb(
         ctx,
         CX + foot.side * HIP_JOINT_DX * (1 - 0.45 * profile),
         hipY + 1.1,
-        CX + (foot.x - CX) * 0.55 + foot.side * 0.9,
-        (hipY + foot.y) / 2 + 0.6,
         foot.x,
         foot.y - 0.7,
+        foot.side * 0.95 * (1 - 0.85 * profile) + fx * foot.lead * 0.2 * profile,
         LEG_W_TOP,
+        LEG_W_MID,
         LEG_W_END,
       );
-      drawShoe(ctx, foot.x, foot.y, fx, profile, foot.side);
+      drawShoe(ctx, foot.x, foot.y, fx, fy, profile, foot.side);
     }
 
-    // The arms narrow across the body as the figure turns, but only halfway. Collapsing them onto
-    // the centreline is geometrically honest and leaves the figure armless in six facings of eight.
-    const across = 1 - 0.5 * profile;
+    // Turned to profile the two arms stop differing across the screen and start differing in depth:
+    // same x, one nearer the viewer and so lower. What separates them side-on is how far forward
+    // each is swung — so the lateral split has to go to zero, or it cancels the forward reach on
+    // whichever side it opposes and leaves that facing armless while its mirror keeps an arm.
     const arms = [-1, 1].map((side) => {
       const swing = -side; // opposite the leg on the same side
       const reach = ARM_REST + ARM_SWING * swing * (ARM_REST_SWING + (1 - ARM_REST_SWING) * step);
       return {
         side,
-        lead: -swing,
-        x: CX + side * HAND_DX * across + fx * reach,
-        y: HAND_Y + bob - swing * step,
+        reach,
+        lead: swing,
+        x: CX + side * HAND_DX * (1 - profile) + fx * reach,
+        y: HAND_Y + bob + swing * (0.9 * profile - step * (1 - profile)) + (side < 0 ? 0 : 0.22),
       };
     });
 
     for (const arm of depthSorted(arms)) {
-      hose(
+      limb(
         ctx,
-        CX + arm.side * SHOULDER_DX * across + LEAN,
+        CX + arm.side * SHOULDER_DX * (1 - profile) + fx * 1.6 * profile + LEAN,
         SHOULDER_Y + bob + (arm.side < 0 ? 0.15 : 0),
-        CX + arm.side * ARM_BOW * across + fx * ARM_REST * 0.6,
-        (SHOULDER_Y + HAND_Y) / 2 + bob,
         arm.x,
         arm.y,
+        arm.side * ARM_BEND * (1 - profile) + fx * profile * arm.reach * 0.3,
         ARM_W_TOP,
+        ARM_W_MID,
         ARM_W_END,
       );
-      ellipse(ctx, arm.x, arm.y, HAND_R, HAND_R * 1.15);
+      ellipse(ctx, arm.x, arm.y, HAND_R, HAND_R * 1.12, arm.side * 0.3);
       ctx.fill();
     }
 
-    ellipse(ctx, CX, TORSO_Y + bob, TORSO_RX, TORSO_RY);
+    ellipse(ctx, CX, TORSO_Y + bob, TORSO_RX * narrow, TORSO_RY);
     ctx.fill();
-    ellipse(ctx, CX, hipY, HIP_RX, HIP_RY);
-    ctx.fill();
+    drawShorts(ctx, hipY, hipRX);
 
     drawButtons(ctx, fx, fy, profile, hipY);
     drawHead(ctx, fx, fy, profile, bob);
   },
 };
+
+// Shorts, not an egg: narrow at the waist, flared, and cut off by a straight hem the legs come out
+// from under. The flare and the hem are silhouette, which is the only place a garment can be drawn
+// at this size — the buttons alone leave the body reading as one undifferentiated blob.
+function drawShorts(ctx: CanvasRenderingContext2D, hipY: number, hipRX: number): void {
+  const top = hipY - HIP_RY;
+  const hem = hipY + HIP_RY;
+  const waist = hipRX * 0.62;
+  ctx.beginPath();
+  ctx.moveTo(CX - waist, top);
+  ctx.quadraticCurveTo(CX - hipRX * 1.04, hipY + 0.6, CX - hipRX, hem - 0.55);
+  ctx.quadraticCurveTo(CX - hipRX, hem, CX - hipRX + 0.55, hem);
+  ctx.lineTo(CX + hipRX - 0.55, hem);
+  ctx.quadraticCurveTo(CX + hipRX, hem, CX + hipRX, hem - 0.55);
+  ctx.quadraticCurveTo(CX + hipRX * 1.04, hipY + 0.6, CX + waist, top);
+  ctx.closePath();
+  ctx.fill();
+}
 
 function drawHead(
   ctx: CanvasRenderingContext2D,
@@ -176,10 +206,10 @@ function drawHead(
 ): void {
   const headX = CX + LEAN;
   const headY = HEAD_Y + bob;
-  const snoutX = headX + fx * 3.4;
-  const snoutY = headY + 2.6;
-  const snoutRX = 2.6 + 0.5 * profile;
-  const snoutRY = 1.9;
+  const snoutX = headX + fx * 3;
+  const snoutY = headY + 2.3;
+  const snoutRX = 2.3 + 0.45 * profile;
+  const snoutRY = 1.65;
 
   ctx.fillStyle = INK;
   ellipse(ctx, headX - EAR_DX - fx * 0.6, EAR_Y + bob, EAR_R, EAR_R);
@@ -192,33 +222,39 @@ function drawHead(
   // The snout leaves the head's silhouette in profile, so it is laid down as ink first and the
   // white sits inside it. A stroke would work too, but it draws a line across the middle of the
   // face where there should be none — and at this size it rasterises as a broken grey chain.
+  // Only where the snout actually breaks the head's outline. Ringing it on every facing puts a
+  // dashed grey chain under the muzzle of the front view that reads as a mouth nobody drew.
   const showFace = fy > FACE_HIDDEN_BELOW;
-  if (showFace || profile > 0.2) {
-    ellipse(ctx, snoutX, snoutY, snoutRX + 0.8, snoutRY + 0.8);
+  if (profile > SNOUT_BREAKS_OUT_ABOVE) {
+    ellipse(ctx, snoutX + fx * 0.3, snoutY, snoutRX + 0.7, snoutRY + 0.35);
     ctx.fill();
   }
   if (!showFace) return; // a head turned this far away shows no face at all
 
   ctx.fillStyle = PAPER;
-  ellipse(ctx, headX + fx * 1.5, headY + 0.3, 3.1, 3.35);
+  ellipse(ctx, headX + fx * 1.35, headY + 0.3, 2.85, 3.05);
   ctx.fill();
   ellipse(ctx, snoutX, snoutY, snoutRX, snoutRY);
   ctx.fill();
 
-  const eyeY = headY - 0.95;
-  const eyeCX = headX + fx * 1.9;
-  const sep = 1.35 * (1 - 0.5 * profile);
+  const eyeY = headY - 0.75;
+  const eyeCX = headX + fx * 1.7;
+  const sep = 1.2 * (1 - 0.5 * profile);
   for (const side of [-1, 1]) {
     const far = side * Math.sign(fx) < 0;
     const scale = far ? 1 - 0.8 * profile : 1;
     if (scale < 0.3) continue; // at full profile the far eye is behind the snout
-    pieEye(ctx, eyeCX + side * sep, eyeY, 1.1 * scale, side < 0 ? 1.55 : 1.62, side * 0.35);
+    const rx = (1 + 0.15 * profile) * scale;
+    // Both wedges lean the same way. Mirroring them turns the pair into matched brackets, which is
+    // the symmetry tell again, and a hand-inked pair never matched anyway.
+    pieEye(ctx, eyeCX + side * sep, eyeY, rx, side < 0 ? 1.35 : 1.4, 0.35);
   }
 
   // Far enough out that the nose meets the ink around the snout rather than floating in the white
-  // with a hairline of paper between the two.
+  // with a hairline of paper between the two. Tilted, because a nose sitting exactly on the
+  // horizontal is the giveaway of a shape placed by arithmetic.
   ctx.fillStyle = INK;
-  ellipse(ctx, headX + fx * 5.25, headY + 2.5, 1.4, 1.1);
+  ellipse(ctx, headX + fx * 4.6, headY + 2.2, 1.25, 0.92, fx * 0.28);
   ctx.fill();
 }
 
@@ -239,9 +275,9 @@ function pieEye(
   ctx.fill();
   ctx.clip();
   const cut = -Math.PI / 2 + tilt;
-  const apexY = y + ry * 0.35;
+  const apexY = y;
   const reach = ry * 4;
-  const spread = 0.45;
+  const spread = 0.42;
   ctx.beginPath();
   ctx.moveTo(x, apexY);
   ctx.lineTo(x + Math.cos(cut - spread) * reach, apexY + Math.sin(cut - spread) * reach);
@@ -261,34 +297,67 @@ function drawButtons(
 ): void {
   if (fy < -0.3) return; // the buttons are on the front of the shorts
   ctx.fillStyle = PAPER;
-  const cx = CX + fx * 1.5;
-  const y = hipY - 0.2;
-  if (profile > 0.85) {
-    ellipse(ctx, cx, y, 0.8, 0.8);
+  const cx = CX + fx * 1.4;
+  const y = hipY + 0.1;
+  // Two buttons only while there is room between them. Foreshortened they merge into one light
+  // band across the hips, which reads as a slot cut through the body rather than as buttons.
+  if (profile > 0.6) {
+    ellipse(ctx, cx + fx * 0.35, y, 0.72, 0.72);
     ctx.fill();
     return;
   }
-  const sep = 1.5 * (1 - 0.55 * profile);
-  ellipse(ctx, cx - sep, y, 0.8, 0.8);
+  const sep = 1.45 * (1 - 0.25 * profile);
+  ellipse(ctx, cx - sep, y, 0.75, 0.75);
   ctx.fill();
-  ellipse(ctx, cx + sep, y - 0.12, 0.74, 0.74);
+  ellipse(ctx, cx + sep, y - 0.14, 0.67, 0.67);
   ctx.fill();
 }
 
 // Solid ink. Outlined white shoes are the brightest mass on a figure that is otherwise solid black:
 // they break the ink language, read as light-coloured spats, and in profile the two overlap into a
 // single white pill. Oversized is carried by the silhouette instead.
+//
+// Toe and heel are separate lobes, so the shoe points where the figure faces and is not the
+// perfectly symmetrical lens a single ellipse gives. Running up or down the screen the toe is
+// foreshortened away to nothing, and what is left is depth — so it shifts in `y` instead, which is
+// the only thing distinguishing the feet of the front view from the feet of the back view.
 function drawShoe(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   fx: number,
+  fy: number,
   profile: number,
   side: number,
 ): void {
+  const tilt = (1 - profile) * side * 0.26;
   ctx.fillStyle = INK;
-  ellipse(ctx, x + fx * 0.9, y, 2 + 1.7 * profile, SHOE_RY, (1 - profile) * side * 0.26);
+  ellipse(ctx, x + fx * 1.15, y + fy * 0.45, 1.6 + 0.7 * profile, SHOE_RY * 0.95, tilt);
   ctx.fill();
+  ellipse(ctx, x - fx * 0.55, y - fy * 0.35, 1.3 + 0.2 * profile, SHOE_RY, tilt);
+  ctx.fill();
+}
+
+// A limb is two hoses meeting at a joint, not one arc. However well a single arc tapers it reads as
+// a tentacle: what makes a leg a leg is the change of direction partway down, the thigh carrying
+// outward and the shin dropping back in. No hard corner — this is rubber hose, so the joint is a
+// bend in a continuous tube rather than a hinge.
+function limb(
+  ctx: CanvasRenderingContext2D,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  bend: number,
+  wTop: number,
+  wMid: number,
+  wEnd: number,
+): void {
+  const knee = 0.58;
+  const kx = ax + (bx - ax) * knee + bend;
+  const ky = ay + (by - ay) * knee;
+  hose(ctx, ax, ay, (ax + kx) / 2 + bend * 0.7, (ay + ky) / 2, kx, ky, wTop, wMid);
+  hose(ctx, kx, ky, (kx + bx) / 2 - bend * 0.55, (ky + by) / 2, bx, by, wMid, wEnd);
 }
 
 // A quadratic swept by a width that tapers from `wTop` to `wEnd` and swells through the belly of
