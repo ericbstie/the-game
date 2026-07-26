@@ -34,6 +34,7 @@ import {
   type Nest,
   nestLayout,
 } from "./enemies";
+import { freshGait, type Gait, updateFacing } from "./facing";
 import { interpolateAt, type PosSample } from "./interpolate";
 import { type Body, PLAYER_MAX_HP, PLAYER_RADIUS, pushOutOfBodies, stepPos } from "./world";
 
@@ -62,6 +63,7 @@ interface AvatarRecord {
   lastSeq: number; // highest applied seq; guards apply-if-newer
   hp: number; // a peer's last relayed HP (render hint); the owner's HP lives in `selfHp`
   healthSeq: number; // highest applied peer-health seq; guards apply-if-newer
+  gait: Gait; // 8-way facing + walk frame, derived here from the rendered position
 }
 
 // A server-owned enemy the client renders. Its position is buffered and interpolated exactly
@@ -74,6 +76,7 @@ interface EnemyRecord {
   pos: Vec2; // spawn fallback until the first move sample buffers
   buffer: PosSample[];
   lastContactAt: number;
+  gait: Gait; // dies with the record, so 240 enemies a wave cost nothing to track
 }
 
 export class ClientWorld {
@@ -111,6 +114,7 @@ export class ClientWorld {
         lastSeq: -1,
         hp: PLAYER_MAX_HP,
         healthSeq: -1,
+        gait: freshGait(s.id, s.pos),
       });
     }
   }
@@ -215,6 +219,10 @@ export class ClientWorld {
     if (delta.tick <= this.lastTick) return;
     this.lastTick = delta.tick;
     for (const s of delta.spawns ?? []) {
+      // A duplicate spawn must not reset the record, because the record now carries derived
+      // facing state. That is only safe because `addEnemy` never recycles an id (`enemies.ts`
+      // increments `nextId` for the life of the session) — if allocation ever stops being
+      // monotonic, a repeat id is a different enemy and this guard has to reseed the gait.
       if (!this.enemies.has(s.id)) {
         this.enemies.set(s.id, {
           id: s.id,
@@ -223,6 +231,7 @@ export class ClientWorld {
           pos: { ...s.pos },
           buffer: [],
           lastContactAt: Number.NEGATIVE_INFINITY,
+          gait: freshGait(s.id, s.pos),
         });
       }
     }
@@ -286,6 +295,7 @@ export class ClientWorld {
         pos: { ...e.pos },
         buffer: [],
         lastContactAt: Number.NEGATIVE_INFINITY,
+        gait: freshGait(e.id, e.pos),
       });
     }
     for (const ns of msg.nests) {
@@ -315,14 +325,18 @@ export class ClientWorld {
   }
 
   // Assemble the render model. The owner is drawn at its live position; peers are sampled
-  // RENDER_DELAY_MS behind `now` from their buffers.
+  // RENDER_DELAY_MS behind `now` from their buffers. Each entity's facing and walk frame are
+  // advanced here, where its rendered position has just been computed — so this is a command as
+  // much as a query. Calling it twice with the *same* `now` is a no-op; calling it twice with
+  // different `now` in one frame splits the EMA step and biases the speed ~1% low. The render
+  // loop is the single caller, once per frame; a second consumer wants `advance`/`snapshot`
+  // split apart rather than caller discipline.
   snapshot(now: number): WorldSnapshot {
-    const renderTime = now - RENDER_DELAY_MS;
     return {
       arena: this.arena,
       players: [...this.avatars.values()]
         .sort((a, b) => a.slot - b.slot)
-        .map((a) => this.render(a, renderTime)),
+        .map((a) => this.render(a, now)),
       enemies: this.renderEnemies(now),
       nests: this.nests.map(renderNest),
       exit: this.exit,
@@ -331,22 +345,41 @@ export class ClientWorld {
     };
   }
 
-  private render(a: AvatarRecord, renderTime: number): Avatar {
+  // The owner's facing is derived from its position like everyone else's, deliberately, and not
+  // from its `MoveInput`: pressing into a wall would then read as movement here and as a held
+  // facing on every other screen.
+  private render(a: AvatarRecord, now: number): Avatar {
     const isSelf = a.id === this.selfId;
-    const pos = isSelf ? a.pos : (interpolateAt(a.buffer, renderTime) ?? a.pos);
+    const pos = isSelf ? a.pos : (interpolateAt(a.buffer, now - RENDER_DELAY_MS) ?? a.pos);
     const hp = isSelf ? this.selfHp : a.hp;
-    return { id: a.id, slot: a.slot, name: a.name, pos: { ...pos }, radius: PLAYER_RADIUS, hp };
+    updateFacing(a.gait, pos, now);
+    return {
+      id: a.id,
+      slot: a.slot,
+      name: a.name,
+      pos: { ...pos },
+      radius: PLAYER_RADIUS,
+      hp,
+      facing: a.gait.facing,
+      frame: a.gait.frame,
+    };
   }
 
   private renderEnemies(now: number): RenderedEnemy[] {
     const renderTime = now - ENEMY_RENDER_DELAY_MS;
-    return [...this.enemies.values()].map((e) => ({
-      id: e.id,
-      kind: e.kind,
-      hp: e.hp,
-      radius: enemyRadius(e.kind),
-      pos: interpolateAt(e.buffer, renderTime) ?? { ...e.pos },
-    }));
+    return [...this.enemies.values()].map((e) => {
+      const pos = interpolateAt(e.buffer, renderTime) ?? { ...e.pos };
+      updateFacing(e.gait, pos, now);
+      return {
+        id: e.id,
+        kind: e.kind,
+        hp: e.hp,
+        radius: enemyRadius(e.kind),
+        pos,
+        facing: e.gait.facing,
+        frame: e.gait.frame,
+      };
+    });
   }
 }
 

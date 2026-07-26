@@ -56,12 +56,15 @@ const blits = (ctx: { calls: Call[] }) =>
       width: c.args[3] as number,
       height: c.args[4] as number,
     }));
+// Facing and walk frame are derived in ClientWorld, not here — drawWorld reads them off the
+// snapshot, so any value serves these fixtures.
+const POSE = { facing: 2, frame: 0 };
 
 const world: WorldSnapshot = {
   arena: { width: 31_200, height: 31_200 },
   players: [
-    { id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 100 },
-    { id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14, hp: 100 },
+    { ...POSE, id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 100 },
+    { ...POSE, id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14, hp: 100 },
   ],
   enemies: [],
   nests: [
@@ -124,8 +127,8 @@ describe("drawWorld", () => {
     const withEnemies: WorldSnapshot = {
       ...world,
       enemies: [
-        { id: "e1", kind: "grunt", pos: { x: 1150, y: 1150 }, radius: 16, hp: 30 }, // on screen
-        { id: "e2", kind: "grunt", pos: { x: 25_000, y: 25_000 }, radius: 16, hp: 30 }, // culled
+        { ...POSE, id: "e1", kind: "grunt", pos: { x: 1150, y: 1150 }, radius: 16, hp: 30 },
+        { ...POSE, id: "e2", kind: "grunt", pos: { x: 25_000, y: 25_000 }, radius: 16, hp: 30 },
       ],
     };
     drawWorld(ctx, withEnemies, { camera, viewport });
@@ -137,7 +140,9 @@ describe("drawWorld", () => {
     const ctx = spyCtx();
     const withCorpse: WorldSnapshot = {
       ...world,
-      players: [{ id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 0 }],
+      players: [
+        { ...POSE, id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 0 },
+      ],
       nests: [],
     };
     drawWorld(ctx, withCorpse, { selfId: "p1", camera, viewport });
@@ -165,10 +170,10 @@ describe("drawWorld with sprites", () => {
   const standing: WorldSnapshot = {
     ...world,
     players: [
-      { id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 100 },
-      { id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14, hp: 100 },
+      { ...POSE, id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 100 },
+      { ...POSE, id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14, hp: 100 },
     ],
-    enemies: [{ id: "e1", kind: "grunt", pos: { x: 1150, y: 1200 }, radius: 16, hp: 30 }],
+    enemies: [{ ...POSE, id: "e1", kind: "grunt", pos: { x: 1150, y: 1200 }, radius: 16, hp: 30 }],
     nests: [{ id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, hp: 600, alive: true, sector: 0 }],
   };
   const everything = { nest: 96, player: 28, grunt: 32, elite: 48, miner: 30, generator: 75 };
@@ -217,7 +222,15 @@ describe("drawWorld with sprites", () => {
     const drifting: WorldSnapshot = {
       ...standing,
       players: [
-        { id: "p1", slot: 1, name: "Ana", pos: { x: 1100.4, y: 1100.7 }, radius: 14, hp: 100 },
+        {
+          ...POSE,
+          id: "p1",
+          slot: 1,
+          name: "Ana",
+          pos: { x: 1100.4, y: 1100.7 },
+          radius: 14,
+          hp: 100,
+        },
       ],
       enemies: [],
       nests: [],
@@ -289,7 +302,9 @@ describe("drawWorld with sprites", () => {
       nests: [],
       // 20 below the bottom edge (1600). A 32 px grunt anchored at its feet still covers 1588—1600,
       // so culling on the radius alone — 16 — would pop it out while it is a third on screen.
-      enemies: [{ id: "e1", kind: "grunt", pos: { x: 1400, y: 1620 }, radius: 16, hp: 30 }],
+      enemies: [
+        { ...POSE, id: "e1", kind: "grunt", pos: { x: 1400, y: 1620 }, radius: 16, hp: 30 },
+      ],
     };
     const ctx = spyCtx();
     drawWorld(ctx, reaching, { camera, viewport, sprites: stubSprites(everything) });
