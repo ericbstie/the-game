@@ -21,12 +21,12 @@ const init: WorldInit = {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // A live match with nothing selected on the build bar, so left-click means shoot.
-function inMatch(onAttack: () => void): HTMLElement {
+function inMatch(onAttack: () => void, world = new ClientWorld(init, "me")): HTMLElement {
   const state: LobbyState = {
     status: "lobby",
     code: "ABCD",
     self: { id: "me", token: "secret", slot: 1 },
-    world: new ClientWorld(init, "me"),
+    world,
   };
   render(
     <GameScreen
@@ -44,6 +44,36 @@ function inMatch(onAttack: () => void): HTMLElement {
 }
 
 afterEach(cleanup);
+
+// #85: a rendered shot must never imply damage the server did not apply. Movement and mining were
+// already gated on death; shooting was not, so a corpse could click, draw its own line, and have
+// the attack admitted — the server's position check passes, because a dead player has not moved.
+describe("#85: a downed player cannot shoot", () => {
+  test("a click while dead is not sent", () => {
+    const onAttack = mock(() => {});
+    const canvas = inMatch(onAttack, new ClientWorld(init, "me", 0));
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(onAttack).toHaveBeenCalledTimes(0);
+  });
+
+  test("and being dead does not consume the cadence, so the first shot back up lands", async () => {
+    const onAttack = mock(() => {});
+    const world = new ClientWorld(init, "me", 0);
+    const canvas = inMatch(onAttack, world);
+    fireEvent.mouseDown(canvas, { button: 0 }); // refused: dead
+    world.reviveSelf();
+    fireEvent.mouseDown(canvas, { button: 0 }); // back up, and not made to wait a cadence
+    expect(onAttack).toHaveBeenCalledTimes(1);
+    await sleep(RANGED_CADENCE_MS + 20);
+  });
+
+  test("a living player is unaffected", () => {
+    const onAttack = mock(() => {});
+    const canvas = inMatch(onAttack);
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(onAttack).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("M5-I5: the client holds itself to the weapon's cadence before firing", () => {
   test("a second click inside the cadence is not sent — the server would refuse it anyway", () => {

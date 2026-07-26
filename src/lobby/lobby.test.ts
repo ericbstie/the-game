@@ -1693,6 +1693,62 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     return { x: (to.x - from.x) / len, y: (to.y - from.y) / len };
   };
 
+  // #85: the client gate is a courtesy; this is the one that counts. A dead player has not moved,
+  // so `admitAttack`'s position check passes and nothing else was looking at their HP.
+  //
+  // Two players deliberately: in a solo match one player at 0 HP is a squad wipe, the match ends,
+  // and `inPlay` refuses everything afterwards — which would pass this test without the gate
+  // existing at all. The teammate keeps the match running so the gate is what is measured.
+  async function squadOfTwoFighting(): Promise<{
+    t: Capture;
+    hub: LobbyHub;
+    grunt: EnemySpawn;
+    dir: Vec2;
+  }> {
+    const t = new Capture();
+    const hub = new LobbyHub(t, {
+      tickMs: TICK,
+      firstWaveMs: 5,
+      startingMetal: 1_000,
+      rng: () => 0.75,
+    });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));
+    const code = created(t).code;
+    hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "Ben" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    await sleep(TICK * 3);
+    const grunt = deltas(t).flatMap((d) => d.spawns ?? [])[0];
+    if (!grunt) throw new Error("the first wave spawned nothing");
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: grunt.pos, seq: 1 }));
+    hub.handleMessage("s2", JSON.stringify({ type: "game/health", hp: 100, seq: 1 })); // Ben lives
+    return { t, hub, grunt, dir: aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 }) };
+  }
+
+  test("a shot from a player the server believes is dead is refused", async () => {
+    const { t, hub, grunt, dir } = await squadOfTwoFighting();
+    hub.handleMessage("s1", JSON.stringify({ type: "game/health", hp: 0, seq: 2 }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    expect(t.sent.some((m) => m.msg.type === "game/match-end")).toBe(false); // still in play
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]); // no line, and no damage
+  });
+
+  test("and it is admitted again once they report themselves back up", async () => {
+    const { t, hub, grunt, dir } = await squadOfTwoFighting();
+    hub.handleMessage("s1", JSON.stringify({ type: "game/health", hp: 0, seq: 2 }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
+    await sleep(TICK * 3);
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]);
+
+    hub.handleMessage("s1", JSON.stringify({ type: "game/health", hp: 100, seq: 3 }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 2 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    // The refusal must not have burned the seq or the cadence, or being dead would cost a shot.
+    expect(deltas(t).flatMap((d) => d.shots ?? []).length).toBeGreaterThan(0);
+  });
+
   test("an admitted shot rides the delta as a PeerShot naming what the sim damaged", async () => {
     const { t, hub, me, grunt } = await fighting();
     const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
