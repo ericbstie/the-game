@@ -20,21 +20,20 @@ them automatically: `feat` bumps the minor, `fix`/`perf` the patch, and a `!` or
 
 ## Issue tracking
 
-Work is organised by **version**. Each version has its own independent tracking issue,
-and **every issue created in this repo must be a sub-issue of the current version's
-tracking issue** — feature tickets, investigations and bugs alike. Nothing is created
-as a top-level issue except a version tracker itself.
+Work is tracked **per version**. Each version has its own tracking issue, and that issue
+is the root — it is not nested under anything. **Every issue created in this repo must be
+a sub-issue of the current version's tracking issue** — feature tickets, investigations
+and bugs alike. The one exception is a deferred issue, below.
 
-The current version is **[TRACKING] Breakout Box — Version 2.0**
-([#91](https://github.com/ericbstie/the-game/issues/91)). File everything under it.
+- **Current: [TRACKING] Breakout Box — Version 2.0**
+  ([#91](https://github.com/ericbstie/the-game/issues/91)), label `version-2.0`.
+- [#3](https://github.com/ericbstie/the-game/issues/3) is the **historical record for
+  v1** — milestones 1–5, closed and complete. Read it for how the game got here; never
+  file new work under it. A closed tracker cannot carry open work.
 
-[#3](https://github.com/ericbstie/the-game/issues/3) is the **closed v1 record** —
-milestones 1–5, how the game got here. Read it for history; never file new work under
-it. A closed tracker cannot carry open work.
-
-A version ships when its tickets are closed. Before opening the next one, close
-**all** issues under the current version and fold anything deliberately left behind
-into the new tracker, saying why it was left.
+When a version ships, close its tracking issue and open the next one. That new issue
+becomes the root for everything after it. Fold anything deliberately left behind into
+the new tracker, saying why it was left.
 
 ### Claiming an issue
 
@@ -62,7 +61,8 @@ to (`version-2.0`, …).
 | `spec` · `decision` · `chore` · `performance` | Use where one of them fits better than the four above. |
 
 `deferred` is orthogonal: it marks work that is wanted but not chartered, and sits
-*alongside* a type rather than replacing one.
+*alongside* a type rather than replacing one. It also changes where the issue lives —
+see **Deferred issues** below.
 
 Version tracking issues take **no type and no size**. They are containers, and a
 container has no blast radius of its own.
@@ -88,6 +88,17 @@ the future that nobody can check and everybody remembers.
 
 If the work turns out bigger than its label, **change the label and say so on the issue**.
 A size that is only ever set once is decoration.
+
+### Deferred issues
+
+A **deferred** issue is one that has been captured but not prioritised into a version —
+an idea worth keeping, with no commitment to build it. It is the one exception to the
+sub-issue rule: **a deferred issue is an orphan — top-level, no parent — until it is
+prioritised.** Being prioritised is exactly what gives it a parent, so attach it to the
+version tracking issue that picks it up at that moment and not before.
+
+This keeps a version's tree an honest picture of what that version is actually doing.
+Parking an unscheduled idea under a version implies a commitment that has not been made.
 
 ## Skills — use these when relevant
 
