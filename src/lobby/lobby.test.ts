@@ -5,7 +5,13 @@ import { ARENA } from "../game/world";
 import { LobbyHub, livePlayers, type Transport } from "./lobby";
 import type { EnemySpawn, ServerMessage, Tile, Vec2 } from "./protocol";
 import type { LobbyServer } from "./server";
-import { expectMessage, makeClient, startServer, type TestClient } from "./testing";
+import {
+  expectMessage,
+  ManualScheduler,
+  makeClient,
+  startServer,
+  type TestClient,
+} from "./testing";
 
 const servers: LobbyServer[] = [];
 const clients: TestClient[] = [];
@@ -684,8 +690,11 @@ describe("M3: the enemy sim streams over the wire", () => {
   });
 });
 
-// The tick's arm/clear lifecycle, driven directly through a capture transport so timer
-// behaviour is asserted deterministically (the WS harness can't observe a cleared interval).
+// The tick's arm/cancel lifecycle, driven directly through a capture transport so timer
+// behaviour is asserted deterministically (the WS harness can't observe a cancelled tick).
+// Time here is virtual: the hub takes a `ManualScheduler`, so "three periods elapsed" means
+// exactly three ticks however contended the CPU is. Sleeping on a real interval instead is
+// what made this block red under load (#86).
 describe("M3: enemy sim tick lifecycle", () => {
   class Capture implements Transport {
     readonly sent: { socketId: string; msg: ServerMessage }[] = [];
@@ -697,51 +706,53 @@ describe("M3: enemy sim tick lifecycle", () => {
 
   const deltas = (t: Capture) => t.sent.filter((m) => m.msg.type === "game/map-delta");
 
-  function startedSolo(tickMs: number): { t: Capture; hub: LobbyHub } {
+  function startedSolo(tickMs: number): { t: Capture; hub: LobbyHub; clock: ManualScheduler } {
     const t = new Capture();
-    const hub = new LobbyHub(t, { tickMs });
+    const clock = new ManualScheduler();
+    const hub = new LobbyHub(t, { tickMs, scheduler: clock });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
-    return { t, hub };
+    return { t, hub, clock };
   }
 
-  test("the tick arms on game/start and streams a monotonic-tick delta each period", async () => {
-    const { t, hub } = startedSolo(10);
-    await sleep(35);
+  test("the tick arms on game/start and streams a monotonic-tick delta each period", () => {
+    const { t, hub, clock } = startedSolo(10);
+    clock.advance(30); // exactly three periods
     hub.dispose();
-    const seen = deltas(t);
-    expect(seen.length).toBeGreaterThanOrEqual(2);
-    const ticks = seen.map(
+    const ticks = deltas(t).map(
       (d) => (d.msg as Extract<ServerMessage, { type: "game/map-delta" }>).tick,
     );
-    expect(ticks[0]).toBe(1);
-    expect(ticks[1]).toBeGreaterThan(ticks[0]);
+    expect(ticks).toEqual([1, 2, 3]); // one delta per period, numbered from one
   });
 
-  test("dispose() clears the tick — nothing streams after", async () => {
-    const { t, hub } = startedSolo(10);
-    await sleep(25);
+  test("dispose() clears the tick — nothing streams after", () => {
+    const { t, hub, clock } = startedSolo(10);
+    clock.advance(20);
     hub.dispose();
     const n = deltas(t).length;
-    await sleep(30);
+    expect(clock.armed).toBe(0); // the job is gone, not merely quiet
+    clock.advance(1_000); // far longer than any sleep could afford to wait
     expect(deltas(t).length).toBe(n);
   });
 
-  test("emptying the session clears the tick — nothing streams after everyone leaves", async () => {
-    const { t, hub } = startedSolo(10);
-    await sleep(25);
+  test("emptying the session clears the tick — nothing streams after everyone leaves", () => {
+    const { t, hub, clock } = startedSolo(10);
+    clock.advance(20);
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/leave" })); // last player out → session destroyed
     const n = deltas(t).length;
-    await sleep(30);
+    expect(clock.armed).toBe(0);
+    clock.advance(1_000);
     expect(deltas(t).length).toBe(n);
   });
 
-  test("a wave spawns grunts and a validated melee on one streams its hit", async () => {
+  test("a wave spawns grunts and a validated melee on one streams its hit", () => {
     const t = new Capture();
-    const hub = new LobbyHub(t, { tickMs: 10, firstWaveMs: 5 }); // fire the first wave almost at once
+    const clock = new ManualScheduler();
+    // Fire the first wave almost at once, then step past it.
+    const hub = new LobbyHub(t, { tickMs: 10, firstWaveMs: 5, scheduler: clock });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
-    await sleep(30);
+    clock.advance(30);
 
     // Grab a grunt the first wave spawned, straight off the stream.
     const target = deltas(t)
@@ -766,7 +777,7 @@ describe("M3: enemy sim tick lifecycle", () => {
         seq: 1,
       }),
     );
-    await sleep(30);
+    clock.advance(30);
     hub.dispose();
 
     const struck = deltas(t)

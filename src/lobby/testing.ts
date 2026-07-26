@@ -1,7 +1,42 @@
 import { expect } from "bun:test";
 import type { LobbyClient, LobbyState } from "./client";
+import type { Cancellable, Scheduler } from "./lobby";
 import { type ClientMessage, PROTOCOL_VERSION, type ServerMessage } from "./protocol";
 import { type ServeLobbyOptions, serveLobby } from "./server";
+
+// A Scheduler that never reads the clock: `advance` alone decides how many times each armed job
+// runs. Sleeping on a real interval asserts against whatever else the CPU is doing, which reds
+// under load; virtual time makes "three periods elapsed" mean exactly three ticks, every run.
+export class ManualScheduler implements Scheduler {
+  private readonly jobs = new Set<{ periodMs: number; fn: () => void; elapsedMs: number }>();
+
+  every(periodMs: number, fn: () => void): Cancellable {
+    // Clamped exactly as `setInterval` clamps it. Without this a zero period is an infinite
+    // loop in `advance` rather than the once-per-millisecond the platform would give.
+    const job = { periodMs: Math.max(1, periodMs), fn, elapsedMs: 0 };
+    this.jobs.add(job);
+    return { cancel: () => this.jobs.delete(job) };
+  }
+
+  // Push virtual time forward, firing each armed job once per whole period crossed. Remainders
+  // carry, so successive advances total the same as one big one. A job cancelled from inside its
+  // own callback stops firing immediately, exactly as a cleared interval would.
+  advance(ms: number): void {
+    for (const job of [...this.jobs]) {
+      job.elapsedMs += ms;
+      while (job.elapsedMs >= job.periodMs && this.jobs.has(job)) {
+        job.elapsedMs -= job.periodMs;
+        job.fn();
+      }
+    }
+  }
+
+  // How many jobs are armed right now — lets a test assert a tick was torn down, rather than
+  // inferring it from an absence of output over some sleep.
+  get armed(): number {
+    return this.jobs.size;
+  }
+}
 
 // Assert a message's `type` and narrow it, so a test can read payload fields safely.
 export function expectMessage<T extends ServerMessage["type"]>(

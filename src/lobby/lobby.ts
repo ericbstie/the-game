@@ -63,9 +63,33 @@ export interface Transport {
   close(socketId: string, code: number, reason?: string): void;
 }
 
+// A cancellable repeating job. Returned by `Scheduler.every`, and the only handle the hub keeps
+// on its tick — so what drives the tick and how it is stopped travel together.
+export interface Cancellable {
+  cancel(): void;
+}
+
+// The interval driver behind the enemy tick. A real match uses the platform timer; a test can
+// pass a manual one and step the sim itself, so a tick assertion never races the CPU it runs on.
+export interface Scheduler {
+  every(periodMs: number, fn: () => void): Cancellable;
+}
+
+const platformScheduler: Scheduler = {
+  every(periodMs, fn) {
+    const timer = setInterval(fn, periodMs);
+    timer.unref?.(); // a lingering tick must never hold the process open
+    return { cancel: () => clearInterval(timer) };
+  },
+};
+
 export interface LobbyConfig {
   graceMs?: number; // slot held + greyed this long after a drop; default 45s
   tickMs?: number; // enemy-sim tick period; default 50ms (~20 Hz). Overridable for fast tests.
+  // Drives the enemy tick. Defaults to the platform timer. A test asserting on tick *output*
+  // should pass a manual one — sleeping on a real interval races whatever else the CPU is
+  // doing, and reds under load. Test knob.
+  scheduler?: Scheduler;
   firstWaveMs?: number; // override the initial wave countdown (default: the sim's 30s). Test knob.
   startingMetal?: number; // seed the shared bank at match start (default 0). Test knob.
   // The sim's only source of entropy — spawn jitter. Defaults to `Math.random`, so a real match
@@ -99,7 +123,7 @@ interface SessionRecord {
   positions: Map<PlayerId, { pos: Vec2; seq: number }>; // last-known relayed position per player
   health: Map<PlayerId, { hp: number; seq: number }>; // last-reported HP per player (aggro-gating + fan-out)
   sim?: EnemyState; // server-authoritative enemy simulation, live only in-game
-  simTimer?: ReturnType<typeof setInterval>; // the 20 Hz tick driving `sim`; cleared on teardown
+  simTimer?: Cancellable; // the 20 Hz tick driving `sim`; cancelled on teardown
   tickNo: number; // monotonic map-delta tick counter (apply-if-newer on clients)
   attackGuards: Map<PlayerId, AttackGuard>; // per-player cadence/seq admission state
   pendingAttacks: Attack[]; // admitted attacks awaiting the next tick's resolution
@@ -126,6 +150,7 @@ export class LobbyHub {
   private readonly graceMs: number;
   private readonly tickMs: number;
   private readonly firstWaveMs?: number;
+  private readonly scheduler: Scheduler;
   private readonly startingMetal: number;
   private readonly rng?: () => number;
   private disposed = false;
@@ -137,6 +162,7 @@ export class LobbyHub {
     this.graceMs = config.graceMs ?? DEFAULT_GRACE_MS;
     this.tickMs = config.tickMs ?? DEFAULT_TICK_MS;
     this.firstWaveMs = config.firstWaveMs;
+    this.scheduler = config.scheduler ?? platformScheduler;
     this.startingMetal = config.startingMetal ?? 0;
     this.rng = config.rng;
   }
@@ -212,7 +238,7 @@ export class LobbyHub {
     for (const session of this.sessions.values()) {
       for (const timer of session.graceTimers.values()) clearTimeout(timer);
       session.graceTimers.clear();
-      if (session.simTimer) clearInterval(session.simTimer); // stop the enemy tick
+      session.simTimer?.cancel(); // stop the enemy tick
     }
   }
 
@@ -411,9 +437,7 @@ export class LobbyHub {
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
     session.sim = spawnEnemyState(session.worldInit, this.rng);
     if (this.firstWaveMs !== undefined) session.sim.msUntilWave = this.firstWaveMs;
-    const timer = setInterval(() => this.tick(session), this.tickMs);
-    timer.unref?.();
-    session.simTimer = timer;
+    session.simTimer = this.scheduler.every(this.tickMs, () => this.tick(session));
   }
 
   // Is this session mid-match? Every in-game command is gated on it, so a frame still in flight
@@ -487,10 +511,8 @@ export class LobbyHub {
   private endMatch(session: SessionRecord, outcome: MatchOutcome): void {
     if (session.phase !== "in-game") return;
     session.phase = outcome;
-    if (session.simTimer) {
-      clearInterval(session.simTimer);
-      session.simTimer = undefined;
-    }
+    session.simTimer?.cancel();
+    session.simTimer = undefined;
     // Retained, not recomputed: the score is frozen at the moment the match ended, so a player
     // who rejoins afterwards is told the same time everyone else saw.
     session.result = { outcome, elapsedMs: Date.now() - (session.startedAt ?? Date.now()) };
@@ -725,7 +747,7 @@ export class LobbyHub {
 
     // Empty session (zero connected, none in grace) is destroyed and its code freed.
     if (session.players.size === 0) {
-      if (session.simTimer) clearInterval(session.simTimer); // stop the enemy tick before teardown
+      session.simTimer?.cancel(); // stop the enemy tick before teardown
       this.sessions.delete(session.code);
       return;
     }
