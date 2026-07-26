@@ -9,8 +9,8 @@ import type { SpriteSubject } from "./sheet";
 //
 // **`facing` is a 4-bit neighbour mask**, not an orientation: bit 1 north, 2 east, 4 south, 8 west,
 // set when another wall abuts that side. 0 is a wall standing alone with all four faces cut; 15 is
-// a wall buried inside a mass with none. `paintStructure` derives it from the structure list once
-// per frame (src/game/draw.ts). A face with a neighbour is drawn as nothing at all — no band, no
+// a wall buried inside a mass with none. `drawWorld` derives it from the structure list once per
+// frame (src/game/draw.ts). A face with a neighbour is drawn as nothing at all — no band, no
 // keyline — which is what lets two tops merge instead of showing a seam every 30 px.
 //
 // **Top against side is carried by value, because there is no colour to carry it** (#76 §1). The
@@ -54,8 +54,8 @@ const SIZE = 30; // 2×2 tiles at TILE 15 (src/game/build.ts)
 const INK = "#000";
 const PAPER = "#fff";
 
-// The mask bits, in compass order. Mirrored in `src/game/draw.ts`, which is the only caller that
-// builds one — the same arrangement `room` already uses for its four unfolded edges.
+// The mask bits, in the same compass order `room` numbers its four unfolded edges in. Mirrored in
+// `src/game/draw.ts`, which is the only caller that builds one.
 const NORTH = 1;
 const EAST = 2;
 const SOUTH = 4;
