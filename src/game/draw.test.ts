@@ -473,6 +473,30 @@ describe("drawWorld with sprites", () => {
     expect(new Set(variants()).size).toBeGreaterThan(1); // and not all the same tile
   });
 
+  test("an ore tile's variant is its position, so no two neighbours draw the same cell", () => {
+    // The variant is `(tx mod 12) * 12 + (ty mod 12)`, not a hash. A hash is uniform but tells a
+    // tile nothing about who it sits next to, so every mark stays boxed in its own cell and a
+    // measurable ink deficit forms on the grid pitch. Position lets a tile derive its neighbours'
+    // cells and draw a mark that straddles a seam identically from both sides. 12 is past the
+    // widest patch the generator can grow, so no patch can contain a cell twice.
+    const ore = new Map<number, "metal" | "power">();
+    for (let ty = 70; ty < 78; ty++)
+      for (let tx = 70; tx < 78; tx++) ore.set(tileKey({ tx, ty }), "metal");
+    const ctx = spyCtx();
+    drawWorld(
+      ctx,
+      { ...standing, players: [], enemies: [], nests: [], ore },
+      { camera, viewport, sprites: stubSprites({ ...everything, "ore-metal": 15 }) },
+    );
+    const at = (tx: number, ty: number) =>
+      blits(ctx).find((b) => b.x === tx * 15 && b.y === ty * 15)?.tag;
+    // The exact formula, not merely "distinct" — a hash also gives distinct values here, so an
+    // assertion about distinctness would pass with the property this indexing exists for removed.
+    expect(at(72, 73)).toBe(`ore-metal/${(72 % 12) * 12 + (73 % 12)}/0`);
+    expect(at(72, 73)).not.toBe(at(73, 73)); // neighbours never share a cell
+    expect(at(72, 73)).not.toBe(at(72, 74));
+  });
+
   test("tiles the room's wall along the edges the camera can see, and nowhere else", () => {
     const ctx = spyCtx();
     const corner: Camera = { x: 0, y: 0 }; // against the north-west corner
