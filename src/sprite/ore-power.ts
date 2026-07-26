@@ -5,10 +5,11 @@ import type { SpriteSubject } from "./sheet";
 // coordinate, so a whole field costs nothing on the wire.
 //
 // Red is one of only two colours #76 grants the game, so it is spent where it does work rather
-// than spread until the tile is a red square: a pale flat wash that carries the glow to every edge
-// of the box, and solid red bodies that carry it at a glance. The wash is *flat* — a graded tile
-// repeated across a patch prints its own 15 px lattice and moirés when the display ratio changes,
-// and a constant cannot.
+// than spread until the tile is a red square. **The tile has no background**: the paper shows
+// through, and the only red is what escapes the ore itself — the solid bodies and the radiance
+// around them. An earlier cut filled the whole box with a flat wash to carry the glow to every
+// edge; over white paper that reads as a pink square with hard edges, and a patch of them prints
+// a visible grid of squares. A glow that fills its own box is a tile, not a glow.
 //
 // The ink is a weighted line rather than a contour. Each body is filled black and then re-filled
 // red offset up and left, so black survives only as a crescent, heaviest at the lower right and
@@ -17,16 +18,15 @@ import type { SpriteSubject } from "./sheet";
 // crescent that thick goes bare instead of turning into a black dot.
 //
 // A generator — 75 px, flat, white — is built on a patch and covers most of it. Nothing here needs
-// the middle of a tile to survive: the wash reaches the box edge, so the seam left around the
-// chassis still glows, and the tiles the chassis misses still carry bodies.
+// the middle of a tile to survive: the tiles the chassis misses still carry bodies, and with no
+// background there is nothing for the chassis to punch a hole in.
 
 const SIZE = 15; // TILE
 const VARIANTS = 12; // more than a patch holds, so no patch reads as a repeating stamp
 
 const INK = "#000";
-const ORE = "#d1200e"; // the body: dark enough to hold its shape against the wash it sits in
+const ORE = "#d1200e"; // the body: dark enough to hold its shape against the paper it sits on
 const EMBER = "#ff5c2a"; // hotter and barely oranger, only ever at the centre of the largest body
-const WASH = "rgba(198, 30, 16, 0.2)"; // over white paper this is a pale pink, not a red tile
 const GLOW = "224, 50, 20"; // the radiance, which supplies its own alpha per stop
 
 const CENTRE = SIZE / 2;
@@ -153,15 +153,12 @@ const orePower: SpriteSubject = {
   size: SIZE,
   facings: VARIANTS,
   frames: 1,
-  draw(ctx, size, facing) {
+  draw(ctx, _size, facing) {
     const rand = seeded(Math.imul(facing + 1, 0x9e3779b1) ^ 0x51ed2701);
-
-    ctx.fillStyle = WASH;
-    ctx.fillRect(0, 0, size, size);
 
     const bodies = bodiesOf(rand, 2 + Math.floor(rand() * 2), true);
     // Unlit fragments: the only pure ink on the tile, and the reason a patch still belongs to a
-    // black-and-white game when the wash is taken away.
+    // black-and-white game rather than reading as the one coloured thing on the floor.
     const chips = bodiesOf(rand, Math.floor(rand() * 2.4), false);
 
     for (const body of bodies) drawRadiance(ctx, rand, body);
