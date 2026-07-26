@@ -58,7 +58,12 @@ const wall: SpriteSubject = {
     ctx.fillRect(0, size - FOOT_H, size, FOOT_H);
 
     for (let course = 1; course < COURSES; course++) {
-      ctx.fillRect(0, faceTop + course * (COURSE_H + COURSE_JOINT) - COURSE_JOINT, size, COURSE_JOINT);
+      ctx.fillRect(
+        0,
+        faceTop + course * (COURSE_H + COURSE_JOINT) - COURSE_JOINT,
+        size,
+        COURSE_JOINT,
+      );
     }
 
     for (let centre = 0; centre <= size; centre += JOINT_PITCH) {
