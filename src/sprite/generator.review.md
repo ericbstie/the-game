@@ -1,81 +1,125 @@
 # generator — review
 
-Box **75** (a 5×5 footprint at `TILE` 15), `facings: 1`, `frames: 1`. One variant: the generator has
-no states and no animation, so both index axes are spent.
+Box **75** (a 5×5 footprint at `TILE` 15), `facings: 1`, `frames: 1`. The generator has no states and
+no animation, so both index axes are spent.
 
-Reviewed per [ADR 0002](../../docs/adr/0002-sprites-are-built-by-one-agent-each-with-a-reviewer.md)
-— a separate subagent read `generator.sheet.png` and reported on it. Findings are advisory; what was
-done with each is recorded below.
+Reviewed per [ADR 0002](../../docs/adr/0002-sprites-are-built-by-one-agent-each-with-a-reviewer.md):
+a separate subagent read `generator.sheet.png` each round and reported on it. Findings are advisory;
+what was done with each is recorded here. Five rounds, and the subject changed twice.
 
-## The constraint that drove every round
+## The lesson this sprite cost five rounds to learn
 
-The generator is the **only building drawn flat, straight down** (#76 §2). Miner, wall and turret
-are elevation and stand up into the Y-sorted layer; this one paints underneath it with the floor and
-the ore. Three drafts failed the same way, and the reason is worth writing down because it is not
-obvious:
+The generator is the **only building drawn flat, straight down** (#76 §2). The first four drafts were
+flat *by construction* — no front face, no cast shadow, no light direction, no foreshortened ellipse,
+no implied height — and reviewers confirmed the geometry was right every single time. Three of them
+were still read as objects that stand up.
 
 > **Projection is read semantically, not geometrically.**
 
-All three drafts were flat *by construction* — no front face, no cast shadow, no light direction, no
-foreshortened ellipse, no implied height. Reviewers confirmed the geometry was correct every time.
-They still read the sprite as standing up, because every draft was built around **a wheel seen
-face-on**, and a wheel is a thing everyone knows faces sideways. Drawing one square to the viewer
-tells them they are looking at its front, whatever the geometry says. Corner bolts compounded it: a
-bolt in each corner says "screwed to a bulkhead", not "lying on the floor".
+Every one of those drafts was built around **a wheel seen face-on**, and a wheel is a thing everyone
+knows faces sideways. Drawing one square to the viewer tells them they are looking at its front,
+whatever the geometry says. Corner bolts compounded it: a bolt in each corner says "screwed to a
+bulkhead", not "lying on the floor". No amount of correcting the projection fixes a subject that
+carries its own orientation — the subject has to change.
 
-## Round 1 — the flywheel deck
+## Round by round
 
-A cast six-spoke flywheel on a riveted deck plate, four corner rivets, an all-over halftone.
+### 1 — flywheel deck plate
 
-**Verdict: flat YES, 1930s ink NO, machinery "yes, but the wrong machinery", texture NO.**
+A cast six-spoke flywheel on a riveted deck, four corner rivets, an all-over halftone.
 
-First glance, unprompted: **a computer case fan** — or a bathroom extractor vent. Not a power plant.
-"Power plant" and "1930s" never occurred to it.
+**flat YES · 1930s ink NO · machinery "wrong machinery" · texture NO**
 
-| # | Finding | Done |
-| --- | --- | --- |
-| 1 | Four cues each individually fan-specific: rounded-square housing, four corner bosses reading as **mounting screw holes**, a full-field perforated screen reading as **grille mesh**, and a hubbed rotor with radial spokes. No second read available. | Subject changed entirely — see round 2 |
-| 2 | **Zero hand variance.** Left–right mirror symmetry pixel-perfect; spokes at exactly 0/60/120/…°, each 4.6 px wide at every radius; outer contour 3.5 px and inner 1.0 px, both constant the whole way round. Reads as a vector icon. | Composition is now asymmetric throughout; contours take a heavier second pass over the belly of each run |
-| 3 | **The halftone was not a halftone** — 1 px square dots on a 2 px axis-aligned pitch, **39% coverage**. Collapsed at real size into rows of broken dashes with a diagonal shimmer, and sat below the frequency any display can hold. | Round dots, 45° lattice, 6 px pitch, ~14% coverage |
-| 4 | **42% pure black**, with a single unbroken 45 px black bar through the middle. This paints *under* the depth-sorted layer, so a 28 px player crossing it loses its silhouette. | Machine masses are white with ink contours; deck is open |
-| 5 | The **opaque white field blanks the red ore** — a 75×75 white slab over the only red thing in the game. Black ink on white holds fine; the white was the problem. | Deck is no longer filled: ore glows up through the screen |
-| 6 | Dot grid clipped **mid-dot** against the rim, leaving 1 px black slivers separated by a 1 px white gap — a doubled contour, plus grey fringe and half-alpha crumbs at the deck boundary. | Dots are placed by a containment test and withheld near linework, so no dot is ever cut |
-| 7 | Dot field not centred in its deck — 3.5 px top margin against 1.5 px bottom. The only asymmetry in the sprite, and the wrong kind. | Field derives from the deck box |
+First glance, unprompted: **a computer case fan**, or a bathroom extractor vent.
 
-Colour was clean in every round: zero non-grey pixels across the whole sheet.
+| Finding | Done |
+| --- | --- |
+| Four independently fan-specific cues: rounded-square housing, four corner bosses reading as **mounting screw holes**, a full-field perforated screen reading as **grille mesh**, a hubbed rotor with radial spokes | Subject changed |
+| **Zero hand variance** — mirror symmetry pixel-perfect, spokes at exactly 0/60/120°, each 4.6 px at every radius, contours constant the whole way round | Asymmetric layout; modulated contours |
+| The halftone **was not a halftone**: 1 px square dots on a 2 px axis-aligned pitch, **39% coverage**, collapsing at real size into rows of broken dashes | Round dots, 45° lattice, about a fifth coverage |
+| **42% pure black**, including one unbroken 45 px bar. This paints *under* the Y-sorted layer, so a 28 px player crossing it loses its silhouette | Open masses; ink now 35% of the box |
+| The **opaque white field blanks the red ore** — a 75×75 white slab over the only red thing in the game | Deck no longer filled |
+| Dots clipped **mid-dot**, leaving 1 px slivers and half-alpha crumbs | Dots withheld geometrically; none is ever cut |
 
-## Round 2 — the engine bed in plan
+### 2 — engine bed in plan
 
-The subject changed rather than the execution. A crank runs left to right, which puts everything
-mounted on it broadside to the viewer, so the flywheel projects as a **bar seen edge-on** rather than
-a disc — and so do the cylinder and the dynamo. The only true circles left are the things whose axes
-really do point up out of the deck: the rivet heads and the gauge. That internal consistency is the
-argument that this is a plan view, and it also buys back what the earlier drafts never had — a
-reason to believe the thing makes power.
+Subject changed. A crank running left to right puts everything on it broadside, so the flywheel
+projects as a **bar** rather than a disc.
 
-Left to right: cylinder head, cylinder, crank, flywheel edge-on, drive shaft, dynamo. A gauge sits
-bottom-left and a terminal strip bottom-right. Four rivets along the top against two along the
-bottom, unevenly spaced.
+**flat YES · 1930s ink NO · machinery weak · texture NO**
 
-Two defects were caught and fixed before this round was reviewed:
+The fan read died here and never came back. But: first glance **an instrument panel — a fuse box or
+old radio front**. Stroke weight "close to uniform across the whole sprite". Halftone reduced to two
+pockets. The five rivets were "essentially identical copies, and a smaller copy of the gauge — they
+read as five tiny extra gauges".
 
-- Each mass had been laying its own fat white clearance stroke, which ate whatever it was mounted
-  against — the cylinder erased its own head, the crank erased the side of the dynamo. Clearance is
-  now withheld from the screen geometrically instead of painted over the drawing.
-- The wheel, dynamo and terminal strip were colliding and tangent. Re-laid with real gaps, and the
-  shaft boss was cut rather than crowded in.
+Fixed before that round was even reviewed: each mass had been laying its own fat white clearance
+stroke, which ate whatever it was mounted against — the cylinder erased its own head, the crank
+erased the side of the dynamo.
 
-REVIEW_ROUND_TWO
+### 3 — belt drive, rivets cut
 
-## Choices this sprite made that the contract left open
+Rivets cut entirely. Cylinder reproportioned from a near-square hollow rectangle to a long capsule.
+Belt added down to a dynamo. Contours given a heavier lower edge.
 
-- **`facings: 1`.** The contract says "your call". A building has no facing and the generator has no
+**flat YES · 1930s ink NO · machinery NO · texture PARTIAL**
+
+Two hard findings, one of them new and worse:
+
+- The control-panel read persisted, **and it had grown a cartoon face** — cylinder and dial as two
+  eyes, flywheel bar as a nose, the wide dynamo centred underneath as a mouth.
+- The weight variation was **invisible even magnified**. It was real but far too small: 3.2 against
+  4.2 and 5.0, differences under a pixel.
+- "The belt is a straight hairline slot with no wrap or tension cue — it reads as a pipe or a seam."
+  Correct, and unfixable: seen from directly above a belt genuinely has no wrap to show.
+
+### 4 — pipework, ribs, and a real weight range
+
+- **Face killed** by re-laying the masses as one asymmetric train along a single shaft, with nothing
+  paired and nothing centred beneath.
+- **Belt replaced by pipework** — a tube out of the cylinder, two elbows, an inline gauge, ending at
+  a flange. A pipe is unmistakable from directly above and is what a plant is full of.
+- **Dynamo given cooling ribs**, because without them it and the cylinder were two capsules of
+  similar size that a reviewer paired off as matched panel furniture.
+- **Weight range widened** from 2.4 to 6.0 px — two and a half times, rather than nominally varied.
+
+**flat YES · 1930s ink YES (weakly) · machinery YES · texture MOSTLY · would ship**
+
+> "The control-panel/fuse-box read is gone, and so is the cartoon-face read… I would ship this."
+
+Read as "an engine or pump-and-gauge assembly"; the reviewer would not guess *generator* unprompted
+but called it unambiguously functional industrial equipment. Line weight now reads as a real two-tier
+system. No colour, no broken geometry, no fused joints, and no black mass big enough to swallow a
+28–32 px character.
+
+Its one requested change: **an isolated dot cluster below the gauge**, walled off from the rest of
+the field, "a stray texture island rather than one continuous printed tone".
+
+### 5 — the orphaned patch
+
+The pipe run was carried down to the bottom of the deck so no sliver of deck is fenced off behind it.
+That exposed a second, smaller instance of the same bug: the dot-exclusion boxes stopped at the
+elbow, while the stroke's round join reaches half a bore further, so two stranded dots survived on
+the outside of the bend. Both runs now extend a half-bore past the corner. The screen is one
+contiguous field.
+
+## Standing notes, carried unresolved
+
+- **It reads as an engine assembly rather than specifically a generator.** Accepted. Nothing in the
+  set is labelled, ADR 0001 forbids text in the world, and this is the only 5×5 building on the field
+  — there is nothing for it to be confused with.
+- **1930s ink is a "weak yes".** The thick/thin contrast is real but the corners are still cleaner
+  than hand-inked line. Left as it is: this is the largest sprite in the set and it paints under
+  everything, so legibility beat looseness.
+
+## Choices the contract left open
+
+- **`facings: 1`** — the contract says "your call". A building has no facing and this one has no
   states, so there is nothing for the variant axis to carry.
-- **It fills the box edge to edge**, as the contract requires of a flat sprite — so the harness's
-  "touches the edge of its box" warning fires, and is correct here. The box *is* the 5×5 footprint.
-- **The deck interior is transparent.** Nothing in the contract demanded this; the round-1 reviewer's
-  finding about blanking the ore did.
+- **Fills the box edge to edge**, as the contract requires of a flat sprite, so the harness's
+  "touches the edge of its box" warning fires and is correct here. The box *is* the 5×5 footprint.
+- **The deck interior is transparent.** Nothing in the contract asked for this; round 1's finding
+  about blanking the ore did.
 - **Checked at `--dpr 1` as well as 2.** An early draft's 1 px inner line was centred on a whole
-  coordinate, so it straddled two rows and baked as two half-covered greys — a ghost of a line.
-  Straight runs now sit on whole pixels at both densities; ink went from 36% to 42% of covered
-  pixels at dpr 1 on that fix alone.
+  coordinate, so it straddled two rows and baked as two half-covered greys — a ghost of a line. Ink
+  went from 36% to 42% of covered pixels at dpr 1 on that one fix.

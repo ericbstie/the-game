@@ -2,7 +2,7 @@
 
 Visual review of `grunt.sheet.png`, per [ADR 0002](../../docs/adr/0002-sprites-are-built-by-one-agent-each-with-a-reviewer.md).
 A subagent read the PNG and looked at it; the findings are advisory and the sprite ships on the
-author's call. Four rounds were run, each on a freshly rendered sheet.
+author's call. Five rounds were run, each on a freshly rendered sheet.
 
 ## What the sprite is
 
@@ -86,17 +86,56 @@ The most detailed pass; it measured the baked pixels rather than eyeballing them
 
 ## Round 4
 
-Run on the sheet as committed. See the verdict below.
+> No enclosed white pockets left — that defect is resolved. Movement reads as a scuttle, not a
+> pulse. Frame 0 genuinely reads as a stopped pose. But **every limb is one unbroken curve from
+> body to tip with no direction change anywhere in the run. A pure arc reads as a tentacle no
+> matter how well it tapers** — a rubber-hose limb needs at least one angle before it reads as a
+> limb. **Verdict: not ship as-is.**
+
+That is the round that mattered most, and it was right. Every earlier pass had treated the octopus
+read as a proportion problem — smaller body, longer legs, thinner strokes — and proportion was
+never the thing. The leg was a single cubic from hip to foot, so however it was weighted it stayed
+one smooth arc.
+
+**Changed:** each leg is now **two hoses meeting at a knee** — a thigh that climbs from the body
+and holds its height as it arrives, and a shin that drops away at once. The knee sits at 58% of the
+leg and is its thickest point, so the bend and the taper land together, which is also where a
+spider's weight actually is.
+
+## Round 5
+
+> The joints read now — a real knee bend, a genuine improvement over the arc. Ink style on target,
+> frame 0 legibly the calmer standing pose, no rogue heavier column, no detached parts, leg count
+> consistent across frames. **But at real size the fan collapses into a four-stroke glyph** — a
+> trunk with two strokes splayed up and a few down, closer to a figure with its arms raised than to
+> a many-legged creature. **Highest-value change: make the fan read as *many* long legs — thin and
+> separate the strokes so the silhouette stops collapsing.**
+
+**Changed:** legs thinned (knee 2.0 → 1.62, tip 1.3 → 1.12, feet smaller to match), the arch
+lowered so fewer legs project above the body as "raised arms", and the spreads pulled in and evened
+out (33/71/111/151) to close the wide empty wedge at the front that was making eight legs look like
+four. The legs separate and can be counted at real size now.
+
+## Outstanding, and shipped anyway
+
+The reviewer is advisory (ADR 0002 §3) and these are the notes it travels with:
+
+- **The rear legs, which the projection puts *above* the body, can be misread as antennae** at a
+  glance. That is inherent to the hybrid — legs behind an upright body have to be drawn above it —
+  and thinning the legs so the whole fan reads made it much weaker. Left as is.
+- **S/SE/SW carry more ink than E/W.** More legs are visible face-on than edge-on; the reviewer
+  called this a consequence of the projection rather than drift, and it is.
+- **The face is lost at `--dpr 1`.** See below.
 
 ## Author's notes
 
-- **`--dpr 1` was checked as well as the default 2.** The silhouette holds — the legs stay
-  continuous rather than breaking into a grey smear, which is what the belly swell bought. The
-  **face is lost at dpr 1**: an eye is about 2 device px there and the body reads as a solid blob.
-  Accepted. Facing is still carried by the leg fan, and the separation from the elite was never
-  going to rest on the face. Checked at the fractional 1.5 that Windows scaling produces too, where
-  it holds up well.
-- **Ink is 59% of covered pixels at dpr 2, 33% at dpr 1.** The dpr 1 figure is the anti-aliasing
+- **`--dpr 1` was checked as well as the default 2**, and the fractional 1.5 that Windows display
+  scaling produces. The silhouette holds at all three: the legs stay continuous and countable
+  rather than breaking up, which is what keeping the tip above a whole logical pixel bought. The
+  **face is lost at dpr 1** — an eye is about 2 device px there and the body reads as a solid blob.
+  Accepted: facing is carried by the leg fan, and the separation from the elite was never going to
+  rest on the face.
+- **Ink is 51% of covered pixels at dpr 2, 23% at dpr 1.** The dpr 1 figure is the anti-aliasing
   the contract says not to fix; it is a resolution floor, not wrong ink.
 - **The grunt/elite silhouette separation is safe.** The elite is a 48 px box almost filled by one
   body with short limbs below it; the grunt is a 3.4 px-radius body inside a 27 px leg fan. They
