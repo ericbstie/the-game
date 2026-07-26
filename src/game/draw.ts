@@ -203,7 +203,7 @@ export function drawWorld(
 
   for (const e of world.enemies) {
     if (!isVisible(e.pos, e.radius * 2, camera, viewport)) continue;
-    standing.push({ y: e.pos.y, paint: () => paintEnemy(ctx, e, sprites, blit) });
+    standing.push({ y: e.pos.y, paint: () => paintEnemy(ctx, e, sprites, blitOver) });
   }
 
   for (const a of world.players) {
@@ -409,11 +409,17 @@ function paintEnemy(
   ctx: CanvasRenderingContext2D,
   enemy: RenderedEnemy,
   sprites: SpriteSource | undefined,
-  blit: Blit,
+  blitOver: Blit,
 ): void {
   const sprite = sprites?.(enemy.kind, enemy.facing, enemy.frame);
   if (sprite) {
-    blit(sprite, enemy.pos.x, enemy.pos.y);
+    // Centred, not foot-anchored, unlike everything else that stands up. A spider is the one
+    // hybrid in the set: its body is upright but its legs splay *flat around* it, so the ring of
+    // legs is its contact with the floor and that ring's centre is where the sim says it is.
+    // Foot-anchoring it would hang the whole ring above `pos` and lift the body a full radius —
+    // contact damage would land from a spider drawn half a body clear of you. The upright player
+    // and the elevation structures are genuinely bottom-anchored and keep `blit`.
+    blitOver(sprite, enemy.pos.x, enemy.pos.y);
     return;
   }
   ctx.fillStyle = ENEMY_COLORS[enemy.kind];

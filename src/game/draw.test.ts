@@ -205,6 +205,23 @@ describe("drawWorld with sprites", () => {
     expect(blits(ctx)[0]).toEqual({ tag: "player/2/0", x: 1086, y: 1072, width: 28, height: 28 });
   });
 
+  test("centres a spider on its position rather than standing it on the box's bottom edge", () => {
+    const ctx = spyCtx();
+    const one: WorldSnapshot = {
+      ...standing,
+      players: [],
+      nests: [],
+      enemies: [
+        { ...POSE, id: "e1", kind: "grunt", pos: { x: 1150, y: 1200 }, radius: 16, hp: 30 },
+      ],
+    };
+    drawWorld(ctx, one, { camera, viewport, sprites: stubSprites(everything) });
+    // A spider's legs splay flat *around* it, so the ring of legs is what meets the floor and its
+    // centre is the position the sim owns. Foot-anchoring would put y at 1168 and lift the body a
+    // full radius clear of where contact damage is actually judged.
+    expect(blits(ctx)[0]).toEqual({ tag: "grunt/2/0", x: 1134, y: 1184, width: 32, height: 32 });
+  });
+
   test("blits into the logical box, leaving the bake's device pixels to the DPR transform", () => {
     const ctx = spyCtx();
     const one: WorldSnapshot = {
