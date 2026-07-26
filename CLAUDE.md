@@ -24,12 +24,26 @@ All work lives under a single umbrella issue: **[TRACKING] Breakout Box — Mult
 Milestones** ([#3](https://github.com/ericbstie/the-game/issues/3)). **Every issue
 created in this repo must be a sub-issue of the TRACKING issue** — milestone
 breakdowns, feature tickets, and bugs alike. Nothing is created as a top-level issue.
+A milestone gets its own tracking issue under #3, and that milestone's tickets are
+sub-issues of *it* — the tree stays rooted at #3 either way.
 
 Work advances one milestone at a time, in order. Each `/wayfinder` → `/implement`
 loop targets only the next open milestone and goes no further. Before advancing to
 the next milestone, close **all** issues for the current milestone and **refine every
 remaining milestone** to reflect how the scope changed while implementing the current
 one.
+
+### Claiming an issue
+
+**Before writing any code for an issue, do all three:**
+
+1. **Comment on the issue saying you are taking it.**
+2. **State the branch you are working on** in that same comment.
+3. **Assign `ericbstie` to the issue.**
+
+One comment covers 1 and 2. Do it the moment you pick the task up, not when you
+finish — the point is that anyone reading the issue can tell it is claimed and where
+the work is happening.
 
 ## Skills — use these when relevant
 
