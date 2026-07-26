@@ -20,6 +20,7 @@ describe("SPRITE_BOX", () => {
       generator: 75, // footprint 5 × TILE
       "ore-metal": 15, // TILE
       "ore-power": 15,
+      room: 30, // TILE × 2, the perimeter band
     });
   });
 });
@@ -40,5 +41,25 @@ describe("SPRITES", () => {
     for (const [name, subject] of landed) {
       if (subject) expect(subject.name).toBe(name);
     }
+  });
+
+  // A sprite module with no registry entry resolves to null, and `drawWorld` then quietly falls
+  // back to the M2 shape — which during M5 is indistinguishable from a sprite nobody has drawn
+  // yet. So an agent could finish its work, merge green, and never appear in the game. This is
+  // what makes that state loud instead: the file existing is the claim, and the entry is the
+  // proof. Infrastructure modules are excluded by name because they are not sprites.
+  test("every sprite module in this directory is wired into the game", () => {
+    const infrastructure = new Set(["sheet", "cache", "registry", "calibration"]);
+    const modules = [...new Bun.Glob("*.ts").scanSync({ cwd: import.meta.dir })]
+      .map((file) => file.replace(/\.ts$/, ""))
+      .filter((name) => !name.endsWith(".test") && !infrastructure.has(name));
+
+    for (const name of modules) {
+      expect({ name, wired: SPRITES[name as SpriteName] !== undefined }).toEqual({
+        name,
+        wired: true,
+      });
+    }
+    expect(modules.length).toBeGreaterThan(0); // the glob itself has to be finding something
   });
 });

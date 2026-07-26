@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { WorldSnapshot } from "../lobby/protocol";
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
+import { tileKey } from "./build";
 import type { Camera, Viewport } from "./camera";
 import { drawWorld } from "./draw";
 
@@ -185,9 +186,9 @@ describe("drawWorld with sprites", () => {
     // is nest 1090, player 1100, player 1150, grunt 1200.
     expect(blits(ctx).map((b) => b.tag)).toEqual([
       "nest/0/0",
-      "player/0/0",
-      "player/0/0",
-      "grunt/0/0",
+      "player/2/0",
+      "player/2/0",
+      "grunt/2/0",
     ]);
   });
 
@@ -201,7 +202,7 @@ describe("drawWorld with sprites", () => {
     };
     drawWorld(ctx, one, { camera, viewport, sprites: stubSprites(everything) });
     // The avatar stands at (1100, 1100): its 28 px box is centred on x and sits *above* y.
-    expect(blits(ctx)[0]).toEqual({ tag: "player/0/0", x: 1086, y: 1072, width: 28, height: 28 });
+    expect(blits(ctx)[0]).toEqual({ tag: "player/2/0", x: 1086, y: 1072, width: 28, height: 28 });
   });
 
   test("blits into the logical box, leaving the bake's device pixels to the DPR transform", () => {
@@ -291,8 +292,218 @@ describe("drawWorld with sprites", () => {
   test("an entity whose sprite has not landed keeps the shape it has had since M2", () => {
     const ctx = spyCtx();
     drawWorld(ctx, standing, { camera, viewport, sprites: stubSprites({ player: 28 }) });
-    expect(blits(ctx).map((b) => b.tag)).toEqual(["player/0/0", "player/0/0"]);
+    expect(blits(ctx).map((b) => b.tag)).toEqual(["player/2/0", "player/2/0"]);
     expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(2); // the nest and the grunt
+  });
+
+  test("asks for the facing and walk frame the entity is actually in", () => {
+    const ctx = spyCtx();
+    const walking: WorldSnapshot = {
+      ...standing,
+      players: [{ ...standing.players[0], facing: 5, frame: 1 }],
+      enemies: [{ ...standing.enemies[0], facing: 7, frame: 1 }],
+      nests: [],
+    };
+    drawWorld(ctx, walking, { camera, viewport, sprites: stubSprites(everything) });
+    expect(blits(ctx).map((b) => b.tag)).toEqual(["player/5/1", "grunt/7/1"]);
+  });
+
+  test("marks your own avatar over its body, not in a puddle at its ankles", () => {
+    const ctx = spyCtx();
+    const one: WorldSnapshot = {
+      ...standing,
+      players: [standing.players[0]],
+      enemies: [],
+      nests: [],
+    };
+    drawWorld(ctx, one, {
+      selfId: "p1",
+      camera,
+      viewport,
+      sprites: stubSprites({ ...everything, halo: 40 }),
+    });
+    const halo = blits(ctx).find((b) => b.tag.startsWith("halo"));
+    // The avatar stands at y 1100 in a 28 px box, so its body centres on 1086 — and the 40 px halo
+    // hangs off that centre rather than off the feet.
+    expect(halo).toEqual({ tag: "halo/0/0", x: 1080, y: 1066, width: 40, height: 40 });
+  });
+
+  test("paints the halo behind the avatar, so a glow does not veil the face", () => {
+    const ctx = spyCtx();
+    const one: WorldSnapshot = {
+      ...standing,
+      players: [standing.players[0]],
+      enemies: [],
+      nests: [],
+    };
+    drawWorld(ctx, one, {
+      selfId: "p1",
+      camera,
+      viewport,
+      sprites: stubSprites({ ...everything, halo: 40 }),
+    });
+    expect(blits(ctx).map((b) => b.tag)).toEqual(["halo/0/0", "player/2/0"]);
+  });
+
+  test("drops the stand-in ring once the halo sprite exists", () => {
+    const withHalo = spyCtx();
+    const one: WorldSnapshot = {
+      ...standing,
+      players: [standing.players[0]],
+      enemies: [],
+      nests: [],
+    };
+    const options = { selfId: "p1", camera, viewport };
+    drawWorld(withHalo, one, { ...options, sprites: stubSprites({ ...everything, halo: 40 }) });
+    expect(withHalo.calls.filter((c) => c.fn === "stroke").length).toBe(0);
+
+    const withoutHalo = spyCtx();
+    drawWorld(withoutHalo, one, { ...options, sprites: stubSprites(everything) });
+    expect(withoutHalo.calls.filter((c) => c.fn === "stroke").length).toBe(1);
+  });
+
+  test("flags a turret holding a target it has no power to fire on", () => {
+    const engaged = { powered: false, targetId: "e1" };
+    const cases: [string, { powered: boolean; targetId: string | null }, number][] = [
+      ["engaged and unpowered", engaged, 1],
+      ["engaged and powered", { powered: true, targetId: "e1" }, 0],
+      // An idle turret is unpowered too, and has nothing to complain about.
+      ["idle", { powered: false, targetId: null }, 0],
+    ];
+    for (const [why, turret, expected] of cases) {
+      const ctx = spyCtx();
+      const defended: WorldSnapshot = {
+        ...standing,
+        players: [],
+        enemies: [],
+        nests: [],
+        structures: [{ id: "b1", kind: "turret", tile: { tx: 74, ty: 74 }, hp: 250, turret }],
+      };
+      drawWorld(ctx, defended, {
+        camera,
+        viewport,
+        sprites: stubSprites({ ...everything, unpowered: 24 }),
+      });
+      const lightning = blits(ctx).filter((b) => b.tag.startsWith("unpowered"));
+      expect({ why, count: lightning.length }).toEqual({ why, count: expected });
+    }
+  });
+
+  test("flashes the lightning off the injected clock rather than reading one", () => {
+    const at = (now: number) => {
+      const ctx = spyCtx();
+      drawWorld(
+        ctx,
+        {
+          ...standing,
+          players: [],
+          enemies: [],
+          nests: [],
+          structures: [
+            {
+              id: "b1",
+              kind: "turret",
+              tile: { tx: 74, ty: 74 },
+              hp: 250,
+              turret: { powered: false, targetId: "e1" },
+            },
+          ],
+        },
+        { camera, viewport, now, sprites: stubSprites({ ...everything, unpowered: 24 }) },
+      );
+      return blits(ctx).find((b) => b.tag.startsWith("unpowered"))?.tag;
+    };
+    expect(at(0)).toBe("unpowered/0/0");
+    expect(at(500)).toBe("unpowered/0/1");
+    expect(at(900)).toBe("unpowered/0/2");
+  });
+
+  test("draws ore a tile at a time once its sprite lands, and in runs before that", () => {
+    const ore = new Map<number, "metal" | "power">();
+    for (let tx = 70; tx < 74; tx++) ore.set(tileKey({ tx, ty: 70 }), "metal");
+    const bare: WorldSnapshot = { ...standing, players: [], enemies: [], nests: [], ore };
+
+    const flat = spyCtx();
+    drawWorld(flat, bare, { camera, viewport, sprites: stubSprites(everything) });
+    // One run of four tiles, merged into a single fill — the path the game has always used.
+    expect(flat.calls.some((c) => c.fn === "fillRect" && c.args[2] === 60)).toBe(true);
+
+    const drawn = spyCtx();
+    drawWorld(drawn, bare, {
+      camera,
+      viewport,
+      sprites: stubSprites({ ...everything, "ore-metal": 15 }),
+    });
+    const tiles = blits(drawn).filter((b) => b.tag.startsWith("ore-metal"));
+    expect(tiles.length).toBe(4);
+    expect(tiles[0]).toMatchObject({ x: 1050, y: 1050, width: 15, height: 15 });
+  });
+
+  test("scatters ore variants from the tile coordinate, so every client sees one field", () => {
+    const ore = new Map<number, "metal" | "power">();
+    for (let tx = 70; tx < 76; tx++) ore.set(tileKey({ tx, ty: 70 }), "metal");
+    const seeded: WorldSnapshot = { ...standing, players: [], enemies: [], nests: [], ore };
+    const variants = () => {
+      const ctx = spyCtx();
+      drawWorld(ctx, seeded, {
+        camera,
+        viewport,
+        sprites: stubSprites({ ...everything, "ore-metal": 15 }),
+      });
+      return blits(ctx).map((b) => b.tag);
+    };
+    expect(variants()).toEqual(variants()); // same tiles, same field, every time
+    expect(new Set(variants()).size).toBeGreaterThan(1); // and not all the same tile
+  });
+
+  test("tiles the room's wall along the edges the camera can see, and nowhere else", () => {
+    const ctx = spyCtx();
+    const corner: Camera = { x: 0, y: 0 }; // against the north-west corner
+    const room: WorldSnapshot = {
+      ...standing,
+      players: [],
+      enemies: [],
+      nests: [],
+      ore: new Map(),
+    };
+    drawWorld(ctx, room, {
+      camera: corner,
+      viewport,
+      sprites: stubSprites({ ...everything, room: 30 }),
+    });
+    const segments = blits(ctx).filter((b) => b.tag.startsWith("room"));
+    const north = segments.filter((b) => b.tag === "room/0/0" && b.y === 0);
+    const west = segments.filter((b) => b.tag === "room/3/0" && b.x === 0);
+    expect(north.length).toBe(Math.ceil(viewport.width / 30));
+    expect(west.length).toBeGreaterThan(0);
+    // The far edges of a 31,200² arena are nowhere near this corner.
+    expect(segments.some((b) => b.tag === "room/1/0" || b.tag === "room/2/0")).toBe(false);
+  });
+
+  test("switches the wall run to the door where it crosses the exit", () => {
+    const ctx = spyCtx();
+    const room: WorldSnapshot = {
+      ...standing,
+      players: [],
+      enemies: [],
+      nests: [],
+      ore: new Map(),
+      exit: { x: 0, y: 60, width: 98, height: 60 },
+    };
+    drawWorld(ctx, room, {
+      camera: { x: 0, y: 0 },
+      viewport,
+      sprites: stubSprites({ ...everything, room: 30 }),
+    });
+    const doors = blits(ctx).filter((b) => b.tag === "room/4/0");
+    expect(doors.map((d) => d.y)).toEqual([60, 90]); // the two segments the exit spans
+  });
+
+  test("keeps the M2 outline and exit rect until the room sprite lands", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, standing, { camera, viewport, sprites: stubSprites(everything) });
+    expect(ctx.calls.some((c) => c.fn === "strokeRect" && c.args[0] === 2)).toBe(true);
+    expect(ctx.calls.some((c) => c.fn === "fillRect" && c.args[1] === 1100)).toBe(true);
   });
 
   test("keeps drawing a sprite whose feet have left the viewport but whose body has not", () => {

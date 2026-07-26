@@ -201,6 +201,7 @@ export function GameScreen({
             viewport,
             ghost,
             dpr,
+            now: Date.now(),
             sprites: spriteCache.source(dpr),
           });
         }

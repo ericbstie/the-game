@@ -2,7 +2,15 @@ import { BUILDABLES, TILE } from "../game/build";
 import { ELITE_RADIUS, GRUNT_RADIUS, NEST_RADIUS } from "../game/enemies";
 import { PLAYER_RADIUS } from "../game/world";
 import type { BuildableKind } from "../lobby/protocol";
+import elite from "./elite";
+import generator from "./generator";
+import grunt from "./grunt";
+import miner from "./miner";
+import nest from "./nest";
+import player from "./player";
 import type { SpriteSubject } from "./sheet";
+import turret from "./turret";
+import wall from "./wall";
 
 // Every sprite the game draws, and the module that draws it.
 //
@@ -36,9 +44,9 @@ export type SpriteName =
 // Every entry is *derived* from the size the entity already is in the simulation, so the art and
 // the thing it stands for can never drift apart. #81 quotes these same numbers.
 //
-// The names left out have no size fixed by #81: `grass` and `room` are #72's and the room-wall
-// ticket's to settle, and `halo`, `warning` and `unpowered` are overlays whose box is their own
-// agent's call. Inventing numbers for them here would be deciding by accident.
+// The names left out have no size fixed by #81: `grass`'s tuft is #72's to settle along with its
+// density, and `halo`, `warning` and `unpowered` are overlays whose box is their own agent's call.
+// Inventing numbers for them here would be deciding by accident.
 export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
   player: PLAYER_RADIUS * 2, // 28
   grunt: GRUNT_RADIUS * 2, // 32
@@ -50,11 +58,24 @@ export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
   generator: footprintBox("generator"), // 75
   "ore-metal": TILE, // 15
   "ore-power": TILE, // 15
+  // The perimeter is tiled from one square, so the band's width is also the run's step. Two tiles
+  // divides the arena exactly (31,200 / 30 = 1,040 segments a side) and matches a wall building.
+  room: TILE * 2, // 30
 };
 
-// The sprites that have actually landed. Empty until the first agent's file is merged; wiring one
-// in is two lines — `import player from "./player";` above, and `player,` here.
-export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {};
+// The sprites that have actually landed. Wiring one in is two lines — an import above, and a name
+// here. A module sitting in this directory without an entry is a sprite nobody can see, so
+// `registry.test.ts` fails on one rather than letting it pass for art that has not landed yet.
+export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
+  player,
+  grunt,
+  elite,
+  nest,
+  miner,
+  wall,
+  turret,
+  generator,
+};
 
 function footprintBox(kind: BuildableKind): number | undefined {
   const spec = BUILDABLES[kind];
