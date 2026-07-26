@@ -62,28 +62,22 @@ const SWELL_STEP = 0.85;
 //
 // Piled rather than packed. One egg ringed by the rest at a constant gap is a rosette, and a
 // rosette reads as a flower, a molecule diagram, or a blackberry — it is also the loudest possible
-// "an algorithm placed these". Merely varying the gaps is not enough to break the lattice: the
-// radii run 2.2:1 and neighbours overlap anywhere from 0.6 to 5.9, so some eggs frankly occlude
-// others and no two gaps match. Uniform spheres at a uniform pitch are fruit, whatever the outline
-// round them is doing.
-const CLUTCH_CENTRE: Pt = [46, 56];
+// "an algorithm placed these". So the gaps run from touching to wide and the mass leans low-left.
+const CLUTCH_CENTRE: Pt = [46, 60];
 const EGGS: readonly Egg[] = [
-  [29, 47, 12, 11, 0.2],
-  [47, 39, 7, 7.5, -0.35],
-  [62, 46, 9, 8.5, 0.45],
-  [19, 62, 6, 6.5, 0.25],
-  [38, 61, 10.5, 10, -0.15],
-  [56, 59, 5.5, 5, 0.3],
-  [29, 75, 8.5, 8, 0.5],
-  [48, 72, 9.5, 9, -0.4],
-  [64, 66, 7, 6.5, 0.15],
+  [30, 50, 10.5, 9.5, 0.2],
+  [49, 44, 8, 8.5, -0.35],
+  [64, 52, 8, 7.5, 0.45],
+  [20, 63, 7, 7.5, 0.25],
+  [36, 63, 9.5, 9, -0.15],
+  [54, 61, 7.5, 7, 0.3],
+  [27, 77, 8, 7.5, 0.5],
+  [46, 76, 9, 8.5, -0.4],
+  [62, 70, 6.5, 6, 0.15],
 ];
 
-// The skin's thickness. Tight enough that an egg pressing it shows as a bulge, slack enough that
-// it does not pinch into a notch between two of them — a concave nick in the outline reads as a
-// tear, and a tear on the *intact* sac is the one thing the other variant is for.
-const MEMBRANE = 6.5;
-const CROWN = 15; // extra slack gathered above the brood, where the sac opens
+const MEMBRANE = 7; // the skin's thickness over the clutch
+const CROWN = 16; // extra slack gathered above the brood, where the sac opens
 
 // The way out, sunk into the crown. A dark ellipse with a paler one laid over it leaves the far
 // inner wall showing as a crescent — what looking down a tube gives you, and what a closed oval on
@@ -92,7 +86,7 @@ const CROWN = 15; // extra slack gathered above the brood, where the sac opens
 //
 // It is drawn *under* the clutch, so the topmost eggs cover its near edge and are seen through it.
 // Floated clear of them it stops being a hole in the bag and becomes a handle on a basket.
-const VENT: Pt = [46, 29];
+const VENT: Pt = [46, 34];
 const VENT_RX = 13;
 const VENT_RY = 7;
 const VENT_LIP: Pt = [46, 36.4];
@@ -121,19 +115,18 @@ const SILK_STRANDS: readonly (readonly [Pt, Pt])[] = [
 const PUDDLE_LOBES = [1.01, 0.95, 1.04, 0.93, 0.98, 1.05, 0.94, 1];
 const SPILL_LOBES = [0.97, 0.93, 1.02, 1.1, 1.22, 1.01, 0.95, 1];
 
-// The wreck's torn edge. Eight breaks whose rises run 12, 5, 12, 13, 5, 15, 9, 16 across widths of
-// 6, 13, 6, 5, 14, 5, 9, 9 — neither the amplitude nor the pitch repeats. Varying only the heights
-// leaves the *spacing* even, and an even pitch is still a stamped zigzag: a row of teeth, and a row
-// of teeth over a dark mound is a grin.
+// The wreck's torn edge. Eight breaks whose rises run 11, 3, 12, 10, 4, 13, 6, 14 — nothing
+// repeats, and two of them are near-flat rather than teeth. An even amplitude at an even period is
+// not a fracture, it is a row of teeth, and a row of teeth over a dark mound is a grin.
 const TEAR: readonly Pt[] = [
   [13, 52],
-  [19, 64],
-  [32, 59],
-  [38, 47],
-  [43, 60],
-  [57, 55],
-  [62, 40],
-  [71, 49],
+  [21, 63],
+  [31, 60],
+  [38, 48],
+  [47, 58],
+  [56, 54],
+  [64, 41],
+  [73, 47],
   [80, 33],
 ];
 
@@ -170,14 +163,12 @@ const RESIDUE: readonly Pt[] = [
 ];
 
 // Eggs that survived the wreck. Without these the two variants share nothing but the floor. Very
-// unequal and at three different heights — a matched pair sitting level above a dark bar is two
-// eyes over a mouth, and two is also too few to say the wreck used to be full. They straddle the
-// residue's edge rather than sitting inside it: an egg landed wholly on the ink has its pale halo
-// close into a ring, and a ring is a doughnut, or another eye.
+// unequal and at different heights — a matched pair sitting level above a dark bar is two eyes over
+// a mouth. Both straddle the residue's edge rather than sitting inside it: an egg landed wholly on
+// the ink has its pale halo close into a ring, and a ring is a doughnut, or another eye.
 const CLINGING: readonly Egg[] = [
-  [30, 72, 7.5, 7, 0.2],
-  [55, 80, 4.5, 4, -0.3],
-  [66, 74, 6, 5.5, 0.4],
+  [31, 73, 7, 6.5, 0.2],
+  [66, 78, 4.5, 4, -0.3],
 ];
 
 // Membrane peeled off the torn side and left hanging. One, not two: a pair sits symmetrically and
@@ -222,8 +213,6 @@ function drawIntact(ctx: CanvasRenderingContext2D): void {
     ctx.stroke();
   }
 
-  puddle(ctx, 34, PUDDLE_LOBES);
-
   ctx.fillStyle = PAPER;
   ctx.beginPath();
   shell();
@@ -249,6 +238,7 @@ function drawIntact(ctx: CanvasRenderingContext2D): void {
   for (const egg of EGGS) haloedEgg(ctx, egg);
 
   inkContour(ctx, shell);
+  puddle(ctx, 33, PUDDLE_LOBES);
 }
 
 function drawDestroyed(ctx: CanvasRenderingContext2D): void {
@@ -263,14 +253,13 @@ function drawDestroyed(ctx: CanvasRenderingContext2D): void {
     ctx.stroke();
   }
 
-  puddle(ctx, 36, SPILL_LOBES);
-
-  // Solid, not outlined: a pale flap with an ink contour encloses a white core, and a small closed
-  // loop beside the sprite is a coin or a monocle rather than a piece of torn membrane.
-  ctx.fillStyle = INK;
+  ctx.fillStyle = PAPER;
   ctx.beginPath();
   closedCurve(ctx, FLAP);
   ctx.fill();
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = CONTOUR;
+  ctx.stroke();
 
   const wreck = () => {
     polyline(ctx, TEAR);
@@ -308,6 +297,7 @@ function drawDestroyed(ctx: CanvasRenderingContext2D): void {
   ctx.restore();
 
   inkContour(ctx, wreck);
+  puddle(ctx, 35, SPILL_LOBES);
 }
 
 // The sac's outline is the clutch's own outline pushed out by the membrane's thickness, so the skin
@@ -319,46 +309,27 @@ function membraneAround(
   eggs: readonly Egg[],
   margin: number,
   crown: number,
-  // Even, so one sample lands square on the top and the crown's slack is gathered centrally rather
-  // than swelling onto one shoulder as a handle. Few and wide apart, so each quadratic bows instead
-  // of running straight and faceting the bag.
+  // Even, so one sample lands square on the top and the crown's slack is gathered centrally
+  // rather than swelling onto one shoulder as a handle. Few and wide apart, so each quadratic bows
+  // instead of running straight and faceting the bag.
   samples = 12,
 ): Pt[] {
-  const arc = Math.PI / samples;
-  // The midpoint curve passes through its polygon's edge midpoints, which sit inside its vertices.
-  // Without this the skin lands a little short of everything it was measured against.
-  const lift = 1 / Math.cos(arc);
   return Array.from({ length: samples }, (_, i) => {
     const angle = (i / samples) * Math.PI * 2;
-    // The widest reach anywhere in this point's own arc, not merely along its axis. An egg sitting
-    // between two samples is otherwise under-measured and the skin closes over it — which at this
-    // size does not read as a bulge, it reads as the contour breaking across the egg.
-    let reach = 0;
-    for (let step = -2; step <= 2; step++) {
-      reach = Math.max(reach, reachAlong(centre, eggs, angle + (step / 2) * arc));
-    }
     const ux = Math.cos(angle);
     const uy = Math.sin(angle);
+    let reach = 0;
+    for (const [x, y, rx, ry] of eggs) {
+      const r = (rx + ry) / 2;
+      const dx = x - centre[0];
+      const dy = y - centre[1];
+      const off = Math.abs(dx * uy - dy * ux);
+      if (off >= r) continue;
+      reach = Math.max(reach, dx * ux + dy * uy + Math.sqrt(r * r - off * off));
+    }
     const slack = margin + crown * Math.max(0, -uy) ** 1.5;
-    return [centre[0] + ux * (reach + slack) * lift, centre[1] + uy * (reach + slack) * lift] as Pt;
+    return [centre[0] + ux * (reach + slack), centre[1] + uy * (reach + slack)] as Pt;
   });
-}
-
-// How far the clutch extends from `centre` along `angle` — the far side of whichever egg reaches
-// furthest that way, or nothing if the ray misses them all.
-function reachAlong(centre: Pt, eggs: readonly Egg[], angle: number): number {
-  const ux = Math.cos(angle);
-  const uy = Math.sin(angle);
-  let reach = 0;
-  for (const [x, y, rx, ry] of eggs) {
-    const r = (rx + ry) / 2;
-    const dx = x - centre[0];
-    const dy = y - centre[1];
-    const off = Math.abs(dx * uy - dy * ux);
-    if (off >= r) continue;
-    reach = Math.max(reach, dx * ux + dy * uy + Math.sqrt(r * r - off * off));
-  }
-  return reach;
 }
 
 // Pale first, ink second: the halo is struck into whatever is already down, then covered on this
@@ -402,14 +373,12 @@ function inkContour(ctx: CanvasRenderingContext2D, shape: () => void): void {
   ctx.stroke();
 }
 
-// Drawn *under* the sprite, so the sac's own bottom contour stays crisp on top of it and what shows
-// is a dark spread around the base. Laid over the top instead, ink meets ink: the base contour, the
-// lowest egg and the splat fuse into one mass and the sac loses its footing on the floor entirely.
-// Lumpy rather than elliptical, because a splat with two matching ends reads as a pair of feet.
+// Drawn last and lapping over the base, so the sac sits *in* it rather than on it. Lumpy rather
+// than elliptical: a splat with two matching ends reads as a pair of feet.
 function puddle(ctx: CanvasRenderingContext2D, rx: number, lobes: readonly number[]): void {
   ctx.fillStyle = INK;
   ctx.beginPath();
-  closedCurve(ctx, lobedRing([48, 89], rx, 3.9, lobes));
+  closedCurve(ctx, lobedRing([48, 90.5], rx, 4.2, lobes));
   ctx.fill();
 }
 

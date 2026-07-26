@@ -35,29 +35,25 @@ const BODY_BOB = 1; // frame 1 rides a pixel higher, so the whole creature moves
 
 // Heights above the floor plane, not screen offsets: the hip is the body's underside and the knee
 // is the top of the arch a leg makes on its way out to its foot.
-const HIP_R = 1.8; // inside the body, so eight leg roots fuse into it instead of fencing off gaps
+const HIP_R = 2.8;
 const HIP_LIFT = 3.2; // high enough that every hip starts *inside* the body, leaving no seam
-const KNEE_LIFT = 3.6;
+const KNEE_LIFT = 4.2;
 const KNEE_KICK = 1.0; // a swinging leg in frame 1 picks its knee up this much further
-// A leg may only rise above its own hip once its knee is clear of the body. Otherwise it goes up
-// and out, then down and back in, and that hook pinches a sliver of white against the body — which
-// at 32 px fills with grey and reads as mush at the one joint the whole silhouette hangs on, or
-// worse, as a second eye. Clear of the body it descends monotonically from hip to foot and can
-// never close a shape; wide of the body it gets the full arch, which is where the arch reads
-// anyway.
-const KNEE_CLEAR = 3.4; // how far past the body's edge a knee must be to earn its full arch
+// A leg running up or down the screen is already stretched by the plan squash; arching it as well
+// folds it into a hairpin that pinches a white hole against the body — and a white hole beside the
+// eye reads as another eye. So the arch is spent on the legs that run across the screen, where it
+// is the thing that says *long legs*, and withheld from the ones that do not.
+const KNEE_FLAT = 0.34; // the arch a leg keeps when it points straight at or away from the viewer
 
-// Each leg is two hoses, not one: a thigh that climbs from the body to the knee and a shin that
-// falls from the knee to the foot, meeting at a real angle. One unbroken arc from body to tip is
-// what reads as a tentacle no matter how well it tapers — a limb needs somewhere the direction
-// changes before it reads as a limb. The knee is also the thickest point, which is where a
-// spider's weight actually is, so the taper and the bend land in the same place.
-const KNEE_AT = 0.58; // how far along the leg the knee sits
-const LEG_HIP_W = 1.5;
-const LEG_KNEE_W = 1.62;
-const LEG_FOOT_W = 1.12; // a tip thinner than a logical pixel is a grey smear, not a fine stroke
-const FOOT_RX = 0.8;
-const FOOT_RY = 0.68;
+// A rubber hose is not a constant-width pipe: it swells at the belly of its curve and tapers to
+// the tip. Constant width is what reads as a tentacle, and as machine linework rather than ink.
+// The tip stays above a whole logical pixel — thinner than that is not a fine stroke, it is an
+// intermittent grey smear at real size.
+const LEG_HIP_W = 1.7;
+const LEG_FOOT_W = 1.3;
+const LEG_BELLY = 0.34; // half-width added at the middle of the curve
+const FOOT_RX = 0.95;
+const FOOT_RY = 0.8;
 
 // The eyes ride a ring around the body's axis, so a facing turns them instead of moving them: the
 // far one narrows to a slit as it goes round, and the three back views end up blank on their own
@@ -107,10 +103,10 @@ interface Leg {
 // swapped — which gives the alternating tetrapod a real spider walks, four feet down at all times,
 // and is the cheapest thing that still reads as a scuttle in two frames.
 const LEGS: Leg[] = [
-  { spread: 33, reach: 14.0, bow: 15, tip: -8, lead: true, carry: 1, skew: 4, slack: 0.96 },
-  { spread: 71, reach: 13.6, bow: 13, tip: -10, lead: false, carry: 0.95, skew: -3, slack: 1.02 },
-  { spread: 111, reach: 13.0, bow: -13, tip: 12, lead: true, carry: 0.8, skew: 5, slack: 0.955 },
-  { spread: 151, reach: 12.0, bow: -18, tip: 18, lead: false, carry: 0.5, skew: -4, slack: 1.04 },
+  { spread: 40, reach: 14.0, bow: 15, tip: -8, lead: true, carry: 1, skew: 4, slack: 0.96 },
+  { spread: 78, reach: 13.4, bow: 13, tip: -10, lead: false, carry: 0.95, skew: -3, slack: 1.02 },
+  { spread: 118, reach: 12.6, bow: -13, tip: 12, lead: true, carry: 0.8, skew: 5, slack: 0.955 },
+  { spread: 154, reach: 11.6, bow: -18, tip: 18, lead: false, carry: 0.5, skew: -4, slack: 1.04 },
 ];
 
 interface Point {
@@ -163,7 +159,7 @@ function hose(
     const p = curveAt(p0, p1, p2, p3, t);
     const d = slopeAt(p0, p1, p2, p3, t);
     const length = Math.hypot(d.x, d.y) || 1;
-    const half = (wide + (thin - wide) * t) / 2;
+    const half = (wide + (thin - wide) * t) / 2 + LEG_BELLY * Math.sin(Math.PI * t);
     const nx = (-d.y / length) * half;
     const ny = (d.x / length) * half;
     near.push({ x: p.x + nx, y: p.y + ny });
@@ -201,43 +197,18 @@ function drawLeg(
   const knee = KNEE_LIFT + (frame === 1 && lead ? KNEE_KICK * leg.carry : 0);
 
   const kneeAngle = heading + spread + bow + swing * 0.35;
-  const kneeOut = Math.abs(Math.cos(kneeAngle * DEG)) * reach * 0.97;
-  const clear = Math.max(0, Math.min(1, (kneeOut - BODY_RX) / KNEE_CLEAR));
-  const arch = HIP_LIFT + (knee - HIP_LIFT) * clear;
+  const across = Math.abs(Math.cos(kneeAngle * DEG));
+  const arch = knee * (KNEE_FLAT + (1 - KNEE_FLAT) * across);
 
-  const hipAngle = heading + spread;
-  const footAngle = hipAngle + bow + tip + swing;
-  const kneeOff = reach * KNEE_AT;
-  const footOff = reach * 0.95;
+  const p0 = floorPoint(HIP_R, heading + spread, HIP_LIFT + bob);
+  const p1 = floorPoint(reach * 0.4, (heading + spread + kneeAngle) / 2, arch * 0.85 + bob);
+  const p2 = floorPoint(reach * 0.97, kneeAngle, arch);
+  const p3 = floorPoint(reach * 0.95, heading + spread + bow + tip + swing, 0);
 
-  // The thigh climbs from the body to the knee, and holds its height as it arrives so the knee is
-  // a corner rather than the top of a smooth hump.
-  const hip = floorPoint(HIP_R, hipAngle, HIP_LIFT + bob);
-  const kneePoint = floorPoint(kneeOff, kneeAngle, arch + bob * 0.5);
-  hose(
-    ctx,
-    hip,
-    floorPoint(kneeOff * 0.4, (hipAngle + kneeAngle) / 2, HIP_LIFT + (arch - HIP_LIFT) * 0.7 + bob),
-    floorPoint(kneeOff * 0.82, kneeAngle, arch + bob * 0.5),
-    kneePoint,
-    LEG_HIP_W,
-    LEG_KNEE_W,
-  );
-
-  // The shin drops away from the knee at once, which is what puts the angle in the silhouette.
-  const foot = floorPoint(footOff, footAngle, 0);
-  hose(
-    ctx,
-    kneePoint,
-    floorPoint(kneeOff + (footOff - kneeOff) * 0.3, kneeAngle, arch * 0.5),
-    floorPoint(kneeOff + (footOff - kneeOff) * 0.72, (kneeAngle + footAngle * 2) / 3, arch * 0.12),
-    foot,
-    LEG_KNEE_W,
-    LEG_FOOT_W,
-  );
+  hose(ctx, p0, p1, p2, p3, LEG_HIP_W, LEG_FOOT_W);
 
   ctx.beginPath();
-  ctx.ellipse(foot.x, foot.y, FOOT_RX, FOOT_RY, 0, 0, TAU);
+  ctx.ellipse(p3.x, p3.y, FOOT_RX, FOOT_RY, 0, 0, TAU);
   ctx.fill();
 }
 

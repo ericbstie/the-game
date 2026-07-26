@@ -11,6 +11,7 @@ import nest from "./nest";
 import oreMetal from "./ore-metal";
 import orePower from "./ore-power";
 import player from "./player";
+import room from "./room";
 import type { SpriteSubject } from "./sheet";
 import turret from "./turret";
 import wall from "./wall";
@@ -70,17 +71,18 @@ export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
 // here. A module sitting in this directory without an entry is a sprite nobody can see, so
 // `registry.test.ts` fails on one rather than letting it pass for art that has not landed yet.
 export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
-  player,
-  grunt,
   elite,
-  nest,
-  miner,
-  wall,
-  turret,
   generator,
+  grunt,
   halo,
+  miner,
+  nest,
   "ore-metal": oreMetal,
   "ore-power": orePower,
+  player,
+  room,
+  turret,
+  wall,
 };
 
 function footprintBox(kind: BuildableKind): number | undefined {

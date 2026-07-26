@@ -3,8 +3,8 @@
 Reviewed by a subagent against `nest.sheet.png`, per [ADR 0002](../../docs/adr/0002-sprites-are-built-by-one-agent-each-with-a-reviewer.md).
 Advisory, not blocking. Recorded as given, then answered.
 
-Three reviews were run, on the round 5, 7 and 9 sheets, by three separate subagents none of which
-saw the others' notes. All three are reproduced. The sprite shipped at round 12.
+Two reviews were run, on the round 5 and round 7 sheets, by two separate subagents neither of
+which saw the other's notes. Both are reproduced. The sprite shipped at round 9.
 
 ---
 
@@ -209,101 +209,12 @@ Declined, with reasons:
 - **A pale split across one egg**, tried in round 8 to say the brood hatches: at this size it read
   as a **letter**. Cut immediately — an accidental glyph is worse than a missing cue.
 
----
-
-## Round 9 — the third reviewer's findings
-
-A third subagent, same brief, no sight of either earlier review.
-
-**1 · Intact reads as a nest? No — "a blackberry, or a bunch of grapes in a bag."** Second read
-caviar in a pouch, a bag of marbles. **Rock and bush are both dodged** — too regular for one, no
-foliage lobes for the other — but berry is on the same fail list and that is where it landed. The
-cause is value distribution: the eggs are the solid black mass and the sac a thin white-cored skin
-around them, so what a player sees is *dark clustered spheres with a rim*, which is the universal
-berry idiom.
-
-**2 · Destroyed reads as destroyed? Yes — "the sheet's strongest asset."** Carried by the jagged
-rim, the tipped stance, the emptiness where the mass used to be, and the spill pooling from the
-base. "The value swing does most of the work… you separate them instantly, by value alone, before
-you resolve any detail. **Do not break this.**" Undermined by the two surviving eggs nearly
-vanishing at real size — the wreck reads *totally* empty, which loses the "this used to be full"
-story — and by those two dots under the sawtooth reading as **an open mouth full of teeth with two
-eyes**, seen at real size before "broken shell" was.
-
-**3 · Same object in two states? Weakly — cousins, not the same prop.** No shared contour language:
-the intact silhouette lumpy and irregular, the wreck's a smooth clean arc; nine circles against
-two dots.
-
-**4 · Rubber-hose ink?** Weight genuinely varies — thin across the upper left, swelling through the
-lower right. "That is brushed, not CAD. Good." But the swell arrives abruptly and reads as a
-separate lobe, and nine hard-edged circles is a lot of interior incident for the idiom.
-
-**5 · Black and white? Yes. Clean.**
-
-**6 · Artefacts.** **Rosette / hexagonal packing** — one central circle ringed by neighbours in an
-offset lattice at near-uniform gaps, "the exact named tell"; radius variation present but not
-enough to break it. Push to a 2:1 spread and let eggs occlude each other. **The top ellipse closes
-into a ring** floating clear of the mass — a halo, a hat brim, a handle, not an opening. **The base
-contour fuses with the ground shadow** at bottom centre: at real size the sac has no visible bottom
-edge and melts into the floor. **Mechanically regular sawtooth** on the wreck's rim. The wreck's
-flap reads as a detached ring — a coin, a monocle.
-
-**7 · Real size.** Base and shadow fuse. The white gaps between eggs are ~3 px and grey out, so the
-cluster collapses toward one dark mass — "which is what makes it read berry instead of many eggs."
-The wreck's two interior dots nearly disappear.
-
-**Fine, do not break:** the black-and-white discipline; **the value contrast between intact (heavy,
-dark) and destroyed (light, open)** — "the single best decision on the sheet"; brush-varying contour
-weight; a contour bold enough to survive real size; and that it is neither a rock nor a bush.
-
----
-
-## Rounds 10 to 12 — what changed
-
-- **The lattice is broken properly.** Varying the gaps was not enough. The radii now run 2.2:1
-  (12 down to 5.5) and neighbours overlap anywhere from 0.6 to 5.9 units, so some eggs frankly
-  occlude others and no two gaps match. Uniform spheres at a uniform pitch are fruit whatever the
-  outline round them does.
-- **The splat is drawn under the sprite, not over it.** That single reordering is the whole fix for
-  the fused base: the sac's own bottom contour now lands crisp on top of the shadow, and what shows
-  is a dark spread around the base rather than ink meeting ink. It also answers the *first*
-  reviewer's opposite note — the sac still sits in the spread rather than floating above it.
-- **The membrane is measured across each sample's whole arc**, not just along its axis. An egg
-  sitting between two sample directions was under-measured, so the skin closed over it — which at
-  96 px does not read as a bulge, it reads as the contour breaking across an egg. A tighter skin
-  was tried first and was worse: it pinched into concave notches between eggs, and a nick in the
-  intact outline reads as a tear, which is the one thing the other variant is for. The generous
-  band that came out of backing off is also the answer to *berry*: a visible skin standing off its
-  contents reads as a bag containing them.
-- **The sawtooth varies in pitch as well as height.** Widths now run 6, 13, 6, 5, 14, 5, 9, 9. Only
-  the amplitudes had been varied, and an even pitch is still a stamped zigzag.
-- **Three survivors in the wreck, at three heights, not two side by side** — enough to say it used
-  to be full, and no pair of eyes over a mouth.
-- **The flap is solid ink.** A pale flap with an ink contour encloses a white core, and a small
-  closed loop beside the sprite is a coin, not torn membrane.
-- **The vent clears the top contour** and the topmost eggs now overlap its near rim, so it cuts into
-  the mass instead of floating above it as a hat brim.
-
-Declined, with reasons:
-
-- **Inverting the value logic so the sac is black and the eggs pale.** It would kill the berry read
-  outright, and it would also kill the thing all three reviewers rated the best decision here: the
-  wreck is legible at a glance *because* intact is heavy and dark and destroyed is light and open.
-  Trading the pair's separability for one variant's first impression is the wrong trade.
-- **A leg or an emerging spider.** The fastest possible "spiders come out of here", and also new
-  content — #81 asks for the sac intact and destroyed, and ADR 0001 forbids anything beyond what was
-  asked. The opening carries it.
-- **A terminator line separating top surface from front face.** That is interior detail, which #76
-  §1 rules out. The vent crescent is the top surface.
-- **Outlining the eggs rather than filling them.** More brush-like, but #76 §1 asks for solid fills,
-  and outlined eggs at this size put three concentric strokes into a 20 px circle.
-
 Still unresolved, and shipping anyway per ADR 0002 §3:
 
 - **Panel 3 magnifies only facing 0**, so the destroyed variant has never been inspected at real
-  baked pixels — only at 2× on the contact grid and at real size on the floor. All three reviewers
-  said so unprompted. Nothing on the sheet can currently show it; the final call is made by looking
-  at it in the game.
-- **The eggs carry more contrast than the contour.** All three reviewers noted it. They are also the
-  only thing that says *brood*, and every fix for it trades against the value contrast that makes
-  the two states separable.
+  baked pixels — only at 2× on the contact grid and at real size on the floor. Both reviewers said
+  so unprompted. Nothing on the sheet can currently show it; the final call is made by looking at it
+  in the game.
+- **The eggs still carry more contrast than the contour.** Both reviewers noted it. They are also
+  the only thing that says *brood*, and the fix for "ball with holes" was to correlate them with the
+  silhouette rather than to quieten them.
