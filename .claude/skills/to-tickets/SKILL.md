@@ -30,7 +30,7 @@ A spec is one big thing; tickets are the order you actually build it. Slice for
 
 Publish tickets to the issue tracker (GitHub issues here), each with its "done
 when" and its blocking tickets listed (sub-issues, or a `blocked-by:` line for
-the edges). Label each with a type, a size and its milestone (CLAUDE.md,
+the edges). Label each with a type, a size and its version (CLAUDE.md,
 *Labels*) — size by blast radius, **never** by time. Fall back to a checklist in
 `TICKETS.md` if there's no tracker. Then build in dependency order —
 `/implement` per ticket.

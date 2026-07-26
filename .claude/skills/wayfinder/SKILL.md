@@ -24,7 +24,7 @@ yet — chart it. Turn the unknowns into investigations that each end in a decis
    - names the output that settles it (a prototype result, a benchmark, a doc, a decision),
    - is `XS` or `S` — narrow enough that one answer closes it (CLAUDE.md, *Sizing*).
 4. **Order by leverage.** Do the investigation that unblocks the most — or could kill the effort earliest — first. Cheap experiments that might invalidate the whole plan go to the front.
-5. **Publish** the investigations to the issue tracker (GitHub issues here), each labelled `investigation` plus a size and its milestone (CLAUDE.md, *Labels*), with its question and "done when" in the body. If there's no tracker, write them to a `PLAN.md`.
+5. **Publish** the investigations to the issue tracker (GitHub issues here), each labelled `investigation` plus a size and its version (CLAUDE.md, *Labels*), with its question and "done when" in the body. If there's no tracker, write them to a `PLAN.md`.
 
 ## Rules
 

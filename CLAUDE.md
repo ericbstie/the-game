@@ -20,18 +20,21 @@ them automatically: `feat` bumps the minor, `fix`/`perf` the patch, and a `!` or
 
 ## Issue tracking
 
-All work lives under a single umbrella issue: **[TRACKING] Breakout Box — Multiplayer
-Milestones** ([#3](https://github.com/ericbstie/the-game/issues/3)). **Every issue
-created in this repo must be a sub-issue of the TRACKING issue** — milestone
-breakdowns, feature tickets, and bugs alike. Nothing is created as a top-level issue.
-A milestone gets its own tracking issue under #3, and that milestone's tickets are
-sub-issues of *it* — the tree stays rooted at #3 either way.
+Work is organised by **version**. Each version has its own independent tracking issue,
+and **every issue created in this repo must be a sub-issue of the current version's
+tracking issue** — feature tickets, investigations and bugs alike. Nothing is created
+as a top-level issue except a version tracker itself.
 
-Work advances one milestone at a time, in order. Each `/wayfinder` → `/implement`
-loop targets only the next open milestone and goes no further. Before advancing to
-the next milestone, close **all** issues for the current milestone and **refine every
-remaining milestone** to reflect how the scope changed while implementing the current
-one.
+The current version is **[TRACKING] Breakout Box — Version 2.0**
+([#91](https://github.com/ericbstie/the-game/issues/91)). File everything under it.
+
+[#3](https://github.com/ericbstie/the-game/issues/3) is the **closed v1 record** —
+milestones 1–5, how the game got here. Read it for history; never file new work under
+it. A closed tracker cannot carry open work.
+
+A version ships when its tickets are closed. Before opening the next one, close
+**all** issues under the current version and fold anything deliberately left behind
+into the new tracker, saying why it was left.
 
 ### Claiming an issue
 
@@ -47,8 +50,8 @@ the work is happening.
 
 ### Labels
 
-Every issue carries **one type**, **one size**, and — when it belongs to a milestone —
-that milestone's label (`milestone-6`, …).
+Every issue carries **one type**, **one size**, and the label of the version it belongs
+to (`version-2.0`, …).
 
 | Type | When |
 | --- | --- |
@@ -61,8 +64,8 @@ that milestone's label (`milestone-6`, …).
 `deferred` is orthogonal: it marks work that is wanted but not chartered, and sits
 *alongside* a type rather than replacing one.
 
-Tracking issues — the umbrella and each milestone's — take **no type and no size**. They
-are containers, and a container has no blast radius of its own.
+Version tracking issues take **no type and no size**. They are containers, and a
+container has no blast radius of its own.
 
 ### Sizing — never in time
 
