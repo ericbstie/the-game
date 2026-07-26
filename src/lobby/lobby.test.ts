@@ -1446,7 +1446,15 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
   // A solo match already one wave in, with a grunt to shoot at and metal to build with.
   async function fighting(): Promise<{ t: Capture; hub: LobbyHub; me: string; grunt: EnemySpawn }> {
     const t = new Capture();
-    const hub = new LobbyHub(t, { tickMs: TICK, firstWaveMs: 5, startingMetal: 1_000 });
+    // Fixed rng: every assertion below is downstream of where the first wave scattered its grunts,
+    // so an unseeded hub would run these against a different world every time. Not 0.5 — that is
+    // the zero-jitter midpoint, which would stack every grunt exactly on its nest.
+    const hub = new LobbyHub(t, {
+      tickMs: TICK,
+      firstWaveMs: 5,
+      startingMetal: 1_000,
+      rng: () => 0.75,
+    });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
     const me = created(t).you.id;
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
@@ -1463,13 +1471,27 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     return { x: (to.x - from.x) / len, y: (to.y - from.y) / len };
   };
 
-  test("an admitted shot rides the delta as a PeerShot", async () => {
+  test("an admitted shot rides the delta as a PeerShot naming what the sim damaged", async () => {
     const { t, hub, me, grunt } = await fighting();
     const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
     hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
     await sleep(TICK * 3);
     hub.dispose();
-    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([{ id: me, dir, hit: grunt.id }]);
+    const struck = deltas(t).find((d) => (d.shots ?? []).length > 0);
+    const shot = struck?.shots?.[0];
+    if (!shot) throw new Error("the admitted shot never reached the wire");
+    expect(shot.id).toBe(me);
+    // Compared per component: admission re-normalizes, and dividing an already-unit vector through
+    // its own length moves it by up to an ULP. Meaningless at render scale, fatal to `toEqual`.
+    expect(shot.dir.x).toBeCloseTo(dir.x, 12);
+    expect(shot.dir.y).toBeCloseTo(dir.y, 12);
+    // Whatever the ray reached first, the same delta has to show the sim writing that thing's HP.
+    // Asserting the invariant rather than the geometry keeps this honest about which target won.
+    expect([
+      ...(struck?.hits ?? []).map((h) => h.id),
+      ...(struck?.deaths ?? []),
+      ...(struck?.nests ?? []).map((n) => n.id),
+    ]).toContain(shot.hit);
   });
 
   test("a shot refused for cadence produces no PeerShot at all", async () => {

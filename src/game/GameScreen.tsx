@@ -26,17 +26,6 @@ const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the a
 // It bakes nothing until something is drawn, so importing this costs nothing under `bun test`,
 // where there is no canvas to bake into.
 const spriteCache = createSpriteCache(SPRITES);
-// How often this client will fire — deliberately a little slower than the cadence the server
-// enforces. Both gate the same `RANGED_CADENCE_MS`, but the server measures arrival-to-arrival
-// against its last admission while the client measures click-to-click, so shots sent at exactly
-// the cadence arrive `RANGED_CADENCE_MS + (latency₂ − latency₁)` apart and any negative jitter
-// puts them under the bar. Clicking at the exact limit would get roughly half of them refused.
-//
-// The margin is paid here rather than by relaxing the server's floor because that floor is the
-// real anti-nuke on shared enemy HP — widening it would let a cheating client out-damage an honest
-// one, while this costs an honest player a sliver of a DPS ceiling nobody clicks fast enough to
-// reach. The 30 ms covers ordinary jitter; it is chosen, not measured.
-export const FIRE_CADENCE_MS = RANGED_CADENCE_MS + 30;
 
 interface GameScreenProps {
   state: LobbyState;
@@ -82,6 +71,11 @@ export function GameScreen({
   // When the last shot actually went out. The cadence is enforced here as well as in the server's
   // `admitAttack` because a fast-clicking player would otherwise send, and draw a line for, shots
   // the server refused. A drawn line must never imply damage nobody applied.
+  //
+  // Exactly `RANGED_CADENCE_MS`, not a hair more: the server measures arrival-to-arrival where
+  // this measures click-to-click, so a shot sent right on the boundary can still land early under
+  // negative jitter and be refused. Widening the gate here would cut the sustained rate of fire,
+  // and M5 (#81) permits no balance change. The boundary case is accepted.
   const lastAttackRef = useRef(Number.NEGATIVE_INFINITY);
   const [selected, setSelected] = useState<BuildableKind | null>(null);
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
@@ -300,7 +294,7 @@ export function GameScreen({
       const now = Date.now();
       if (kind) {
         onBuildRef.current(kind, cursorTile(pointerRef.current, camera));
-      } else if (now - lastAttackRef.current >= FIRE_CADENCE_MS) {
+      } else if (now - lastAttackRef.current >= RANGED_CADENCE_MS) {
         lastAttackRef.current = now;
         onAttackRef.current({ ...self }, aimDir(pointerRef.current, self, camera));
       }

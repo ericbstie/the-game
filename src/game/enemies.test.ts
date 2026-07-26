@@ -842,6 +842,18 @@ describe("M5-I5: a turret's aim streams as a transition, a player's shot as an e
     expect(stepEnemies(s, [], [], 0, build).events.aims).toEqual([[turret.id, null, 0]]);
   });
 
+  test("power is never held without a target, which is why an idle turret needs no aim", () => {
+    const { build, turret, from } = withTurret(10_000);
+    const s = inRange(from);
+    stepEnemies(s, [], [], 0, build);
+    expect(turret.turret).toMatchObject({ powered: true, targetId: "e1" });
+    s.enemies.delete("e1");
+    stepEnemies(s, [], [], 0, build);
+    // The invariant `snapshotAims` leans on: losing the target is what releases the slot, so a
+    // turret omitted from the keyframe is always an unpowered one.
+    expect(turret.turret).toMatchObject({ powered: false, targetId: null });
+  });
+
   test("a turret holding a target on a starved grid reports powered 0 — the lightning case", () => {
     const { build, turret, from } = withTurret(0);
     expect(stepEnemies(inRange(from), [], [], 0, build).events.aims).toEqual([

@@ -576,22 +576,31 @@ describe("M5-I5: the client adopts streamed aims and shots, and refuses to draw 
     const w = new ClientWorld(init(), "self");
     const shot = { id: "peer", dir: { x: 1, y: 0 }, hit: "e1" };
     w.applyMapDelta({ tick: 1, moves: [], shots: [shot] }, 4_000);
-    expect(w.peerShots()).toEqual([{ shot, at: 4_000 }]);
+    expect(w.peerShots(4_000, SHOT_RETENTION_MS)).toEqual([{ shot, at: 4_000 }]);
   });
 
   test("the owner's own shot is not buffered — it is drawn locally at fire time instead", () => {
     const w = new ClientWorld(init(), "self");
     w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "self", dir: { x: 1, y: 0 } }] }, 0);
-    expect(w.peerShots()).toEqual([]);
+    expect(w.peerShots(0, SHOT_RETENTION_MS)).toEqual([]);
+  });
+
+  test("a caller's own lifetime bounds what it gets back, not the retention window", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "peer", dir: { x: 1, y: 0 } }] }, 0);
+    const lineMs = 100; // whatever the render layer picks, well inside SHOT_RETENTION_MS
+    expect(w.peerShots(lineMs - 1, lineMs)).toHaveLength(1);
+    expect(w.peerShots(lineMs + 1, lineMs)).toEqual([]); // still retained, but too old to draw
+    expect(w.peerShots(lineMs + 1, SHOT_RETENTION_MS)).toHaveLength(1);
   });
 
   test("a shot older than the retention window is dropped, even on a tick with no shots", () => {
     const w = new ClientWorld(init(), "self");
     w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "peer", dir: { x: 1, y: 0 } }] }, 0);
     w.applyMapDelta({ tick: 2, moves: [] }, SHOT_RETENTION_MS - 1);
-    expect(w.peerShots()).toHaveLength(1); // still inside the window
+    expect(w.peerShots(0, SHOT_RETENTION_MS)).toHaveLength(1); // still inside the window
     w.applyMapDelta({ tick: 3, moves: [] }, SHOT_RETENTION_MS + 1);
-    expect(w.peerShots()).toEqual([]);
+    expect(w.peerShots(0, SHOT_RETENTION_MS)).toEqual([]);
   });
 
   test("a live enemy's target id resolves to where it is rendered", () => {

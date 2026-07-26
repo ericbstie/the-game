@@ -625,8 +625,13 @@ export function snapshotStructures(build: BuildState): StructureSpawn[] {
 
 // The engaged turrets' aims, for the same keyframe. Aim transitions are sparse relative to how
 // long a target is held, so a reconnecter who missed one would otherwise see a turret siege a nest
-// with no line at all. An idle turret is deliberately absent: rebuilding a structure already mints
-// it un-aimed and unpowered, so carrying one would say nothing.
+// with no line at all.
+//
+// An idle turret is absent, and loses nothing by it: `powered` is never true without a target —
+// `stepTurrets` releases the slot the instant the target is lost — so an omitted turret is exactly
+// the unpowered, un-aimed one that `insertStructure` already mints. The corollary is that
+// `powered` is only meaningful alongside a target, which is also how both things that read it (the
+// line and the unpowered-lightning) already treat it.
 export function snapshotAims(build: BuildState): TurretAim[] {
   const aims: TurretAim[] = [];
   for (const s of build.structures.values()) {

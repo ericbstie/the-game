@@ -68,6 +68,10 @@ export interface LobbyConfig {
   tickMs?: number; // enemy-sim tick period; default 50ms (~20 Hz). Overridable for fast tests.
   firstWaveMs?: number; // override the initial wave countdown (default: the sim's 30s). Test knob.
   startingMetal?: number; // seed the shared bank at match start (default 0). Test knob.
+  // The sim's only source of entropy — spawn jitter. Defaults to `Math.random`, so a real match
+  // scatters each wave differently. A test that asserts on anything downstream of a spawn position
+  // should pass a fixed one, or the assertion is against a different world every run. Test knob.
+  rng?: () => number;
 }
 
 const DEFAULT_GRACE_MS = 45_000;
@@ -123,6 +127,7 @@ export class LobbyHub {
   private readonly tickMs: number;
   private readonly firstWaveMs?: number;
   private readonly startingMetal: number;
+  private readonly rng?: () => number;
   private disposed = false;
 
   constructor(
@@ -133,6 +138,7 @@ export class LobbyHub {
     this.tickMs = config.tickMs ?? DEFAULT_TICK_MS;
     this.firstWaveMs = config.firstWaveMs;
     this.startingMetal = config.startingMetal ?? 0;
+    this.rng = config.rng;
   }
 
   handleMessage(socketId: string, raw: string): void {
@@ -403,7 +409,7 @@ export class LobbyHub {
     session.sentMetal = this.startingMetal;
 
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
-    session.sim = spawnEnemyState(session.worldInit);
+    session.sim = spawnEnemyState(session.worldInit, this.rng);
     if (this.firstWaveMs !== undefined) session.sim.msUntilWave = this.firstWaveMs;
     const timer = setInterval(() => this.tick(session), this.tickMs);
     timer.unref?.();

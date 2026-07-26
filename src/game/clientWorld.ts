@@ -51,9 +51,9 @@ import { type Body, PLAYER_MAX_HP, PLAYER_RADIUS, pushOutOfBodies, stepPos } fro
 
 export const RENDER_DELAY_MS = 100; // render peers this far behind real time to smooth the relay
 export const BUFFER_MS = 500; // keep this much peer history; older samples are pruned
-// How long a squadmate's shot is kept. A memory bound, not the line's lifetime — that lives in the
-// render layer (#74 §5), which ages each shot itself. Deliberately clear of any lifetime it is
-// likely to pick, and short enough that the buffer stays a handful of entries.
+// How long a squadmate's shot is kept before it is pruned. A memory bound, not the line's
+// lifetime — the render layer owns that (#74 §5) and passes it to `peerShots`, which is what stops
+// anything drawing for the full window. Must stay clear of any lifetime a caller might ask for.
 export const SHOT_RETENTION_MS = 250;
 export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their 20 Hz stream
 // Dead this long, then the client snaps back to center. With a stopwatch for a score and a base
@@ -315,9 +315,14 @@ export class ClientWorld {
     return nest?.alive ? { ...nest.pos } : null;
   }
 
-  // The squad's recent shots, newest last. The render layer picks how long each line lives.
-  peerShots(): readonly ShotEvent[] {
-    return this.shots;
+  // The squad's shots from the last `maxAgeMs`, oldest first.
+  //
+  // The caller passes its own line lifetime rather than reading the buffer whole, so a line can
+  // never outlive it by borrowing the retention window — which is longer on purpose, and is a
+  // memory bound rather than a statement about how long anything is drawn (#74 §5).
+  peerShots(now: number, maxAgeMs: number): ShotEvent[] {
+    const from = now - maxAgeMs;
+    return this.shots.filter((s) => s.at >= from);
   }
 
   // Rebuild the economy from the reconnect keyframe: the bank and every building the squad has
