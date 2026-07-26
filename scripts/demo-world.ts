@@ -122,8 +122,15 @@ export function demoWorld(): WorldSnapshot {
     structures: [
       { id: "b1", kind: "generator", tile: { tx: 1042, ty: 1030 }, hp: 300 },
       { id: "b2", kind: "miner", tile: { tx: 1030, ty: 1032 }, hp: 200 },
+      // An L of walls, not a pair: a wall's variant is a mask of which sides another wall abuts, so
+      // a lone wall or a straight run only ever exercises a few of the sixteen. The corner is what
+      // shows whether a run reads as one continuous mass — which is the whole point of the mask, and
+      // is invisible on a single tile.
       { id: "b3", kind: "wall", tile: { tx: 1032, ty: 1050 }, hp: 145 }, // chewed on by e2
       { id: "b4", kind: "wall", tile: { tx: 1034, ty: 1050 }, hp: 400 },
+      { id: "b6", kind: "wall", tile: { tx: 1036, ty: 1050 }, hp: 400 },
+      { id: "b7", kind: "wall", tile: { tx: 1036, ty: 1052 }, hp: 400 },
+      { id: "b8", kind: "wall", tile: { tx: 1036, ty: 1054 }, hp: 400 },
       // One turret engaged and powered — it draws a line — and one holding a target it has no
       // power to fire on, which is the only thing that draws the lightning.
       {
