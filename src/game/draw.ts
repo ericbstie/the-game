@@ -296,6 +296,11 @@ export function drawWorld(
     standing.push({ y: e.pos.y, paint: () => paintEnemy(ctx, e, sprites, blitOver) });
   }
 
+  // A player's name and bar do not join the sort. They are collected here and painted in one pass
+  // after every body, because a halo is wider than the figure it marks and would otherwise cover a
+  // squadmate's name — see `paintOverhead`.
+  const overhead: (() => void)[] = [];
+
   for (const a of world.players) {
     // A dead player vanishes instantly — no corpse (#81). What replaced the M2 fade is the screen
     // darkening below, and it is the dying player's own view only: squadmates simply see you gone.
@@ -305,6 +310,7 @@ export function drawWorld(
       y: a.pos.y,
       paint: () => paintAvatar(ctx, a, a.id === options.selfId, sprites, blit, blitOver),
     });
+    overhead.push(() => paintOverhead(ctx, a, sprites));
   }
 
   // Lower on screen paints later, so it paints in front. The sort is stable (ES2019), so two
@@ -316,6 +322,10 @@ export function drawWorld(
   // Over the sort, not in it: a shot is an event between two things rather than a thing standing on
   // the floor, and a line half-hidden behind the spider it ends at says nothing.
   drawShots(ctx, world, options);
+
+  // Names last of everything in the world. They are on ADR 0001's short allowlist — almost nothing
+  // else may be written on screen — so nothing the world draws is allowed to obscure one.
+  for (const paint of overhead) paint();
 
   // The ghost paints last so it reads on top of whatever it would replace, and it paints as the
   // building itself — the same sprite, at the same tile — because #81 spends opacity on validity
@@ -743,15 +753,43 @@ function paintAvatar(
     ctx.lineWidth = 2.5;
     strokeCircle(ctx, avatar.pos.x, bodyY, avatar.radius + 3);
   }
-  // The label rides above whatever was actually drawn, which a foot-anchored sprite makes taller
-  // than the circle it replaced, and above the bar rather than beside it. The band the bar occupies
-  // is reserved whether or not one is showing, so a label does not hop as a player takes a hit.
-  const top = avatar.pos.y - (sprite ? sprite.size : avatar.radius);
+}
+
+// A player's bar and name, drawn in a pass of their own after every body has painted.
+//
+// The pass exists because of the halo. It is centred on the *body*, which a foot-anchored sprite
+// puts half a sprite above `pos`, and it is nearly twice the player's width — so it reaches higher
+// than the figure does and spills well outside it. Painted in the Y-sorted pass, a squadmate
+// standing a little above you had their name land inside your ring, which reads as your own name
+// against the one marker that is supposed to mean "this is you". Two things fix it and neither is
+// enough alone: the offset has to clear the halo rather than the sprite, and no halo may paint
+// after any label.
+function paintOverhead(
+  ctx: CanvasRenderingContext2D,
+  avatar: Avatar,
+  sprites: SpriteSource | undefined,
+): void {
+  const sprite = sprites?.("player", avatar.facing, avatar.frame);
+  const halo = sprites?.("halo", 0, 0);
+  const body = sprite ? sprite.size : avatar.radius * 2;
+  // Every label clears the halo, not only your own: the one that reads wrong is a *neighbour's*.
+  const reach = Math.max(body, (halo ? halo.size : 0) / 2 + body / 2);
+  const top = avatar.pos.y - reach;
+  // The bar rides above the drawing and the name above the bar. The band the bar occupies is
+  // reserved whether or not one is showing, so a label does not hop as a player takes a hit.
   healthBar(ctx, avatar.pos.x, top, avatar.radius * 2, avatar.hp, PLAYER_MAX_HP);
-  ctx.fillStyle = INK;
   ctx.font = "12px system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText(avatar.name, avatar.pos.x, top - BAR_GAP - BAR_HEIGHT - 3);
+  const baseline = top - BAR_GAP - BAR_HEIGHT - 3;
+  // Cut out of the ink rather than laid on it. The floor is white paper and so is this stroke, so a
+  // name over a black spider reads as a hole in the spider — which is how the period printed a
+  // caption over artwork, and the only thing that keeps unoutlined black text legible over ink.
+  ctx.lineWidth = 3;
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = PAPER;
+  ctx.strokeText(avatar.name, avatar.pos.x, baseline);
+  ctx.fillStyle = INK;
+  ctx.fillText(avatar.name, avatar.pos.x, baseline);
 }
 
 // Land a world coordinate on a whole device pixel. The caller paints through

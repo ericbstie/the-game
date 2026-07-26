@@ -44,6 +44,7 @@ function spyCtx() {
     fill: record("fill"),
     stroke: record("stroke"),
     fillText: record("fillText"),
+    strokeText: record("strokeText"),
     drawImage: record("drawImage"),
   };
   return ctx as unknown as CanvasRenderingContext2D & { calls: Call[] };
@@ -773,6 +774,52 @@ describe("health bars", () => {
     expect(frame.fill).not.toBe(lost.fill); // ink under paper, so the frame survives any health
     expect(frame.args[1]).toBe(1150 - 16 - 3 - 4); // clear of the top of the drawing
     expect(lost.args[1]).toBe((frame.args[1] as number) + 1);
+  });
+});
+
+// A name over a head is on ADR 0001's short allowlist, so it has to survive a floor that is now
+// white paper and a set of sprites that are now solid ink. Two ways it did not, both found in a
+// rendered frame once the halo shipped.
+describe("name labels", () => {
+  const two: WorldSnapshot = {
+    ...world,
+    enemies: [],
+    nests: [],
+    structures: [],
+  };
+  const sprites = stubSprites({ player: 28, halo: 52 });
+
+  test("cuts the name out of whatever is under it, rather than laying black on black", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, two, { camera, viewport, selfId: "p1", sprites });
+    const stroked = ctx.calls.filter((c) => c.fn === "strokeText");
+    const filled = ctx.calls.filter((c) => c.fn === "fillText");
+    expect(stroked.map((c) => c.args[0])).toEqual(["Ana", "Ben"]);
+    // Paper under ink, and the outline laid down first so the fill sits inside it.
+    expect(stroked.every((c) => c.stroke === "#ffffff")).toBe(true);
+    expect(filled.every((c) => c.fill === "#000")).toBe(true);
+    expect(ctx.calls.indexOf(stroked[0])).toBeLessThan(ctx.calls.indexOf(filled[0]));
+  });
+
+  // The halo is centred on the *body* — half a sprite above `pos` — and is nearly twice the
+  // player's width, so it reaches higher than the figure does. A label offset by the sprite's own
+  // height lands inside it.
+  test("clears the halo's reach, not just the sprite's", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, two, { camera, viewport, selfId: "p1", sprites });
+    const label = ctx.calls.find((c) => c.fn === "fillText" && c.args[0] === "Ana");
+    const haloTop = 1100 - 28 / 2 - 52 / 2; // bodyY − half the halo box
+    expect(label?.args[2]).toBeLessThan(haloTop);
+  });
+
+  // The offset alone is not enough: a squadmate 7–40 px above you still paints their body — and
+  // their halo — after your label if labels ride the Y-sort.
+  test("paints every name after every avatar, so no halo can cover a squadmate's", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, two, { camera, viewport, selfId: "p1", sprites });
+    const lastBlit = ctx.calls.findLastIndex((c) => c.fn === "drawImage");
+    const firstLabel = ctx.calls.findIndex((c) => c.fn === "strokeText");
+    expect(firstLabel).toBeGreaterThan(lastBlit);
   });
 });
 
