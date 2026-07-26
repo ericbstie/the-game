@@ -5,6 +5,7 @@ import type { BuildableKind } from "../lobby/protocol";
 import elite from "./elite";
 import generator from "./generator";
 import grunt from "./grunt";
+import grass from "./grass";
 import halo from "./halo";
 import miner from "./miner";
 import nest from "./nest";
@@ -76,6 +77,7 @@ export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
 // here. A module sitting in this directory without an entry is a sprite nobody can see, so
 // `registry.test.ts` fails on one rather than letting it pass for art that has not landed yet.
 export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
+  grass,
   elite,
   generator,
   grunt,
