@@ -45,6 +45,47 @@ One comment covers 1 and 2. Do it the moment you pick the task up, not when you
 finish — the point is that anyone reading the issue can tell it is claimed and where
 the work is happening.
 
+### Labels
+
+Every issue carries **one type**, **one size**, and — when it belongs to a milestone —
+that milestone's label (`milestone-6`, …).
+
+| Type | When |
+| --- | --- |
+| `feature` | A capability that does not exist yet. |
+| `improvement` | Something that already works, made better — tuning, legibility, ergonomics. |
+| `bug` | Behaviour that is wrong against its own spec. |
+| `investigation` | Produces a decision or a measurement, not shipped behaviour. |
+| `spec` · `decision` · `chore` · `performance` | Use where one of them fits better than the four above. |
+
+`deferred` is orthogonal: it marks work that is wanted but not chartered, and sits
+*alongside* a type rather than replacing one.
+
+Tracking issues — the umbrella and each milestone's — take **no type and no size**. They
+are containers, and a container has no blast radius of its own.
+
+### Sizing — never in time
+
+Sizes are **XS · S · M · L · XL**. They measure **blast radius and unknowns**: how many
+places have to change together, and how much you cannot see from outside the work when
+you start it.
+
+| Size | Shape |
+| --- | --- |
+| `XS` | One constant, one call site. The diff explains itself. |
+| `S` | One module, one behaviour. Existing tests stretch to cover it. |
+| `M` | Several modules, or one module plus the wire shape it implies. New tests, no new architecture. |
+| `L` | An assumption baked into many call sites, or a new subsystem with its own state. Needs a measurement or a recorded decision before it can close. |
+| `XL` | Spans client, server and wire at once, or still carries an open design question. Look for the split first; if it genuinely cannot be split, say why in the body. |
+
+**Never estimate in time.** Not hours, days, sittings, sessions or sprints — not in an
+issue, a comment, a plan, a commit message, or a reply. A size is a claim about the
+shape of the work, and the code can confirm or refute it. A duration is a claim about
+the future that nobody can check and everybody remembers.
+
+If the work turns out bigger than its label, **change the label and say so on the issue**.
+A size that is only ever set once is decoration.
+
 ## Skills — use these when relevant
 
 This repo ships engineering skills in `.claude/skills/`. Two of them are

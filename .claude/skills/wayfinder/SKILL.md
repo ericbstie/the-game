@@ -1,19 +1,19 @@
 ---
 name: wayfinder
 description: >-
-  Plan large, uncertain, multi-session work by mapping it into investigation
-  tickets before any implementation. Invoke with /wayfinder when a task is too
-  big or too unknown to spec directly — it surfaces the open questions, turns
-  each into a small investigation that ends in a decision, and orders them by
-  what unblocks the most.
+  Plan large, uncertain work by mapping it into investigation tickets before any
+  implementation. Invoke with /wayfinder when a task is too big or too unknown to
+  spec directly — it surfaces the open questions, turns each into a small
+  investigation that ends in a decision, and orders them by what unblocks the
+  most.
 disable-model-invocation: true
 ---
 
 # Wayfinder
 
 Big work fails when you plan the build before you understand the terrain. When a
-task spans many sessions and carries real unknowns, don't spec it yet — chart
-it. Turn the unknowns into investigations that each end in a decision.
+task is too large to hold in one head and carries real unknowns, don't spec it
+yet — chart it. Turn the unknowns into investigations that each end in a decision.
 
 ## Process
 
@@ -22,9 +22,9 @@ it. Turn the unknowns into investigations that each end in a decision.
 3. **Turn each unknown into an investigation ticket.** Each one:
    - asks a single answerable question ("can host-authoritative netcode hold 6 players at <100ms?"),
    - names the output that settles it (a prototype result, a benchmark, a doc, a decision),
-   - is small enough to finish in one session.
+   - is `XS` or `S` — narrow enough that one answer closes it (CLAUDE.md, *Sizing*).
 4. **Order by leverage.** Do the investigation that unblocks the most — or could kill the effort earliest — first. Cheap experiments that might invalidate the whole plan go to the front.
-5. **Publish** the investigations to the issue tracker (GitHub issues here), each labelled as an investigation, with its question and "done when" in the body. If there's no tracker, write them to a `PLAN.md`.
+5. **Publish** the investigations to the issue tracker (GitHub issues here), each labelled `investigation` plus a size and its milestone (CLAUDE.md, *Labels*), with its question and "done when" in the body. If there's no tracker, write them to a `PLAN.md`.
 
 ## Rules
 

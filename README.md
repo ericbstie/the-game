@@ -50,6 +50,11 @@ To demo a lobby across two networks, see [docs/cross-network-demo.md](docs/cross
 
 **Plan (big or unclear work):** `/wayfinder` → `/to-spec` → `/to-tickets`, then build each ticket below.
 
+**Claim first.** Before writing code for an issue, comment that you're taking it, name your
+branch in that comment, and assign the author. Every issue carries one type label
+(`feature` · `improvement` · `bug` · `investigation`), one size (`XS`–`XL`, measured by
+blast radius — **never** by time), and its milestone. See [CLAUDE.md](CLAUDE.md).
+
 **Build:**
 
 1. `research` — verify anything unknown against real sources.
