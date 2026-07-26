@@ -69,6 +69,11 @@ export function serveLobby(options: ServeLobbyOptions = {}): LobbyServer {
     },
     websocket: {
       idleTimeout: options.idleTimeout ?? DEFAULT_IDLE_TIMEOUT,
+      // Bun's default is off. `game/map-delta` is repetitive JSON — ids and key names recur 240
+      // times a tick — so it deflates well even after #84 trimmed the coordinates: a measured
+      // 66% off the worst case, for 0.8% of one core at a full squad. `bun run delta:size`
+      // re-measures both halves of that trade.
+      perMessageDeflate: true,
       open(ws) {
         registry.set(ws.data.socketId, ws);
       },
