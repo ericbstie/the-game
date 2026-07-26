@@ -512,8 +512,12 @@ describe("drawWorld with sprites", () => {
       viewport,
       sprites: stubSprites({ ...everything, room: 30 }),
     });
-    const doors = blits(ctx).filter((b) => b.tag === "room/4/0");
+    // The exit sits on the west edge, so the door carries that edge: ROOM_DOOR (4) + ROOM_WEST (3).
+    // A single shared door tile cannot work — the wall's profile is asymmetric top to bottom, so an
+    // orientation-free tile is invariant under a vertical flip and cannot match both ends.
+    const doors = blits(ctx).filter((b) => b.tag === "room/7/0");
     expect(doors.map((d) => d.y)).toEqual([60, 90]); // the two segments the exit spans
+    expect(blits(ctx).some((b) => b.tag === "room/4/0")).toBe(false); // never the edgeless door
   });
 
   test("keeps the M2 outline and exit rect until the room sprite lands", () => {

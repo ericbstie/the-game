@@ -79,6 +79,11 @@ const ROOM_NORTH = 0;
 const ROOM_EAST = 1;
 const ROOM_SOUTH = 2;
 const ROOM_WEST = 3;
+// The door variants run parallel to the four edges, so a door carries the edge it is set into:
+// `ROOM_DOOR + ROOM_EAST` is the east door. One shared door tile is not possible — the wall's
+// profile is asymmetric top to bottom, so an orientation-free tile is invariant under a vertical
+// flip, and no vflip-invariant tile can match both an asymmetric wall's ends. That is arithmetic,
+// not taste, so the edge is resolved here rather than designed around in the sprite.
 const ROOM_DOOR = 4;
 
 // One stable colour per slot (1..6), so a player keeps their colour across the match.
@@ -422,7 +427,7 @@ function pushRoom(
     // on its grid either way.
     const door =
       x < exit.x + exit.width && x + band > exit.x && y < exit.y + exit.height && y + band > exit.y;
-    const sprite = source("room", door ? ROOM_DOOR : facing, 0);
+    const sprite = source("room", door ? ROOM_DOOR + facing : facing, 0);
     if (sprite) blit(sprite, x + band / 2, y + band);
   };
   const across = (facing: number, y: number): void => {

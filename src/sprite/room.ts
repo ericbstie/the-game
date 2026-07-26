@@ -8,33 +8,37 @@ import type { SpriteSubject } from "./sheet";
 // flat, like a carton cut at the corners and pressed open. So there is one drawing, in *wall
 // space* — `u` along the perimeter, `v` from the wall's top edge down to its base — and four rigid
 // rotations of it, each turned so the top points outward and the base sits against the floor. The
-// cornice is always on the far side and the skirting always on the floor side, which is what makes
-// the four edges read as one room rather than four unrelated fences: at the south edge the heavy
-// band is at the *bottom* of the screen, the opposite of every other wall in the game.
+// cap is always on the far side and the skirting always on the floor side, which is what makes the
+// four edges read as one room rather than four unrelated fences: at the south edge the heavy band is
+// at the *bottom* of the screen, the opposite of every other wall in the game.
 //
-// **The mass is outboard and the face is light.** The cornice takes 12 of the 30 px and sits on the
-// far side, which is the boundary of the play space and the half nobody's feet reach. The face is
-// paper under a light hatch, so ink entities still read against it.
+// **The face carries the mass, and the cap is only a cap.** This was the other way round for three
+// drawings and it was the thing that kept the sprite reading as trim: with a 12 px slab of cornice
+// over a face that was 73% paper, the largest black shape in the sprite was its least important
+// part, and the only part that is actually *wall* was the same value as the floor it stands on. A
+// wall has to occupy space. So the cap is 5 px, the face is 18, and the face is hatched to about
+// half ink — dark enough to separate from white paper at a glance, open enough that ink entities
+// still read against it.
 //
 // **It is opaque, corner to corner.** The band is fully covered — no transparent pixel — for two
 // reasons: it joins the Y-sort, so the near wall has to actually hide the legs of a player standing
 // against it; and the run draws both an N and a W segment into the same box at each corner, where
 // an opaque later segment simply covers the earlier one instead of crossing it into a mesh.
 //
-// **Nothing in the drawing has a period of 30.** A run repeats every segment, so anything that
-// varies along `u` becomes the same "accident" every 30 px in a line — the trap `wall.review.md`
-// documents. Every band therefore runs the full length and continues straight through a join, and
-// the only along-run rhythm, the hatch, has a pitch that divides the box, so the stroke a neighbour
-// starts at its own column 0 is the next member of this one's family rather than a second stroke
-// beside it. All the hand is in the profile down `v`, which is free.
+// **Nothing has a period of 30 except the pier, which is meant to.** A run repeats every segment, so
+// anything that varies along `u` becomes the same "accident" every 30 px in a line — the trap
+// `wall.review.md` documents. Every band therefore runs the full length and continues straight
+// through a join, and the hatch's pitch divides the box while its strokes are three times longer
+// than that pitch, so three of them cross any column and the family reads as continuous rather than
+// as one closed cell per box. The pier is the deliberate exception: it is the bay rhythm, and a bay
+// is exactly one box wide.
 //
 // **It must not be read as a buildable wall**, which shares the 30 px box and is often on screen
-// beside it. That one is masonry: a *light* field of white bricks in a staggered bond at pitch 10,
-// 44% ink. This is its inverse — 63% ink, a solid black cornice over a hatched grey face, and no
-// bond anywhere. Different material, different tone, different scale of mark.
+// beside it. That one is masonry: a *light* field of white bricks in a staggered bond under a solid
+// black cap. This is its inverse — a dark hatched field under a thin cap, and no bond anywhere.
 //
-// Every edge is an integer and every band is axis-aligned, which is where this style gets hard
-// black for nothing (#77 §4). Only the door's studs curve.
+// Every edge is an integer and every band is axis-aligned, which is where this style gets hard black
+// for nothing (#77 §4). Only the wall's hatch is diagonal, and it is meant to carry grey.
 
 const SIZE = 30; // TILE × 2 (src/game/build.ts) — the perimeter band, and the run's step
 
@@ -45,147 +49,149 @@ const PAPER = "#fff";
 // are rotations, not mirrors, so it is one rigid wall shown four ways. `v = 0` lands on the box
 // edge furthest from the middle of the arena and `v = SIZE` on the edge that meets the floor.
 const UNFOLD: [number, number, number, number, number, number][] = [
-  [1, 0, 0, 1, 0, 0], // 0 N — top of the wall up the screen
-  [0, 1, -1, 0, SIZE, 0], // 1 E — top of the wall to the right
-  [-1, 0, 0, -1, SIZE, SIZE], // 2 S — top of the wall down the screen, the near wall
-  [0, -1, 1, 0, 0, SIZE], // 3 W — top of the wall to the left
+  [1, 0, 0, 1, 0, 0], // N — top of the wall up the screen
+  [0, 1, -1, 0, SIZE, 0], // E — top of the wall to the right
+  [-1, 0, 0, -1, SIZE, SIZE], // S — top of the wall down the screen, the near wall
+  [0, -1, 1, 0, 0, SIZE], // W — top of the wall to the left
 ];
 
+// Facings 0–3 are the four walls; 4–7 are the same four edges with the door in them, so the caller
+// asks for `DOOR + facing` where the run crosses the exit.
+//
+// **The door needs that edge.** The wall's profile is asymmetric top to bottom — a 5 px cap outboard
+// against a 7 px floor group inboard — so a tile that cannot tell which way is up cannot line up
+// with both ends of it. That is arithmetic, not taste, and it is why two earlier orientation-free
+// plates read as a punched grille and then as a bar of chocolate: both had to be invariant under a
+// vertical flip, and no vertically symmetric tile can meet an asymmetric wall at both edges.
 const DOOR = 4;
 
+const CAP = 5; // the wall's top edge: a cap on a surface, not the main event
+const SKIRTING = 23; // where the face stops and the floor group starts
+
 // Ink bands down the wall, `[v, height]`. Each runs the full length of the segment, so it passes
-// straight through a join and a run has one unbroken profile. The whites between them are the
-// fillet under the cornice, the plaster face, and the skirting board's own face.
+// straight through a join and a run has one unbroken profile.
 //
-// **Two thirds of the band is ink, and all of it is outboard.** The first version put a 7 px cornice
-// on a mostly-white band and, rendered as a butted run on white paper, read as a decorative rule —
-// no heavier than the moulding round a page. The mass has to be there, and the far side is where it
-// belongs: it is the edge of the play space, and it is the half nobody's feet ever reach.
-//
-// The weights are a hierarchy — cornice 12 > ground line 3 > moulding 1 — because this style is a
+// The weights are a hierarchy — cap 5 > ground line 3 > skirting rule 2 — because this style is a
 // heavy outer contour holding lighter interior detail, and one uniform stroke reads as CAD linework.
+// The 2 px of white between the skirting rule and the ground line is load-bearing and was measured:
+// at 1 px it fails to separate them at dpr 1 and the whole floor group collapses into one black bar.
 const BANDS: [v: number, height: number][] = [
-  [0, 12], // the cornice: the top of the wall, and where all the weight lives
-  [24, 2], // the top edge of the skirting board
+  [0, CAP], // the cap along the top of the wall
+  [SKIRTING, 2], // the top edge of the skirting board
   [27, 3], // the shadow where the skirting meets the floor — the room's ground line
 ];
 
-// A pier every segment, carrying the cornice down onto the skirting. It exists because the review
-// measured the first hatched version and found **every column of a 720 px run carried identical
-// ink** — dead flat, which is why a run read as milled edging rather than as a wall. Horizontal
-// bands alone are an extrusion; a wall needs a beat. This is the beat, and it is one per segment
-// because that is the only pitch a bay can have when the box is the bay.
+// The face, hatched. Hatching is granted on large structures by #76 §1, and this is the largest
+// structure in the game.
 //
-// It is off centre, so the tile has no axis of symmetry, and it stops on the skirting rather than
-// running to the floor, so the bays it makes are wide, shallow and hatched — a panelled bay, not the
-// tall empty cell that reads as a window.
-const PIER_AT = 12;
-const PIER_WIDTH = 3;
-const PIER_TOP = 12; // the underside of the cornice, so the pier hangs off it
-const PIER_BOTTOM = 24; // the top edge of the skirting, so the pier lands on something
+// **It has to be tone, and it has to be diagonal.** Three earlier attempts put marks *along* the run
+// — panelled cells, scribe lines, upright hatching — and each failed the same way: a single row of
+// identical marks under a heavy black band is a **ruler**, and varying their lengths made it a better
+// ruler, not a worse one. A diagonal is the one direction the box's own axes do not offer, which is
+// why it resolves as a shade instead of as its strokes.
+//
+// **One weight, one length, one pitch.** A fourth attempt gave the strokes cycling weights and
+// lengths to look hand-laid, and a fresh reviewer measured it as three unlike marks in a repeating
+// cluster — a stamped pattern rather than a hatch. A hatch is a uniform family; its irregularity has
+// to come from the rasteriser, not from a cycle. The strokes are 1 CSS px, never less, because below
+// that a stroke stops being a stroke and becomes a grey smear.
+//
+// **Fine and close, not bold and wide.** At 2 px on a 6 px pitch the same coverage read as hazard
+// tape: bold alternating diagonals are a warning stripe, not shading. A hatch has to be dense enough
+// that the eye stops resolving individual strokes and sees a value instead, which is the whole point
+// of using one.
+const HATCH_PITCH = 3; // divides the box, so the family carries straight through a join
+const HATCH_WIDTH = 1;
 
-// The face, hatched — the shade that separates a vertical surface from the white paper floor.
-// Hatching is granted on large structures by #76 §1, and this is the largest structure in the game.
+// A pier every segment, carrying the cap down onto the skirting. It exists because a review measured
+// the first hatched version and found **every column of a 720 px run carried identical ink** — dead
+// flat, which is why the run read as milled edging rather than as a wall. Horizontal bands alone are
+// an extrusion; a wall needs a beat, and the beat is one bay per box because the box is the bay.
 //
-// **It has to be tone, and it has to be diagonal.** Three earlier attempts put marks *along* the
-// run — panelled cells, then scribe lines, then upright hatching — and every one of them failed the
-// same way: a single row of identical marks under a heavy black band is a **ruler**, and varying
-// their lengths made it a better ruler rather than a worse one. Thirty pixels of depth leaves room
-// for horizontal bands or for one row of marks and nothing else, so the only field that reads as
-// material here is one that runs across both. A diagonal is the one direction the box's own axes do
-// not offer, which is why it resolves as a shade instead of as its strokes — and shading a plane is
-// the whole reason to draw one.
+// It is off centre, so the tile has no axis of symmetry, and it is narrow and full height: a stubby
+// 4 px tab with a splayed foot was read as a thumbtack, and the aspect ratio is what fixes that.
 //
-// The strokes are 1 CSS px, never less; below that a stroke stops being a stroke and turns into a
-// grey smear. They are the only thing here that is not axis-aligned, so they are the only ink on the
-// sheet that anti-aliases, and that is what makes the band read as grey rather than as stripes.
-// The pitch divides the box, so the family carries on through a join at its own spacing.
-//
-// The weights alternate and every third stroke overshoots the band, because the review found the
-// even version — one width, one angle, one period, cut off flush at both rules — to be the sheet's
-// loudest generated-imagery tell. Both cycles have a length that divides the box, so a neighbour
-// continues this one's alternation rather than restarting it.
-const HATCH_TOP = 14;
-const HATCH_BOTTOM = 24;
-const HATCH_PITCH = 5;
-const HATCH_HEAVY = 2; // every other stroke, so the field is not one uniform weight
-const HATCH_OVERSHOOT = 3; // every third stroke runs past the rule instead of stopping on it
+// **No reveal around it.** Flanking it with white to make it stand out closed each bay into a
+// discrete rectangular cell holding three slashes, which is the sprocket-hole failure returning by
+// another route. A pier is the only unbroken vertical in a field of diagonals; that is enough, and
+// the hatch has to run past it for the wall to stay one surface.
+const PIER = { u: 11, width: 3 };
 
 // The escape door. The exit is 936 world units along its wall (`EXIT_LONG_FRAC`, src/game/world.ts),
-// so this variant is tiled about 31 times in a row — one drawing of a door leaf would read as 31
-// doors. It is therefore a single unbroken plate: solid ink full depth, studded, so any number of
-// them butt into one long riveted gate. The wall's white face stopping dead against a full-depth
-// black plate is the jamb, and the studs are what keep the plate a made thing rather than a hole.
+// so this variant is tiled about 31 times in a row and every part of it has to survive repetition:
+// it is a *length of gate*, not a picture of a door.
 //
-// It is deliberately symmetric under a quarter turn, which is the one choice on this sheet made
-// against taste. `drawWorld` asks for facing 4 whatever edge the exit falls on, so an oriented door
-// would be drawn sideways on three walls out of four; a plate with no top is the only door that
-// survives that. See `room.review.md` — a lintel, a threshold and jambs all need an orientation this
-// sprite is never handed, and every one of them is what the review asked for.
+// What makes it a door rather than a hole is that the wall does not stop at it. The cap runs straight
+// on above and thickens into the head; the skirting rule, its white gap and the ground line all
+// continue at exactly the depths the wall puts them, so the room's floor line never breaks.
 //
-// **Strapwork, not rivets.** The first plate was studded with white discs and the review read it as
-// punched holes with the floor showing through — the signature of a void, which is the one thing the
-// door must not be. Straps are axis-aligned, so unlike a disc they stay hard-edged at every ratio;
-// they cross in both axes, which is what a quarter-turn symmetry forces and what a strapped gate
-// happens to have anyway; and at this width they bring the plate to the same 64% ink as the wall, so
-// the door no longer reads as a heavier mass punched through it. The strap positions are mirrored
-// about the box's centre, which is what makes the quarter turn exact, and their pitch divides the
-// box, so a run of them is one gate rather than 31 doors. The plate stays solid ink at all four
-// edges, so the wall's ground line carries straight on through the door as its threshold.
-const STRAP_AT = 13;
-const STRAP_WIDTH = 4;
+// **The gate has to be carpentry, not stripes.** A 7 px band of vertical bars read as a vent grille,
+// and the fix is three things at once: give it most of the tile's height, make the joints hairline so
+// the field stays near-solid, and run a **ledger** across it — a horizontal brace is what stops a row
+// of boards being a row of stripes. The boards are also laid so the black left over at the box edge
+// is double width, which puts a **stile every 30 px**, the way a long boarded gate really is built;
+// that stile is also the jamb where the run meets the wall.
+const DOOR_HEAD = 6; // the cap, thickened into a lintel over the opening
+const DOOR_SOFFIT = 2; // the lit underside of that lintel; 1 px does not separate at dpr 1
+const BOARD_PITCH = 6;
+const BOARD_PHASE = 4;
+const BOARD_JOINT = 2;
+const BOARD_STILE = 6; // black left whole at the box edge, so two neighbours make one stile
+const LEDGER_AT = 5; // down from the top of the gate — off centre, so the gate is not symmetric
+const LEDGER_HEIGHT = 2;
 
 const room: SpriteSubject = {
   name: "room",
   size: SIZE,
-  facings: 5,
+  facings: 8,
   frames: 1,
   draw(ctx, size, facing) {
-    if (facing >= DOOR) {
-      drawDoor(ctx, size);
-      return;
-    }
-
     ctx.save();
-    ctx.transform(...UNFOLD[facing]);
+    ctx.transform(...UNFOLD[facing % UNFOLD.length]);
     ctx.fillStyle = PAPER;
     ctx.fillRect(0, 0, size, size);
     ctx.fillStyle = INK;
-    for (const [v, height] of BANDS) ctx.fillRect(0, v, size, height);
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, HATCH_TOP - 1, size, HATCH_BOTTOM - HATCH_TOP + 2);
-    ctx.clip();
-    ctx.strokeStyle = INK;
-    for (let k = -3; k * HATCH_PITCH < size; k++) {
-      const top = HATCH_TOP - (mod(k, HATCH_OVERSHOOT) === 0 ? 1 : 0);
-      const foot = HATCH_BOTTOM + 1;
-      ctx.lineWidth = mod(k, HATCH_HEAVY) === 0 ? 1 : 2;
-      ctx.beginPath();
-      ctx.moveTo(k * HATCH_PITCH, top);
-      ctx.lineTo(k * HATCH_PITCH + foot - top, foot);
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    ctx.fillRect(PIER_AT, PIER_TOP, PIER_WIDTH, PIER_BOTTOM - PIER_TOP);
+    if (facing < DOOR) drawWall(ctx, size);
+    else drawDoor(ctx, size);
     ctx.restore();
   },
 };
 
-function drawDoor(ctx: CanvasRenderingContext2D, size: number): void {
-  ctx.fillStyle = INK;
-  ctx.fillRect(0, 0, size, size);
-  ctx.fillStyle = PAPER;
-  ctx.fillRect(0, STRAP_AT, size, STRAP_WIDTH);
-  ctx.fillRect(STRAP_AT, 0, STRAP_WIDTH, size);
+function drawWall(ctx: CanvasRenderingContext2D, size: number): void {
+  for (const [v, height] of BANDS) ctx.fillRect(0, v, size, height);
+
+  const drop = SKIRTING - CAP;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, CAP, size, drop);
+  ctx.clip();
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = HATCH_WIDTH;
+  ctx.beginPath();
+  // From a full stroke-length before the box, so a stroke that entered the neighbour's right edge is
+  // drawn here too and the family crosses the join instead of restarting at it.
+  for (let u = -drop; u < size; u += HATCH_PITCH) {
+    ctx.moveTo(u, CAP);
+    ctx.lineTo(u + drop, SKIRTING);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.fillRect(PIER.u, CAP, PIER.width, drop);
 }
 
-// Positive remainder, because the hatch is indexed from before the box's left edge and JavaScript's
-// `%` keeps the sign — which would break the alternation exactly where a run crosses a join.
-function mod(value: number, by: number): number {
-  return ((value % by) + by) % by;
+function drawDoor(ctx: CanvasRenderingContext2D, size: number): void {
+  const gate = DOOR_HEAD + DOOR_SOFFIT;
+  ctx.fillRect(0, 0, size, DOOR_HEAD);
+  ctx.fillRect(0, gate, size, size - gate);
+
+  ctx.fillStyle = PAPER;
+  for (let u = BOARD_PHASE; u < size - BOARD_STILE; u += BOARD_PITCH) {
+    ctx.fillRect(u, gate, BOARD_JOINT, SKIRTING - gate);
+  }
+  ctx.fillRect(0, gate + LEDGER_AT, size, LEDGER_HEIGHT);
+  // The wall's own skirting face, carried across the door so the floor line reads as one line.
+  ctx.fillRect(0, SKIRTING + 2, size, 2);
 }
 
 export default room;
