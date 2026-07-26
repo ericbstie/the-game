@@ -453,6 +453,22 @@ describe("M4-T3: enemies leave the front line to chew on your structures", () =>
     expect(only(s).target).toEqual({ kind: "player", id: "p1" });
   });
 
+  // #75: a player who drops out of the squad list must break the lock the same tick. Without
+  // this, lock-and-commit is what makes the bug bite — an enemy holds a target that neither
+  // dies nor leaves range, so it stands on an empty patch of floor until grace expires.
+  test("a player who leaves the squad list breaks the lock and the enemy re-targets", () => {
+    const minerAt = { x: C.x + 5_000, y: C.y };
+    const { build, miner } = withMiner(minerAt);
+    const s = stateWith([grunt("e1", { x: minerAt.x + 300, y: minerAt.y })]);
+    const standing = { x: minerAt.x + 700, y: minerAt.y };
+
+    stepWith(s, [standing], build);
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
+
+    stepWith(s, [], build); // that player is gone from the list; the miner is still there
+    expect(only(s).target).toEqual({ kind: "structure", id: miner.id });
+  });
+
   test("an enemy locked on a player ignores a closer teammate and a closer miner", () => {
     const start = { x: C.x + 5_000, y: C.y };
     const { build } = withMiner({ x: start.x + 60, y: start.y }); // a miner right on top of it

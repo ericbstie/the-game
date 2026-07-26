@@ -456,7 +456,8 @@ export class LobbyHub {
   // `moves` is always present; spawn/hit/death arrays ride only when non-empty.
   private tick(session: SessionRecord): void {
     if (!session.sim) return;
-    const players = livePlayers(session.positions, session.health); // dead players drop from aggro
+    // Dead and disconnected players both drop from aggro; only the present and living are chased.
+    const players = livePlayers(session.positions, session.health, connectedIds(session));
     const attacks = session.pendingAttacks;
     session.pendingAttacks = [];
     // The economy settles first: miners trickle and the energy ceiling is recomputed before the
@@ -832,19 +833,32 @@ function connectedPlayers(session: SessionRecord): PlayerRecord[] {
   return [...session.players.values()].filter((p) => p.presence.status === "connected");
 }
 
+function connectedIds(session: SessionRecord): ReadonlySet<PlayerId> {
+  return new Set(connectedPlayers(session).map((p) => p.id));
+}
+
 // A player who has never reported HP counts as alive, so a fresh match never reads as a wipe.
 function isAlive(session: SessionRecord, id: PlayerId): boolean {
   return (session.health.get(id)?.hp ?? PLAYER_MAX_HP) > 0;
 }
 
-// The players fed to the enemy sim: everyone with a known position, minus the dead. A player who
-// has never reported HP defaults to alive; one at 0 HP is dropped so enemies stop chasing a corpse.
+// The players fed to the enemy sim: everyone present, with a known position, minus the dead. A
+// player who has never reported HP defaults to alive; one at 0 HP is dropped so enemies stop
+// chasing a corpse.
+//
+// `connected` is the gate that keeps a disconnected player out. Their position deliberately
+// survives the whole grace window — peers hold it as a stand-in and the reconnect burst replays
+// it — but it is a stale sample, not a body, and an enemy chasing it is chasing nobody. Dropping
+// them here also breaks any existing lock, because `resolveTarget` cannot find a player who is
+// not in this list.
 export function livePlayers(
   positions: Map<PlayerId, { pos: Vec2; seq: number }>,
   health: Map<PlayerId, { hp: number; seq: number }>,
+  connected: ReadonlySet<PlayerId>,
 ): PlayerRef[] {
   const alive: PlayerRef[] = [];
   for (const [id, sample] of positions) {
+    if (!connected.has(id)) continue;
     if ((health.get(id)?.hp ?? PLAYER_MAX_HP) > 0) alive.push({ id, pos: sample.pos });
   }
   return alive;
