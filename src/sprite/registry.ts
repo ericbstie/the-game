@@ -64,6 +64,11 @@ export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
   // The perimeter is tiled from one square, so the band's width is also the run's step. Two tiles
   // divides the arena exactly (31,200 / 30 = 1,040 segments a side) and matches a wall building.
   room: TILE * 2, // 30
+  // Settled by #72 alongside the density, because neither number means anything without the other:
+  // the same scatter reads as decoration at one size and as undergrowth at the next one up. Ten is
+  // the smallest box whose blades still resolve on a non-retina display, and at 10 against the
+  // player's 28 the tuft stays plainly something the player walks over rather than through.
+  grass: 10,
 };
 
 // The sprites that have actually landed. Wiring one in is two lines — an import above, and a name

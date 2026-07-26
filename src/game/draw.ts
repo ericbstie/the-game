@@ -168,6 +168,10 @@ export function drawWorld(
     );
   };
 
+  // Grass first, ore over it: an ore tile is a patch of mineral in the ground rather than something
+  // growing on it, and it fills its tile edge to edge, so tufts underneath would be both invisible
+  // and muddling to read.
+  drawGrass(camera, viewport, sprites, blit);
   drawOre(ctx, world, camera, viewport, sprites, blit);
 
   const standing: Standing[] = [];
@@ -238,6 +242,74 @@ export function drawWorld(
     ctx.strokeStyle = ghost.valid ? GHOST_OK : GHOST_BAD;
     ctx.lineWidth = 2;
     ctx.strokeRect(ghost.tile.tx * TILE, ghost.tile.ty * TILE, side, side);
+  }
+}
+
+// How thickly the tufts fall: one tuft per this many tiles, on average. Chosen by rendering a
+// ladder of densities at real size and looking, which is the only way this could honestly be
+// settled — at one per 8 (~280 a screen) the scatter closes up into a continuous texture and starts
+// competing with the ink sprites standing on it, which is the exact failure the white floor was
+// brought in to fix; at one per 24 (~100) the floor opens into bare voids most of a screen across
+// and the grass stops reading as a property of the ground. One per 12 is ~200 tufts on an 800×600
+// screen — about one per 2,400 px² — the densest setting that still reads as marks on paper rather
+// than as ground cover.
+const GRASS_PERIOD = 12;
+
+// Where a tile's tuft falls, or null for the tiles that carry none.
+//
+// Pure arithmetic on the tile coordinate — the `oreSeed` derive-don't-stream idiom — so all six
+// clients scatter the identical field with nothing on the wire and nothing in the snapshot (#76 §3).
+// The offset within the tile comes from a second hash rather than from the first one's spare bits,
+// so the tufts do not line up on the lattice that chose them; without it the scatter reads as a
+// grid at a glance, which is the very thing the pattern mechanism was rejected for.
+export function grassAt(tx: number, ty: number): { x: number; y: number; variant: number } | null {
+  if (tileVariant(tx, ty) % GRASS_PERIOD !== 0) return null;
+  const jitter = tileVariant(tx + 1, ty * 3 + 7);
+  // Over 256, not 255, so the offset is [0, 1) and a tuft can never land exactly on the next tile's
+  // edge — which would put it outside the tile that chose it and out of the walk's reach.
+  return {
+    x: tx * TILE + ((jitter & 0xff) / 256) * TILE,
+    y: ty * TILE + (((jitter >>> 8) & 0xff) / 256) * TILE,
+    variant: jitter >>> 16,
+  };
+}
+
+// Scatter the tufts over the paper, walking only the tiles the camera can see.
+//
+// Per-tuft blits, and deliberately not a `CanvasPattern` or a chunk cache. Measured against both at
+// this density (#72): a pattern fill and a chunk blit each cost ~0.7–0.8 ms because they composite
+// every pixel of the viewport whether or not there is ink in it, while ~200 individual blits cost
+// ~0.45 ms because they only touch the pixels that carry a tuft. Below roughly 300 tufts a screen
+// the simplest mechanism is also the fastest one — and it is the only one of the three with no
+// cache to evict across a 2,080 × 2,080 tile world, and no repeat for the eye to find.
+//
+// Nothing here is culled, because the floor *is* the screen; the walk is bounded to visible tiles
+// instead, so a 31,200² arena costs exactly what an 800 px one does. The tile scan itself measured
+// 0.03 ms over 2,255 tiles, so the cost is the blits and only the blits.
+function drawGrass(
+  camera: Camera,
+  viewport: Viewport,
+  sprites: SpriteSource | undefined,
+  blit: Blit,
+): void {
+  // One probe up front, exactly as the ore does: until the grass module lands, the floor is bare
+  // paper and this whole pass costs a single lookup.
+  const probe = sprites?.("grass", 0, 0);
+  if (!probe) return;
+  const source = sprites as SpriteSource;
+  const first = tileOf({ x: camera.x, y: camera.y });
+  const last = tileOf({ x: camera.x + viewport.width, y: camera.y + viewport.height });
+  // A tuft is foot-anchored and centred, so it reaches a whole box above the tile that chose it and
+  // half a box either side. Derived from the sprite rather than hard-coded, so a tuft drawn larger
+  // than a tile still cannot pop in at the viewport edge.
+  const margin = Math.ceil(probe.size / TILE);
+  for (let ty = Math.max(0, first.ty - margin); ty <= last.ty + margin; ty++) {
+    for (let tx = Math.max(0, first.tx - margin); tx <= last.tx + margin; tx++) {
+      const tuft = grassAt(tx, ty);
+      if (!tuft) continue;
+      const sprite = source("grass", tuft.variant, 0);
+      if (sprite) blit(sprite, tuft.x, tuft.y);
+    }
   }
 }
 

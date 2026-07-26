@@ -4,7 +4,7 @@ import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
 import { tileKey } from "./build";
 import type { Camera, Viewport } from "./camera";
-import { drawWorld } from "./draw";
+import { drawWorld, grassAt } from "./draw";
 
 // happy-dom returns null from getContext('2d'), so the draw path is exercised against a
 // spy that records the calls and lets any property be assigned.
@@ -545,5 +545,69 @@ describe("drawWorld with sprites", () => {
       { camera, viewport, sprites: stubSprites(everything) },
     );
     expect(blits(gone).length).toBe(0);
+  });
+});
+
+// The floor's own scatter. Its density is a decision (#72) rather than an implementation detail —
+// it is what the grass sprite was drawn against and what the frame budget was measured at — so it
+// is pinned here, where changing the hash or the period fails loudly instead of quietly redressing
+// the whole game.
+describe("the grass scatter", () => {
+  test("is derived from the tile alone, so every client scatters the identical field", () => {
+    for (const [tx, ty] of [
+      [0, 0],
+      [37, 812],
+      [2079, 2079],
+      [1040, 1040],
+    ]) {
+      expect(grassAt(tx, ty)).toEqual(grassAt(tx, ty));
+    }
+  });
+
+  test("falls one tuft per 12 tiles, the density the art was judged at", () => {
+    let tufts = 0;
+    const side = 400; // 160,000 tiles — enough that the rate is the hash's and not the sample's
+    for (let ty = 0; ty < side; ty++) {
+      for (let tx = 0; tx < side; tx++) if (grassAt(tx, ty)) tufts++;
+    }
+    expect(tufts / (side * side)).toBeCloseTo(1 / 12, 2);
+  });
+
+  test("puts a tuft inside the tile that chose it, which is what bounds the viewport walk", () => {
+    for (let ty = 0; ty < 60; ty++) {
+      for (let tx = 0; tx < 60; tx++) {
+        const tuft = grassAt(tx, ty);
+        if (!tuft) continue;
+        expect(tuft.x).toBeGreaterThanOrEqual(tx * 15);
+        expect(tuft.x).toBeLessThan((tx + 1) * 15);
+        expect(tuft.y).toBeGreaterThanOrEqual(ty * 15);
+        expect(tuft.y).toBeLessThan((ty + 1) * 15);
+      }
+    }
+  });
+
+  test("costs nothing at all until the grass sprite lands", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport, sprites: stubSprites({ player: 28 }) });
+    expect(blits(ctx).every((b) => !b.tag.startsWith("grass/"))).toBe(true);
+  });
+
+  test("covers the viewport and paints under everything that stands on it", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport, sprites: stubSprites({ grass: 10, player: 28 }) });
+    const painted = blits(ctx);
+    const grass = painted.filter((b) => b.tag.startsWith("grass/"));
+
+    // ~2,450 tiles fall in the walk at this viewport, so one per 12 is roughly 200 tufts. A wide
+    // band, because the exact count is the hash's business — the point is that it is a scatter and
+    // not a lawn, and not three stray marks.
+    expect(grass.length).toBeGreaterThan(120);
+    expect(grass.length).toBeLessThan(320);
+    // Nothing standing may be painted before the floor it stands on.
+    expect(painted.findIndex((b) => b.tag.startsWith("player/"))).toBeGreaterThan(
+      painted.findLastIndex((b) => b.tag.startsWith("grass/")),
+    );
+    // Several distinct variants, or the field is one drawing repeated.
+    expect(new Set(grass.map((b) => b.tag)).size).toBeGreaterThan(1);
   });
 });
