@@ -233,6 +233,10 @@ export function admitAttack(
   guard.lastAt = now;
   const len = Math.hypot(report.dir.x, report.dir.y);
   if (len === 0 || !Number.isFinite(len)) return null; // points nowhere, or overflowed
+  // Unconditional, including for an already-unit vector, which float division can shift by an ULP.
+  // A `len === 1` fast path would be exact-equality on untrusted input, guarding a difference of
+  // 1e-16 world units that nothing downstream can observe — the security property is worth more
+  // than the idempotence.
   return { x: report.dir.x / len, y: report.dir.y / len };
 }
 
