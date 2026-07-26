@@ -113,7 +113,7 @@ the collision it stands for cannot drift apart. They are in code as `SPRITE_BOX`
 | `elite` | the big-bodied spider | **48** | 8 compass | 2 walk | yes |
 | `nest` | the egg sac — **0 intact, 1 destroyed** | **96** | 2 | 1 | yes |
 | `miner` | in elevation | **30** | 1 | 1 | yes |
-| `wall` | in elevation | **30** | 1 | 1 | yes |
+| `wall` | the wall top, **from above** — masonry only on the faces a neighbour does not cover. The facing is a **4-bit neighbour mask**: 1 N, 2 E, 4 S, 8 W, so 0 stands alone and 15 is buried in a mass. `drawWorld` derives it | **30** | 16 | 1 | yes |
 | `turret` | in elevation | **30** | 1 | 1 | yes |
 | `generator` | **flat, from above** | **75** | 1 | 1 | yes |
 | `ore-metal` | one tile, pure ink — several variants scattered across a patch | **15** | variants | 1 | yes |
