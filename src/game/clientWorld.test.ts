@@ -646,3 +646,49 @@ describe("M5-I5: the client adopts streamed aims and shots, and refuses to draw 
     expect(new ClientWorld(init(), "self").shotTargetPos("nobody", 0)).toBeNull();
   });
 });
+
+// The state behind the HUD's warning bell (#76 §5). The wire reports damage, an edge; the icon
+// reports being under attack, a condition. These pin the translation between the two.
+describe("ClientWorld structure-under-attack window", () => {
+  const WINDOW = 2000;
+  const tile = tileOf({ x: 600, y: 600 });
+  const wall = { id: "w1", kind: "wall" as const, tile, hp: 400 };
+
+  test("nothing is under attack in a match where nothing has been bitten", () => {
+    const w = new ClientWorld(init(), "self");
+    expect(w.structureUnderAttack(0, WINDOW)).toBe(false);
+    expect(w.structureUnderAttack(1_000_000, WINDOW)).toBe(false);
+  });
+
+  test("a bite on a standing structure raises it, and it lapses after the window", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], builds: [wall] }, 1000);
+    w.applyMapDelta({ tick: 2, moves: [], structHits: [{ id: "w1", hp: 380 }] }, 2000);
+    expect(w.structureUnderAttack(2000, WINDOW)).toBe(true);
+    expect(w.structureUnderAttack(2000 + WINDOW - 1, WINDOW)).toBe(true);
+    expect(w.structureUnderAttack(2000 + WINDOW, WINDOW)).toBe(false);
+  });
+
+  test("each further bite pushes the window out, so a base being chewed holds it steady", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], builds: [wall] }, 0);
+    w.applyMapDelta({ tick: 2, moves: [], structHits: [{ id: "w1", hp: 380 }] }, 1000);
+    w.applyMapDelta({ tick: 3, moves: [], structHits: [{ id: "w1", hp: 360 }] }, 2500);
+    expect(w.structureUnderAttack(2500 + WINDOW - 1, WINDOW)).toBe(true);
+  });
+
+  // The whole reason this reads `structHits` and not `removals`: demolishing your own wall is not
+  // an attack, and flashing a warning at a player tidying up would be worse than showing nothing.
+  test("demolishing your own structure is not an attack", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], builds: [wall] }, 0);
+    w.applyMapDelta({ tick: 2, moves: [], removals: ["w1"] }, 1000);
+    expect(w.structureUnderAttack(1000, WINDOW)).toBe(false);
+  });
+
+  test("a hit naming a structure this client has never seen raises nothing", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], structHits: [{ id: "ghost", hp: 10 }] }, 1000);
+    expect(w.structureUnderAttack(1000, WINDOW)).toBe(false);
+  });
+});

@@ -12,10 +12,12 @@ import nest from "./nest";
 import oreMetal from "./ore-metal";
 import orePower from "./ore-power";
 import player from "./player";
+import reconnecting from "./reconnecting";
 import room from "./room";
 import type { SpriteSubject } from "./sheet";
 import turret from "./turret";
 import wall from "./wall";
+import warning from "./warning";
 
 // Every sprite the game draws, and the module that draws it.
 //
@@ -43,6 +45,7 @@ export type SpriteName =
   | "room" // the perimeter wall unfolded outward, and the escape door
   | "halo" // the barely-yellow self marker
   | "warning" // HUD: a structure is under attack
+  | "reconnecting" // HUD: the socket dropped and the client is trying to get back in
   | "unpowered"; // in-world: a turret with no energy
 
 // The box a sprite draws in, in CSS px — which is also world units, since the zoom is 1:1.
@@ -87,9 +90,11 @@ export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
   "ore-metal": oreMetal,
   "ore-power": orePower,
   player,
+  reconnecting,
   room,
   turret,
   wall,
+  warning,
 };
 
 function footprintBox(kind: BuildableKind): number | undefined {
