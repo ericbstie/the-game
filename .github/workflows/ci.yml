@@ -31,6 +31,9 @@ jobs:
       - name: Format
         run: bunx biome format .
 
+      - name: Typecheck
+        run: bun run typecheck
+
       - name: Test
         run: bun test
 

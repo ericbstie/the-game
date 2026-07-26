@@ -14,11 +14,15 @@ bun install
 bun dev
 bun test
 bun test --watch
+bun run typecheck
 bun run check
 bun run build
 bun run sprite:sheet src/sprite/<name>.ts
 bun run sprite:frame
 ```
+
+`bun run check` is lint, format **and** types — Bun strips types without checking them, so
+`bun test` alone will run green on a tree `tsc` rejects.
 
 Both `bun dev` (hot reload) and `bun serve` run the unified server in `server.ts` — one
 process, one origin, serving the React app and the same-origin lobby WebSocket. `bun run
