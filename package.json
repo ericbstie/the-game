@@ -1,6 +1,6 @@
 {
   "name": "breakout-box",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,8 +11,9 @@
     "test": "bun test",
     "lint": "biome lint .",
     "format": "biome format --write .",
-    "check": "biome check .",
-    "ci": "biome ci .",
+    "typecheck": "tsc --noEmit",
+    "check": "biome check . && bun run typecheck",
+    "ci": "biome ci . && bun run typecheck",
     "version:next": "bun run scripts/next-version.ts",
     "sprite:sheet": "bun run scripts/sprite-sheet.ts",
     "sprite:frame": "bun run scripts/world-frame.ts",
