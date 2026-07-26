@@ -1,5 +1,5 @@
 import type { SpriteName } from "./registry";
-import { bakeSubject, type SpriteSubject } from "./sheet";
+import { bakedPixels, bakeSubject, type SpriteSubject } from "./sheet";
 
 // The draw-time side of the sprite pipeline: baked offscreen canvases the render loop blits
 // instead of drawing shapes.
@@ -7,7 +7,9 @@ import { bakeSubject, type SpriteSubject } from "./sheet";
 // The one rule that shapes all of it comes from #77 §5. `GameScreen` paints through
 // `setTransform(dpr, …)`, so a sprite baked at its logical size is *upscaled* on a HiDPI display
 // and reads as a smudge — at 28 px, 70% of a contour comes out grey. Sprites are therefore baked
-// at `size × dpr` and blitted into a `size`-CSS-px box, which is one device pixel per baked pixel.
+// at `size × dpr` and blitted into a box exactly that many device pixels wide, which is one device
+// pixel per baked pixel and so nothing to resample (see `BakedSprite.size`, which is what carries
+// that box and is not always the nominal one).
 // That makes the device pixel ratio part of a bake's identity: when it changes, every bake in
 // hand is the wrong resolution, so the cache empties itself rather than keeping a second copy of
 // the whole sprite set for a display the player is no longer looking at.
@@ -16,9 +18,16 @@ import { bakeSubject, type SpriteSubject } from "./sheet";
 // never spawns an elite never pays for one, and the fifteen sprite modules can land one at a time
 // without the first frame growing to meet them.
 
-// What the render loop needs to put a sprite on screen: the baked image, and the logical box to
-// blit it into. The image is `size × dpr` device pixels; `size` is CSS px, so the two disagree by
-// design and the caller must use `size`.
+// What the render loop needs to put a sprite on screen: the baked image, and the box in CSS px to
+// blit it into.
+//
+// `size` is **not** always the subject's nominal box. It is `bakedPixels(size, dpr) / dpr` — the
+// CSS width that comes out to exactly the bake's device-pixel width, so the blit is 1:1 and there
+// is nothing to resample. Those agree whenever `size × dpr` is a whole number, which is every
+// character at every ratio, but not a 15 px ore tile at 1.25× or 1.5× (Windows display scaling),
+// where the nominal box would land the destination half a device pixel off its source and turn
+// every edge grey. A sprite can therefore draw up to half a device pixel larger than its nominal
+// box; that is the cheaper of the two errors, and it is invisible.
 export interface BakedSprite {
   image: CanvasImageSource;
   size: number;
@@ -57,7 +66,7 @@ export function createSpriteCache(
     }
     return {
       image: frames[wrap(frame, subject.frames)][wrap(facing, subject.facings)],
-      size: subject.size,
+      size: bakedPixels(subject.size, bakedDpr) / bakedDpr,
     };
   };
 

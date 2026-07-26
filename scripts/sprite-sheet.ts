@@ -1,10 +1,15 @@
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { type BakeMeasurement, layoutSheet, type SpriteSubject } from "../src/sprite/sheet";
+import {
+  type BakeMeasurement,
+  bakedPixels,
+  layoutSheet,
+  type SpriteSubject,
+} from "../src/sprite/sheet";
 import { capture, measurementsIn } from "./headless";
 
 // Render a sprite module to a PNG review sheet an agent can look at.
 //
-//   bun run sprite:sheet src/sprite/player/player.ts
+//   bun run sprite:sheet src/sprite/player.ts
 //
 // The Chromium launch itself lives in `headless.ts`, which the world-frame renderer shares.
 
@@ -121,7 +126,7 @@ function report(result: SheetResult): void {
     `sheet   ${sheet.width}×${sheet.height} css → ${Math.round(sheet.width * dpr)}×${Math.round(sheet.height * dpr)} px`,
   );
   console.log(
-    `subject ${subject.name} · ${subject.size}px box baked at ${subject.size * dpr}px for dpr ${dpr}`,
+    `subject ${subject.name} · ${subject.size}px box baked at ${bakedPixels(subject.size, dpr)}px for dpr ${dpr}`,
   );
   for (const bake of result.bakes) {
     const box = bake.bounds

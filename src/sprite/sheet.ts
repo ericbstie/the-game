@@ -162,7 +162,7 @@ export function drawSheet(ctx: CanvasRenderingContext2D, render: SheetRender): v
   ctx.textBaseline = "alphabetic";
   ctx.font = "bold 13px monospace";
   ctx.fillText(
-    `${subject.name} · ${size}px box · ${subject.facings} facings × ${subject.frames} frames · baked at ${size * dpr}px for dpr ${dpr}`,
+    `${subject.name} · ${size}px box · ${subject.facings} facings × ${subject.frames} frames · baked at ${bakedPixels(size, dpr)}px for dpr ${dpr}`,
     MARGIN,
     MARGIN + 14,
   );
@@ -245,15 +245,25 @@ export function drawSheet(ctx: CanvasRenderingContext2D, render: SheetRender): v
   }
 }
 
+// How many device pixels a `size`-CSS-px box bakes to at this ratio. The whole pipeline turns on
+// this being one number: the offscreen canvas is this wide, and the blit's destination has to be
+// exactly this many device pixels or the bake is resampled on its way to the screen. `size × dpr`
+// is not always a whole number — a 15 px ore tile at Windows' 1.5× scaling wants 22.5 — so it is
+// rounded here, once, and everything else divides back out of this rather than rounding again.
+export function bakedPixels(size: number, dpr: number): number {
+  return Math.round(size * dpr);
+}
+
 // Bake every facing and frame at `size × dpr`. This is the one rule a sprite must be produced
 // under, so the harness owns it rather than asking a dozen agents to remember it (#77 §5).
 export function bakeSubject(subject: SpriteSubject, dpr: number): HTMLCanvasElement[][] {
   assertSubject(subject);
+  const pixels = bakedPixels(subject.size, dpr);
   return Array.from({ length: subject.frames }, (_, frame) =>
     Array.from({ length: subject.facings }, (_, facing) => {
       const canvas = document.createElement("canvas");
-      canvas.width = Math.round(subject.size * dpr);
-      canvas.height = Math.round(subject.size * dpr);
+      canvas.width = pixels;
+      canvas.height = pixels;
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("no 2d context: sprites can only be baked in a real browser");
       ctx.scale(dpr, dpr);

@@ -10,6 +10,7 @@ import type {
   WorldSnapshot,
 } from "../lobby/protocol";
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
+import type { SpriteName } from "../sprite/registry";
 import { BUILDABLES, footprintCenter, oreAt, TILE, tileOf } from "./build";
 import { type Camera, isVisible, type Viewport } from "./camera";
 
@@ -52,6 +53,9 @@ export interface DrawOptions {
   // Device pixels per CSS pixel, matching the `setTransform(dpr, …)` the caller paints through.
   // Blits are aligned to whole device pixels with it; nothing else here needs it.
   dpr?: number;
+  // Wall-clock ms, injected rather than read, so this stays a pure function of its arguments (the
+  // `stepBuild` idiom). Only the flashing overlays use it; without it they sit on their first frame.
+  now?: number;
 }
 
 // One thing standing on the floor, waiting for its turn to paint. `y` is its floor line — the
@@ -65,11 +69,17 @@ interface Standing {
 // elevation and joins the sorted pass.
 const FLAT: Partial<Record<BuildableKind, true>> = { generator: true };
 
-// Which way a character faces and where it is in its walk cycle are #73's to derive from the
-// position stream. Until that lands every character stands still and faces east. The indices
-// already flow through the cache and the blit, so #73 is a change to these two arguments.
-const FACING_PENDING = 0;
-const FRAME_PENDING = 0;
+// How fast a flashing overlay alternates. The spec asks for a flash and fixes no rate; this is
+// slow enough to read as deliberate and fast enough to catch the eye mid-fight.
+const FLASH_MS = 400;
+
+// The room's perimeter is one sprite with a variant per edge, unfolded outward (#76 §2), plus the
+// door set into whichever edge the exit falls on.
+const ROOM_NORTH = 0;
+const ROOM_EAST = 1;
+const ROOM_SOUTH = 2;
+const ROOM_WEST = 3;
+const ROOM_DOOR = 4;
 
 // One stable colour per slot (1..6), so a player keeps their colour across the match.
 const SLOT_COLORS = ["#4f8cff", "#ff5d5d", "#40c463", "#f2c14e", "#c77dff", "#4dd0e1"];
@@ -110,28 +120,22 @@ export function drawWorld(
   options: DrawOptions,
 ): void {
   const { arena } = world;
-  const { camera, viewport, sprites, dpr = 1 } = options;
+  const { camera, viewport, sprites, dpr = 1, now = 0 } = options;
+  const flash = Math.floor(now / FLASH_MS);
 
-  // A sprite is baked at `size × dpr` and blitted into a `size`-CSS-px box, so every blit is one
-  // device pixel per baked pixel with nothing to resample (#77 §5). Smoothing could then only
-  // soften a sprite that had drifted off that alignment — exactly the case that should be visible
-  // rather than quietly blurred. Set per frame, not once: `GameScreen` resizes the backing store
-  // when the DPR changes, and assigning `canvas.width` resets the whole 2D drawing state with it.
+  // Every blit below is one device pixel per baked pixel: `BakedSprite.size` is the CSS width that
+  // comes out to exactly the bake's device-pixel width, and `snap` puts its corner on a whole
+  // device pixel, so there is nothing left for smoothing to interpolate (#77 §5). Turning it off
+  // is therefore not what makes sprites crisp — the 1:1 geometry is. It is here so that a sprite
+  // which ever *does* drift off that alignment shows it, instead of being quietly blurred into
+  // looking almost right. Set per frame, not once: `GameScreen` resizes the backing store when the
+  // DPR changes, and assigning `canvas.width` resets the whole 2D drawing state with it.
   ctx.imageSmoothingEnabled = false;
 
   // Clear and repaint only the visible slice of the world, not the whole 31,200² arena.
   ctx.clearRect(camera.x, camera.y, viewport.width, viewport.height);
   ctx.fillStyle = BG;
   ctx.fillRect(camera.x, camera.y, viewport.width, viewport.height);
-
-  drawOre(ctx, world, camera, viewport);
-
-  ctx.strokeStyle = WALL;
-  ctx.lineWidth = 4;
-  ctx.strokeRect(2, 2, arena.width - 4, arena.height - 4);
-
-  ctx.fillStyle = EXIT;
-  ctx.fillRect(world.exit.x, world.exit.y, world.exit.width, world.exit.height);
 
   // An upright sprite occupies a point on the floor and extends above it, so its box hangs off
   // the bottom centre. Aligning that to whole device pixels is what keeps a bake that was made
@@ -146,7 +150,32 @@ export function drawWorld(
     );
   };
 
+  // Overlays — the self halo, a turret's lightning — mark something rather than stand on the
+  // floor, so they hang off their centre instead of their feet.
+  const blitOver = (sprite: BakedSprite, x: number, y: number): void => {
+    ctx.drawImage(
+      sprite.image,
+      snap(x - sprite.size / 2, camera.x, dpr),
+      snap(y - sprite.size / 2, camera.y, dpr),
+      sprite.size,
+      sprite.size,
+    );
+  };
+
+  drawOre(ctx, world, camera, viewport, sprites, blit);
+
   const standing: Standing[] = [];
+
+  // The room's walls stand up like everything else, so they join the sort rather than sitting
+  // under it: the near wall has to paint in front of a player standing against it, and the far
+  // wall behind. Until the sprite lands, the perimeter is the M2 outline and the exit a flat rect.
+  if (!pushRoom(world, camera, viewport, sprites, blit, standing)) {
+    ctx.strokeStyle = WALL;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(2, 2, arena.width - 4, arena.height - 4);
+    ctx.fillStyle = EXIT;
+    ctx.fillRect(world.exit.x, world.exit.y, world.exit.width, world.exit.height);
+  }
 
   for (const n of world.nests) {
     if (!isVisible(n.pos, n.radius * 2, camera, viewport)) continue;
@@ -159,7 +188,15 @@ export function drawWorld(
     const side = spec.footprint * TILE;
     if (!isVisible(footprintCenter(s.tile, spec.footprint), side / 2, camera, viewport)) continue;
     // A building's box *is* its footprint, so its floor line is the front edge of that square.
-    const paint = () => paintStructure(ctx, s.kind, s.tile, side, sprites, blit);
+    const paint = () => {
+      paintStructure(ctx, s.kind, s.tile, side, sprites, blit);
+      // A turret holding a target it has no power to fire on. `powered` alone cannot say it — an
+      // idle turret is unpowered too, and has nothing to complain about (#74).
+      if (s.turret?.targetId != null && !s.turret.powered) {
+        const lightning = sprites?.("unpowered", 0, flash);
+        if (lightning) blitOver(lightning, ...centreOf(s.tile, side));
+      }
+    };
     if (FLAT[s.kind]) paint();
     else standing.push({ y: (s.tile.ty + spec.footprint) * TILE, paint });
   }
@@ -173,7 +210,7 @@ export function drawWorld(
     if (!isVisible(a.pos, a.radius * 2, camera, viewport, LABEL_PAD)) continue;
     standing.push({
       y: a.pos.y,
-      paint: () => paintAvatar(ctx, a, a.id === options.selfId, sprites, blit),
+      paint: () => paintAvatar(ctx, a, a.id === options.selfId, sprites, blit, blitOver),
     });
   }
 
@@ -206,9 +243,33 @@ function drawOre(
   world: WorldSnapshot,
   camera: Camera,
   viewport: Viewport,
+  sprites: SpriteSource | undefined,
+  blit: Blit,
 ): void {
   const first = tileOf({ x: camera.x, y: camera.y });
   const last = tileOf({ x: camera.x + viewport.width, y: camera.y + viewport.height });
+
+  // Once ore is drawn it is a tile at a time, because two neighbouring tiles are different
+  // drawings and there is no run to merge. That is affordable where a flat fill would not be:
+  // ore is scattered in patches over a 2,080² grid, so only a small share of the visible tiles
+  // carry any. Probing both kinds up front keeps the common case — no ore art yet — on exactly
+  // the run-length path it has always used.
+  if (sprites?.("ore-metal", 0, 0) || sprites?.("ore-power", 0, 0)) {
+    for (let ty = Math.max(0, first.ty); ty <= last.ty; ty++) {
+      for (let tx = Math.max(0, first.tx); tx <= last.tx; tx++) {
+        const kind = oreAt(world.ore, { tx, ty });
+        if (kind === null) continue;
+        const sprite = sprites(ORE_SPRITES[kind], tileVariant(tx, ty), 0);
+        if (sprite) blit(sprite, tx * TILE + sprite.size / 2, ty * TILE + sprite.size);
+        else {
+          ctx.fillStyle = ORE_COLORS[kind];
+          ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+        }
+      }
+    }
+    return;
+  }
+
   for (let ty = Math.max(0, first.ty); ty <= last.ty; ty++) {
     let runKind: OreKind | null = null;
     let runStart = 0;
@@ -234,6 +295,77 @@ function drawOre(
 // Put a baked sprite on the floor at a world point. Closed over the camera and the DPR by
 // `drawWorld`, so the painters below never have to think about either.
 type Blit = (sprite: BakedSprite, footX: number, footY: number) => void;
+
+const ORE_SPRITES: Record<OreKind, SpriteName> = {
+  metal: "ore-metal",
+  power: "ore-power",
+};
+
+// Which variant of a scattered floor sprite a tile gets. Pure arithmetic on the tile coordinate,
+// so every client derives the same field with nothing on the wire — the same derive-don't-stream
+// idiom the ore grid itself uses. The cache wraps whatever comes out into the sprite's range, so
+// this never has to know how many variants an agent drew.
+function tileVariant(tx: number, ty: number): number {
+  const mixed = Math.imul((tx * 73_856_093) ^ (ty * 19_349_663), 0x45d9f3b);
+  return (mixed ^ (mixed >>> 15)) >>> 0;
+}
+
+function centreOf(tile: Tile, side: number): [x: number, y: number] {
+  return [tile.tx * TILE + side / 2, tile.ty * TILE + side / 2];
+}
+
+// Tile the room's perimeter into the sorted pass, one segment per box along each visible edge,
+// and return whether it drew anything. Only the span the camera can see is walked, so a 31,200²
+// arena costs exactly what an 800 px one does.
+//
+// The door is not a separate sprite: it is the variant the wall run switches to where it crosses
+// the exit, which is what makes it a door *set into* the wall rather than a gap in it (#76 §3).
+function pushRoom(
+  world: WorldSnapshot,
+  camera: Camera,
+  viewport: Viewport,
+  sprites: SpriteSource | undefined,
+  blit: Blit,
+  standing: Standing[],
+): boolean {
+  const wall = sprites?.("room", ROOM_NORTH, 0);
+  if (!sprites || !wall) return false;
+  const source = sprites;
+  const band = wall.size;
+  const { width, height } = world.arena;
+  const { exit } = world;
+  const left = Math.max(0, camera.x);
+  const right = Math.min(width, camera.x + viewport.width);
+  const top = Math.max(0, camera.y);
+  const bottom = Math.min(height, camera.y + viewport.height);
+
+  const segment = (facing: number, x: number, y: number): void => {
+    // A segment straddling the exit is the door instead. Both are the same size, so the run stays
+    // on its grid either way.
+    const door =
+      x < exit.x + exit.width && x + band > exit.x && y < exit.y + exit.height && y + band > exit.y;
+    const sprite = source("room", door ? ROOM_DOOR : facing, 0);
+    if (sprite) blit(sprite, x + band / 2, y + band);
+  };
+  const across = (facing: number, y: number): void => {
+    for (let x = Math.floor(left / band) * band; x < right; x += band) {
+      const at = x;
+      standing.push({ y: y + band, paint: () => segment(facing, at, y) });
+    }
+  };
+  const down = (facing: number, x: number): void => {
+    for (let y = Math.floor(top / band) * band; y < bottom; y += band) {
+      const at = y;
+      standing.push({ y: at + band, paint: () => segment(facing, x, at) });
+    }
+  };
+
+  if (camera.y < band) across(ROOM_NORTH, 0);
+  if (camera.y + viewport.height > height - band) across(ROOM_SOUTH, height - band);
+  if (camera.x < band) down(ROOM_WEST, 0);
+  if (camera.x + viewport.width > width - band) down(ROOM_EAST, width - band);
+  return true;
+}
 
 function paintNest(
   ctx: CanvasRenderingContext2D,
@@ -279,7 +411,7 @@ function paintEnemy(
   sprites: SpriteSource | undefined,
   blit: Blit,
 ): void {
-  const sprite = sprites?.(enemy.kind, FACING_PENDING, FRAME_PENDING);
+  const sprite = sprites?.(enemy.kind, enemy.facing, enemy.frame);
   if (sprite) {
     blit(sprite, enemy.pos.x, enemy.pos.y);
     return;
@@ -294,19 +426,26 @@ function paintAvatar(
   isSelf: boolean,
   sprites: SpriteSource | undefined,
   blit: Blit,
+  blitOver: Blit,
 ): void {
   const dead = avatar.hp <= 0;
   ctx.globalAlpha = dead ? CORPSE_ALPHA : 1; // a downed player reads as a faded corpse
-  const sprite = sprites?.("player", FACING_PENDING, FRAME_PENDING);
+  const sprite = sprites?.("player", avatar.facing, avatar.frame);
+  // Where the body actually is. A foot-anchored sprite stands *above* its position, so anything
+  // that marks the avatar has to aim here and not at `pos`, which is now the ground under it.
+  const bodyY = avatar.pos.y - (sprite ? sprite.size / 2 : 0);
+  const halo = isSelf && !dead ? sprites?.("halo", 0, 0) : null;
+  // Behind the avatar, so a glow reads as a glow around it rather than a veil over its face.
+  if (halo) blitOver(halo, avatar.pos.x, bodyY);
   if (sprite) blit(sprite, avatar.pos.x, avatar.pos.y);
   else {
     ctx.fillStyle = SLOT_COLORS[(avatar.slot - 1) % SLOT_COLORS.length];
     fillCircle(ctx, avatar.pos.x, avatar.pos.y, avatar.radius);
   }
-  if (isSelf && !dead) {
+  if (isSelf && !dead && !halo) {
     ctx.strokeStyle = SELF_RING;
     ctx.lineWidth = 2.5;
-    strokeCircle(ctx, avatar.pos.x, avatar.pos.y, avatar.radius + 3);
+    strokeCircle(ctx, avatar.pos.x, bodyY, avatar.radius + 3);
   }
   // The label rides above whatever was actually drawn, which a foot-anchored sprite makes taller
   // than the circle it replaced.

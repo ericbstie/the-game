@@ -94,6 +94,25 @@ describe("createSpriteCache", () => {
     expect(cache.source(3)("elite", 0, 0)?.size).toBe(48);
   });
 
+  // The bake is a whole number of device pixels because a canvas cannot be 22.5 px wide. If the
+  // blit went into the nominal box instead, its destination would be half a device pixel off its
+  // source, and with smoothing off that is a nearest-neighbour resample of every edge — measured
+  // at 45 grey pixels on a pure axis-aligned fill that comes out at 0 when the ratio divides.
+  // 1.25 and 1.5 are ordinary Windows display scaling, not exotic.
+  test("reports a box that is a whole number of device pixels, even when the ratio does not divide", () => {
+    for (const [dpr, size, expected] of [
+      [1.5, 15, 23], // an ore tile: 22.5 rounds up
+      [1.25, 15, 19],
+      [1.25, 30, 38], // a 2×2 building
+      [1.5, 75, 113], // the generator
+      [1.5, 28, 42], // a character, which divides exactly at every ratio
+    ] as const) {
+      const cache = createSpriteCache({ player: subject("player", size) }, counting().bake);
+      const drawn = cache.source(dpr)("player", 0, 0)?.size ?? 0;
+      expect({ dpr, size, device: drawn * dpr }).toEqual({ dpr, size, device: expected });
+    }
+  });
+
   test("wraps facing and frame, so an unbounded walk counter never indexes off the sheet", () => {
     const cache = createSpriteCache({ player: subject("player", 28) }, counting().bake);
     const sprites = cache.source(1);
