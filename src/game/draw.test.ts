@@ -4,27 +4,42 @@ import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
 import { tileKey } from "./build";
 import type { Camera, Viewport } from "./camera";
-import { drawWorld, grassAt } from "./draw";
+import { drawWorld, grassAt, type ShotSource } from "./draw";
 
 // happy-dom returns null from getContext('2d'), so the draw path is exercised against a
 // spy that records the calls and lets any property be assigned.
+// The drawing state a call went out under is recorded with it, because from M5 on that state *is*
+// the message for two of the things drawn here: the ghost says "you cannot place this" in opacity
+// alone, and the health bar's two fills differ only in colour and extent.
 interface Call {
   fn: string;
   args: unknown[];
+  alpha: number;
+  fill: unknown;
+  stroke: unknown;
 }
 function spyCtx() {
   const calls: Call[] = [];
+  let ctx: Record<string, unknown>;
   const record =
     (fn: string) =>
     (...args: unknown[]) => {
-      calls.push({ fn, args });
+      calls.push({
+        fn,
+        args,
+        alpha: (ctx.globalAlpha as number | undefined) ?? 1,
+        fill: ctx.fillStyle,
+        stroke: ctx.strokeStyle,
+      });
     };
-  const ctx = {
+  ctx = {
     calls,
     clearRect: record("clearRect"),
     fillRect: record("fillRect"),
     strokeRect: record("strokeRect"),
     beginPath: record("beginPath"),
+    moveTo: record("moveTo"),
+    lineTo: record("lineTo"),
     arc: record("arc"),
     fill: record("fill"),
     stroke: record("stroke"),
@@ -33,6 +48,18 @@ function spyCtx() {
   };
   return ctx as unknown as CanvasRenderingContext2D & { calls: Call[] };
 }
+
+// Where a stroked line went, in world coordinates. `moveTo`/`lineTo` are recorded like everything
+// else, so a shot line reads off the log as the pair of points it was drawn from.
+const lines = (ctx: { calls: Call[] }) => {
+  const drawn: { from: [number, number]; to: [number, number] }[] = [];
+  let from: [number, number] | null = null;
+  for (const c of ctx.calls) {
+    if (c.fn === "moveTo") from = c.args as [number, number];
+    else if (c.fn === "lineTo" && from) drawn.push({ from, to: c.args as [number, number] });
+  }
+  return drawn;
+};
 
 // A sprite source standing in for baked art: every requested name resolves, and each image is
 // tagged so a call log says *which* sprite was blitted and in what order. Sprites the game has
@@ -92,12 +119,15 @@ describe("drawWorld", () => {
     ).toBe(true);
   });
 
-  test("draws the exit rectangle in world coordinates", () => {
+  // The exit had a flat `#39d353` rectangle here through M4. #76 grants exactly two colours and
+  // neither is that one, and the `room` sprite now draws the door as the variant its wall run
+  // switches to where it crosses the exit — so the rectangle went, rather than being restyled.
+  test("no longer paints a fallback rectangle over the exit", () => {
     const ctx = spyCtx();
     drawWorld(ctx, world, { camera, viewport });
     expect(
       ctx.calls.some((c) => c.fn === "fillRect" && c.args[0] === 0 && c.args[1] === 1100),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("culls entities outside the viewport", () => {
@@ -137,18 +167,52 @@ describe("drawWorld", () => {
     expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(4);
   });
 
-  test("a downed (0 HP) self avatar still draws but drops its self-ring (corpse)", () => {
+  // M2 faded a downed player to a 0.35-alpha corpse. #81 replaced that outright: the character
+  // vanishes instantly, and what marks the death is the screen darkening below.
+  test("a dead player vanishes — no body, no name, no marker", () => {
     const ctx = spyCtx();
-    const withCorpse: WorldSnapshot = {
+    const downed: WorldSnapshot = {
       ...world,
       players: [
         { ...POSE, id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 0 },
       ],
       nests: [],
     };
-    drawWorld(ctx, withCorpse, { selfId: "p1", camera, viewport });
-    expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(1); // the corpse circle is drawn
-    expect(ctx.calls.filter((c) => c.fn === "stroke").length).toBe(0); // but no self-ring stroke()
+    drawWorld(ctx, downed, { selfId: "p1", camera, viewport });
+    expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(0);
+    expect(ctx.calls.filter((c) => c.fn === "fillText").length).toBe(0);
+  });
+
+  test("darkens only the dying player's own screen, and only while they are down", () => {
+    const dim = (selfId: string, hp: number) => {
+      const ctx = spyCtx();
+      drawWorld(
+        ctx,
+        {
+          ...world,
+          players: [
+            { ...POSE, id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp },
+            {
+              ...POSE,
+              id: "p2",
+              slot: 2,
+              name: "Ben",
+              pos: { x: 1200, y: 1150 },
+              radius: 14,
+              hp: 100,
+            },
+          ],
+          nests: [],
+        },
+        { selfId, camera, viewport },
+      );
+      // The viewport-sized fill the paper always lays down is one; a second is the darkening.
+      return ctx.calls.filter((c) => c.fn === "fillRect" && c.args[2] === 800 && c.args[3] === 600)
+        .length;
+    };
+    expect(dim("p1", 0)).toBe(2); // Ana is down and this is Ana's screen
+    expect(dim("p2", 0)).toBe(1); // Ben sees Ana gone and nothing else
+    expect(dim("p1", 100)).toBe(1);
   });
 
   test("draws a silenced (dead) nest in its dimmed colour", () => {
@@ -544,11 +608,10 @@ describe("drawWorld with sprites", () => {
     expect(blits(ctx).some((b) => b.tag === "room/4/0")).toBe(false); // never the edgeless door
   });
 
-  test("keeps the M2 outline and exit rect until the room sprite lands", () => {
+  test("keeps the M2 outline until the room sprite lands", () => {
     const ctx = spyCtx();
     drawWorld(ctx, standing, { camera, viewport, sprites: stubSprites(everything) });
     expect(ctx.calls.some((c) => c.fn === "strokeRect" && c.args[0] === 2)).toBe(true);
-    expect(ctx.calls.some((c) => c.fn === "fillRect" && c.args[1] === 1100)).toBe(true);
   });
 
   test("keeps drawing a sprite whose feet have left the viewport but whose body has not", () => {
@@ -637,5 +700,294 @@ describe("the grass scatter", () => {
     );
     // Several distinct variants, or the field is one drawing repeated.
     expect(new Set(grass.map((b) => b.tag)).size).toBeGreaterThan(1);
+  });
+});
+
+// The damage readout, and the only one there is: #81 gives it to enemies, peers and structures
+// alike, withholds it from anything at full health, and refuses structures any damage state of
+// their own — so a bar that fails to appear is the whole feedback loop failing to appear.
+describe("health bars", () => {
+  // Two axis-aligned fills per bar: the ink frame, four px tall, and the paper knocked back out of
+  // its two-px interior. Nothing else in the frame fills a rect that short, so the height alone
+  // identifies each, and counting the frames counts the bars.
+  const bars = (ctx: { calls: Call[] }) =>
+    ctx.calls.filter((c) => c.fn === "fillRect" && c.args[3] === 4);
+  const knockouts = (ctx: { calls: Call[] }) =>
+    ctx.calls.filter((c) => c.fn === "fillRect" && c.args[3] === 2);
+  const bare = { ...world, players: [], enemies: [], nests: [], structures: [] };
+  const ana = { ...POSE, id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14 };
+  const drawn = (patch: Partial<WorldSnapshot>) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, { ...bare, ...patch }, { camera, viewport });
+    return { frames: bars(ctx), interiors: knockouts(ctx) };
+  };
+
+  test("shows nothing at all while everything is at full health", () => {
+    expect(
+      drawn({
+        players: [{ ...ana, hp: 100 }],
+        enemies: [
+          { ...POSE, id: "e1", kind: "grunt", pos: { x: 1150, y: 1150 }, radius: 16, hp: 30 },
+        ],
+        structures: [{ id: "b1", kind: "wall", tile: { tx: 74, ty: 74 }, hp: 400 }],
+      }).frames,
+    ).toEqual([]);
+  });
+
+  test("shows one on an enemy, a peer and a structure the moment each is damaged", () => {
+    expect(
+      drawn({
+        enemies: [
+          { ...POSE, id: "e1", kind: "grunt", pos: { x: 1150, y: 1150 }, radius: 16, hp: 29 },
+        ],
+      }).frames.length,
+    ).toBe(1);
+    expect(drawn({ players: [{ ...ana, hp: 99 }] }).frames.length).toBe(1);
+    expect(
+      drawn({ structures: [{ id: "b1", kind: "wall", tile: { tx: 74, ty: 74 }, hp: 399 }] }).frames
+        .length,
+    ).toBe(1);
+  });
+
+  // The elite's 120 HP is full for nothing in the set — 60% of an elite, four times a grunt's whole
+  // health — so a bar read off one shared maximum would be wrong for one kind or for both.
+  test("judges 'full' per enemy kind, not against a shared number", () => {
+    const at = (kind: "grunt" | "elite", hp: number, radius: number) =>
+      drawn({ enemies: [{ ...POSE, id: "e1", kind, pos: { x: 1150, y: 1150 }, radius, hp }] })
+        .frames.length;
+    expect(at("grunt", 30, 16)).toBe(0);
+    expect(at("elite", 30, 24)).toBe(1); // the same number, and a badly wounded elite
+    expect(at("elite", 200, 24)).toBe(0);
+  });
+
+  test("spends the bar's length on what is left, inside an ink frame that never shrinks", () => {
+    const { frames, interiors } = drawn({
+      enemies: [
+        { ...POSE, id: "e1", kind: "grunt", pos: { x: 1150, y: 1150 }, radius: 16, hp: 15 },
+      ],
+    });
+    const [frame] = frames;
+    const [lost] = interiors;
+    expect(frame.args[2]).toBe(32); // the grunt's own width
+    expect(lost.args[2]).toBe(15); // half of the 30 interior px
+    expect(frame.fill).not.toBe(lost.fill); // ink under paper, so the frame survives any health
+    expect(frame.args[1]).toBe(1150 - 16 - 3 - 4); // clear of the top of the drawing
+    expect(lost.args[1]).toBe((frame.args[1] as number) + 1);
+  });
+});
+
+// #81 makes a refused placement a matter of opacity and nothing else — no second colour, no cross,
+// no outline. The ghost through M4 was a green or red 0.45-alpha rectangle, which said the same
+// thing three ways and in two colours #76 never granted.
+describe("the build ghost", () => {
+  const ghosting = (valid: boolean) => {
+    const ctx = spyCtx();
+    drawWorld(
+      ctx,
+      { ...world, players: [], nests: [], structures: [] },
+      {
+        camera,
+        viewport,
+        sprites: stubSprites({ wall: 30 }),
+        ghost: { kind: "wall", tile: { tx: 74, ty: 74 }, valid },
+      },
+    );
+    return ctx.calls.filter((c) => c.fn === "drawImage");
+  };
+
+  test("draws the building itself, at full opacity where it can be placed", () => {
+    const [ghost] = ghosting(true);
+    expect((ghost.args[0] as { tag: string }).tag).toBe("wall/0/0");
+    expect(ghost.alpha).toBe(1);
+  });
+
+  test("fades it, and only fades it, where it cannot", () => {
+    const [ghost] = ghosting(false);
+    expect((ghost.args[0] as { tag: string }).tag).toBe("wall/0/0");
+    expect(ghost.alpha).toBeGreaterThan(0);
+    expect(ghost.alpha).toBeLessThan(1);
+  });
+
+  test("says nothing about validity beyond that", () => {
+    const shape = (valid: boolean) => ghosting(valid).map((c) => [c.args.slice(1), c.fill]);
+    expect(shape(true)).toEqual(shape(false));
+  });
+});
+
+// One continuous ink line from a shooter to what it hit, for your own shots, your squadmates' and
+// your turrets' alike (#81). Two constraints shape every test here: the line may never depict
+// damage the server did not apply (#74 §7), and it is the most expensive thing in the frame per
+// unit, so its 100 ms lifetime is enforced rather than assumed.
+describe("shot lines", () => {
+  const shooter = {
+    ...POSE,
+    id: "p1",
+    slot: 1,
+    name: "Ana",
+    pos: { x: 1100, y: 1100 },
+    radius: 14,
+    hp: 100,
+  };
+  const grunt = {
+    ...POSE,
+    id: "e1",
+    kind: "grunt" as const,
+    pos: { x: 1300, y: 1200 },
+    radius: 16,
+  };
+  const field: WorldSnapshot = {
+    ...world,
+    players: [shooter],
+    enemies: [{ ...grunt, hp: 30 }],
+    nests: [],
+    structures: [],
+  };
+  const live = (id: string) => (id === "e1" ? grunt.pos : null);
+  const fire = (patch: Partial<WorldSnapshot>, shots: ShotSource, now = 1000) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, { ...field, ...patch }, { camera, viewport, now, shots });
+    return lines(ctx);
+  };
+  const none = { peers: [], own: null, resolve: live };
+
+  test("draws your own shot where you fired it, without waiting for the relay", () => {
+    const drawn = fire({}, { ...none, own: { at: 960, from: shooter.pos, dir: { x: 1, y: 0 } } });
+    expect(drawn.length).toBe(1);
+    expect(drawn[0].from).toEqual([1100, 1100]);
+    expect(drawn[0].to[0]).toBeGreaterThan(1100); // out along the aim, to the weapon's full reach
+    expect(drawn[0].to[1]).toBe(1100);
+  });
+
+  test("retires a line after its 100 ms, whoever fired it", () => {
+    const own = { at: 900, from: shooter.pos, dir: { x: 1, y: 0 } };
+    expect(fire({}, { ...none, own }, 999).length).toBe(1);
+    expect(fire({}, { ...none, own }, 1000).length).toBe(0);
+    const peer = { shot: { id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }, at: 900 };
+    expect(fire({}, { ...none, peers: [peer] }, 999).length).toBe(1);
+    expect(fire({}, { ...none, peers: [peer] }, 1000).length).toBe(0);
+  });
+
+  test("ends a squadmate's shot on what the server says it hit", () => {
+    const drawn = fire(
+      {},
+      { ...none, peers: [{ shot: { id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }, at: 1000 }] },
+    );
+    expect(drawn).toEqual([{ from: [1100, 1100], to: [1300, 1200] }]);
+  });
+
+  // The authority invariant. A target id outlives its target by one tick in two places — a turret
+  // still names the enemy it just killed until it re-targets, and a killing shot rides the same
+  // delta as the death it caused — so a line drawn on an unresolvable id would be damage nobody
+  // applied. `shotTargetPos` answers null for both, and that is where the line stops.
+  test("draws nothing at all when the target no longer resolves", () => {
+    const gone = { ...none, resolve: () => null };
+    expect(
+      fire(
+        {},
+        { ...gone, peers: [{ shot: { id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }, at: 1000 }] },
+      ),
+    ).toEqual([]);
+    expect(
+      fire(
+        {
+          structures: [
+            {
+              id: "b1",
+              kind: "turret",
+              tile: { tx: 74, ty: 74 },
+              hp: 250,
+              turret: { powered: true, targetId: "e1" },
+            },
+          ],
+        },
+        gone,
+      ),
+    ).toEqual([]);
+  });
+
+  // A hitscan ray at 24 half-width over 700 units misses often, and a squadmate firing into empty
+  // air with no line looks broken (#74 §6). A miss names no target, so there is nothing to falsify.
+  test("still draws a shot that hit nothing, out to full range", () => {
+    const drawn = fire(
+      {},
+      { ...none, peers: [{ shot: { id: "p1", dir: { x: 0, y: 1 } }, at: 1000 }] },
+    );
+    expect(drawn.length).toBe(1);
+    expect(drawn[0].to[1]).toBeGreaterThan(1100);
+  });
+
+  test("ignores a shot from a peer who is no longer in the world", () => {
+    expect(
+      fire(
+        {},
+        { ...none, peers: [{ shot: { id: "p9", dir: { x: 1, y: 0 }, hit: "e1" }, at: 1000 }] },
+      ),
+    ).toEqual([]);
+  });
+
+  // No per-shot event arrives for a turret — only its `(target, powered)` transition does — so the
+  // client generates the pulse train itself: one pulse per 200 ms cadence, each lasting 100 ms.
+  describe("a turret's generated pulse train", () => {
+    const turreted = (turret: { powered: boolean; targetId: string | null }) => ({
+      structures: [
+        { id: "b1", kind: "turret" as const, tile: { tx: 74, ty: 74 }, hp: 250, turret },
+      ],
+    });
+
+    test("pulses for half of each cadence, so it reads as shots and not as a beam", () => {
+      const engaged = turreted({ powered: true, targetId: "e1" });
+      expect(fire(engaged, none, 1000).length).toBe(1);
+      expect(fire(engaged, none, 1099).length).toBe(1);
+      expect(fire(engaged, none, 1100).length).toBe(0);
+      expect(fire(engaged, none, 1200).length).toBe(1);
+    });
+
+    test("fires from the middle of the turret's own footprint", () => {
+      expect(fire(turreted({ powered: true, targetId: "e1" }), none, 1000)).toEqual([
+        { from: [1125, 1125], to: [1300, 1200] },
+      ]);
+    });
+
+    test("draws nothing for a turret with no target or no power", () => {
+      expect(fire(turreted({ powered: true, targetId: null }), none, 1000)).toEqual([]);
+      expect(fire(turreted({ powered: false, targetId: "e1" }), none, 1000)).toEqual([]);
+    });
+  });
+
+  test("costs nothing when the render layer has no shots to draw", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, field, { camera, viewport, now: 1000 });
+    expect(lines(ctx)).toEqual([]);
+  });
+
+  // A line can be long enough to cross the whole viewport, so it is culled on the box it spans and
+  // not on either end: a turret off one edge firing at a nest off the other still crosses the middle
+  // of the screen. Only a shot with nothing of it on screen is skipped.
+  test("culls a shot the camera cannot see any part of", () => {
+    const far = {
+      ...POSE,
+      id: "p2",
+      slot: 2,
+      name: "Ben",
+      pos: { x: 9000, y: 9000 },
+      radius: 14,
+      hp: 100,
+    };
+    expect(
+      fire(
+        { players: [far] },
+        {
+          ...none,
+          peers: [{ shot: { id: "p2", dir: { x: 1, y: 0 }, hit: "e2" }, at: 1000 }],
+          resolve: () => ({ x: 9500, y: 9000 }),
+        },
+      ),
+    ).toEqual([]);
+    expect(
+      fire(
+        { players: [far] },
+        { ...none, peers: [{ shot: { id: "p2", dir: { x: -1, y: 0 }, hit: "e1" }, at: 1000 }] },
+      ).length,
+    ).toBe(1);
   });
 });

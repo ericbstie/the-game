@@ -1,21 +1,27 @@
 # The frame budget
 
-What one frame of the game is allowed to cost, and what it costs today. Measured in
+What one frame of the game is allowed to cost, and what it costs today. First measured in
 [#72](https://github.com/ericbstie/the-game/issues/72) on a real canvas; re-measurable at any time
 with `bun run frame:budget`.
 
-The budget exists because the rest of Milestone 5 draws into this frame — health bars, the shot
-lines of [#74](https://github.com/ericbstie/the-game/issues/74), the restyled HUD — and each of
-those tickets is written by an agent who cannot see what the others are spending.
+The budget exists because Milestone 5 draws into this frame from several tickets at once, each
+written by an agent who cannot see what the others are spending. The health bars and the shot lines
+of [#74](https://github.com/ericbstie/the-game/issues/74) have landed and are measured below; the
+restyled HUD has not, and is the last thing still owed a number.
 
 ## The number
 
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
-5.4 ms — 32% of it.**
+6.2 ms — 37% of it, leaving 10.5 ms of headroom.**
 
 The worst case is not hypothetical: 240 enemies (`ENEMY_CAP`, the hard governor), 40 structures,
 6 players and 4 nests, *all inside the viewport so nothing is culled*, over the full grass-and-ore
-floor, everything standing passing through the Y-sort. 290 sorted entities, 840 blits.
+floor, everything standing passing through the Y-sort — and every one of them damaged, so every one
+of them carries a bar. 290 sorted entities, 845 blits, 286 health bars, 50 shot lines.
+
+The in-world render layer is now complete, so this is measured **through the shipped `drawWorld`**
+rather than reserved beside it. The health bars and shot lines below are no longer allowances: they
+are in the frame, drawn by the code the game runs.
 
 ## Measured under
 
@@ -33,43 +39,40 @@ floor, everything standing passing through the Y-sort. 290 sorted entities, 840 
 
 | Layer | ms | What it is |
 | --- | ---: | --- |
-| Paper | 1.6 | `clearRect` + the white `fillRect`, over 1.92 M device pixels, twice |
-| Grass | 0.8 | ~200 tuft blits, one per 12 tiles |
-| Ore | 1.4 | ~330 ore tiles, two patches on screen |
-| Everything standing | 2.3 | 290 entities: sort, cull, and 500 sprite blits |
-| **Total** | **5.4** | **32% of a 16.67 ms frame** |
+| Paper | 1.9 | `clearRect` + the white `fillRect`, over 1.92 M device pixels, twice |
+| Grass and ore | 0.8 | ~200 tuft blits at one per 12 tiles, and ~330 ore tiles |
+| Everything standing | 2.2 | 290 entities: sort, cull, ~500 sprite blits and 286 health bars |
+| Shot lines | 1.3 | 50 concurrent — 5 generated turret pulses, 45 relayed squadmate shots |
+| **Total** | **6.2** | **37% of a 16.67 ms frame** |
 
-The **Y-sort itself is not a cost**: 61 µs at 290 entities, 0.4% of the frame. [#71](https://github.com/ericbstie/the-game/issues/71)
+The **Y-sort itself is not a cost**: 35 µs at 290 entities, 0.2% of the frame. [#71](https://github.com/ericbstie/the-game/issues/71)
 measured the same sort at 36.6 µs for 250. Sorting is free; painting is not.
 
-## Reserved for work not yet built
+**The health bars are close to free.** Adding 286 of them moved the standing layer by roughly a
+tenth of a millisecond, because each is two axis-aligned fills on integer edges and those carry no
+anti-aliasing at all.
 
-Measured as standalone allowances so the tickets that own them can be priced before they are
-written.
-
-| Item | ms | Note |
-| --- | ---: | --- |
-| Health bars, 240 damaged entities | 0.4 | Two axis-aligned fills each. Cheap — axis-aligned integer-edge fills carry no anti-aliasing at all. |
-| Shot lines, 25 concurrent | 1.0 | |
-| Shot lines, 50 concurrent | 1.8 | |
-| Shot lines, 150 concurrent | 5.7 | A whole second of a defended base's fire at once. |
-
-**Projected Milestone 5 worst case — the frame, plus 240 health bars, plus 50 concurrent shot
-lines — is 7.6 ms, 45% of the frame, leaving 9.1 ms of headroom.**
+**The shot lines are not.** Fifty cost 1.3 ms — a fifth of the whole frame for fifty marks — which
+is what "the most expensive thing in the frame per unit" means in practice. A standalone stroke of
+150 lines measures 4.2 ms on its own. That ratio is why the 100 ms lifetime in `draw.ts`
+(`SHOT_LINE_MS`) is a budget and not a look: at 150 shot events a second it is what holds the
+concurrent count near 50 instead of near 150.
 
 ## The rules
 
-1. **Shot lines are the most expensive thing in the frame, per unit.** ~34 µs each — one costs
-   what sixteen sprite blits cost, because a stroked line across the viewport covers far more
-   pixels than a 32 px sprite. #74 should therefore price its **lifetime**, not just its wire
-   shape: at 150 shot events a second, a 1-frame line means ~3 on screen and a 1-second line means
-   ~150, which is the difference between 0.1 ms and 5.7 ms. **Budget 50 concurrent.** Above ~150 the
-   frame stops being comfortable.
+1. **Shot lines are the most expensive thing in the frame, per unit.** ~26 µs each — one costs
+   what a dozen sprite blits cost, because a stroked line across the viewport covers far more
+   pixels than a 32 px sprite. The **lifetime** is therefore the control, not the wire shape: at
+   150 shot events a second, a 1-frame line means ~3 on screen and a 1-second line means ~150,
+   which is the difference between 0.1 ms and 4.2 ms. **`SHOT_LINE_MS` is 100 and the budget is 50
+   concurrent.** Above ~150 the frame stops being comfortable.
 2. **Nothing new gets a full-viewport pass.** The paper fill is already the single most expensive
-   item at 1.6 ms, because it touches every pixel. A second full-screen pass — a vignette, a tint,
+   item at 1.9 ms, because it touches every pixel. A second full-screen pass — a vignette, a tint,
    a darkening overlay for the downed player — costs about the same again. The downed-player
-   darkening (#81) is the one such effect the spec asks for; it is affordable precisely because
-   only the dying player's own client draws it, and only while they are down.
+   darkening (#81) is the one such effect the spec asks for, and it is drawn; it is affordable
+   precisely because only the dying player's own client draws it, and only while they are down.
+   That also means the worst case above is **not** the worst case for a player who is dead — add
+   about a paper fill to it, and they are looking at a screen with nothing happening on it.
 3. **Cost stays independent of world size.** Every floor pass is bounded to visible tiles, and
    everything else is culled by the camera. A 31,200² arena costs what an 800 px one does. Anything
    added to the floor keeps that property.

@@ -15,6 +15,7 @@ import player from "./player";
 import room from "./room";
 import type { SpriteSubject } from "./sheet";
 import turret from "./turret";
+import unpowered from "./unpowered";
 import wall from "./wall";
 
 // Every sprite the game draws, and the module that draws it.
@@ -89,6 +90,7 @@ export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
   player,
   room,
   turret,
+  unpowered,
   wall,
 };
 

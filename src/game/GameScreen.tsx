@@ -14,7 +14,7 @@ import {
 } from "./build";
 import { type Camera, computeCamera } from "./camera";
 import { RESPAWN_DELAY_MS } from "./clientWorld";
-import { type BuildGhost, drawWorld } from "./draw";
+import { type BuildGhost, drawWorld, type OwnShot, SHOT_LINE_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { aimDir, keyToBuildSlot, keyToDirection, movesEqual, NO_MOVE } from "./input";
 import { PLAYER_MAX_HP } from "./world";
@@ -77,6 +77,9 @@ export function GameScreen({
   // negative jitter and be refused. Widening the gate here would cut the sustained rate of fire,
   // and M5 (#81) permits no balance change. The boundary case is accepted.
   const lastAttackRef = useRef(Number.NEGATIVE_INFINITY);
+  // Your own last shot, kept so its line can be drawn from here rather than from the relay the
+  // server sends back to the whole squad. `drawWorld` ages it; nothing has to clear it.
+  const ownShotRef = useRef<OwnShot | null>(null);
   const [selected, setSelected] = useState<BuildableKind | null>(null);
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
@@ -158,12 +161,16 @@ export function GameScreen({
       if (canvas && world) {
         const dpr = window.devicePixelRatio || 1;
         if (dpr !== viewRef.current.dpr) resizeForDpr(canvas, viewRef, dpr);
-        if (!world.isDead()) world.stepSelf(dt, heldRef.current, Date.now()); // a corpse holds still
-        world.updateHealth(Date.now()); // judge contact damage at the owner's true position
+        // One clock for the whole frame. `snapshot` advances each entity's gait on the `now` it is
+        // given, and the shot lines resolve their targets against the same interpolation it renders
+        // on — reading the clock twice would split that step and land a line off its own sprite.
+        const clock = Date.now();
+        if (!world.isDead()) world.stepSelf(dt, heldRef.current, clock); // a downed player holds still
+        world.updateHealth(clock); // judge contact damage at the owner's true position
         const { w, h } = viewRef.current;
         const ctx = w > 0 && h > 0 ? canvas.getContext("2d") : null;
         if (ctx) {
-          const snapshot = world.snapshot(Date.now());
+          const snapshot = world.snapshot(clock);
           const self = selfPos(snapshot.players, selfIdRef.current) ?? center(world.arena);
           const viewport = { width: w, height: h };
           const camera = computeCamera(self, viewport, world.arena);
@@ -195,8 +202,14 @@ export function GameScreen({
             viewport,
             ghost,
             dpr,
-            now: Date.now(),
+            now: clock,
             sprites: spriteCache.source(dpr),
+            shots: {
+              // Aged to the line's own lifetime, never to the buffer's longer retention window.
+              peers: world.peerShots(clock, SHOT_LINE_MS),
+              own: ownShotRef.current,
+              resolve: (id) => world.shotTargetPos(id, clock),
+            },
           });
         }
       }
@@ -296,7 +309,9 @@ export function GameScreen({
         onBuildRef.current(kind, cursorTile(pointerRef.current, camera));
       } else if (now - lastAttackRef.current >= RANGED_CADENCE_MS) {
         lastAttackRef.current = now;
-        onAttackRef.current({ ...self }, aimDir(pointerRef.current, self, camera));
+        const dir = aimDir(pointerRef.current, self, camera);
+        ownShotRef.current = { at: now, from: { ...self }, dir };
+        onAttackRef.current({ ...self }, dir);
       }
     } else if (e.button === 2) {
       harvestingRef.current = Date.now(); // right-click harvests for as long as it is held

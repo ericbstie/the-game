@@ -7,12 +7,16 @@ import type {
   RenderedEnemy,
   RenderedNest,
   Tile,
+  Vec2,
   WorldSnapshot,
 } from "../lobby/protocol";
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
-import { BUILDABLES, footprintCenter, oreAt, TILE, tileOf } from "./build";
+import { BUILDABLES, footprintCenter, oreAt, TILE, TURRET_CADENCE_MS, tileOf } from "./build";
 import { type Camera, isVisible, type Viewport } from "./camera";
+import type { ShotEvent } from "./clientWorld";
+import { ELITE_HP, GRUNT_HP, RANGED_RANGE } from "./enemies";
+import { PLAYER_MAX_HP } from "./world";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
 // caller pre-translates the context to the camera (so 1 world unit = 1 CSS px), so this
@@ -33,9 +37,53 @@ import { type Camera, isVisible, type Viewport } from "./camera";
 // Sprites arrive one at a time, one agent each (ADR 0002). A sprite the registry has no module
 // for yet resolves to null and that entity keeps the shape it has drawn since M2, so the game
 // stays playable and this file's older tests stay honest throughout.
+//
+// Beyond the art, M5 gives this file everything #81 says the world itself tells the player, and
+// nothing else — no wave warning, no structure damage state, no hit or death effect:
+//
+// - **A health bar on anything damaged**, and on nothing at full health. It is the *only* damage
+//   readout, because a structure deliberately does not change appearance as it is worn down.
+// - **A shot line**, for your own shots, your squadmates' and your turrets' alike. It is the most
+//   expensive thing in the frame per unit, so its 100 ms lifetime is a budget and not a look.
+// - **Death by vanishing** — no corpse — plus a screen darkening drawn only on the dying player's
+//   own client, for as long as they are down.
+
+// How long one shot's line stays on screen, client-side. No duration ever rides the wire and the
+// server holds no line state (#74 §5). Half `TURRET_CADENCE_MS`, so a turret's pulse train reads as
+// discrete shots rather than as a continuous beam, and ~6 frames at 60 Hz, so one shot is visible.
+//
+// It is also the whole cost control. A stroked line across the viewport is the most expensive thing
+// in the frame per unit — ~34 µs, sixteen sprite blits — because it covers far more pixels than a
+// 32 px sprite. At 150 shot events a second a 1-second lifetime would put ~150 lines on screen for
+// 5.7 ms; 100 ms holds it near the budgeted 50 (`docs/frame-budget.md`).
+export const SHOT_LINE_MS = 100;
+
+// The owner's own shot, recorded where it is fired rather than round-tripped: the server relays it
+// to the squad, but drawing the relay would put a second line up a tick late and from the position
+// the shooter had then. `from` is the origin the attack was actually sent with.
+export interface OwnShot {
+  at: number;
+  from: Vec2;
+  dir: Vec2;
+}
+
+// Everything the render layer needs to put this frame's shot lines up, kept as one bag because a
+// line is meaningless without all three parts.
+//
+// `resolve` is the authority guard, and it is the reason the render layer cannot assemble these on
+// its own: a target id outlives its target by one tick in two places — a turret still names the
+// enemy it just killed until it re-targets, and a killing `PeerShot` rides the same delta as the
+// death it caused. `ClientWorld.shotTargetPos` answers null for both, which is what stops a line
+// depicting damage the server did not apply (#74 §7).
+export interface ShotSource {
+  peers: ShotEvent[]; // `ClientWorld.peerShots(now, SHOT_LINE_MS)` — already aged
+  own: OwnShot | null;
+  resolve: (targetId: string) => Vec2 | null;
+}
 
 // The tile-snapped preview under the cursor while a buildable is selected. `valid` drives the
-// colour, so the player learns a placement is refused before spending the click.
+// opacity — full when it can be placed, semi-transparent when it cannot (#81) — so the player
+// learns a placement is refused before spending the click.
 export interface BuildGhost {
   kind: BuildableKind;
   tile: Tile;
@@ -47,6 +95,8 @@ export interface DrawOptions {
   viewport: Viewport;
   selfId?: PlayerId; // ringed so you can find yourself
   ghost?: BuildGhost;
+  // This frame's shot lines. Absent — in a test, or before the first shot — nothing is drawn.
+  shots?: ShotSource;
   // Baked art, or nothing. Absent — in a test, or before the first sprite lands — every entity
   // falls back to its shape, which is what keeps this one draw path the only one.
   sprites?: SpriteSource;
@@ -95,18 +145,42 @@ const SLOT_COLORS = ["#4f8cff", "#ff5d5d", "#40c463", "#f2c14e", "#c77dff", "#4d
 // paper is a colour and #76 grants exactly two of those, neither of them this.
 const PAPER = "#ffffff";
 const WALL = "#2a2a35";
-const EXIT = "#39d353";
 const NEST = "#8e44ad"; // spawner nests
 const NEST_DEAD = "#3a2d44"; // a silenced (destroyed) nest
-// Ink, matching what the sprite modules draw with, so a label or a ring reads as part of the same
-// drawing. Both were near-white when the floor was dark and would now be invisible on it.
-const LABEL = "#000";
-const SELF_RING = "#000";
-const CORPSE_ALPHA = 0.35; // a downed player fades to this
+// Ink, matching what the sprite modules draw with, so a label, a ring, a health bar or a shot line
+// reads as part of the same drawing. It was near-white when the floor was dark, and would now be
+// invisible on it.
+const INK = "#000";
 const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
+
+// A shot is one stroked line, and #81 asks for exactly that: continuous ink, shooter to target,
+// with no travelling projectile (#80 is out of scope). Two logical px so it survives being drawn
+// diagonally at dpr 1 without reading as a rule.
+const SHOT_WIDTH = 2;
+
+// The damage readout, and the only thing that carries it: structures deliberately do not change
+// appearance as they are damaged (#81). Four px tall, which is a one-px ink frame around two px of
+// signal — the frame is what keeps the bar legible over a sprite as well as over bare paper.
+const BAR_HEIGHT = 4;
+const BAR_GAP = 3; // clear paper between the top of the drawing and the bar above it
+
+// Your own screen while you are down. A second full-viewport pass costs about what the paper fill
+// does (~1.6 ms), which is affordable for exactly the reason `docs/frame-budget.md` rule 2 gives:
+// only the dying player's own client draws it, and only for the 20 s they are down.
+const DOWNED_DIM = "rgba(0, 0, 0, 0.55)";
+
+// What a placement that cannot be made looks like. #81 makes validity a matter of opacity alone —
+// full when it can be placed, semi-transparent when it cannot — so there is no second colour and no
+// refusal mark here; the ghost is simply the building you are about to place, faded.
+const GHOST_BLOCKED_ALPHA = 0.45;
 
 // One colour per enemy kind; the elite reads darker and, with its larger radius, distinct.
 const ENEMY_COLORS: Record<EnemyKind, string> = { grunt: "#e8643c", elite: "#a01f1f" };
+
+// What "full health" means for each kind, so a bar can be withheld from anything undamaged. Read
+// from the simulation rather than restated, or an HP rebalance would leave every enemy permanently
+// showing a bar that never fills.
+const ENEMY_MAX_HP: Record<EnemyKind, number> = { grunt: GRUNT_HP, elite: ELITE_HP };
 
 // Ore reads as ground texture, not as an entity: muted enough to sit under everything drawn on
 // top of it, distinct enough to spot a patch while running past.
@@ -121,9 +195,6 @@ const BUILD_COLORS: Record<BuildableKind, string> = {
   generator: "#3fbfa0",
 };
 const BUILD_EDGE = "#1a1a22";
-const GHOST_OK = "#39d353";
-const GHOST_BAD = "#ff5d5d";
-const GHOST_ALPHA = 0.45;
 
 export function drawWorld(
   ctx: CanvasRenderingContext2D,
@@ -183,13 +254,16 @@ export function drawWorld(
 
   // The room's walls stand up like everything else, so they join the sort rather than sitting
   // under it: the near wall has to paint in front of a player standing against it, and the far
-  // wall behind. Until the sprite lands, the perimeter is the M2 outline and the exit a flat rect.
+  // wall behind. Without the sprite the perimeter falls back to the M2 outline.
+  //
+  // The exit had a fallback rectangle of its own here and no longer does. It was `#39d353`, a
+  // colour #76 never granted, and the `room` sprite has landed — the door is now the variant the
+  // wall run switches to where it crosses the exit, so nothing the player can see reached the
+  // rectangle any more.
   if (!pushRoom(world, camera, viewport, sprites, blit, standing)) {
     ctx.strokeStyle = WALL;
     ctx.lineWidth = 4;
     ctx.strokeRect(2, 2, arena.width - 4, arena.height - 4);
-    ctx.fillStyle = EXIT;
-    ctx.fillRect(world.exit.x, world.exit.y, world.exit.width, world.exit.height);
   }
 
   for (const n of world.nests) {
@@ -211,6 +285,7 @@ export function drawWorld(
         const lightning = sprites?.("unpowered", 0, flash);
         if (lightning) blitOver(lightning, ...centreOf(s.tile, side));
       }
+      healthBar(ctx, s.tile.tx * TILE + side / 2, s.tile.ty * TILE, side, s.hp, spec.hp);
     };
     if (FLAT[s.kind]) paint();
     else standing.push({ y: (s.tile.ty + spec.footprint) * TILE, paint });
@@ -222,6 +297,9 @@ export function drawWorld(
   }
 
   for (const a of world.players) {
+    // A dead player vanishes instantly — no corpse (#81). What replaced the M2 fade is the screen
+    // darkening below, and it is the dying player's own view only: squadmates simply see you gone.
+    if (a.hp <= 0) continue;
     if (!isVisible(a.pos, a.radius * 2, camera, viewport, LABEL_PAD)) continue;
     standing.push({
       y: a.pos.y,
@@ -235,19 +313,122 @@ export function drawWorld(
   standing.sort((a, b) => a.y - b.y);
   for (const entry of standing) entry.paint();
 
-  // The ghost paints last so it reads on top of whatever it would replace.
+  // Over the sort, not in it: a shot is an event between two things rather than a thing standing on
+  // the floor, and a line half-hidden behind the spider it ends at says nothing.
+  drawShots(ctx, world, options);
+
+  // The ghost paints last so it reads on top of whatever it would replace, and it paints as the
+  // building itself — the same sprite, at the same tile — because #81 spends opacity on validity
+  // and leaves nothing to spend on a second silhouette.
   const ghost = options.ghost;
   const ghostSpec = ghost && BUILDABLES[ghost.kind];
   if (ghost && ghostSpec) {
-    const side = ghostSpec.footprint * TILE;
-    ctx.globalAlpha = GHOST_ALPHA;
-    ctx.fillStyle = ghost.valid ? GHOST_OK : GHOST_BAD;
-    ctx.fillRect(ghost.tile.tx * TILE, ghost.tile.ty * TILE, side, side);
+    ctx.globalAlpha = ghost.valid ? 1 : GHOST_BLOCKED_ALPHA;
+    paintStructure(ctx, ghost.kind, ghost.tile, ghostSpec.footprint * TILE, sprites, blit);
     ctx.globalAlpha = 1;
-    ctx.strokeStyle = ghost.valid ? GHOST_OK : GHOST_BAD;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(ghost.tile.tx * TILE, ghost.tile.ty * TILE, side, side);
   }
+
+  // Last of all, and only ever on the dying player's own screen.
+  const self = world.players.find((p) => p.id === options.selfId);
+  if (self && self.hp <= 0) {
+    ctx.fillStyle = DOWNED_DIM;
+    ctx.fillRect(camera.x, camera.y, viewport.width, viewport.height);
+  }
+}
+
+// The frame's shot lines: your own, your squadmates' and your turrets' (#81), all the same ink.
+//
+// Aged here rather than upstream. `ClientWorld` keeps shots for `SHOT_RETENTION_MS` (250) as a
+// memory bound, which is deliberately longer than any lifetime a caller might ask for; drawing
+// everything it holds would put two and a half times the budgeted lines on screen.
+//
+// Turret shots have no per-shot event to age, because none is sent: a turret's `(target, powered)`
+// pair is streamed as a transition, so the client generates the pulse train itself — one pulse
+// every `TURRET_CADENCE_MS` for as long as that state holds, each lasting `SHOT_LINE_MS` (#74 §5).
+// The generated phase can sit up to a cadence out of step with the server's real cooldown, which is
+// invisible at 200 ms and cannot misrepresent damage: the server is applying `TURRET_DAMAGE` on
+// exactly that cadence for as long as the state the pulse is derived from holds.
+function drawShots(
+  ctx: CanvasRenderingContext2D,
+  world: WorldSnapshot,
+  { shots, camera, viewport, now = 0 }: DrawOptions,
+): void {
+  if (!shots) return;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = SHOT_WIDTH;
+
+  const line = (from: Vec2, to: Vec2): void => {
+    // A line can be long enough to cross the whole viewport, so it is culled on the box it spans
+    // rather than on either end: a turret off the left edge firing at a nest off the right one is
+    // still drawn across the middle of the screen.
+    if (Math.max(from.x, to.x) < camera.x || Math.min(from.x, to.x) > camera.x + viewport.width) {
+      return;
+    }
+    if (Math.max(from.y, to.y) < camera.y || Math.min(from.y, to.y) > camera.y + viewport.height) {
+      return;
+    }
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+  };
+
+  if (shots.own && now - shots.own.at < SHOT_LINE_MS) {
+    line(shots.own.from, reach(shots.own.from, shots.own.dir));
+  }
+
+  for (const { shot, at } of shots.peers) {
+    if (now - at >= SHOT_LINE_MS) continue;
+    // The origin is not on the wire: the shooter's own rendered position is already within a
+    // player-diameter of where the server saw it (#74 §3). A peer who has since left has none.
+    const from = world.players.find((p) => p.id === shot.id)?.pos;
+    if (!from) continue;
+    // A ray that hit nothing still draws, out to full range — a squadmate firing into empty air
+    // with no line looks broken (#74 §6). A ray that hit something the client cannot resolve draws
+    // nothing at all: that is the death window, and it is the one case a line would be a lie.
+    const to = shot.hit === undefined ? reach(from, shot.dir) : shots.resolve(shot.hit);
+    if (to) line(from, to);
+  }
+
+  if (now % TURRET_CADENCE_MS >= SHOT_LINE_MS) return;
+  for (const s of world.structures) {
+    if (!s.turret?.powered || s.turret.targetId === null) continue;
+    const spec = BUILDABLES[s.kind];
+    const to = spec && shots.resolve(s.turret.targetId);
+    if (to) line(footprintCenter(s.tile, spec.footprint), to);
+  }
+}
+
+// Where a shot that hit nothing ends: full range along the aim vector, which the server admitted as
+// a unit vector.
+function reach(from: Vec2, dir: Vec2): Vec2 {
+  return { x: from.x + dir.x * RANGED_RANGE, y: from.y + dir.y * RANGED_RANGE };
+}
+
+// The damage readout for one entity, sitting above whatever was drawn for it. Nothing at full
+// health shows a bar (#81) — the absence is the "undamaged" state, so there is no full bar to
+// mistake for one.
+//
+// Two axis-aligned fills on integer edges, which carry no anti-aliasing at all and cost ~1.7 µs
+// each: the ink bar entire, then the missing share knocked back out to paper. That way the frame
+// around it is ink whatever the health, so the bar reads over a black sprite as well as over the
+// white floor — which a fill-only bar does not.
+function healthBar(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  topY: number,
+  width: number,
+  hp: number,
+  maxHp: number,
+): void {
+  if (hp >= maxHp) return;
+  const x = Math.round(centerX - width / 2);
+  const y = Math.round(topY - BAR_GAP - BAR_HEIGHT);
+  ctx.fillStyle = INK;
+  ctx.fillRect(x, y, width, BAR_HEIGHT);
+  const lost = Math.round((width - 2) * (1 - Math.max(0, hp) / maxHp));
+  ctx.fillStyle = PAPER;
+  ctx.fillRect(x + width - 1 - lost, y + 1, lost, BAR_HEIGHT - 2);
 }
 
 // How thickly the tufts fall: one tuft per this many tiles, on average. Chosen by rendering a
@@ -522,10 +703,19 @@ function paintEnemy(
     // contact damage would land from a spider drawn half a body clear of you. The upright player
     // and the elevation structures are genuinely bottom-anchored and keep `blit`.
     blitOver(sprite, enemy.pos.x, enemy.pos.y);
-    return;
+  } else {
+    ctx.fillStyle = ENEMY_COLORS[enemy.kind];
+    fillCircle(ctx, enemy.pos.x, enemy.pos.y, enemy.radius);
   }
-  ctx.fillStyle = ENEMY_COLORS[enemy.kind];
-  fillCircle(ctx, enemy.pos.x, enemy.pos.y, enemy.radius);
+  const half = sprite ? sprite.size / 2 : enemy.radius;
+  healthBar(
+    ctx,
+    enemy.pos.x,
+    enemy.pos.y - half,
+    enemy.radius * 2,
+    enemy.hp,
+    ENEMY_MAX_HP[enemy.kind],
+  );
 }
 
 function paintAvatar(
@@ -536,13 +726,11 @@ function paintAvatar(
   blit: Blit,
   blitOver: Blit,
 ): void {
-  const dead = avatar.hp <= 0;
-  ctx.globalAlpha = dead ? CORPSE_ALPHA : 1; // a downed player reads as a faded corpse
   const sprite = sprites?.("player", avatar.facing, avatar.frame);
   // Where the body actually is. A foot-anchored sprite stands *above* its position, so anything
   // that marks the avatar has to aim here and not at `pos`, which is now the ground under it.
   const bodyY = avatar.pos.y - (sprite ? sprite.size / 2 : 0);
-  const halo = isSelf && !dead ? sprites?.("halo", 0, 0) : null;
+  const halo = isSelf ? sprites?.("halo", 0, 0) : null;
   // Behind the avatar, so a glow reads as a glow around it rather than a veil over its face.
   if (halo) blitOver(halo, avatar.pos.x, bodyY);
   if (sprite) blit(sprite, avatar.pos.x, avatar.pos.y);
@@ -550,19 +738,20 @@ function paintAvatar(
     ctx.fillStyle = SLOT_COLORS[(avatar.slot - 1) % SLOT_COLORS.length];
     fillCircle(ctx, avatar.pos.x, avatar.pos.y, avatar.radius);
   }
-  if (isSelf && !dead && !halo) {
-    ctx.strokeStyle = SELF_RING;
+  if (isSelf && !halo) {
+    ctx.strokeStyle = INK;
     ctx.lineWidth = 2.5;
     strokeCircle(ctx, avatar.pos.x, bodyY, avatar.radius + 3);
   }
   // The label rides above whatever was actually drawn, which a foot-anchored sprite makes taller
-  // than the circle it replaced.
+  // than the circle it replaced, and above the bar rather than beside it. The band the bar occupies
+  // is reserved whether or not one is showing, so a label does not hop as a player takes a hit.
   const top = avatar.pos.y - (sprite ? sprite.size : avatar.radius);
-  ctx.fillStyle = LABEL;
+  healthBar(ctx, avatar.pos.x, top, avatar.radius * 2, avatar.hp, PLAYER_MAX_HP);
+  ctx.fillStyle = INK;
   ctx.font = "12px system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText(avatar.name, avatar.pos.x, top - 5);
-  ctx.globalAlpha = 1;
+  ctx.fillText(avatar.name, avatar.pos.x, top - BAR_GAP - BAR_HEIGHT - 3);
 }
 
 // Land a world coordinate on a whole device pixel. The caller paints through

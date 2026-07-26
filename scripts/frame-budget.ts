@@ -52,6 +52,8 @@ export function parseArgs(argv: string[]): BudgetRequest {
 export interface BudgetResult {
   standing: number;
   blits: number;
+  bars: number;
+  lines: number;
   layers: Record<string, number>;
   ySortMs: number;
   healthBarsMs: Record<string, number>;
@@ -77,6 +79,9 @@ const DPR = ${request.dpr};
 const CAM = { x: 15_400, y: 15_400 };
 const STRUCTURES = 40;
 const ITERS = 60;
+// The budget's own rule: 50 concurrent lines, which is what a 100 ms lifetime holds a defended
+// base's fire down to. Five come from powered turrets and the rest from relayed squadmate shots.
+const SHOT_LINES = 50;
 
 // Deterministic, so two runs of this script compare to each other.
 function rng(seed) {
@@ -86,6 +91,10 @@ function rng(seed) {
 
 // The worst frame the game can be asked for: every enemy the governor allows, all of them inside
 // the viewport so nothing is culled and all of them go through the Y-sort.
+//
+// Everything is damaged, deliberately. A health bar is drawn only for something below full health
+// (#81), so an undamaged fixture would measure a frame the game never has to draw at its worst —
+// and the bars are the one M5 addition whose count scales with the enemy cap.
 function build(enemyCount, structureCount, withOre) {
   const r = rng(12_345);
   const enemies = [];
@@ -95,7 +104,7 @@ function build(enemyCount, structureCount, withOre) {
       id: "e" + i, kind: elite ? "elite" : "grunt",
       pos: { x: CAM.x + r() * VIEW.width, y: CAM.y + r() * VIEW.height },
       facing: Math.floor(r() * 8), frame: Math.floor(r() * 2),
-      radius: elite ? 24 : 16, hp: elite ? 120 : 30,
+      radius: elite ? 24 : 16, hp: elite ? 119 : 17,
     });
   }
   const kinds = ["miner", "wall", "turret", "generator"];
@@ -103,9 +112,11 @@ function build(enemyCount, structureCount, withOre) {
   for (let i = 0; i < structureCount; i++) {
     const kind = kinds[i % 4];
     structures.push({
-      id: "b" + i, kind, hp: 200,
+      id: "b" + i, kind, hp: 137,
       tile: { tx: Math.floor((CAM.x + r() * VIEW.width) / TILE), ty: Math.floor((CAM.y + r() * VIEW.height) / TILE) },
-      ...(kind === "turret" ? { turret: { targetId: "e1", powered: false } } : {}),
+      // Half the turrets hold a target they can fire on and draw a line; the other half hold one
+      // they cannot, which is the only thing that draws the lightning. Both cost, so both are here.
+      ...(kind === "turret" ? { turret: { targetId: "e" + i, powered: i % 8 === 2 } } : {}),
     });
   }
   const players = [];
@@ -113,7 +124,7 @@ function build(enemyCount, structureCount, withOre) {
     players.push({
       id: "p" + i, slot: i + 1, name: "Player" + i,
       pos: { x: CAM.x + r() * VIEW.width, y: CAM.y + r() * VIEW.height },
-      facing: Math.floor(r() * 8), frame: Math.floor(r() * 2), radius: 14, hp: 100,
+      facing: Math.floor(r() * 8), frame: Math.floor(r() * 2), radius: 14, hp: 61,
     });
   }
   const nests = [];
@@ -160,21 +171,40 @@ try {
   const floor = build(0, 0, true);
   const full = build(ENEMY_CAP, STRUCTURES, true);
 
+  // The shot lines, through the shipped path rather than a hand-rolled stroke: the powered turrets
+  // generate their own pulse, and squadmates' relayed shots make the count up to the budgeted 50.
+  const byId = new Map(full.enemies.map((e) => [e.id, e.pos]));
+  const turretLines = full.structures.filter((s) => s.turret && s.turret.powered).length;
+  const peers = [];
+  for (let i = 0; i < SHOT_LINES - turretLines; i++) {
+    peers.push({ shot: { id: "p" + (i % 6), dir: { x: 1, y: 0 }, hit: "e" + i }, at: opts.now });
+  }
+  const m5 = { ...opts, shots: { peers, own: null, resolve: (id) => byId.get(id) ?? null } };
+
   // Whichever layer is measured first otherwise absorbs the canvas's one-time setup and reads two
   // to three times its true cost. Spend it here, on a result nobody reads.
-  measure(() => { setup(); drawWorld(ctx, full, opts); }, 10);
+  measure(() => { setup(); drawWorld(ctx, full, m5); }, 10);
 
   // Each layer is the whole frame up to that point, so the deltas below are what each one adds.
   const paperMs = measure(() => { setup(); drawWorld(ctx, empty, opts); });
   const floorMs = measure(() => { setup(); drawWorld(ctx, floor, opts); });
   const fullMs = measure(() => { setup(); drawWorld(ctx, full, opts); });
+  const m5Ms = measure(() => { setup(); drawWorld(ctx, full, m5); });
 
   let blits = 0;
+  let bars = 0;
+  let lines = 0;
   const raw = ctx.drawImage.bind(ctx);
+  const rawStroke = ctx.stroke.bind(ctx);
+  const rawFill = ctx.fillRect.bind(ctx);
   ctx.drawImage = (...args) => { blits++; raw(...args); };
+  ctx.stroke = (...args) => { lines++; rawStroke(...args); };
+  ctx.fillRect = (...args) => { if (args[3] === 4) bars++; rawFill(...args); };
   setup();
-  drawWorld(ctx, full, opts);
+  drawWorld(ctx, full, m5);
   ctx.drawImage = raw;
+  ctx.stroke = rawStroke;
+  ctx.fillRect = rawFill;
 
   // The Y-sort alone, to sit beside the 36.6 us at 250 entities #71 measured.
   const rows = [];
@@ -208,10 +238,13 @@ try {
   const result = {
     standing: full.enemies.length + STRUCTURES + full.players.length + full.nests.length,
     blits,
+    bars,
+    lines,
     layers: {
       paper: +paperMs.toFixed(3),
       floor: +floorMs.toFixed(3),
       full: +fullMs.toFixed(3),
+      m5: +m5Ms.toFixed(3),
     },
     ySortMs: +ySortMs.toFixed(4),
     healthBarsMs: { 60: +healthBars(60).toFixed(3), 240: +healthBars(240).toFixed(3) },
@@ -220,7 +253,7 @@ try {
 
   // Drawn last so the screenshot is the frame that was measured, not the final probe.
   setup();
-  drawWorld(ctx, full, opts);
+  drawWorld(ctx, full, m5);
   document.getElementById("measurements").textContent = JSON.stringify(result);
 } catch (e) {
   document.getElementById("measurements").textContent = JSON.stringify({ error: String(e && e.stack || e) });
@@ -250,25 +283,25 @@ if (import.meta.main) {
   const r = await runBudget(request);
   const share = (ms: number) => `${((ms / FRAME_MS) * 100).toFixed(1)}%`;
   console.log(request.out);
-  console.log(`worst case  ${r.standing} standing entities, ${r.blits} blits, dpr ${request.dpr}`);
+  console.log(
+    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} shot lines, dpr ${request.dpr}`,
+  );
   console.log(
     `sprites     ${Object.keys(request.sprites).join(", ") || "the registry as it stands"}`,
   );
   console.log("");
   console.log(`  paper only          ${r.layers.paper.toFixed(3)} ms`);
   console.log(`  + grass and ore     ${r.layers.floor.toFixed(3)} ms`);
+  console.log(`  + everything up     ${r.layers.full.toFixed(3)} ms`);
   console.log(
-    `  + everything up     ${r.layers.full.toFixed(3)} ms   ${share(r.layers.full)} of a 16.67 ms frame`,
+    `  + the shot lines    ${r.layers.m5.toFixed(3)} ms   ${share(r.layers.m5)} of a 16.67 ms frame`,
   );
   console.log("");
   console.log(`  y-sort alone        ${(r.ySortMs * 1000).toFixed(1)} us`);
-  console.log(`  health bars (240)   ${r.healthBarsMs[240].toFixed(3)} ms`);
-  console.log(`  shot lines (25)     ${r.shotLinesMs[25].toFixed(3)} ms`);
-  console.log(`  shot lines (150)    ${r.shotLinesMs[150].toFixed(3)} ms`);
+  console.log(`  shot lines (150)    ${r.shotLinesMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log("");
-  const projected = r.layers.full + r.healthBarsMs[240] + r.shotLinesMs[50];
-  console.log(`projected M5 worst case (frame + 240 bars + 50 shot lines)`);
+  console.log(`M5 worst case, measured through the shipped drawWorld`);
   console.log(
-    `  ${projected.toFixed(2)} ms   ${share(projected)}   headroom ${(FRAME_MS - projected).toFixed(2)} ms`,
+    `  ${r.layers.m5.toFixed(2)} ms   ${share(r.layers.m5)}   headroom ${(FRAME_MS - r.layers.m5).toFixed(2)} ms`,
   );
 }

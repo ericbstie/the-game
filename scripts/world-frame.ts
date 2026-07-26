@@ -87,7 +87,7 @@ export function entrySource(request: FrameRequest, modules = MODULES): string {
 import { drawWorld } from ${JSON.stringify(modules.draw)};
 import { createSpriteCache } from ${JSON.stringify(modules.cache)};
 import { SPRITES } from ${JSON.stringify(modules.registry)};
-import { DEMO_CAMERA, DEMO_SELF, DEMO_VIEWPORT, demoWorld } from ${JSON.stringify(modules.world)};
+import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoShots, demoWorld } from ${JSON.stringify(modules.world)};
 
 const dpr = ${request.dpr};
 const camera = ${JSON.stringify(request.at)} ?? DEMO_CAMERA;
@@ -115,11 +115,16 @@ ctx.drawImage = (...args) => {
 
 // The transform GameScreen paints the world through, unchanged.
 ctx.setTransform(dpr, 0, 0, dpr, -camera.x * dpr, -camera.y * dpr);
-drawWorld(ctx, demoWorld(), {
+const world = demoWorld();
+drawWorld(ctx, world, {
   selfId: DEMO_SELF,
   camera,
   viewport,
   dpr,
+  // Frozen, so the two things that alternate on the clock are in their visible phase.
+  now: DEMO_NOW,
+  ghost: DEMO_GHOST,
+  shots: demoShots(world, DEMO_NOW),
   // The real registry, so the frame is the game as it actually stands. Anything named on the
   // command line is layered over it — a sprite under review, or one nobody has wired yet.
   sprites: createSpriteCache({ ...SPRITES, ${table} }).source(dpr),
