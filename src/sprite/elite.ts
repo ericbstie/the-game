@@ -1,66 +1,89 @@
 import type { SpriteSubject } from "./sheet";
 
-// The elite spider. Its sibling the grunt is exaggerated into long legs; this one is exaggerated
-// the other way, into a body that fills most of the box and legs that barely clear it. The game is
-// black and white, so that difference in silhouette is the only thing telling the two apart.
+// The elite spider. Its sibling the grunt is exaggerated into long thin legs; this one is
+// exaggerated the other way, into body mass. The game is black and white, so silhouette is the
+// only thing telling the two apart: the grunt is a small dot on wire, this is a heavy two-lobed
+// carcass carried on eight short thick arches.
 //
-// The projection is the hybrid #76 fixes for spiders and for nothing else in the game: the **body
-// and face are upright**, drawn as if seen head-on, while the **legs splay flat around them**, as
-// if seen straight down. Two consequences fall out of that and shape everything below:
+// The projection is the hybrid #76 fixes for spiders and nothing else in the game: the **body and
+// face are upright**, drawn head-on, while the **legs splay flat around them**, drawn from above.
+// Three things follow, and they shape everything below.
 //
-// - The leg star is a top-down disc centred on the creature's contact with the floor, so it is
-//   drawn first and the upright body simply covers whichever legs point away from the viewer.
-//   Turning the creature rotates the disc, which is why the visible leg fan differs per facing.
-// - Turning the body cannot move it up or down the screen, so depth is carried by *overlap*: the
-//   abdomen changes sides with the head, rides high when it is the far mass, and swells and drops
-//   in front of the head when the creature walks away from the viewer.
+// - **A leg arches.** It leaves the body's flank, rises *outboard of and above* where it attached,
+//   and comes down to a planted foot. That hook over the silhouette is the whole spider signal; a
+//   leg that only hangs off the bottom contour reads as a drip and the creature reads as an ant.
+// - **The body turns by overlap, not by moving.** An upright body cannot slide up or down the
+//   screen as it turns, so the turn is carried by the two lobes trading places: the small
+//   face-carrying cephalothorax leads, the big abdomen trails, and the near one is drawn over the
+//   far one. Walking at the player puts the small lobe low; walking away puts it high.
+// - **Each foot's bearing sets its lateral position honestly, and its depth is compressed.** Two
+//   legs the same angle fore and aft of the creature therefore share a column and separate only in
+//   depth, exactly as they do in a real profile. Depth itself is squeezed into a shallow band
+//   below the body, because at 48 px an upright body hides anything standing behind it — and a
+//   spider that shows four of its eight legs is an octopus.
+//
+// Nothing here is exactly mirrored: the bearings carry a fixed skew and every leg has its own
+// reach, knee height and knee clearance. Exact symmetry is a tell, not a style.
 
 const SIZE = 48;
 const FACINGS = 8;
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
 
-// #73 fixed the convention: `angle = facing / 8 × 2π` in canvas y-down space, so 0 = E, 2 = S with
-// the face turned at the viewer, 4 = W, and 6 = N showing the creature's back.
+// #73 fixed the convention: `angle = facing / 8 × 2π` on a canvas whose y points down, so 0 = E,
+// 2 = S with the face turned at the player, 4 = W, 6 = N showing the creature's back.
 const heading = (facing: number) => (facing / FACINGS) * TAU;
 
-const HUB = { x: 24, y: 30.5 }; // where the legs meet the floor — the foot anchor the Y-sort uses
-const BODY = { x: 24, y: 18, rx: 13.5, ry: 12 };
-const ABDOMEN = { rx: 9.2, ry: 8.2 };
-const LATERAL = 4; // how far head and abdomen separate as the creature turns side-on
-const LIFT = 6; // and how far the abdomen rides above the head when it is the far mass
-const SWELL = 0.18; // it grows this much again when it is the near one
+// The body is wide, but not so wide that a leg has nowhere to arch. Eight arches need room
+// outboard of the silhouette, and at 48 px a body that fills the box eats it — which is how the
+// legs end up fused to the flank and the creature ends up a shaggy lump.
+const CORE = { x: 24, y: 18 };
+const ABDOMEN = { rx: 9.8, ry: 9.5 }; // the heavy back lobe: the elite's whole silhouette identity
+const HEAD = { rx: 7.5, ry: 7 }; // the cephalothorax, smaller and set lower — it carries the face
+const HEAD_DROP = 2.5; // it sits below the abdomen at every facing, not only when it leads
+const LATERAL = 5; // how far apart the lobes slide as the creature turns side-on
+const DEPTH = 5; // and how far the near one drops below the far one
+const SWELL = 0.08; // the near lobe grows this much, the far one shrinks by it
 
-const LEG_SPREAD = [48, 88, 128, 166].map((d) => d * DEG); // from the heading, per side
-const LEG_REACH = 14;
-const LEG_BOW = 3.2;
-const LEG_BASE_W = 4.8; // stubby: nearly a fifth of its own length, where the grunt's are wire
-const LEG_TIP_W = 2.4;
+// Where each foot falls, as a bearing off the heading, mirrored per side — plus a fixed skew that
+// is *not* mirrored, so no facing of this sprite has an axis of exact symmetry.
+const LEG_BEARINGS = [36, 72, 110, 150].map((d) => d * DEG);
+const LEG_SKEW = [2, -3, 1.5, -2].map((d) => d * DEG);
+const LEG_REACH = 16;
+const LEG_SPACING = 0.55; // how far the feet are pulled off their bearing to stop them colliding
+const KNEE_OUT = [2, 1.1, 1.6, 0.7]; // the arch peaks out beyond the foot, not halfway to it
+const KNEE_UP = [6.8, 4.6, 5.8, 3.8]; // and above where the leg left the body
+const SHOULDER_DROP = 0.45; // legs leave the body low, so the arch has white to rise through
+const FOOT_LINE = 38;
+const FOOT_DEPTH = 3.5; // a foot behind the creature lands higher up the screen than one in front
+const FOOT_SAG = 3.5; // and a foot under the middle of the body lands nearer the viewer
+const LEG_ROOT_W = 4.2;
+const LEG_TIP_W = 1.9; // never below 1 CSS px, or the tip breaks up into grey at real size
+const LEG_BELLY = 0.16; // rubber hose: the tube swells at the belly of its curve
+const LEG_BURIED = 2.5; // the root starts inside the body, so the two fills meet without a seam
 
-// A two-frame gait, and frame 0 is the one that has to carry it: the cycle parks there whenever a
+// Two frames, and frame 0 is the one that carries the sprite: the cycle parks there whenever a
 // creature is not moving (#81), which at the front line is most of them, most of the time. So
-// frame 0 is a planted, symmetric stance and frame 1 is the scuttle — an alternating tetrapod,
-// half the legs swung toward the heading and reaching, the other half gathered under the body.
-const SWING = 11 * DEG;
-const REACHING = 1.08;
-const GATHERED = 0.88;
-const BOB = -1; // and the whole body lifts a hair as the legs push
+// frame 0 is the neutral planted stance, every foot down. Frame 1 is the scuttle — an alternating
+// tetrapod, half the legs swung forward and planted while the other half swing back and lift clear
+// of the floor. The body itself does not move between frames, and neither does the foot ring: a
+// sprite that inflates and deflates reads as a pulse rather than as a stride.
+const SWING = 15 * DEG;
+const LIFT = 2.6; // how far a swinging foot comes off the floor
 
-const EYE_AZIMUTH = 38 * DEG; // where the eyes sit around the head, either side of the face
-const EYE_ORBIT = 10;
-const EYE_RX = 3.9;
-const EYE_RY = 3.3;
-const EYE_RISE = 3.4;
-const EYE_EDGE = 0.1; // past the limb an eye is gone
-const EYE_SLIVER = 0.32; // and near it, it flattens no further than this or it reads as a nick
+// The eyes sit at a fixed bearing around the head and vanish as that bearing passes the limb, so
+// the eight facings fall out of the heading instead of being drawn one at a time. They are narrow
+// tilted slits rather than rounds: a white oval on a black curve is where you would paint a
+// specular highlight, and at real size that is exactly what it reads as.
+const EYE_BEARING = 34 * DEG;
+const EYE_ORBIT = 7;
+const EYE_EDGE = 0.12; // past the limb the eye is gone
+const EYE_SLIVER = 0.5; // and near it, it flattens no further than this or it reads as a nick
+const EYE = { rx: 3.5, ry: 1.75, rise: 1.8, tilt: 26 * DEG };
 
-const BRISTLES = [-150, -117, -90, -63, -30].map((d) => d * DEG);
-const BRISTLE_H = 3;
-const BRISTLE_W = 1.7;
-
-const FANG_DROP = 4.4;
-const FANG_W = 1.55;
-const FANG_GAP = 2.9;
+const FANG_DROP = 3.2;
+const FANG_W = 1.2;
+const FANG_GAP = 2.4;
 
 interface Point {
   x: number;
@@ -79,71 +102,105 @@ const elite: SpriteSubject = {
   frames: 2,
   draw(ctx, _size, facing, frame) {
     const theta = heading(facing);
-    const toward = Math.sin(theta); // +1 when the creature walks at the viewer, -1 when away
+    const toward = Math.sin(theta); // +1 walking at the player, -1 walking away
     const across = Math.cos(theta);
-    const bob = frame === 0 ? 0 : BOB;
 
-    const head: Mass = { x: BODY.x + across * LATERAL, y: BODY.y + bob, rx: BODY.rx, ry: BODY.ry };
-    const swell = 1 - toward * SWELL;
-    const abdomen: Mass = {
-      x: BODY.x - across * LATERAL,
-      y: BODY.y - toward * LIFT + bob,
-      rx: ABDOMEN.rx * swell,
-      ry: ABDOMEN.ry * swell,
-    };
+    const head = lobe(HEAD, across * LATERAL, toward * DEPTH + HEAD_DROP, 1 + toward * SWELL);
+    const abdomen = lobe(ABDOMEN, -across * LATERAL, -toward * DEPTH, 1 - toward * SWELL);
+    const body = [head, abdomen];
 
     ctx.fillStyle = "#000";
-    drawLegs(ctx, theta, frame);
+    for (const l of layOutLegs(theta, frame)) leg(ctx, l, body);
+
     if (toward < 0) {
-      drawHead(ctx, head);
+      drawMass(ctx, head);
       drawMass(ctx, abdomen);
       return;
     }
     drawMass(ctx, abdomen);
-    drawHead(ctx, head);
+    drawMass(ctx, head);
     drawFace(ctx, head, theta);
   },
 };
 
-function drawLegs(ctx: CanvasRenderingContext2D, theta: number, frame: number): void {
-  for (let pair = 0; pair < LEG_SPREAD.length; pair++) {
-    for (const side of [-1, 1]) {
-      // Neighbouring legs down one side are never in the same half of the gait, and the two sides
-      // are out of phase with each other: the alternating tetrapod a spider actually walks on.
-      const reaching = (pair + (side > 0 ? 1 : 0)) % 2 === 0;
-      const swing = frame === 0 ? 0 : reaching ? SWING : -SWING;
-      const reach = frame === 0 ? 1 : reaching ? REACHING : GATHERED;
-      const angle = theta + side * (LEG_SPREAD[pair] - swing);
-      tube(ctx, HUB, angle, LEG_REACH * reach, side * LEG_BOW);
-    }
-  }
+function lobe(r: { rx: number; ry: number }, dx: number, dy: number, scale: number): Mass {
+  return { x: CORE.x + dx, y: CORE.y + dy, rx: r.rx * scale, ry: r.ry * scale };
 }
 
-// One rubber-hose leg: a bowed tube that tapers to a rounded tip, filled rather than stroked so
-// the taper is real. No joint anywhere along it — that is the whole of the style.
-function tube(
-  ctx: CanvasRenderingContext2D,
-  from: Point,
-  angle: number,
-  reach: number,
-  bow: number,
-): void {
-  const to = { x: from.x + Math.cos(angle) * reach, y: from.y + Math.sin(angle) * reach };
-  const ctrl = {
-    x: (from.x + to.x) / 2 - Math.sin(angle) * bow,
-    y: (from.y + to.y) / 2 + Math.cos(angle) * bow,
+interface Leg {
+  index: number;
+  foot: Point;
+  depth: number; // +1 the foot is in front of the creature, -1 behind it
+  out: -1 | 1; // which side of the box the leg arches over
+  spread: number; // 0 under the body, 1 at full stretch — how high the arch can afford to be
+}
+
+// The eight feet, placed and then sorted apart. The bearing decides where a foot wants to be, but
+// two legs the same angle fore and aft of the creature want the same column, and eight legs sharing
+// four columns is four legs as far as a player is concerned. So the honest placement is blended
+// with an even fan: the ordering and the lean survive, the collisions do not.
+function layOutLegs(theta: number, frame: number): Leg[] {
+  const wanted = [];
+  for (let index = 0; index < LEG_BEARINGS.length; index++) {
+    for (const side of [-1, 1]) {
+      // Neighbouring legs down one side are never in the same half of the gait, and the two sides
+      // are out of phase: the alternating tetrapod a spider actually walks on.
+      const forward = (index + (side > 0 ? 1 : 0)) % 2 === 0;
+      const phase = frame === 0 ? 0 : forward ? 1 : -1;
+      const bearing = theta + side * LEG_BEARINGS[index] + LEG_SKEW[index] + phase * SWING;
+      wanted.push({ index, bearing, lift: phase < 0 ? LIFT : 0 });
+    }
+  }
+  wanted.sort((a, b) => Math.cos(a.bearing) - Math.cos(b.bearing));
+
+  const legs = wanted.map((w, slot) => {
+    const across = Math.cos(w.bearing);
+    const depth = Math.sin(w.bearing);
+    const fanned = (slot - (wanted.length - 1) / 2) / ((wanted.length - 1) / 2);
+    const spread = across * (1 - LEG_SPACING) + fanned * LEG_SPACING;
+    return {
+      index: w.index,
+      depth,
+      out: (spread >= 0 ? 1 : -1) as -1 | 1,
+      spread: Math.abs(spread),
+      foot: {
+        x: CORE.x + spread * LEG_REACH,
+        y: FOOT_LINE + depth * FOOT_DEPTH + (1 - spread * spread) * FOOT_SAG - w.lift,
+      },
+    };
+  });
+  // Behind first, so a leg in front of the creature laps the one behind it rather than the reverse.
+  return legs.sort((a, b) => a.depth - b.depth);
+}
+
+// One rubber-hose leg: out and up off the flank, over an arch that clears the silhouette, and down
+// to its foot on the floor. Filled rather than stroked, so the tube can swell at the belly of the
+// curve and taper to a rounded foot, and bent in one continuous curve, so it has no joint.
+function leg(ctx: CanvasRenderingContext2D, l: Leg, body: Mass[]): void {
+  const { foot, out } = l;
+  // A leg whose foot falls behind the creature leaves the body a little higher up its flank than
+  // one whose foot falls in front, which is what keeps the eight arches off each other.
+  const shoulder = flank(out, SHOULDER_DROP - l.depth * 0.3, body);
+  // The arch peaks *over the foot*, not halfway to it: the leg goes out from under the body, up
+  // and clear of the silhouette, and only then comes down. Bending it at the midpoint instead
+  // keeps the whole arch inside the body, where it fuses to the flank and reads as a shaggy hem.
+  // Legs planted under the belly have nowhere to rise into, so they barely arch at all.
+  const knee = {
+    x: foot.x + out * KNEE_OUT[l.index],
+    y: shoulder.y - KNEE_UP[l.index] * (0.3 + 0.7 * l.spread),
   };
 
-  const steps = 12;
+  const steps = 14;
   const near: Point[] = [];
   const far: Point[] = [];
-  let tip = angle;
+  let tip = 0;
   for (let s = 0; s <= steps; s++) {
     const t = s / steps;
-    const p = quadratic(from, ctrl, to, t);
-    const d = quadraticTangent(from, ctrl, to, t);
+    const p = quadratic(shoulder, knee, foot, t);
+    const d = quadraticTangent(shoulder, knee, foot, t);
     const len = Math.hypot(d.x, d.y) || 1;
-    const half = (LEG_BASE_W + (LEG_TIP_W - LEG_BASE_W) * t) / 2;
+    const taper = LEG_ROOT_W + (LEG_TIP_W - LEG_ROOT_W) * t ** 0.75;
+    const half = (taper * (1 + LEG_BELLY * Math.sin(Math.PI * t))) / 2;
     near.push({ x: p.x - (d.y / len) * half, y: p.y + (d.x / len) * half });
     far.push({ x: p.x + (d.y / len) * half, y: p.y - (d.x / len) * half });
     tip = Math.atan2(d.y, d.x);
@@ -152,10 +209,26 @@ function tube(
   ctx.beginPath();
   ctx.moveTo(near[0].x, near[0].y);
   for (let i = 1; i <= steps; i++) ctx.lineTo(near[i].x, near[i].y);
-  ctx.arc(to.x, to.y, LEG_TIP_W / 2, tip + Math.PI / 2, tip - Math.PI / 2, true);
+  ctx.arc(foot.x, foot.y, LEG_TIP_W / 2, tip + Math.PI / 2, tip - Math.PI / 2, true);
   for (let i = steps; i >= 0; i--) ctx.lineTo(far[i].x, far[i].y);
   ctx.closePath();
   ctx.fill();
+}
+
+// Where a direction leaves the body's outline, marched rather than solved because the outline is
+// the union of two ellipses and it is the far crossing a leg has to start outside of.
+function flank(dx: number, dy: number, body: Mass[]): Point {
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+  let radius = 0;
+  for (let t = 0; t <= 26; t += 0.5) {
+    const x = CORE.x + ux * t;
+    const y = CORE.y + uy * t;
+    if (body.some((m) => ((x - m.x) / m.rx) ** 2 + ((y - m.y) / m.ry) ** 2 <= 1)) radius = t + 0.5;
+  }
+  const buried = Math.max(radius - LEG_BURIED, 0);
+  return { x: CORE.x + ux * buried, y: CORE.y + uy * buried };
 }
 
 function drawMass(ctx: CanvasRenderingContext2D, m: Mass): void {
@@ -164,68 +237,41 @@ function drawMass(ctx: CanvasRenderingContext2D, m: Mass): void {
   ctx.fill();
 }
 
-function drawHead(ctx: CanvasRenderingContext2D, head: Mass): void {
-  drawMass(ctx, head);
-  for (const t of BRISTLES) {
-    const base = { x: head.x + head.rx * Math.cos(t), y: head.y + head.ry * Math.sin(t) };
-    const gx = Math.cos(t) / head.rx;
-    const gy = Math.sin(t) / head.ry;
-    const len = Math.hypot(gx, gy) || 1;
-    const out = { x: gx / len, y: gy / len };
-    // The base sinks a little way into the mass, so the two fills meet with no seam between them.
-    const foot = { x: base.x - out.x * 0.8, y: base.y - out.y * 0.8 };
-    ctx.beginPath();
-    ctx.moveTo(foot.x - out.y * BRISTLE_W, foot.y + out.x * BRISTLE_W);
-    ctx.lineTo(foot.x + out.y * BRISTLE_W, foot.y - out.x * BRISTLE_W);
-    ctx.lineTo(base.x + out.x * BRISTLE_H, base.y + out.y * BRISTLE_H);
-    ctx.closePath();
-    ctx.fill();
-  }
-}
-
-// The face is knocked out of the ink in white — a black character with white features, which is
-// how the era drew one. Every feature is placed by its azimuth around the head and disappears as
-// that azimuth passes the limb, so all eight facings fall out of the heading rather than being
-// authored one by one.
+// The face is knocked out of the ink in white, which is how the era drew a black character. The
+// tilt of the slits is the whole of the elite's expression, and the only thing that makes it a
+// threat rather than a bug. Everything stays inside the head's outline: a mouth cut through the
+// bottom contour hollows out the very mass this sprite exists to sell.
 function drawFace(ctx: CanvasRenderingContext2D, head: Mass, theta: number): void {
   ctx.save();
   ctx.beginPath();
   ctx.ellipse(head.x, head.y, head.rx, head.ry, 0, 0, TAU);
   ctx.clip();
+  ctx.fillStyle = "#fff";
 
   for (const side of [-1, 1]) {
-    const azimuth = theta + side * EYE_AZIMUTH;
-    const facingViewer = Math.sin(azimuth);
-    if (facingViewer <= EYE_EDGE) continue;
-    const rx = EYE_RX * Math.max(facingViewer, EYE_SLIVER);
-    const x = head.x + EYE_ORBIT * Math.cos(azimuth);
-    const y = head.y - EYE_RISE;
-
-    ctx.fillStyle = "#fff";
-    ctx.beginPath();
-    ctx.ellipse(x, y, rx, EYE_RY, 0, 0, TAU);
-    ctx.fill();
-
-    // The brow: ink laid back over the eye, dropping toward the middle of the face. It is the
-    // whole of the elite's expression, and the only thing making it a threat rather than a bug.
+    const bearing = theta + side * EYE_BEARING;
+    const open = Math.sin(bearing);
+    if (open <= EYE_EDGE) continue;
+    const x = head.x + EYE_ORBIT * Math.cos(bearing);
     const inward = head.x < x ? -1 : 1;
-    const edge = rx + 1;
-    ctx.fillStyle = "#000";
     ctx.beginPath();
-    ctx.moveTo(x - inward * edge, y - EYE_RY * 1.5);
-    ctx.lineTo(x + inward * edge, y + EYE_RY * 0.15);
-    ctx.lineTo(x + inward * edge, y - EYE_RY * 3);
-    ctx.lineTo(x - inward * edge, y - EYE_RY * 3);
-    ctx.closePath();
+    ctx.ellipse(
+      x,
+      head.y - EYE.rise,
+      EYE.rx * Math.max(open, EYE_SLIVER),
+      EYE.ry,
+      -inward * EYE.tilt,
+      0,
+      TAU,
+    );
     ctx.fill();
   }
 
-  const open = 0.38 + 0.62 * Math.sin(theta);
-  const mouth = { x: head.x + head.rx * 0.5 * Math.cos(theta), y: head.y + head.ry * 0.34 };
-  ctx.fillStyle = "#fff";
+  const gape = 0.45 + 0.55 * Math.sin(theta);
+  const mouth = { x: head.x + head.rx * 0.4 * Math.cos(theta), y: head.y + head.ry * 0.25 };
   for (const side of [-1, 1]) {
-    const x = mouth.x + side * FANG_GAP * open;
-    const w = FANG_W * (0.45 + 0.55 * open);
+    const x = mouth.x + side * FANG_GAP * gape;
+    const w = FANG_W * (0.5 + 0.5 * gape);
     ctx.beginPath();
     ctx.moveTo(x - w, mouth.y);
     ctx.lineTo(x + w, mouth.y);

@@ -4,21 +4,39 @@ import type { SpriteSubject } from "./sheet";
 // centre of its 96px box so it overlaps whatever is behind it.
 //
 // The two states ride the `facing` axis and there is no animation: waves arrive unannounced, so a
-// sac has no charging frame to draw (#76 §5). What the two states have to survive is being read
-// side by side on a white floor with no colour and no text, so the difference is carried three
-// ways at once — the silhouette loses its top, the mass slumps outward, and the *value* inverts:
-// intact is a pale sac holding solid ink eggs, destroyed is a pale shell around a solid ink cavity
-// holding pale broken ones. The wreck stays on the field next to live sacs, so a glance has to
-// separate them.
+// sac has no charging frame to draw (#76 §5). What they have to survive is being read side by side
+// on a white floor with no colour and no text, so the difference is carried four ways at once — the
+// wreck loses its top, slumps wider, empties, and keeps only a couple of the eggs that fill the
+// live one. The wreck stays on the field next to live sacs, so a glance has to separate them.
 //
-// The tear is deliberately **asymmetric**, one shoulder still standing. A sac torn evenly across
-// reads as a bowl; a sac torn off to one side reads as damage.
+// The tear is deliberately **asymmetric**, one side still standing. A sac torn evenly across reads
+// as a bowl; a sac torn off to one side reads as damage.
 //
-// Two things this sprite must not become, both found by looking at it rather than by reasoning:
-// silk drawn as long taut lines from the flanks to the floor reads as **legs**, so the silk lies
-// flat and short on the floor instead; and shading drawn as inset copies of the contour reads as a
-// **spiral**, so it is straight parallel ink. This is the largest sprite in the set, which is the
-// one place #76 §1 allows hatching at all.
+// Six things this sprite must not become. Every one of them is something a bake actually did, not
+// something reasoned about in advance, and most were only visible at real size:
+//
+// - **legs** — silk drawn as long taut lines from the flanks to the floor turns the sac into a
+//   standing creature, which on a spider nest is the worst available misread. The silk lies flat
+//   and short on the floor instead, and the puddle buries its inner half.
+// - **a face** — one dome with one dark hole near its top is a head with an eye, and fringing the
+//   hole with torn silk only supplies eyelashes. The opening is a crescent sunk into the crown, so
+//   what shows is the far inner wall of a tube rather than a closed oval.
+// - **already broken** — a deep notch cut into the intact outline to separate two lobes reads as a
+//   bite taken out of it, which is the one thing the *other* variant is for.
+// - **a cut gemstone** — many control points at alternating radii looks like the obvious way to
+//   scallop a bag and is not: the segments go straight and it comes out faceted, which is the rock
+//   this must never be. Few points, wide apart, so each quadratic bows.
+// - **a bowling ball** — perfect circles evenly scattered inside a smooth ring are holes punched in
+//   a solid, not eggs in a skin. Hence `membraneAround`: the outline is computed *from* the clutch,
+//   so the skin can only bulge where an egg is pressing it.
+// - **a mouth** — an even row of triangles across a solid black interior is a cartoon jaw. The tear
+//   breaks unevenly, twice into blunt flats, and the wreck is hollow and pale rather than filled.
+//
+// **Hatching was tried and cut.** #76 §1 allows it on a sprite this large and this is one of only
+// two with the room, but both forms failed at real size: contour-following strokes read as a snail
+// shell, and straight parallel ink read as a barber pole, then — once thinned to a band — as a bite
+// out of the outline. What replaced it is what the era actually used: solid shapes with a hard
+// terminator, and a contour that swells on the shaded side. See `nest.review.md`.
 //
 // Coordinates are written in a 96-unit design space so the numbers read as the drawing. Buildings
 // get axis-aligned integer edges; a sac is the one thing in the set that should not, so its
@@ -32,209 +50,138 @@ const INTACT = 0;
 
 const INK = "#000";
 const PAPER = "#fff";
-const CONTOUR = 3;
-const FLAP_CONTOUR = 2.2;
-const SILK = 1.4;
-const HATCH = 1;
-const HATCH_STEP = 5.5;
+const CONTOUR = 2.2;
+const RIM = 1.6;
+const SILK = 1.7; // below ~1.5 a stroke is a grey smear at real size, not a line
+const HALO = 2.4; // pale separator that keeps crowded eggs from fusing into one blob
+const SWELL_PASSES = 3;
+const SWELL_STEP = 0.85;
 
-// The intact sac: a lumpy mass narrowing to a torn opening, off-symmetric and unevenly lobed so it
-// reads as grown rather than generated. Points are controls, not vertices — the curve runs through
-// their midpoints.
-const SHELL: readonly Pt[] = [
-  [45, 6],
-  [58, 10],
-  [66, 20],
-  [62, 30],
-  [76, 34],
-  [87, 50],
-  [79, 61],
-  [85, 74],
-  [70, 89],
-  [48, 94],
-  [28, 88],
-  [13, 73],
-  [20, 60],
-  [11, 49],
-  [22, 32],
-  [33, 29],
-  [28, 17],
-  [34, 8],
-];
-
-// The clutch, seen through the sac wall. Solid ink, deliberately uneven in size and spaced rather
-// than overlapping: merged eggs read as one blob, and a blob is what makes a sac look like a rock.
+// The brood. Unequal and overlapping, because a real clutch crowds — evenly spaced circles of one
+// size are dice pips. Ordered back to front: each egg's pale halo cuts into the ones already down.
+//
+// Piled rather than packed. One egg ringed by the rest at a constant gap is a rosette, and a
+// rosette reads as a flower, a molecule diagram, or a blackberry — it is also the loudest possible
+// "an algorithm placed these". So the gaps run from touching to wide and the mass leans low-left.
+const CLUTCH_CENTRE: Pt = [46, 60];
 const EGGS: readonly Egg[] = [
-  [46, 68, 11.5, 11, -0.2],
-  [30, 51, 9.5, 8.5, 0.35],
-  [55, 46, 7.5, 8, -0.4],
-  [67, 60, 8, 8.5, 0.15],
-  [27, 73, 6.5, 6, -0.5],
-  [63, 79, 5.5, 5, 0.3],
+  [30, 50, 10.5, 9.5, 0.2],
+  [49, 44, 8, 8.5, -0.35],
+  [64, 52, 8, 7.5, 0.45],
+  [20, 63, 7, 7.5, 0.25],
+  [36, 63, 9.5, 9, -0.15],
+  [54, 61, 7.5, 7, 0.3],
+  [27, 77, 8, 7.5, 0.5],
+  [46, 76, 9, 8.5, -0.4],
+  [62, 70, 6.5, 6, 0.15],
 ];
 
-// The way out, as radius multipliers round an ellipse. A hole is the cue no rock and no bush has —
-// but a lone dark oval on a pale dome reads as an *eye*, so it is torn well off round and fringed
-// with the silk it broke through.
-const MOUTH: Pt = [45.5, 17];
-const MOUTH_LOBES = [1.14, 0.83, 1.05, 0.76, 1.18, 0.88, 0.98, 1.09];
-const FRINGE: readonly (readonly [Pt, Pt])[] = [
-  [
-    [37, 13],
-    [33, 7],
-  ],
-  [
-    [43, 11],
-    [42, 4],
-  ],
-  [
-    [50, 11],
-    [53, 5],
-  ],
-  [
-    [55, 15],
-    [61, 12],
-  ],
-  [
-    [39, 22],
-    [34, 25],
-  ],
-];
+const MEMBRANE = 7; // the skin's thickness over the clutch
+const CROWN = 16; // extra slack gathered above the brood, where the sac opens
 
-// Silk lying flat on the floor round the base. Drawn before the contact shadow, which buries the
-// inner half of every strand, so what shows is a short splayed stub and never a leg.
+// The way out, sunk into the crown. A dark ellipse with a paler one laid over it leaves the far
+// inner wall showing as a crescent — what looking down a tube gives you, and what a closed oval on
+// the front of a dome never will. It is also the sprite's visible top surface, so both variants are
+// seen from the same slightly-above elevation.
+//
+// It is drawn *under* the clutch, so the topmost eggs cover its near edge and are seen through it.
+// Floated clear of them it stops being a hole in the bag and becomes a handle on a basket.
+const VENT: Pt = [46, 34];
+const VENT_RX = 13;
+const VENT_RY = 7;
+const VENT_LIP: Pt = [46, 36.4];
+
+// Silk lying flat on the floor. Drawn before the puddle, which buries the inner half of every
+// strand, so what shows is a short splayed stub and never a leg. Unequal on purpose, and ending in
+// nothing: a blob on the end of a thin line is a pin, and four pins round a splat are legs again.
 const SILK_STRANDS: readonly (readonly [Pt, Pt])[] = [
   [
-    [24, 84],
-    [6, 90],
+    [28, 87],
+    [10, 91],
   ],
   [
-    [28, 90],
-    [12, 93],
+    [64, 88],
+    [86, 91],
   ],
   [
-    [72, 85],
-    [90, 90],
-  ],
-  [
-    [68, 90],
-    [84, 93],
+    [38, 90],
+    [23, 94],
   ],
 ];
 
-// The destroyed sac: the same belly slumped wider and lower, its left shoulder torn away entirely
-// and its right one left standing.
+// Flat and low. A tall splat swallows the bottom of the sac, and with the bottom contour goes the
+// whole read of the thing standing on a floor. The wreck's has a tongue running out past its own
+// footprint on one side — what a ruptured sac leaks, and the one thing on it that spills.
+const PUDDLE_LOBES = [1.01, 0.95, 1.04, 0.93, 0.98, 1.05, 0.94, 1];
+const SPILL_LOBES = [0.97, 0.93, 1.02, 1.1, 1.22, 1.01, 0.95, 1];
+
+// The wreck's torn edge. Eight breaks whose rises run 11, 3, 12, 10, 4, 13, 6, 14 — nothing
+// repeats, and two of them are near-flat rather than teeth. An even amplitude at an even period is
+// not a fracture, it is a row of teeth, and a row of teeth over a dark mound is a grin.
 const TEAR: readonly Pt[] = [
-  [15, 52],
-  [21, 61],
-  [27, 53],
-  [33, 63],
-  [40, 56],
-  [46, 66],
-  [52, 58],
-  [58, 64],
-  [64, 49],
-  [69, 55],
-  [73, 38],
+  [13, 52],
+  [21, 63],
+  [31, 60],
+  [38, 48],
+  [47, 58],
+  [56, 54],
+  [64, 41],
+  [73, 47],
+  [80, 33],
 ];
 
 const WRECK_WALL: readonly Pt[] = [
-  [84, 50],
-  [87, 66],
-  [82, 82],
-  [69, 91],
-  [48, 94],
-  [27, 90],
-  [13, 78],
-  [10, 57],
+  [87, 44],
+  [88, 64],
+  [80, 82],
+  [62, 92],
+  [40, 91],
+  [22, 84],
+  [12, 70],
+  [13, 52],
 ];
 
-// The cavity is the tear's own teeth pushed down and inward, so the shell reads as a wall with
-// thickness rather than as a black shape sitting inside a pale one.
-const CAVITY_TEAR: readonly Pt[] = TEAR.map(([x, y]) => [48 + (x - 48) * 0.88, y + 8] as Pt);
+// The broken shell has thickness, shown by the wreck's whole outline shrunk a little and stroked
+// inside itself. Offsetting only the torn edge downward is the obvious way and it self-crosses
+// wherever a break is steeper than it is wide, which encloses a stray triangle.
+const WALL_CENTRE: Pt = [48, 62];
+const WALL_INSET = 0.88;
 
-const CAVITY_WALL: readonly Pt[] = [
-  [80, 54],
-  [83, 67],
-  [78, 81],
-  [67, 87],
-  [48, 89],
-  [29, 86],
-  [17, 76],
-  [15, 58],
+// What is left inside, as one solid shape with a hard terminator — the era's own way of shading,
+// and the reason the wreck is not filled black to its rim. Its top edge falls steadily to one side
+// rather than dipping in the middle: a dark mound that rises at both ends is a smile.
+const RESIDUE: readonly Pt[] = [
+  [15, 72],
+  [29, 71],
+  [44, 76],
+  [59, 81],
+  [74, 85],
+  [72, 90],
+  [50, 91],
+  [30, 89],
+  [17, 82],
 ];
 
-// Membrane peeled back off the tear — one long flap hanging off the torn side, one small tab still
-// clinging to the shoulder that survived.
-const FLAPS: readonly (readonly Pt[])[] = [
-  [
-    [16, 51],
-    [8, 57],
-    [5, 71],
-    [12, 79],
-    [19, 71],
-    [21, 58],
-  ],
-  [
-    [76, 34],
-    [84, 31],
-    [88, 39],
-    [81, 42],
-    [76, 39],
-  ],
+// Eggs that survived the wreck. Without these the two variants share nothing but the floor. Very
+// unequal and at different heights — a matched pair sitting level above a dark bar is two eyes over
+// a mouth. Both straddle the residue's edge rather than sitting inside it: an egg landed wholly on
+// the ink has its pale halo close into a ring, and a ring is a doughnut, or another eye.
+const CLINGING: readonly Egg[] = [
+  [31, 73, 7, 6.5, 0.2],
+  [66, 78, 4.5, 4, -0.3],
 ];
 
-// Broken shells in the cavity — the same clutch as the intact sac's, inverted to pale on ink.
-const HUSKS: readonly (readonly Pt[])[] = [
-  [
-    [34, 80],
-    [41, 76],
-    [44, 83],
-    [36, 86],
-  ],
-  [
-    [50, 77],
-    [58, 74],
-    [59, 82],
-    [51, 84],
-  ],
-  [
-    [60, 83],
-    [66, 81],
-    [65, 87],
-    [59, 86],
-  ],
-];
-
-// Shell thrown clear, lying on the floor outside the sac's own shadow.
-const DEBRIS: readonly (readonly Pt[])[] = [
-  [
-    [4, 85],
-    [11, 82],
-    [13, 88],
-    [6, 90],
-  ],
-  [
-    [86, 79],
-    [93, 82],
-    [91, 88],
-    [84, 86],
-  ],
-];
-
-// Guy silk snapped: the floor keeps an anchored stub, the sac keeps a curled loose end, and the
-// gap between them is the damage.
-const SNAPPED: readonly (readonly [Pt, Pt, Pt])[] = [
-  [
-    [14, 70],
-    [7, 76],
-    [11, 82],
-  ],
-  [
-    [87, 68],
-    [93, 74],
-    [89, 80],
-  ],
+// Membrane peeled off the torn side and left hanging. One, not two: a pair sits symmetrically and
+// puts the bowl back.
+// It overlaps the wall it tore off, because a shard drawn clear of the shell is not a shard — at
+// real size it is a stray mark beside the sprite.
+const FLAP: readonly Pt[] = [
+  [14, 50],
+  [6, 56],
+  [5, 70],
+  [12, 78],
+  [20, 68],
+  [22, 56],
 ];
 
 const nest: SpriteSubject = {
@@ -254,95 +201,69 @@ const nest: SpriteSubject = {
 };
 
 function drawIntact(ctx: CanvasRenderingContext2D): void {
+  const outline = membraneAround(CLUTCH_CENTRE, EGGS, MEMBRANE, CROWN);
+  const shell = () => closedCurve(ctx, outline);
+
   ctx.strokeStyle = INK;
-  ctx.fillStyle = INK;
   ctx.lineWidth = SILK;
   for (const [from, to] of SILK_STRANDS) {
     ctx.beginPath();
     ctx.moveTo(from[0], from[1]);
     ctx.lineTo(to[0], to[1]);
     ctx.stroke();
-    ctx.beginPath();
-    ctx.ellipse(to[0], to[1], 2, 1.4, 0, 0, Math.PI * 2);
-    ctx.fill();
   }
 
-  groundShadow(ctx, 34);
-
-  const shell = () => closedCurve(ctx, SHELL);
   ctx.fillStyle = PAPER;
   ctx.beginPath();
   shell();
   ctx.fill();
 
-  // Shade on the flank away from the light, drawn under the eggs so they stay solid ink and no
-  // hatching ever crosses one.
-  hatch(ctx, shell, [
-    [54, 24],
-    [96, 24],
-    [96, 96],
-    [32, 96],
-  ]);
-
-  ctx.fillStyle = INK;
-  for (const [x, y, rx, ry, tilt] of EGGS) {
-    ctx.beginPath();
-    ctx.ellipse(x, y, rx, ry, tilt, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
+  ctx.save();
   ctx.beginPath();
-  closedCurve(ctx, lobedRing(MOUTH, 9, 5.5, MOUTH_LOBES));
+  shell();
+  ctx.clip();
+  ctx.fillStyle = INK;
+  ctx.beginPath();
+  ctx.ellipse(VENT[0], VENT[1], VENT_RX, VENT_RY, 0, 0, Math.PI * 2);
   ctx.fill();
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = RIM;
+  ctx.stroke();
+  ctx.fillStyle = PAPER;
+  ctx.beginPath();
+  ctx.ellipse(VENT_LIP[0], VENT_LIP[1], VENT_RX - 1.2, VENT_RY - 1.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 
+  for (const egg of EGGS) haloedEgg(ctx, egg);
+
+  inkContour(ctx, shell);
+  puddle(ctx, 33, PUDDLE_LOBES);
+}
+
+function drawDestroyed(ctx: CanvasRenderingContext2D): void {
+  // The floor keeps the live sac's own silk, snapped back to stubs. That shared anchoring is what
+  // makes the wreck the same object rather than a second prop that happens to be nearby.
   ctx.strokeStyle = INK;
   ctx.lineWidth = SILK;
-  for (const [from, to] of FRINGE) {
+  for (const [from, to] of SILK_STRANDS) {
     ctx.beginPath();
-    ctx.moveTo(from[0], from[1]);
+    ctx.moveTo((from[0] + to[0]) / 2, (from[1] + to[1]) / 2);
     ctx.lineTo(to[0], to[1]);
     ctx.stroke();
   }
 
-  ctx.lineWidth = CONTOUR;
+  ctx.fillStyle = PAPER;
   ctx.beginPath();
-  shell();
-  ctx.stroke();
-}
-
-function drawDestroyed(ctx: CanvasRenderingContext2D): void {
+  closedCurve(ctx, FLAP);
+  ctx.fill();
   ctx.strokeStyle = INK;
-  ctx.fillStyle = INK;
-  ctx.lineWidth = SILK;
-  for (const [from, bend, to] of SNAPPED) {
-    ctx.beginPath();
-    ctx.moveTo(from[0], from[1]);
-    ctx.quadraticCurveTo(bend[0], bend[1], to[0], to[1]);
-    ctx.stroke();
-  }
-  for (const shard of DEBRIS) {
-    ctx.beginPath();
-    polyline(ctx, shard);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  groundShadow(ctx, 36);
-
-  for (const flap of FLAPS) {
-    ctx.fillStyle = PAPER;
-    ctx.beginPath();
-    closedCurve(ctx, flap);
-    ctx.fill();
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = FLAP_CONTOUR;
-    ctx.stroke();
-  }
+  ctx.lineWidth = CONTOUR;
+  ctx.stroke();
 
   const wreck = () => {
     polyline(ctx, TEAR);
     openCurve(ctx, WRECK_WALL);
-    ctx.lineTo(TEAR[0][0], TEAR[0][1]);
     ctx.closePath();
   };
 
@@ -351,65 +272,114 @@ function drawDestroyed(ctx: CanvasRenderingContext2D): void {
   wreck();
   ctx.fill();
 
-  hatch(ctx, wreck, [
-    [58, 40],
-    [96, 40],
-    [96, 96],
-    [38, 96],
-  ]);
-
-  ctx.fillStyle = INK;
-  ctx.beginPath();
-  polyline(ctx, CAVITY_TEAR);
-  openCurve(ctx, CAVITY_WALL);
-  ctx.lineTo(CAVITY_TEAR[0][0], CAVITY_TEAR[0][1]);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = PAPER;
-  for (const shell of HUSKS) {
-    ctx.beginPath();
-    polyline(ctx, shell);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = CONTOUR;
-  ctx.beginPath();
-  wreck();
-  ctx.stroke();
-}
-
-// A contact shadow rather than a cast one: the sac sits *on* the floor (#76 §2), so the ink spreads
-// round its base instead of being thrown to one side.
-function groundShadow(ctx: CanvasRenderingContext2D, rx: number): void {
-  ctx.fillStyle = INK;
-  ctx.beginPath();
-  ctx.ellipse(48, 89.5, rx, 5, 0, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-// Straight parallel ink at 45°, clipped to the shape and then to its shaded flank. Contour-following
-// strokes were tried first and read as a spiral shell rather than as shading.
-function hatch(ctx: CanvasRenderingContext2D, shape: () => void, wedge: readonly Pt[]): void {
   ctx.save();
   ctx.beginPath();
-  shape();
+  wreck();
   ctx.clip();
-  ctx.beginPath();
-  polyline(ctx, wedge);
-  ctx.closePath();
-  ctx.clip();
+
   ctx.strokeStyle = INK;
-  ctx.lineWidth = HATCH;
+  ctx.lineWidth = RIM;
+  ctx.save();
+  ctx.translate(WALL_CENTRE[0], WALL_CENTRE[1]);
+  ctx.scale(WALL_INSET, WALL_INSET);
+  ctx.translate(-WALL_CENTRE[0], -WALL_CENTRE[1]);
   ctx.beginPath();
-  for (let d = -DESIGN; d <= DESIGN * 2; d += HATCH_STEP) {
-    ctx.moveTo(d, DESIGN);
-    ctx.lineTo(d + DESIGN, 0);
-  }
-  ctx.stroke();
+  wreck();
   ctx.restore();
+  ctx.stroke();
+
+  ctx.fillStyle = INK;
+  ctx.beginPath();
+  closedCurve(ctx, RESIDUE);
+  ctx.fill();
+
+  for (const egg of CLINGING) haloedEgg(ctx, egg);
+  ctx.restore();
+
+  inkContour(ctx, wreck);
+  puddle(ctx, 35, SPILL_LOBES);
+}
+
+// The sac's outline is the clutch's own outline pushed out by the membrane's thickness, so the skin
+// bulges exactly where an egg presses against it. A contour drawn independently of the contents is
+// what turns this into a ball with holes in it. The margin widens toward the top, which gathers the
+// bag into a pale crown above the brood — the slack the sac opens through.
+function membraneAround(
+  centre: Pt,
+  eggs: readonly Egg[],
+  margin: number,
+  crown: number,
+  // Even, so one sample lands square on the top and the crown's slack is gathered centrally
+  // rather than swelling onto one shoulder as a handle. Few and wide apart, so each quadratic bows
+  // instead of running straight and faceting the bag.
+  samples = 12,
+): Pt[] {
+  return Array.from({ length: samples }, (_, i) => {
+    const angle = (i / samples) * Math.PI * 2;
+    const ux = Math.cos(angle);
+    const uy = Math.sin(angle);
+    let reach = 0;
+    for (const [x, y, rx, ry] of eggs) {
+      const r = (rx + ry) / 2;
+      const dx = x - centre[0];
+      const dy = y - centre[1];
+      const off = Math.abs(dx * uy - dy * ux);
+      if (off >= r) continue;
+      reach = Math.max(reach, dx * ux + dy * uy + Math.sqrt(r * r - off * off));
+    }
+    const slack = margin + crown * Math.max(0, -uy) ** 1.5;
+    return [centre[0] + ux * (reach + slack), centre[1] + uy * (reach + slack)] as Pt;
+  });
+}
+
+// Pale first, ink second: the halo is struck into whatever is already down, then covered on this
+// egg's own side. It is what lets the clutch crowd and overlap without fusing into one black mass.
+function haloedEgg(ctx: CanvasRenderingContext2D, [x, y, rx, ry, tilt]: Egg): void {
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, tilt, 0, Math.PI * 2);
+  ctx.strokeStyle = PAPER;
+  ctx.lineWidth = HALO;
+  ctx.stroke();
+  ctx.fillStyle = INK;
+  ctx.fill();
+}
+
+// Rubber-hose ink swells at a curve's belly and thins away from it; one uniform width reads as CAD
+// linework. Offset passes thicken the side the light falls away from and taper by themselves where
+// the contour turns parallel to the offset, which no clipped band does.
+//
+// They are clipped to the *outside* of the shape. Unclipped, the side where the offset points
+// inward lays a second stroke across the pale fill, which reads as a doubled contour that starts
+// and ends against nothing.
+function inkContour(ctx: CanvasRenderingContext2D, shape: () => void): void {
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = CONTOUR;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, DESIGN, DESIGN);
+  shape();
+  ctx.clip("evenodd");
+  for (let i = 1; i < SWELL_PASSES; i++) {
+    ctx.save();
+    ctx.translate(i * SWELL_STEP, i * SWELL_STEP);
+    ctx.beginPath();
+    shape();
+    ctx.restore(); // the path is already in user space; stroke it at an unscaled width
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.beginPath();
+  shape();
+  ctx.stroke();
+}
+
+// Drawn last and lapping over the base, so the sac sits *in* it rather than on it. Lumpy rather
+// than elliptical: a splat with two matching ends reads as a pair of feet.
+function puddle(ctx: CanvasRenderingContext2D, rx: number, lobes: readonly number[]): void {
+  ctx.fillStyle = INK;
+  ctx.beginPath();
+  closedCurve(ctx, lobedRing([48, 90.5], rx, 4.2, lobes));
+  ctx.fill();
 }
 
 function polyline(ctx: CanvasRenderingContext2D, pts: readonly Pt[]): void {

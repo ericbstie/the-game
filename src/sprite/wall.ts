@@ -2,45 +2,69 @@ import type { SpriteSubject } from "./sheet";
 
 // The buildable barrier — the cheap slab players drop to steer a wave. Not the room perimeter.
 //
-// Three constraints shape every number here.
+// What fixes every number here:
 //
-// **It is drawn edge to edge.** Players lay these in runs, and a run has to read as one wall
-// rather than as a line of stamps. So the blockwork repeats every `JOINT_PITCH`, which divides the
-// box: a joint lands *on* the box edge, and the half a joint each of two neighbours contributes
-// adds up to exactly the joint that sits mid-box. Nothing in the drawing has a period of 30, so
-// there is nothing at the seam for the eye to lock onto, and no feature is distinctive enough to
-// be recognised as a repeat. The bond is stacked rather than staggered because a staggered course
-// has to straddle the box edge, which leaves that course's outer column un-inked and bites a notch
-// out of the silhouette of a wall standing on its own.
+// **It is drawn edge to edge, in runs.** A row of these has to read as one wall, not as a line of
+// stamps. Nothing in the drawing has a period of 30: the courses run the full width, and the bond
+// repeats every `BOND_PITCH`, which divides the box. The phases are deliberately off the box edges
+// — no vertical ink sits in column 0 or column 29 — so two neighbours never double a joint into a
+// thicker line at the seam, and never leave a gap either. The result is one continuous bond across
+// a run, with nothing marking where one wall ends and the next begins.
+//
+// **The bond is staggered.** A stacked bond turns into a lattice at this size and reads as a
+// window; the half-pitch offset between courses is what makes it read as masonry instead.
 //
 // **Every edge is an integer.** Axis-aligned integer-edge fills are the one place this style gets
-// hard black for free — 0% anti-aliasing, measured (#77 §4). A wall is entirely axis-aligned, so
-// the bands below are sized to divide exactly and no curve is used anywhere.
+// hard black for free — 0% anti-aliasing, measured (#77 §4). Nothing here curves, so the sprite is
+// pure ink at any dpr.
 //
-// **The two planes are told apart by tone, not by outline.** The top surface is solid ink and the
-// front face is white blockwork, which is the only way to say "different plane" at 30 px without
-// interior detail. The courses are the heavier joint so the face reads as stacked masonry rather
-// than as a lattice.
+// **It has to be told apart from the miner and the turret**, which share its 30 px box. Both of
+// those are solid ink masses standing clear of their box edges. The wall is their inverse: a white
+// field of thin ink lines filling the box corner to corner. Tone and silhouette both separate them
+// before any detail is resolved.
 //
 // Elevation, per #76 §2. The box is exactly the footprint square, so the top surface is
 // foreshortened into a band rather than drawn as a full square, and the sprite is blitted anchored
-// at the bottom of its box — that bottom edge is where the wall meets the floor. Ink deliberately
-// reaches all four edges of the box; the harness reports that as "touches the edge of its box",
-// and for this sprite that is the point.
+// at the bottom of its box — that bottom edge is the course line where the wall meets the floor.
+// Ink deliberately reaches all four edges of the box; the harness reports that as "touches the edge
+// of its box", and for this sprite that is the point.
 //
 // No damage states: #76 §5 cut them, and a health bar carries damage instead.
 
 const SIZE = 30; // 2×2 tiles at TILE 15 (src/game/build.ts)
 
-// Bands down the box. They sum to SIZE, and every one of them is whole.
-const CAP_H = 7; // the top surface, foreshortened
-const COURSE_H = 6;
-const COURSES = 3;
-const COURSE_JOINT = 2; // mortar between courses
-const FOOT_H = 1; // the line where the front face meets the floor
+const CAP_H = 5; // the top surface, foreshortened into a band
+// The base outranks a bed joint so the wall reads as sitting on the floor rather than floating,
+// and so the silhouette has some line-weight hierarchy: this style is a heavy outer contour
+// holding lighter interior detail, and the cap and the base are the only contour a wall gets.
+const BASE_H = 2;
 
-const BLOCK_JOINT = 2; // mortar between blocks — one whole joint, or two halves across a seam
-const JOINT_PITCH = 10; // divides SIZE, so a run of walls has one rhythm and no seam
+const BOND_PITCH = 10; // divides SIZE, so a run of walls carries one unbroken bond
+
+const BED_JOINT = 1;
+
+// Courses deepen toward the floor and the head joints alternate weight. **Variation down the box is
+// the only irregularity a tiling sprite can afford.** A run of walls repeats horizontally, so
+// anything that varies across the box has a period of exactly 30 and shows up as a repeating stamp;
+// anything that varies down it is free, because every course still runs the full width and lines up
+// with its neighbours. So the hand goes in vertically — which is also what keeps the face off
+// reading as CAD linework, since real ink is not all one weight, while the silhouette keeps the hard
+// integer edges that make this sprite pure black at any dpr.
+//
+// The weight varies only on the **head** joints, which are 4–6 px stubs. It was tried on the bed
+// joints too and had to come out: those run the full width, so a 2 px bed reads as a second cap
+// band across the middle of the wall and competes with the real one.
+//
+// `phase` is where a course's head joints start, and alternating it by half a pitch is the stagger
+// that makes this masonry rather than a lattice. Both phases sit clear of columns 0 and 29, which
+// is what lets two neighbours meet without doubling a joint or leaving a gap. Heights sum with the
+// bed joints, the cap and the base to exactly SIZE.
+const COURSES = [
+  { height: 4, phase: 2, head: 1 },
+  { height: 5, phase: 7, head: 2 },
+  { height: 5, phase: 2, head: 1 },
+  { height: 6, phase: 7, head: 2 },
+];
 
 const INK = "#000";
 
@@ -50,26 +74,20 @@ const wall: SpriteSubject = {
   facings: 1,
   frames: 1,
   draw(ctx, size) {
-    const faceTop = CAP_H;
-    const faceHeight = COURSES * COURSE_H + (COURSES - 1) * COURSE_JOINT;
-
     ctx.fillStyle = INK;
     ctx.fillRect(0, 0, size, CAP_H);
-    ctx.fillRect(0, size - FOOT_H, size, FOOT_H);
+    ctx.fillRect(0, size - BASE_H, size, BASE_H);
 
-    for (let course = 1; course < COURSES; course++) {
-      ctx.fillRect(
-        0,
-        faceTop + course * (COURSE_H + COURSE_JOINT) - COURSE_JOINT,
-        size,
-        COURSE_JOINT,
-      );
-    }
-
-    for (let centre = 0; centre <= size; centre += JOINT_PITCH) {
-      const left = Math.max(0, centre - BLOCK_JOINT / 2);
-      const right = Math.min(size, centre + BLOCK_JOINT / 2);
-      ctx.fillRect(left, faceTop, right - left, faceHeight);
+    let y = CAP_H;
+    for (const [index, course] of COURSES.entries()) {
+      for (let x = course.phase; x < size; x += BOND_PITCH) {
+        ctx.fillRect(x, y, course.head, course.height);
+      }
+      y += course.height;
+      if (index < COURSES.length - 1) {
+        ctx.fillRect(0, y, size, BED_JOINT);
+        y += BED_JOINT;
+      }
     }
   },
 };
