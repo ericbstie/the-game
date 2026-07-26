@@ -884,6 +884,28 @@ describe("health bars", () => {
     expect(at("elite", 200, 24)).toBe(0);
   });
 
+  // #88 §2: #81 granted bars to "enemies, peers and structures". A nest is none of those three, so
+  // it got none — and at NEST_HP 600 it is the longest single fight in the game, and the one
+  // readout with real tactical weight, since killing a nest is how a sector is silenced.
+  test("shows one on a damaged nest — the longest fight in the game had no progress at all", () => {
+    const nest = { id: "n1", pos: { x: 1150, y: 1150 }, radius: 48, alive: true, sector: 0 };
+    expect(drawn({ nests: [{ ...nest, hp: 600 }] }).frames).toEqual([]); // untouched, as ever
+    const { frames, interiors } = drawn({ nests: [{ ...nest, hp: 300 }] });
+    expect(frames.length).toBe(1);
+    expect(frames[0].args[2]).toBe(96); // the nest's own width, like every other bar
+    expect(interiors[0].args[2]).toBe(47); // half the 94 interior px
+  });
+
+  test("a silenced nest shows none — it is wreckage, not a fight in progress", () => {
+    expect(
+      drawn({
+        nests: [
+          { id: "n1", pos: { x: 1150, y: 1150 }, radius: 48, hp: 0, alive: false, sector: 0 },
+        ],
+      }).frames,
+    ).toEqual([]);
+  });
+
   test("spends the bar's length on what is left, inside an ink frame that never shrinks", () => {
     const { frames, interiors } = drawn({
       enemies: [
@@ -935,6 +957,14 @@ describe("name labels", () => {
     expect(label?.args[2]).toBeLessThan(haloTop);
   });
 
+  // #88 §4: the UI ships Playfair Display on every screen, but this label is drawn by `drawWorld`
+  // and kept the system font — the only text in the game not in the game's typeface.
+  test("is set in the game's own typeface, like every other word in it", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, two, { camera, viewport, selfId: "p1", sprites });
+    expect(ctx.font).toContain("Playfair Display");
+  });
+
   // The offset alone is not enough: a squadmate 7–40 px above you still paints their body — and
   // their halo — after your label if labels ride the Y-sort.
   test("paints every name after every avatar, so no halo can cover a squadmate's", () => {
@@ -965,17 +995,22 @@ describe("the build ghost", () => {
     return ctx.calls.filter((c) => c.fn === "drawImage");
   };
 
-  test("draws the building itself, at full opacity where it can be placed", () => {
+  test("draws the building itself, near-solid where it can be placed", () => {
     const [ghost] = ghosting(true);
     expect((ghost.args[0] as { tag: string }).tag).toBe("wall/0/0");
-    expect(ghost.alpha).toBe(1);
+    expect(ghost.alpha).toBeGreaterThan(0.5);
+    // #88 §1: taken literally, "full opacity when valid" made a valid ghost pixel-identical to a
+    // placed building — a player lining a wall up against an existing one could not tell the
+    // preview from the real thing without moving the cursor. Held back just enough to read as a
+    // preview, which keeps validity a matter of opacity and adds no second channel.
+    expect(ghost.alpha).toBeLessThan(1);
   });
 
-  test("fades it, and only fades it, where it cannot", () => {
+  test("fades it further, and only fades it, where it cannot", () => {
     const [ghost] = ghosting(false);
     expect((ghost.args[0] as { tag: string }).tag).toBe("wall/0/0");
     expect(ghost.alpha).toBeGreaterThan(0);
-    expect(ghost.alpha).toBeLessThan(1);
+    expect(ghost.alpha).toBeLessThan(ghosting(true)[0].alpha as number);
   });
 
   test("says nothing about validity beyond that", () => {

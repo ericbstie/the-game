@@ -23,7 +23,7 @@ import {
 } from "./build";
 import { type Camera, isVisible, type Viewport } from "./camera";
 import type { ShotEvent } from "./clientWorld";
-import { ELITE_HP, GRUNT_HP, RANGED_RANGE } from "./enemies";
+import { ELITE_HP, GRUNT_HP, NEST_HP, RANGED_RANGE } from "./enemies";
 import { PLAYER_MAX_HP } from "./world";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
@@ -190,9 +190,16 @@ const BAR_GAP = 3; // clear paper between the top of the drawing and the bar abo
 // only the dying player's own client draws it, and only for the 20 s they are down.
 const DOWNED_DIM = "rgba(0, 0, 0, 0.55)";
 
-// What a placement that cannot be made looks like. #81 makes validity a matter of opacity alone —
-// full when it can be placed, semi-transparent when it cannot — so there is no second colour and no
-// refusal mark here; the ghost is simply the building you are about to place, faded.
+// What a placement looks like. #81 makes validity a matter of opacity alone — more solid when it
+// can be placed, less when it cannot — so there is no second colour and no refusal mark here; the
+// ghost is simply the building you are about to place, faded.
+//
+// A *valid* ghost is held just off solid rather than at literal full opacity (#88 §1). At 1.0 it
+// was pixel-identical to a building already standing there, so a player lining a wall up against
+// an existing run could not tell the preview from the real thing without moving the cursor. 0.85
+// still reads as clearly-placeable next to 0.45, and it keeps validity a matter of opacity rather
+// than introducing the second channel #81 set out to remove.
+const GHOST_VALID_ALPHA = 0.85;
 const GHOST_BLOCKED_ALPHA = 0.45;
 
 // One colour per enemy kind; the elite reads darker and, with its larger radius, distinct.
@@ -289,7 +296,13 @@ export function drawWorld(
 
   for (const n of world.nests) {
     if (!isVisible(n.pos, n.radius * 2, camera, viewport)) continue;
-    standing.push({ y: n.pos.y, paint: () => paintNest(ctx, n, sprites, blit) });
+    standing.push({
+      y: n.pos.y,
+      paint: () => {
+        paintNest(ctx, n, sprites, blit);
+        paintNestHealth(ctx, n);
+      },
+    });
   }
 
   // Built once for the whole frame, not once per wall: every wall asks the same question of the
@@ -368,7 +381,7 @@ export function drawWorld(
   const ghost = options.ghost;
   const ghostSpec = ghost && BUILDABLES[ghost.kind];
   if (ghost && ghostSpec) {
-    ctx.globalAlpha = ghost.valid ? 1 : GHOST_BLOCKED_ALPHA;
+    ctx.globalAlpha = ghost.valid ? GHOST_VALID_ALPHA : GHOST_BLOCKED_ALPHA;
     // The ghost takes the neighbour mask too, off the walls that are actually standing, so a wall
     // laid onto the end of a run previews the join it will make rather than a fresh four-sided
     // block. The run it joins keeps its own faces until the placement lands: the ghost is a preview
@@ -723,6 +736,17 @@ function paintNest(
   fillCircle(ctx, nest.pos.x, nest.pos.y, nest.radius);
 }
 
+// #81 granted bars to "enemies, peers and structures". A nest is none of those three and so got
+// none — despite NEST_HP 600 being the longest single fight in the game, and the one readout with
+// real tactical weight, since killing a nest is how a sector is silenced (#88 §2).
+//
+// A silenced nest is skipped rather than shown empty: it is wreckage, not a fight in progress, and
+// the destroyed sprite already says so.
+function paintNestHealth(ctx: CanvasRenderingContext2D, nest: RenderedNest): void {
+  if (!nest.alive) return;
+  healthBar(ctx, nest.pos.x, nest.pos.y - nest.radius, nest.radius * 2, nest.hp, NEST_HP);
+}
+
 // Every tile a wall stands on, so a wall can be asked what it abuts. Only walls go in: a miner
 // butted against a wall is a different building and the wall's face is still cut where it meets one.
 function wallTiles(structures: WorldSnapshot["structures"]): Set<number> {
@@ -873,7 +897,10 @@ function paintOverhead(
   // The bar rides above the drawing and the name above the bar. The band the bar occupies is
   // reserved whether or not one is showing, so a label does not hop as a player takes a hit.
   healthBar(ctx, avatar.pos.x, top, avatar.radius * 2, avatar.hp, PLAYER_MAX_HP);
-  ctx.font = "12px system-ui, sans-serif";
+  // The game's own typeface, as every other word in it is. This label is on ADR 0001's in-match
+  // allowlist and is drawn here rather than in the DOM, so it was the one piece of text the M5 UI
+  // restyle could not reach (#88 §4). The fallbacks match `styles.css`.
+  ctx.font = '12px "Playfair Display", "Times New Roman", Times, serif';
   ctx.textAlign = "center";
   const baseline = top - BAR_GAP - BAR_HEIGHT - 3;
   // Cut out of the ink rather than laid on it. The floor is white paper and so is this stroke, so a
