@@ -505,13 +505,17 @@ describe("the bank is whole Metal", () => {
     expect(build.bank.metal).toBe(5);
   });
 
+  // The tick count is derived from the trickle rather than fixed, so a retune of MINER_TRICKLE
+  // cannot leave this asserting a sequence the rate no longer produces.
   test("stepBuild reports the whole Metal that crossed on that tick, not the rate", () => {
     const build = freshBuildState(ARENA);
     build.bank.metal = MINER.cost;
-    placeStructure(build, "miner", metalTile, MINER); // MINER_TRICKLE a second, 0.2 a tick
+    placeStructure(build, "miner", metalTile, MINER);
+    const TICK_MS = 50;
+    const ticks = Math.ceil(1_000 / (MINER_TRICKLE * TICK_MS)); // ticks one miner takes per Metal
     const crossings = [];
-    for (let i = 0; i < 5; i++) crossings.push(stepBuild(build, 50));
-    expect(crossings).toEqual([0, 0, 0, 0, 1]);
+    for (let i = 0; i < ticks; i++) crossings.push(stepBuild(build, TICK_MS));
+    expect(crossings).toEqual([...new Array(ticks - 1).fill(0), 1]);
   });
 
   test("an idle grid reports no crossing", () => {

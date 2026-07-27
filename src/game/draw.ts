@@ -32,6 +32,7 @@ import {
 import { type Camera, isVisible, type Viewport } from "./camera";
 import type { ShotEvent } from "./clientWorld";
 import { ELITE_HP, GRUNT_HP, NEST_HP, RANGED_RANGE } from "./enemies";
+import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
 import { PLAYER_MAX_HP } from "./world";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
@@ -113,6 +114,9 @@ export interface DrawOptions {
   ghost?: BuildGhost;
   // This frame's shot lines. Absent — in a test, or before the first shot — nothing is drawn.
   shots?: ShotSource;
+  // The `+1`s currently in the air (#99), accrued per miner by `stepMetalFloats`. Aged here, like
+  // a shot line: the render layer owns how long one is up, and nothing about it rides the wire.
+  floats?: readonly MetalFloat[];
   // Baked art, or nothing. Absent — in a test, or before the first sprite lands — every entity
   // falls back to its shape, which is what keeps this one draw path the only one.
   sprites?: SpriteSource;
@@ -181,6 +185,11 @@ const NEST_DEAD = "#3a2d44"; // a silenced (destroyed) nest
 // invisible on it.
 const INK = "#000";
 const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
+
+// The game's own typeface, as every other word in it is — the fallbacks match `styles.css`. Shared
+// by the two things ADR 0001 allows to be written in the world: a player's name and a miner's `+1`.
+const WORLD_FONT = '12px "Playfair Display", "Times New Roman", Times, serif';
+const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for no other figure
 
 // A shot is one stroked line, and #81 asks for exactly that: continuous ink, shooter to target,
 // with no travelling projectile (#80 is out of scope). Two logical px so it survives being drawn
@@ -379,8 +388,13 @@ export function drawWorld(
   // the floor, and a line half-hidden behind the spider it ends at says nothing.
   drawShots(ctx, world, options);
 
+  // Over the sort for the same reason a shot line is: a `+1` marks the miner that earned it rather
+  // than standing on the floor beside it, and one half-hidden behind a spider says nothing.
+  drawFloats(ctx, options.floats, now);
+
   // Names last of everything in the world. They are on ADR 0001's short allowlist — almost nothing
-  // else may be written on screen — so nothing the world draws is allowed to obscure one.
+  // else may be written on screen — so nothing the world draws is allowed to obscure one, the `+1`
+  // included.
   for (const paint of overhead) paint();
 
   // The ghost paints last so it reads on top of whatever it would replace, and it paints as the
@@ -475,6 +489,33 @@ function drawShots(
     const to = spec && shots.resolve(s.turret.targetId);
     if (to) line(footprintCenter(s.tile, spec.footprint), to);
   }
+}
+
+// The `+1`s a miner throws up as it mines (#99). Each one is literally one whole Metal — never a
+// batched total — so the figure never changes and the only things that age are its height and its
+// opacity. Cut out of paper exactly as a name is, and for the same reason: the floor is white and
+// the sprites are solid ink, so unoutlined black over a spider is invisible.
+function drawFloats(
+  ctx: CanvasRenderingContext2D,
+  floats: readonly MetalFloat[] | undefined,
+  now: number,
+): void {
+  if (!floats || floats.length === 0) return;
+  ctx.font = WORLD_FONT;
+  ctx.textAlign = "center";
+  ctx.lineWidth = 3;
+  ctx.lineJoin = "round";
+  for (const float of floats) {
+    const life = (now - float.at) / FLOAT_MS;
+    if (life < 0 || life >= 1) continue;
+    ctx.globalAlpha = 1 - life;
+    const y = float.pos.y - life * FLOAT_RISE;
+    ctx.strokeStyle = PAPER;
+    ctx.strokeText(FLOAT_TEXT, float.pos.x, y);
+    ctx.fillStyle = INK;
+    ctx.fillText(FLOAT_TEXT, float.pos.x, y);
+  }
+  ctx.globalAlpha = 1;
 }
 
 // Where a shot that hit nothing ends: full range along the aim vector, which the server admitted as
@@ -911,10 +952,9 @@ function paintOverhead(
   // The bar rides above the drawing and the name above the bar. The band the bar occupies is
   // reserved whether or not one is showing, so a label does not hop as a player takes a hit.
   healthBar(ctx, avatar.pos.x, top, avatar.radius * 2, avatar.hp, PLAYER_MAX_HP);
-  // The game's own typeface, as every other word in it is. This label is on ADR 0001's in-match
-  // allowlist and is drawn here rather than in the DOM, so it was the one piece of text the M5 UI
-  // restyle could not reach (#88 §4). The fallbacks match `styles.css`.
-  ctx.font = '12px "Playfair Display", "Times New Roman", Times, serif';
+  // On ADR 0001's in-match allowlist, and drawn here rather than in the DOM, so it was the one piece
+  // of text the M5 UI restyle could not reach (#88 §4).
+  ctx.font = WORLD_FONT;
   ctx.textAlign = "center";
   const baseline = top - BAR_GAP - BAR_HEIGHT - 3;
   // Cut out of the ink rather than laid on it. The floor is white paper and so is this stroke, so a

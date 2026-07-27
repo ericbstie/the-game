@@ -29,7 +29,7 @@ sparingly rather than as a replacement vocabulary for the sentences they displac
 |---|---|
 | Main menu | Text as needed |
 | Lobby screen | Text as needed, **including the 4-character lobby code** — it cannot be shared to join without being read |
-| In match | The **name label above each player**; the **Metal and Energy readouts**; the **escape time on the end screen**; the words **`metal / s`** on the Metal-per-second box the Metal readout reveals (granted on request, [#105](https://github.com/ericbstie/the-game/issues/105)); and on each build slot, its **Metal cost as a numeral** and its **one-word name** — `mine` · `generator` · `wall` · `turret` (granted on request, [#98](https://github.com/ericbstie/the-game/issues/98)) |
+| In match | The **name label above each player**; the **Metal and Energy readouts**; the **escape time on the end screen**; the words **`metal / s`** on the Metal-per-second box the Metal readout reveals (granted on request, [#105](https://github.com/ericbstie/the-game/issues/105)); on each build slot, its **Metal cost as a numeral** and its **one-word name** — `mine` · `generator` · `wall` · `turret` (granted on request, [#98](https://github.com/ericbstie/the-game/issues/98)); and the **`+1` a miner floats as it mines** (granted on request, [#99](https://github.com/ericbstie/the-game/issues/99)) |
 
 Everything not in that table goes, including the controls hint, the HP label and downed
 countdown, and the in-match lobby-code header.
@@ -40,6 +40,10 @@ things. A name identifies the building: it gives what the sprite draws a word, w
 itself cannot. A numeral states the price, which the player could otherwise only learn by trying to
 place a building and being refused, and which is what makes choosing between a 120 turret and a 150
 generator a judgement rather than a guess. The number keys the names used to carry stayed gone.
+
+The miner's `+1` is the first grant for text over the *arena* rather than on a readout or a slot. It
+was asked for in those words, and it is a number for the same reason the build slot's cost is one:
+what it says is a quantity, and an icon cannot say how much.
 
 The Metal-per-second box, asked for in the same version, needed a grant for only half of what it
 shows. Its figure needed none — that is one more Metal number on a readout already allowed. Its

@@ -1,6 +1,7 @@
 import { mulberry32, type OreGrid, TILE, tileKey } from "../src/game/build";
 import type { BuildGhost, ShotSource } from "../src/game/draw";
 import { ELITE_HP } from "../src/game/enemies";
+import { FLOAT_MS, type MetalFloat, minerFloatOrigin } from "../src/game/floats";
 import type { Tile, Vec2, WorldSnapshot } from "../src/lobby/protocol";
 
 // A hand-built world for `sprite:frame` to paint. Not a fixture for `bun test` and not the real
@@ -131,7 +132,12 @@ export function demoWorld(): WorldSnapshot {
     ore: demoOre(),
     structures: [
       { id: "b1", kind: "generator", tile: { tx: 1042, ty: 1030 }, hp: 300 },
+      // Three miners rather than one, because #99's `+1` is a *fade* — a single number at a single
+      // instant says nothing about whether it reads on its way up or disappears too soon. Same
+      // argument as the paired elites above.
       { id: "b2", kind: "miner", tile: { tx: 1030, ty: 1032 }, hp: 200 },
+      { id: "b9", kind: "miner", tile: { tx: 1027, ty: 1037 }, hp: 200 },
+      { id: "b10", kind: "miner", tile: { tx: 1034, ty: 1037 }, hp: 200 },
       // An L of walls, not a pair: a wall's variant is a mask of which sides another wall abuts, so
       // a lone wall or a straight run only ever exercises a few of the sixteen. The corner is what
       // shows whether a run reads as one continuous mass — which is the whole point of the mask, and
@@ -190,6 +196,18 @@ export function demoShots(world: WorldSnapshot, now: number): ShotSource {
       world.nests.find((n) => n.id === id && n.alive)?.pos ??
       null,
   };
+}
+
+// A `+1` over every miner in the scene, spread across the life of a float so the frame carries the
+// whole fade at once. Derived from the structures rather than hand-placed, so a number can never end
+// up over a miner that is not there — which is the one way this drawing can be wrong.
+export function demoFloats(world: WorldSnapshot, now: number): MetalFloat[] {
+  const miners = world.structures.filter((s) => s.kind === "miner");
+  return miners.map((s, i) => ({
+    id: s.id,
+    pos: minerFloatOrigin(s.tile),
+    at: now - Math.round((i / miners.length) * FLOAT_MS),
+  }));
 }
 
 function unit(from: Vec2, to: Vec2): Vec2 {

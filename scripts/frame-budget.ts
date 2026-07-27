@@ -22,6 +22,7 @@ const CACHE_MODULE = join(import.meta.dir, "../src/sprite/cache.ts");
 const REGISTRY_MODULE = join(import.meta.dir, "../src/sprite/registry.ts");
 const BUILD_MODULE = join(import.meta.dir, "../src/game/build.ts");
 const ENEMIES_MODULE = join(import.meta.dir, "../src/game/enemies.ts");
+const FLOATS_MODULE = join(import.meta.dir, "../src/game/floats.ts");
 
 export interface BudgetRequest {
   sprites: Record<string, string>;
@@ -54,6 +55,7 @@ export interface BudgetResult {
   blits: number;
   bars: number;
   lines: number;
+  floats: number;
   layers: Record<string, number>;
   ySortMs: number;
   healthBarsMs: Record<string, number>;
@@ -73,6 +75,7 @@ import { createSpriteCache } from ${JSON.stringify(CACHE_MODULE)};
 import { SPRITES } from ${JSON.stringify(REGISTRY_MODULE)};
 import { tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { ENEMY_CAP } from ${JSON.stringify(ENEMIES_MODULE)};
+import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
 
 const VIEW = { width: 800, height: 600 };
 const DPR = ${request.dpr};
@@ -181,6 +184,17 @@ try {
   }
   const m5 = { ...opts, shots: { peers, own: null, resolve: (id) => byId.get(id) ?? null } };
 
+  // #99's floats. STRUCTURES cycles the four kinds, so a quarter of them are miners — ten at 40,
+  // which is the count the ticket asks this to be measured at. Each is at a different point of its
+  // life, because opacity is what a float costs differently at.
+  const miners = full.structures.filter((s) => s.kind === "miner");
+  const floats = miners.map((s, i) => ({
+    id: s.id,
+    pos: minerFloatOrigin(s.tile),
+    at: opts.now - Math.round((i / miners.length) * FLOAT_MS),
+  }));
+  const withFloats = { ...m5, floats };
+
   // Whichever layer is measured first otherwise absorbs the canvas's one-time setup and reads two
   // to three times its true cost. Spend it here, on a result nobody reads.
   measure(() => { setup(); drawWorld(ctx, full, m5); }, 10);
@@ -190,6 +204,7 @@ try {
   const floorMs = measure(() => { setup(); drawWorld(ctx, floor, opts); });
   const fullMs = measure(() => { setup(); drawWorld(ctx, full, opts); });
   const m5Ms = measure(() => { setup(); drawWorld(ctx, full, m5); });
+  const floatsMs = measure(() => { setup(); drawWorld(ctx, full, withFloats); });
 
   let blits = 0;
   let bars = 0;
@@ -201,7 +216,7 @@ try {
   ctx.stroke = (...args) => { lines++; rawStroke(...args); };
   ctx.fillRect = (...args) => { if (args[3] === 4) bars++; rawFill(...args); };
   setup();
-  drawWorld(ctx, full, m5);
+  drawWorld(ctx, full, withFloats);
   ctx.drawImage = raw;
   ctx.stroke = rawStroke;
   ctx.fillRect = rawFill;
@@ -240,11 +255,13 @@ try {
     blits,
     bars,
     lines,
+    floats: floats.length,
     layers: {
       paper: +paperMs.toFixed(3),
       floor: +floorMs.toFixed(3),
       full: +fullMs.toFixed(3),
       m5: +m5Ms.toFixed(3),
+      floats: +floatsMs.toFixed(3),
     },
     ySortMs: +ySortMs.toFixed(4),
     healthBarsMs: { 60: +healthBars(60).toFixed(3), 240: +healthBars(240).toFixed(3) },
@@ -284,7 +301,7 @@ if (import.meta.main) {
   const share = (ms: number) => `${((ms / FRAME_MS) * 100).toFixed(1)}%`;
   console.log(request.out);
   console.log(
-    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} shot lines, dpr ${request.dpr}`,
+    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} shot lines, ${r.floats} miner floats, dpr ${request.dpr}`,
   );
   console.log(
     `sprites     ${Object.keys(request.sprites).join(", ") || "the registry as it stands"}`,
@@ -293,15 +310,16 @@ if (import.meta.main) {
   console.log(`  paper only          ${r.layers.paper.toFixed(3)} ms`);
   console.log(`  + grass and ore     ${r.layers.floor.toFixed(3)} ms`);
   console.log(`  + everything up     ${r.layers.full.toFixed(3)} ms`);
+  console.log(`  + the shot lines    ${r.layers.m5.toFixed(3)} ms`);
   console.log(
-    `  + the shot lines    ${r.layers.m5.toFixed(3)} ms   ${share(r.layers.m5)} of a 16.67 ms frame`,
+    `  + the miner floats  ${r.layers.floats.toFixed(3)} ms   ${share(r.layers.floats)} of a 16.67 ms frame`,
   );
   console.log("");
   console.log(`  y-sort alone        ${(r.ySortMs * 1000).toFixed(1)} us`);
   console.log(`  shot lines (150)    ${r.shotLinesMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log("");
-  console.log(`M5 worst case, measured through the shipped drawWorld`);
+  console.log(`Worst case, measured through the shipped drawWorld`);
   console.log(
-    `  ${r.layers.m5.toFixed(2)} ms   ${share(r.layers.m5)}   headroom ${(FRAME_MS - r.layers.m5).toFixed(2)} ms`,
+    `  ${r.layers.floats.toFixed(2)} ms   ${share(r.layers.floats)}   headroom ${(FRAME_MS - r.layers.floats).toFixed(2)} ms`,
   );
 }

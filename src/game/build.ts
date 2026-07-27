@@ -243,7 +243,7 @@ export interface BuildableSpec {
   requires: OreKind | null; // the ore at least one tile under the footprint must be
 }
 
-export const MINER_TRICKLE = 4; // metal/s — it never stops and it stacks
+export const MINER_TRICKLE = 2; // metal/s — it never stops and it stacks
 export const GENERATOR_OUTPUT = 400; // energy/s of ceiling each standing generator contributes
 
 // Turret fire. Range matches the player's own reach, and ~20 dps kills a 30 HP grunt in ~1.5 s.
@@ -456,13 +456,26 @@ export function removeStructure(build: BuildState, id: string): Structure | null
 // over ten seconds, because 0.6 added two hundred times lands at 119.99999999999973.
 const THOUSANDTHS_PER_METAL = 1_000;
 
+// Anything carrying an unbanked remainder. `BuildState` is one; #99's per-miner counters are the
+// others, which is why this is a shape rather than a field of the bank.
+export interface MetalAccrual {
+  metalThousandths: number;
+}
+
+// Take the whole Metal that `metal` completes, leaving the sub-unit remainder behind. The one place
+// a whole-Metal crossing is decided: `creditMetal` banks what this returns and #99 floats a `+1` on
+// it, so a cosmetic derived per miner counts the same crossings the shared bank is paid on.
+export function accrueMetal(accrual: MetalAccrual, metal: number): number {
+  accrual.metalThousandths += Math.round(metal * THOUSANDTHS_PER_METAL);
+  const whole = Math.floor(accrual.metalThousandths / THOUSANDTHS_PER_METAL);
+  accrual.metalThousandths -= whole * THOUSANDTHS_PER_METAL;
+  return whole;
+}
+
 // Pay Metal into the shared bank, returning the whole Metal that just landed in it — 0 on a tick
-// that only moved the remainder. That return is the "a whole Metal was banked" crossing: the beat
-// #99 floats a `+1` on.
+// that only moved the remainder.
 export function creditMetal(build: BuildState, metal: number): number {
-  build.metalThousandths += Math.round(metal * THOUSANDTHS_PER_METAL);
-  const whole = Math.floor(build.metalThousandths / THOUSANDTHS_PER_METAL);
-  build.metalThousandths -= whole * THOUSANDTHS_PER_METAL;
+  const whole = accrueMetal(build, metal);
   build.bank.metal += whole;
   return whole;
 }
