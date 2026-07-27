@@ -2,6 +2,7 @@ import type {
   Arena,
   Avatar,
   Bank,
+  BuildableKind,
   EnemyKind,
   EnemySnapshot,
   Exit,
@@ -21,6 +22,7 @@ import type {
 } from "../lobby/protocol";
 import {
   type BuildState,
+  buildCost,
   freshBuildState,
   generateOre,
   insertStructure,
@@ -383,6 +385,13 @@ export class ClientWorld {
   // it costs nothing on the wire and a miner leaves the reading the tick its removal arrives.
   metalRate(): number {
     return metalRate(this.build);
+  }
+
+  // What a buildable would cost the squad right now (#101), for the build bar's cost circle.
+  // Derived from the mirrored structure set like `metalRate`, so the bar quotes the very number
+  // server-side admission will charge and the ghost is already testing against.
+  buildCost(kind: BuildableKind): number {
+    return buildCost(kind, this.build);
   }
 
   // The live energy rate: what the grid can generate, and what is drawing against it.

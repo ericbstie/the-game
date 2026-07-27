@@ -43,6 +43,12 @@ const BUILD_NAMES: Record<BuildableKind, string> = {
   generator: "generator",
 };
 
+// Every slot's live Metal price, in bar order. A turret's climbs with the squad's standing turrets
+// (#101), so the circle is mirrored from the world on the HUD's timer rather than read once.
+// Before the world exists the squad has nothing standing, which is exactly the registry price.
+const slotCosts = (world: ClientWorld | undefined): number[] =>
+  BUILD_SLOTS.map((kind) => world?.buildCost(kind) ?? BUILDABLES[kind]?.cost ?? 0);
+
 // One cache for the app: a baked sprite depends on the display, not on which screen is mounted.
 // It bakes nothing until something is drawn, so importing this costs nothing under `bun test`,
 // where there is no canvas to bake into.
@@ -114,6 +120,7 @@ export function GameScreen({
   const [metal, setMetal] = useState(0); // the shared bank, mirrored into React for the HUD
   const [metalRate, setMetalRate] = useState(0); // shown on the reveal behind the total (#105)
   const [power, setPower] = useState({ generation: 0, consumption: 0 }); // the live energy rate
+  const [costs, setCosts] = useState(() => slotCosts(state.world)); // the build bar's cost circles
   const [underAttack, setUnderAttack] = useState(false); // drives the HUD's warning bell
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
   const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
@@ -319,6 +326,10 @@ export function GameScreen({
           ? shown // same numbers: return the same object so React bails out of the re-render
           : { ...live },
       );
+      setCosts((shown) => {
+        const next = slotCosts(world);
+        return next.every((cost, i) => cost === shown[i]) ? shown : next;
+      });
       // A downed player stops streaming position — peers hold its last pos as a corpse.
       if (!world.isDead()) {
         const pos = world.selfPos();
@@ -476,7 +487,7 @@ export function GameScreen({
           its one-word name underneath (#98). The words and the numerals are an ADR 0001 exception,
           asked for explicitly and recorded in the allowlist — the number keys stay gone. */}
       <div className="build-bar" role="toolbar" aria-label="Buildables">
-        {BUILD_SLOTS.map((kind) => {
+        {BUILD_SLOTS.map((kind, slot) => {
           const icon = SPRITES[kind];
           const spec = BUILDABLES[kind];
           return (
@@ -492,7 +503,7 @@ export function GameScreen({
             >
               {/* No spec, no circle: a kind that has not shipped has no cost to state, and an empty
                   circle would read as "free". */}
-              {spec && <span className="build-cost">{spec.cost}</span>}
+              {spec && <span className="build-cost">{costs[slot]}</span>}
               {icon && <SpriteIcon subject={icon} px={BUILD_ICON_PX} />}
               <span className="build-name">{BUILD_NAMES[kind]}</span>
             </button>

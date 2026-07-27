@@ -262,8 +262,40 @@ export const BUILDABLES: Partial<Record<BuildableKind, BuildableSpec>> = {
   miner: { footprint: 2, cost: 50, hp: 200, requires: "metal" },
   wall: { footprint: 2, cost: 10, hp: 400, requires: null },
   generator: { footprint: 5, cost: 150, hp: 300, requires: "power" },
-  turret: { footprint: 2, cost: 120, hp: 250, requires: null },
+  turret: { footprint: 2, cost: 60, hp: 250, requires: null },
 };
+
+// What a turret's price is multiplied by for each turret the squad already has standing (#101).
+// Provisional, like every balance number: a later value is a retune, not a correction.
+export const TURRET_COST_GROWTH = 1.3;
+
+function countKind(build: BuildState, kind: BuildableKind): number {
+  let count = 0;
+  for (const s of build.structures.values()) if (s.kind === kind) count++;
+  return count;
+}
+
+// What `kind` costs the squad *right now* — the one number the build bar, the placement ghost and
+// server-side admission all read, so none of them can quote a price another would refuse. Only the
+// turret escalates; every other buildable is its registry cost flat.
+//
+// The count is taken from the live structure map rather than tallied, so a turret leaving by any
+// route — demolished, or chewed down by an enemy — drops the price the same tick, and it is the
+// squad's turrets that are counted because the map is the squad's.
+//
+// Growth is applied by repeated multiplication rather than `**`: IEEE multiplication is exact,
+// while `Math.pow` is only implementation-approximated, so this is the form that cannot round to a
+// different whole Metal in the browser than it does on the server. Same reason `mulberry32` uses
+// `Math.imul`.
+export function buildCost(kind: BuildableKind, build: BuildState): number {
+  const base = BUILDABLES[kind]?.cost ?? 0;
+  if (kind !== "turret") return base;
+  let cost = base;
+  for (let standing = countKind(build, "turret"); standing > 0; standing--) {
+    cost *= TURRET_COST_GROWTH;
+  }
+  return Math.round(cost);
+}
 
 // A turret's live state. `cooldownMs` counts down to its next shot on the injected `dtMs` rather
 // than a clock, like an enemy's `biteMs`. `powered` is whether it has won an activation slot;
@@ -353,7 +385,7 @@ export function placementError(
 ): PlacementError {
   const spec = BUILDABLES[kind];
   if (!spec) return "unknown-buildable";
-  if (build.bank.metal < spec.cost) return "unaffordable";
+  if (build.bank.metal < buildCost(kind, build)) return "unaffordable";
   const maxTile = Math.floor(Math.min(build.arena.width, build.arena.height) / TILE) - 1;
   const tiles = footprintTiles(tile, spec.footprint);
   for (const t of tiles) {
@@ -382,8 +414,9 @@ export function freshBuildGuard(): BuildGuard {
 }
 
 // Decide whether to accept a reported placement, mutating `guard` as a side effect (the
-// `admitAttack` idiom). Returns the spec so the caller can debit and place without a second
-// lookup, or null if the placement is refused.
+// `admitAttack` idiom). Returns the spec so the caller can place without a second lookup — its HP
+// and footprint, not its price: what a placement is charged is `buildCost`, re-derived at the
+// debit. Null if the placement is refused.
 export function admitBuild(
   guard: BuildGuard,
   report: { kind: BuildableKind; tile: Tile; seq: number },
@@ -408,7 +441,8 @@ export function placeStructure(
   tile: Tile,
   spec: BuildableSpec,
 ): Structure {
-  build.bank.metal -= spec.cost;
+  // Priced before the insert, so the turret being paid for is not counted against its own price.
+  build.bank.metal -= buildCost(kind, build);
   return insertStructure(build, { id: `b${build.nextId++}`, kind, tile, hp: spec.hp });
 }
 
@@ -487,10 +521,8 @@ export function creditMetal(build: BuildState, metal: number): number {
 //
 // Returns the whole Metal that crossed into the bank this tick, usually 0.
 export function stepBuild(build: BuildState, dtMs: number): number {
-  let generators = 0;
-  for (const s of build.structures.values()) if (s.kind === "generator") generators++;
   const banked = creditMetal(build, (metalRate(build) * dtMs) / 1000);
-  build.power.generation = generators * GENERATOR_OUTPUT;
+  build.power.generation = countKind(build, "generator") * GENERATOR_OUTPUT;
   return banked;
 }
 
@@ -501,9 +533,7 @@ export function stepBuild(build: BuildState, dtMs: number): number {
 // instant it is let go, so folding it in would make the readout flicker with whoever is digging —
 // a worse answer to "is one more miner worth it" than no readout at all.
 export function metalRate(build: BuildState): number {
-  let miners = 0;
-  for (const s of build.structures.values()) if (s.kind === "miner") miners++;
-  return miners * MINER_TRICKLE;
+  return countKind(build, "miner") * MINER_TRICKLE;
 }
 
 // --- Solidity ------------------------------------------------------------------------------
@@ -619,6 +649,10 @@ export function admitDemolish(
 }
 
 // Remove a structure and credit the refund. Rounded down, so a cheap building can refund nothing.
+//
+// Deliberately the registry price, not `buildCost`: what a turret cost when it went up is not
+// recoverable — the standing count has moved since — and #101 asked only that the price of the
+// *next* turret escalate. A refund basis for an escalating cost is an open question, not a default.
 export function demolishStructure(build: BuildState, structure: Structure): number {
   const refund = Math.floor((BUILDABLES[structure.kind]?.cost ?? 0) * DEMOLISH_REFUND);
   removeStructure(build, structure.id);

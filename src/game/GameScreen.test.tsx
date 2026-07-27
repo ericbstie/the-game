@@ -217,6 +217,7 @@ describe("#105: hovering the Metal readout shows Metal per second", () => {
 });
 
 describe("#98: a build slot states its cost and its name", () => {
+  const mirrored = () => act(() => sleep(POS_SEND_MS + 30));
   // `mine`, not `miner` — the author's wording for the label. The domain type stays `miner`.
   const NAMES: Record<string, string> = {
     miner: "mine",
@@ -236,6 +237,38 @@ describe("#98: a build slot states its cost and its name", () => {
       // And nothing else: the cost and the name are the only words ADR 0001 grants a slot.
       expect(slot.textContent).toBe(`${BUILDABLES[kind]?.cost}${NAMES[kind]}`);
     }
+  });
+
+  // #101: the circle has to quote what the placement will actually be charged, not the base — a
+  // slot reading 60 while the server debits 101 is a refused placement with nothing to explain it.
+  test("the turret circle climbs with the squad's standing turrets; the rest hold", async () => {
+    const world = new ClientWorld(init, "me");
+    inMatch(() => {}, world);
+    const circle = (kind: string) =>
+      screen.getByLabelText(kind).querySelector(".build-cost")?.textContent;
+    await mirrored();
+    expect(circle("turret")).toBe("60");
+
+    world.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        builds: [
+          { id: "t1", kind: "turret", tile: { tx: 40, ty: 40 }, hp: 250 },
+          { id: "t2", kind: "turret", tile: { tx: 44, ty: 40 }, hp: 250 },
+        ],
+      },
+      Date.now(),
+    );
+    await mirrored();
+    expect(circle("turret")).toBe("101");
+    expect(circle("miner")).toBe("50");
+    expect(circle("wall")).toBe("10");
+    expect(circle("generator")).toBe("150");
+
+    world.applyMapDelta({ tick: 2, moves: [], removals: ["t1"] }, Date.now());
+    await mirrored();
+    expect(circle("turret")).toBe("78");
   });
 });
 
