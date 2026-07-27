@@ -2,6 +2,7 @@ import {
   BUILDABLES,
   type BuildableSpec,
   freshBuildState,
+  mulberry32,
   placeStructure,
   tileOf,
 } from "../src/game/build";
@@ -25,17 +26,6 @@ const TICK_MS = 50; // the 20 Hz sim tick
 const TICKS_PER_SECOND = 1000 / TICK_MS;
 const PLAYERS = 6; // the design's full squad
 const TURRETS = 30;
-
-// A deterministic rng, so two runs of this script measure the same world.
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
 const deflated = (value: unknown): number =>
