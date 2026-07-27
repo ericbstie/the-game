@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { LobbyState } from "../lobby/client";
 import type { WorldInit } from "../lobby/protocol";
+import { MINER_TRICKLE } from "./build";
 import { ClientWorld } from "./clientWorld";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { GameScreen } from "./GameScreen";
@@ -19,6 +20,7 @@ const init: WorldInit = {
 // ever overshoot, so every gap below is asserted on rather than assumed — a slow machine must fail
 // the test rather than quietly stop exercising it.
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const POS_SEND_MS = 50; // the HUD mirror's cadence, matching the component's own constant
 
 // A live match with nothing selected on the build bar, so left-click means shoot.
 function inMatch(onAttack: () => void, world = new ClientWorld(init, "me")): HTMLElement {
@@ -108,5 +110,69 @@ describe("M5-I5: the client holds itself to the weapon's cadence before firing",
     await sleep(RANGED_CADENCE_MS / 2 + 25);
     fireEvent.mouseDown(canvas, { button: 0 });
     expect(onAttack).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("#105: hovering the Metal readout shows Metal per second", () => {
+  const withMiners = (count: number) => {
+    const world = new ClientWorld(init, "me");
+    world.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        builds: Array.from({ length: count }, (_, i) => ({
+          id: `m${i}`,
+          kind: "miner" as const,
+          tile: { tx: 40 + i * 2, ty: 40 },
+          hp: 200,
+        })),
+      },
+      Date.now(),
+    );
+    return world;
+  };
+  // The HUD mirrors the world on the same ~20 Hz timer that streams position, so the readout is a
+  // tick behind the delta rather than immediate. Inside `act`, because that tick is what re-renders.
+  const mirrored = () => act(() => sleep(POS_SEND_MS + 30));
+  // What the box shows a player: its unit, and the figure set beside it as the bank total is.
+  const unit = () => screen.getByText("metal / s");
+  const figure = () => unit().nextElementSibling?.textContent;
+
+  test("names the unit it is measuring, and reads miners × MINER_TRICKLE", async () => {
+    inMatch(() => {}, withMiners(3));
+    await mirrored();
+    expect(unit().textContent).toBe("metal / s");
+    expect(figure()).toBe(String(3 * MINER_TRICKLE));
+  });
+
+  test("is zero with nothing standing, and moves as miners are built", async () => {
+    const world = withMiners(0);
+    inMatch(() => {}, world);
+    await mirrored();
+    expect(figure()).toBe("0");
+    world.applyMapDelta(
+      {
+        tick: 2,
+        moves: [],
+        builds: [{ id: "m9", kind: "miner", tile: { tx: 60, ty: 60 }, hp: 200 }],
+      },
+      Date.now(),
+    );
+    await mirrored();
+    expect(figure()).toBe(String(MINER_TRICKLE));
+  });
+
+  // Hover and focus on the readout are what slide the box out, and both are CSS — only a browser can
+  // say whether it moved. What is checkable here is the structure that reveal stands on: the box
+  // inside the readout, and a readout keyboard focus can land on. A `<span>` in its place, or the box
+  // hoisted out to a sibling, leaves the reading reachable by pointer alone.
+  test("hides inside a readout that keyboard focus can reach, not the pointer alone", async () => {
+    inMatch(() => {}, withMiners(1));
+    await mirrored();
+    const readout = screen.getByText("Metal").parentElement as HTMLElement;
+    expect(readout.contains(unit())).toBe(true);
+    expect(readout.tabIndex).toBeGreaterThanOrEqual(0);
+    readout.focus();
+    expect(document.activeElement).toBe(readout);
   });
 });

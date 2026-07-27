@@ -24,6 +24,7 @@ import {
   freshBuildState,
   generateOre,
   insertStructure,
+  metalRate,
   type OreGrid,
   removeStructure,
   slidePos,
@@ -375,6 +376,13 @@ export class ClientWorld {
   // The shared Metal readout. The server sends whole Metal, so this needs no rounding of its own.
   metal(): number {
     return this.build.bank.metal;
+  }
+
+  // Metal per second the squad's miners are paying in (#105). Per squad, not per player: the bank is
+  // shared and miners are communal. Derived from the mirrored structure set rather than streamed, so
+  // it costs nothing on the wire and a miner leaves the reading the tick its removal arrives.
+  metalRate(): number {
+    return metalRate(this.build);
   }
 
   // The live energy rate: what the grid can generate, and what is drawing against it.
