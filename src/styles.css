@@ -328,11 +328,15 @@ button:disabled {
   pointer-events: none;
 }
 
-/* Escape's menu: a small torn-out page over the match. `<dialog>` centres and plates itself, so
-   this only sets the padding — and clears the backdrop, because a wash over the arena would come
-   out as the grey this palette does not have, and because the match behind it is still being
-   played and has to stay watchable. */
+/* Escape's menu: a small torn-out page over the match. The margin is the centring, and it has to be
+   written out: the UA sheet pins a modal `<dialog>` to all four edges and lets `margin: auto` float
+   it to the middle, but the reset at the top of this file zeroes every margin, and an author rule
+   outranks the UA's whatever their specificities — so without this the menu collapses into the
+   top-left corner (#118). The padding is restored from the same reset. The backdrop is cleared
+   because a wash over the arena would come out as the grey this palette does not have, and because
+   the match behind it is still being played and has to stay watchable. */
 .game-menu {
+  margin: auto;
   padding: 1.5rem;
 }
 
