@@ -183,10 +183,10 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
     return { canvas, shots, pressedAt };
   }
 
-  // Six cadences: the three-second hold the ticket counts six shots over.
+  // Six cadences: the hold the ticket counts six shots over.
   const HOLD_MS = 6 * RANGED_CADENCE_MS;
 
-  test("a three-second hold sends exactly six shots", async () => {
+  test("a six-cadence hold sends exactly six shots", async () => {
     const { shots, pressedAt } = holdFire();
     await settle(HOLD_MS + RANGED_CADENCE_MS / 2); // held past the window, so a stall reads as one
     fireEvent.mouseUp(window);

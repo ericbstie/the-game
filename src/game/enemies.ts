@@ -91,7 +91,7 @@ export const RANGED_HALFWIDTH = 24; // the ray's half-thickness; an enemy within
 export const RANGED_DAMAGE = 3;
 // Both the client's own gate and the server's admission floor (#103) — one number, so a held
 // trigger can never pace itself into shots `admitAttack` refuses.
-export const RANGED_CADENCE_MS = 500;
+export const RANGED_CADENCE_MS = 250;
 
 // The server's loose anti-teleport-aim tolerance: a reported swing origin this far from the
 // player's last relayed position is rejected. Generous enough to survive relay lag (a player

@@ -272,8 +272,9 @@ describe("stepEnemies shot resolution (hitscan ray)", () => {
     expect(at(s, "far")?.hp).toBe(GRUNT_HP); // single-target, no cleave
   });
 
-  // #103: auto-fire slowed the weapon to one shot per 0.5 s, and RANGED_DAMAGE went 1 → 3 to
-  // hold sustained DPS roughly where clicking already had it.
+  // #103: auto-fire paced the weapon at `RANGED_CADENCE_MS`, and RANGED_DAMAGE went 1 → 3 to
+  // hold sustained DPS roughly where clicking already had it. #119 doubled the rate of fire and
+  // left the damage where it was.
   test("a grunt takes ten shots to die at RANGED_DAMAGE 3", () => {
     expect(RANGED_DAMAGE).toBe(3);
     const s = stateWith([grunt("e1", { x: 200, y: 100 })]);

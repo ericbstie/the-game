@@ -60,7 +60,7 @@ export const BUFFER_MS = 500; // keep this much peer history; older samples are 
 export const SHOT_RETENTION_MS = 250;
 export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their 20 Hz stream
 // How long a spider stays white after it is hit (#107). Three frames at 60 Hz — enough to register
-// — and well under the 180 ms weapon cadence, so consecutive hits read as separate flashes instead
+// — and well under `RANGED_CADENCE_MS`, so consecutive hits read as separate flashes instead
 // of one continuous white spider. It lives here rather than in the render layer because the clock it
 // is measured against is this class's: the flash has to be judged on the delayed instant the sprite
 // is interpolated to, not on the instant the event arrived.
