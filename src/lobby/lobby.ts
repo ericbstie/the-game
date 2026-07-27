@@ -7,6 +7,8 @@ import {
   creditMetal,
   type DemolishGuard,
   demolishStructure,
+  drainForge,
+  enqueueForge,
   freshBuildGuard,
   freshBuildState,
   freshDemolishGuard,
@@ -17,6 +19,7 @@ import {
   placeStructure,
   snapshotAims,
   snapshotStructures,
+  spendBullet,
   stepBuild,
 } from "../game/build";
 import {
@@ -93,6 +96,10 @@ export interface LobbyConfig {
   scheduler?: Scheduler;
   firstWaveMs?: number; // override the initial wave countdown (default: the sim's 30s). Test knob.
   startingMetal?: number; // seed the shared bank at match start (default 0). Test knob.
+  // Seed the squad's bullets at match start (default 0 — a real squad forges every one it fires).
+  // A combat test that is about the weapon rather than the economy takes its ammo from here rather
+  // than spending a virtual second at the forge for each shot. Test knob.
+  startingAmmo?: number;
   // The sim's only source of entropy — spawn jitter. Defaults to `Math.random`, so a real match
   // scatters each wave differently. A test that asserts on anything downstream of a spawn position
   // should pass a fixed one, or the assertion is against a different world every run. Test knob.
@@ -131,6 +138,7 @@ interface SessionRecord {
   ore?: OreGrid; // derived from worldInit.oreSeed at start; identical to every client's copy
   build?: BuildState; // the squad's economy — bank and buildings, written only by this hub
   sentMetal: number; // the last whole-Metal figure broadcast; the bank rides only when it moves
+  sentAmmo: number; // the last bullet count broadcast; ammo rides on the same terms as the bank
   sentPower: Power; // the last power figures broadcast; power rides only when they move
   pendingBuilds: StructureSpawn[]; // placements admitted since the last tick, awaiting broadcast
   mineGuards: Map<PlayerId, MineGuard>; // per-player hand-mine cadence/seq/accrual state
@@ -153,6 +161,7 @@ export class LobbyHub {
   private readonly firstWaveMs?: number;
   private readonly scheduler: Scheduler;
   private readonly startingMetal: number;
+  private readonly startingAmmo: number;
   private readonly rng?: () => number;
   private disposed = false;
 
@@ -165,6 +174,7 @@ export class LobbyHub {
     this.firstWaveMs = config.firstWaveMs;
     this.scheduler = config.scheduler ?? platformScheduler;
     this.startingMetal = config.startingMetal ?? 0;
+    this.startingAmmo = config.startingAmmo ?? 0;
     this.rng = config.rng;
   }
 
@@ -204,6 +214,9 @@ export class LobbyHub {
         return;
       case "game/demolish":
         this.gameDemolish(socketId, msg.id, msg.seq);
+        return;
+      case "game/forge":
+        this.gameForge(socketId);
         return;
     }
   }
@@ -282,6 +295,7 @@ export class LobbyHub {
       attackGuards: new Map(),
       pendingAttacks: [],
       sentMetal: 0,
+      sentAmmo: 0,
       sentPower: { generation: 0, consumption: 0 },
       pendingBuilds: [],
       mineGuards: new Map(),
@@ -441,6 +455,8 @@ export class LobbyHub {
     // how it is written rather than because every caller happened to pass a round number.
     creditMetal(session.build, this.startingMetal);
     session.sentMetal = session.build.bank.metal;
+    session.build.ammo.bullets = this.startingAmmo;
+    session.sentAmmo = session.build.ammo.bullets;
 
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
     session.sim = spawnEnemyState(session.worldInit, this.rng);
@@ -493,6 +509,13 @@ export class LobbyHub {
         session.sentMetal = metal;
         delta.bank = { metal };
       }
+      // Same terms as the bank: a count that only moves when a bullet is forged or fired, so it
+      // stays off the settled tick entirely.
+      const bullets = session.build.ammo.bullets;
+      if (bullets !== session.sentAmmo) {
+        session.sentAmmo = bullets;
+        delta.ammo = bullets;
+      }
       const power = session.build.power;
       if (
         power.generation !== session.sentPower.generation ||
@@ -522,6 +545,9 @@ export class LobbyHub {
     session.phase = outcome;
     session.simTimer?.cancel();
     session.simTimer = undefined;
+    // The forge stops with the match and hands back nothing: the Metal for everything still in the
+    // queue was spent when it was ordered, and there has never been a path that returns it.
+    if (session.build) drainForge(session.build.ammo);
     // Retained, not recomputed: the score is frozen at the moment the match ended, so a player
     // who rejoins afterwards is told the same time everyone else saw.
     session.result = { outcome, elapsedMs: Date.now() - (session.startedAt ?? Date.now()) };
@@ -551,7 +577,26 @@ export class LobbyHub {
     // sim, beside the HP it writes — so a refused attack has no path to the wire at all (#74 §4).
     // The aim that rides on is the normalized one admission returned, never the reported vector.
     const aim = admitAttack(guard, { pos, dir, seq }, lastPos, Date.now());
-    if (aim) session.pendingAttacks.push({ pos, dir: aim, by: player.id });
+    if (!aim) return;
+    // A shot costs a bullet from the squad's pool (#102). Taken after admission, so a shot the
+    // cadence already refused never spends one — and a shot refused here reaches neither
+    // `pendingAttacks` nor the sim, which is what keeps it off the wire entirely.
+    if (!session.build || !spendBullet(session.build.ammo)) return;
+    session.pendingAttacks.push({ pos, dir: aim, by: player.id });
+  }
+
+  // An order for a bullet: charge the shared bank now and queue the forging. Deliberately no seq
+  // and no cadence — the request carries no state that could arrive stale, and two of them are two
+  // bullets, which is a thing a player is allowed to want. Nothing records who ordered it, so the
+  // queue is the squad's and keeps running through that player's death and disconnect.
+  private gameForge(socketId: string): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (!this.inPlay(session) || !session.build) return; // only during a match
+    enqueueForge(session.build);
   }
 
   // A reported hand-mine: admit it (ore kind + loose reach + seq + cadence) and credit the
@@ -700,6 +745,7 @@ export class LobbyHub {
         type: "game/build-init",
         tick: session.tickNo,
         bank: { metal: session.build.bank.metal },
+        ammo: session.build.ammo.bullets,
         power: { ...session.build.power },
         structures: snapshotStructures(session.build),
         aims: snapshotAims(session.build),

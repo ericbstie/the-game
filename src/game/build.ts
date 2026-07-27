@@ -337,6 +337,64 @@ export interface TurretRuntime {
   targetId: string | null;
 }
 
+// --- Ammo ---------------------------------------------------------------------------------
+// The squad's bullets, and the forge that makes them. One pool for the whole squad: a bullet
+// belongs to whichever shot is admitted first, not to whoever paid for it.
+
+// What a bullet costs and how long it takes to forge. Provisional, like every balance number: a
+// later value is a retune, not a correction.
+export const BULLET_COST = 5; // Metal, charged at enqueue
+export const FORGE_MS = 1_000; // one bullet at a time, serially
+
+export interface Ammo {
+  bullets: number; // forged and spendable now
+  queued: number; // ordered and paid for, still being forged
+  forgeMs: number; // time left on the bullet at the head of the queue; 0 when nothing is queued
+}
+
+// Order one bullet: the Metal leaves the bank now and the bullet arrives FORGE_MS later. Returns
+// whether the squad could afford it.
+//
+// Charging at enqueue rather than on delivery is what makes the queue the squad's rather than the
+// buyer's — nothing here records who ordered it, so there is nobody to refund and no owner whose
+// death or disconnect the queue could be tied to.
+export function enqueueForge(build: BuildState): boolean {
+  if (build.bank.metal < BULLET_COST) return false;
+  build.bank.metal -= BULLET_COST;
+  if (build.ammo.queued === 0) build.ammo.forgeMs = FORGE_MS;
+  build.ammo.queued++;
+  return true;
+}
+
+// Advance the forge one tick. Overflow carries into the next bullet the way the wave clock re-arms,
+// so a queue is paced by the time it was given rather than by how the ticks happened to fall.
+function stepForge(ammo: Ammo, dtMs: number): void {
+  if (ammo.queued === 0) return;
+  ammo.forgeMs -= dtMs;
+  while (ammo.forgeMs <= 0 && ammo.queued > 0) {
+    ammo.queued--;
+    ammo.bullets++;
+    ammo.forgeMs += FORGE_MS;
+  }
+  if (ammo.queued === 0) ammo.forgeMs = 0; // an idle forge holds no clock for the next order
+}
+
+// Take one bullet, or refuse. The check and the take are one indivisible step for the same reason
+// `ActivationQueue` reserves power in one: two shots resolved in the same tick must not both see
+// the last bullet.
+export function spendBullet(ammo: Ammo): boolean {
+  if (ammo.bullets <= 0) return false;
+  ammo.bullets--;
+  return true;
+}
+
+// Throw the queue away. The Metal went at enqueue and there is no refund path anywhere, so the
+// bullets in flight are simply lost — which is what the match ending does to them.
+export function drainForge(ammo: Ammo): void {
+  ammo.queued = 0;
+  ammo.forgeMs = 0;
+}
+
 // A placed building. `tile` is the top-left of its square footprint; `hp` is sim-owned.
 export interface Structure {
   id: string;
@@ -354,6 +412,9 @@ export interface BuildState {
   occupancy: Map<number, string>; // tileKey → structure id, so overlap is a lookup, not a scan
   bank: Bank; // whole Metal only; `creditMetal` is the sole way in
   metalThousandths: number; // the unbanked remainder, in [0, 1000). Owned by `creditMetal`.
+  // The squad's bullets. Only `bullets` is streamed: the queue behind it is server-only, so a
+  // client's mirror carries it at zero — the same shape `metalThousandths` already has.
+  ammo: Ammo;
   power: Power;
   nextId: number;
 }
@@ -365,6 +426,7 @@ export function freshBuildState(arena: Arena): BuildState {
     occupancy: new Map(),
     bank: { metal: 0 },
     metalThousandths: 0,
+    ammo: { bullets: 0, queued: 0, forgeMs: 0 },
     power: { generation: 0, consumption: 0 },
     nextId: 1,
   };
@@ -544,14 +606,16 @@ export function creditMetal(build: BuildState, metal: number): number {
   return whole;
 }
 
-// Advance the economy one tick: miners trickle Metal into the shared bank, and the energy ceiling
-// is recomputed from the generators actually standing. Recomputing rather than accumulating is
-// what makes Energy a rate and not a bank — a generator destroyed or demolished drops the ceiling
-// the same tick, with no reserve left over. Deterministic in (state, dtMs); no clock.
+// Advance the economy one tick: miners trickle Metal into the shared bank, the forge delivers
+// whatever it finished, and the energy ceiling is recomputed from the generators actually standing.
+// Recomputing rather than accumulating is what makes Energy a rate and not a bank — a generator
+// destroyed or demolished drops the ceiling the same tick, with no reserve left over. Deterministic
+// in (state, dtMs); no clock.
 //
 // Returns the whole Metal that crossed into the bank this tick, usually 0.
 export function stepBuild(build: BuildState, dtMs: number): number {
   const banked = creditMetal(build, (metalRate(build) * dtMs) / 1000);
+  stepForge(build.ammo, dtMs);
   build.power.generation = countKind(build, "generator") * GENERATOR_OUTPUT;
   return banked;
 }

@@ -35,11 +35,19 @@ const init: WorldInit = {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const POS_SEND_MS = 50; // the HUD mirror's cadence, matching the component's own constant
 
+// A world stocked with bullets. Shooting spends one from the squad's pool (#102), so every test
+// below that is about the trigger rather than about the pool starts with more than it can use.
+function armed(initialHp?: number): ClientWorld {
+  const world = new ClientWorld(init, "me", initialHp);
+  world.build.ammo.bullets = 999;
+  return world;
+}
+
 // A live match, returning the arena canvas. Every callback defaults to a no-op, so a test names
 // only the one it is watching.
 function renderMatch(
   handlers: Partial<Omit<React.ComponentProps<typeof GameScreen>, "state">> = {},
-  world = new ClientWorld(init, "me"),
+  world = armed(),
 ): HTMLElement {
   const state: LobbyState = {
     status: "lobby",
@@ -64,7 +72,7 @@ function renderMatch(
 }
 
 // A live match with nothing selected on the build bar, so left-click means shoot.
-function inMatch(onAttack: () => void, world = new ClientWorld(init, "me")): HTMLElement {
+function inMatch(onAttack: () => void, world = armed()): HTMLElement {
   return renderMatch({ onAttack }, world);
 }
 
@@ -97,14 +105,14 @@ afterEach(cleanup);
 describe("#85: a downed player cannot shoot", () => {
   test("a click while dead is not sent", () => {
     const onAttack = mock(() => {});
-    const canvas = inMatch(onAttack, new ClientWorld(init, "me", 0));
+    const canvas = inMatch(onAttack, armed(0));
     fireEvent.mouseDown(canvas, { button: 0 });
     expect(onAttack).toHaveBeenCalledTimes(0);
   });
 
   test("and being dead does not consume the cadence, so the first shot back up lands", async () => {
     const onAttack = mock(() => {});
-    const world = new ClientWorld(init, "me", 0);
+    const world = armed(0);
     const canvas = inMatch(onAttack, world);
     fireEvent.mouseDown(canvas, { button: 0 }); // refused: dead
     world.reviveSelf();
@@ -164,7 +172,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
 
   // Press and hold the trigger, collecting every shot the component sent with the instant it left.
   // The button stays down until a test releases it.
-  function holdFire(world = new ClientWorld(init, "me")) {
+  function holdFire(world = armed()) {
     const shots: Shot[] = [];
     const onAttack = (pos: Vec2, dir: Vec2) => shots.push({ at: Date.now(), pos, dir });
     const canvas = renderMatch({ onAttack }, world);
@@ -235,7 +243,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
   });
 
   test("dying mid-hold stops the fire", async () => {
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     const { shots } = holdFire(world);
     world.applyPeerHealth("me", 0, 1);
     await settle(2 * RANGED_CADENCE_MS);
@@ -244,7 +252,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
   });
 
   test("a dead player fires nothing while the button is held", async () => {
-    const world = new ClientWorld(init, "me", 0);
+    const world = armed(0);
     const { shots } = holdFire(world);
     await settle(3 * RANGED_CADENCE_MS);
     fireEvent.mouseUp(window);
@@ -252,7 +260,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
   });
 
   test("standing up under a still-held button fires no free shot", async () => {
-    const world = new ClientWorld(init, "me", 0);
+    const world = armed(0);
     const { shots } = holdFire(world);
     await settle(RANGED_CADENCE_MS);
     world.reviveSelf();
@@ -264,7 +272,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
   });
 
   test("firing again after a respawn takes a fresh press", async () => {
-    const world = new ClientWorld(init, "me", 0);
+    const world = armed(0);
     const { canvas, shots } = holdFire(world);
     world.reviveSelf();
     await settle(RANGED_CADENCE_MS);
@@ -301,7 +309,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
   });
 
   test("mining and firing are held independently — releasing one keeps the other", async () => {
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     world.ore.set(tileKey(CURSOR_TILE), "metal");
     const onMine = mock(() => {});
     const shots: Shot[] = [];
@@ -326,7 +334,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
     // Metal in the bank and ore under the cursor, because a placement the ghost paints red is one
     // the drag refuses to send (#104) — a squad with nothing banked would place nothing here and
     // the "never fires" half would pass for the wrong reason.
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     world.ore.set(tileKey(CURSOR_TILE), "metal");
     world.build.bank.metal = 1_000;
     const canvas = renderMatch({ onBuild, onAttack }, world);
@@ -342,7 +350,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
 
 describe("#105: hovering the Metal readout shows Metal per second", () => {
   const withMiners = (count: number) => {
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     world.applyMapDelta(
       {
         tick: 1,
@@ -430,7 +438,7 @@ describe("#98: a build slot states its cost and its name", () => {
   // #101: the circle has to quote what the placement will actually be charged, not the base — a
   // slot reading 60 while the server debits 101 is a refused placement with nothing to explain it.
   test("the turret circle climbs with the squad's standing turrets; the rest hold", async () => {
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     inMatch(() => {}, world);
     const circle = (kind: string) =>
       screen.getByLabelText(kind).querySelector(".build-cost")?.textContent;
@@ -513,7 +521,7 @@ describe("#100: Escape opens the menu", () => {
   });
 
   test("opening it releases held movement — the next step sees NO_MOVE", async () => {
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     const moves = recordMoves(world);
     renderMatch({}, world);
     fireEvent.keyDown(window, { key: "w" });
@@ -525,7 +533,7 @@ describe("#100: Escape opens the menu", () => {
   });
 
   test("movement is never locked while it is open, and works again once it closes", async () => {
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     const moves = recordMoves(world);
     renderMatch({}, world);
     fireEvent.keyDown(window, { key: "Escape" });
@@ -543,7 +551,7 @@ describe("#100: Escape opens the menu", () => {
 describe("#100: right-click cancels a selected buildable", () => {
   test("it clears the selection and arms no harvest", async () => {
     const onMine = mock(() => {});
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     world.ore.set(tileKey(CURSOR_TILE), "metal");
     const canvas = renderMatch({ onMine }, world);
     const wall = screen.getByLabelText("wall");
@@ -558,7 +566,7 @@ describe("#100: right-click cancels a selected buildable", () => {
 
   test("with nothing selected it still harvests, as it always did", async () => {
     const onMine = mock(() => {});
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     world.ore.set(tileKey(CURSOR_TILE), "metal");
     const canvas = renderMatch({ onMine }, world);
     fireEvent.mouseDown(canvas, { button: 2 });
@@ -646,7 +654,7 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
   // these holds right-click on something that resolves to no mine.
   test("bare grass starts no harvest and imposes no pin", async () => {
     const onMine = mock(() => {});
-    const { moves } = mineAndWalk(new ClientWorld(init, "me"), { onMine });
+    const { moves } = mineAndWalk(armed(), { onMine });
     await settle(MINE_CADENCE_MS * 3);
     expect(onMine).toHaveBeenCalledTimes(0);
     expect(moves.at(-1)?.up).toBe(true);
@@ -654,7 +662,7 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
 
   test("power ore starts no harvest and imposes no pin", async () => {
     const onMine = mock(() => {});
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     world.ore.set(tileKey(CURSOR_TILE), "power");
     const { moves } = mineAndWalk(world, { onMine });
     await settle(MINE_CADENCE_MS * 3);
@@ -716,7 +724,7 @@ describe("#104: hold and drag left-click to place a run of buildables", () => {
     });
 
   const funded = (metal: number) => {
-    const world = new ClientWorld(init, "me");
+    const world = armed();
     world.build.bank.metal = metal;
     return world;
   };
@@ -908,5 +916,53 @@ describe("#104: hold and drag left-click to place a run of buildables", () => {
     const OBSERVED_SKEW_MS = 1;
     const gaps = at.slice(1).map((t, i) => t - (at[i] ?? 0));
     expect(gaps.filter((gap) => gap < BUILD_CADENCE_MS - OBSERVED_SKEW_MS)).toEqual([]);
+  });
+});
+
+// #102: a shot costs a bullet from the squad's pool, and the server refuses one it cannot pay for.
+// The trigger is gated on the mirrored count for the same reason it is gated on the cadence — a
+// line drawn here would claim damage the server never applied (#85). The line and the report leave
+// in the same statement, so a shot that is not sent is a shot that is not drawn.
+describe("#102: an empty pool refuses the trigger", () => {
+  const withAmmo = (bullets: number): ClientWorld => {
+    const world = new ClientWorld(init, "me");
+    world.build.ammo.bullets = bullets;
+    return world;
+  };
+
+  test("a click with nothing in the pool sends nothing", () => {
+    const onAttack = mock(() => {});
+    const canvas = renderMatch({ onAttack }, withAmmo(0));
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(onAttack).toHaveBeenCalledTimes(0);
+  });
+
+  test("one bullet buys exactly the one click", () => {
+    const onAttack = mock(() => {});
+    const canvas = renderMatch({ onAttack }, withAmmo(1));
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(onAttack).toHaveBeenCalledTimes(1);
+  });
+
+  test("an empty pool does not consume the cadence, so the first bullet fires the moment it lands", () => {
+    const onAttack = mock(() => {});
+    const world = withAmmo(0);
+    const canvas = renderMatch({ onAttack }, world);
+    fireEvent.mouseDown(canvas, { button: 0 }); // refused: nothing to fire
+    world.applyMapDelta({ tick: 1, moves: [], ammo: 1 }, Date.now());
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(onAttack).toHaveBeenCalledTimes(1);
+  });
+
+  test("a held trigger goes quiet the moment the pool runs dry", async () => {
+    const onAttack = mock(() => {});
+    const world = withAmmo(1);
+    const canvas = renderMatch({ onAttack }, world);
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(onAttack).toHaveBeenCalledTimes(1);
+    world.applyMapDelta({ tick: 1, moves: [], ammo: 0 }, Date.now()); // the server took it
+    await settle(RANGED_CADENCE_MS * 2);
+    fireEvent.mouseUp(window);
+    expect(onAttack).toHaveBeenCalledTimes(1); // still 1: the hold has nothing left to spend
   });
 });

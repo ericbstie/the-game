@@ -50,3 +50,27 @@ describe("what the trim buys", () => {
     expect(trimmed.compressed).toBeLessThan(full.compressed);
   });
 });
+
+// #102 put `ammo` on the delta as a sparse field, and the benchmark could not see it: the tick
+// measured here is a settled one, which by construction carries no economy field at all. A budget
+// that structurally cannot observe a field is the rot the header warns about, so each is measured
+// on a tick that does carry it and reported against the settled one.
+describe("what a sparse economy field costs", () => {
+  test("the settled tick carries neither, which is exactly why they are measured apart", () => {
+    const { trimmed } = worstCaseTick();
+    expect(trimmed.bank).toBeUndefined();
+    expect(trimmed.ammo).toBeUndefined();
+  });
+
+  test("each is measured on a tick that really does carry its own field", () => {
+    const { bankTick, ammoTick } = worstCaseTick();
+    expect(bankTick.bank).toBeDefined();
+    expect(ammoTick.ammo).toBeDefined();
+  });
+
+  test("and each therefore reads as bytes the settled tick does not pay", () => {
+    const { trimmed, bankTick, ammoTick } = measure();
+    expect(bankTick.raw).toBeGreaterThan(trimmed.raw);
+    expect(ammoTick.raw).toBeGreaterThan(trimmed.raw);
+  });
+});

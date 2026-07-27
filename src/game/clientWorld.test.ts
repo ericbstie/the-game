@@ -567,6 +567,7 @@ describe("M5-I5: the client adopts streamed aims and shots, and refuses to draw 
     const w = new ClientWorld(init(), "self");
     w.initBuild({
       bank: { metal: 0 },
+      ammo: 0,
       power: { generation: 0, consumption: 0 },
       structures: [placed("b1")],
       aims: [["b1", "n3", 0]],
@@ -797,10 +798,51 @@ describe("#105: the squad's Metal rate", () => {
     const w = new ClientWorld(init(), "self");
     w.initBuild({
       bank: { metal: 10 },
+      ammo: 0,
       power: { generation: 0, consumption: 0 },
       structures: [miner("m1", 40), miner("m2", 44), miner("m3", 48)],
       aims: [],
     });
     expect(w.metalRate()).toBe(3 * MINER_TRICKLE);
+  });
+});
+
+// #102: the pool is server-owned, and the client mirrors it so the trigger can be gated on a
+// number the server agrees with — a shot it would refuse for want of a bullet must never be drawn.
+describe("#102: the squad's bullets are mirrored from the stream", () => {
+  test("a fresh world holds no bullets", () => {
+    expect(new ClientWorld(init(), "self").ammo()).toBe(0);
+  });
+
+  test("a delta's count replaces the mirror", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], ammo: 3 }, 0);
+    expect(w.ammo()).toBe(3);
+  });
+
+  test("an emptied pool arrives as a zero, not as a missing field", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], ammo: 1 }, 0);
+    w.applyMapDelta({ tick: 2, moves: [], ammo: 0 }, 50);
+    expect(w.ammo()).toBe(0);
+  });
+
+  test("a tick that carries no ammo leaves the mirror where it was", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], ammo: 2 }, 0);
+    w.applyMapDelta({ tick: 2, moves: [] }, 50);
+    expect(w.ammo()).toBe(2);
+  });
+
+  test("the reconnect keyframe rebuilds it", () => {
+    const w = new ClientWorld(init(), "self");
+    w.initBuild({
+      bank: { metal: 10 },
+      ammo: 7,
+      power: { generation: 0, consumption: 0 },
+      structures: [],
+      aims: [],
+    });
+    expect(w.ammo()).toBe(7);
   });
 });

@@ -284,6 +284,9 @@ export class ClientWorld {
       }
     }
     if (delta.bank) this.build.bank.metal = delta.bank.metal;
+    // Tested against undefined, not truthiness: an emptied pool arrives as a 0, which is exactly
+    // the value the trigger has to see.
+    if (delta.ammo !== undefined) this.build.ammo.bullets = delta.ammo;
     if (delta.power) this.build.power = { ...delta.power };
     for (const b of delta.builds ?? []) {
       if (!this.build.structures.has(b.id)) insertStructure(this.build, { ...b });
@@ -362,6 +365,7 @@ export class ClientWorld {
   // standing. The ore grid needs nothing — it was derived from the seed when this world was built.
   initBuild(msg: {
     bank: Bank;
+    ammo: number;
     power: Power;
     structures: StructureSpawn[];
     aims: TurretAim[];
@@ -369,6 +373,7 @@ export class ClientWorld {
     for (const id of [...this.build.structures.keys()]) removeStructure(this.build, id);
     for (const s of msg.structures) insertStructure(this.build, { ...s });
     this.build.bank.metal = msg.bank.metal;
+    this.build.ammo.bullets = msg.ammo;
     this.build.power = { ...msg.power };
     // Rebuilding a turret mints it un-aimed, so the keyframe's aims are what restore the lines and
     // the lightning a reconnecter would otherwise never be told about.
@@ -378,6 +383,13 @@ export class ClientWorld {
   // The shared Metal readout. The server sends whole Metal, so this needs no rounding of its own.
   metal(): number {
     return this.build.bank.metal;
+  }
+
+  // The squad's spendable bullets (#102). Mirrored, never computed: the pool is server-owned and
+  // the forge queue behind it never crosses the wire. This is what the trigger is gated on, so a
+  // shot the server would refuse for want of a bullet is never drawn (#85).
+  ammo(): number {
+    return this.build.ammo.bullets;
   }
 
   // Metal per second the squad's miners are paying in (#105). Per squad, not per player: the bank is

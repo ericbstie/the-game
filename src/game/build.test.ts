@@ -7,6 +7,7 @@ import {
   BUILD_CADENCE_MS,
   BUILD_SLOTS,
   BUILDABLES,
+  BULLET_COST,
   type BuildableSpec,
   type BuildState,
   buildCost,
@@ -14,6 +15,9 @@ import {
   DEMOLISH_CADENCE_MS,
   DEMOLISH_HOLD_MS,
   demolishStructure,
+  drainForge,
+  enqueueForge,
+  FORGE_MS,
   footprintCenter,
   footprintTiles,
   freshBuildGuard,
@@ -38,6 +42,7 @@ import {
   slidePos,
   snapshotAims,
   solidAt,
+  spendBullet,
   stepBuild,
   structureBlocking,
   structureCenter,
@@ -1094,5 +1099,116 @@ describe("M5-I5: the reconnect keyframe carries the engaged turrets' aims", () =
       [turret.id, "e7", 1],
       [starved.id, "n2", 0],
     ]);
+  });
+});
+
+// #102 stage 2: the squad's ammo pool and the forge queue behind it. Metal is charged the moment a
+// bullet is ordered and nothing is ever given back, so every test here checks the bank as well as
+// the pool.
+describe("#102: bullets are forged from Metal, one at a time", () => {
+  const TICK = 50; // the sim's own 20 Hz tick, which is what drives the forge
+  const funded = (metal: number): BuildState => {
+    const build = freshBuildState(ARENA);
+    creditMetal(build, metal);
+    return build;
+  };
+  const runForge = (build: BuildState, ms: number) => {
+    for (let elapsed = 0; elapsed < ms; elapsed += TICK) stepBuild(build, TICK);
+  };
+
+  test("a fresh squad has no bullets and nothing on the forge", () => {
+    const build = freshBuildState(ARENA);
+    expect(build.ammo).toEqual({ bullets: 0, queued: 0, forgeMs: 0 });
+  });
+
+  test("the Metal leaves the bank at enqueue, before any bullet exists", () => {
+    const build = funded(12);
+    expect(enqueueForge(build)).toBe(true);
+    expect(build.bank.metal).toBe(12 - BULLET_COST);
+    expect(build.ammo.bullets).toBe(0);
+    expect(build.ammo.queued).toBe(1);
+  });
+
+  test("ordering at exactly the price succeeds; one Metal short refuses and charges nothing", () => {
+    const exact = funded(BULLET_COST);
+    expect(enqueueForge(exact)).toBe(true);
+    expect(exact.bank.metal).toBe(0);
+
+    const short = funded(BULLET_COST - 1);
+    expect(enqueueForge(short)).toBe(false);
+    expect(short.bank.metal).toBe(BULLET_COST - 1);
+    expect(short.ammo.queued).toBe(0);
+  });
+
+  test("a bullet lands after a full forge and not a tick before", () => {
+    const build = funded(BULLET_COST);
+    enqueueForge(build);
+    runForge(build, FORGE_MS - TICK);
+    expect(build.ammo.bullets).toBe(0);
+    stepBuild(build, TICK);
+    expect(build.ammo.bullets).toBe(1);
+    expect(build.ammo.queued).toBe(0);
+  });
+
+  test("three ordered bullets land a forge apart, not together", () => {
+    const build = funded(3 * BULLET_COST);
+    for (let i = 0; i < 3; i++) enqueueForge(build);
+    expect(build.bank.metal).toBe(0); // all three paid for up front
+
+    runForge(build, FORGE_MS);
+    expect(build.ammo.bullets).toBe(1);
+    runForge(build, FORGE_MS);
+    expect(build.ammo.bullets).toBe(2);
+    runForge(build, FORGE_MS);
+    expect(build.ammo.bullets).toBe(3);
+    expect(build.ammo.queued).toBe(0);
+  });
+
+  test("the forge carries its overflow rather than losing it to a long tick", () => {
+    const build = funded(2 * BULLET_COST);
+    enqueueForge(build);
+    enqueueForge(build);
+    stepBuild(build, FORGE_MS + FORGE_MS / 2);
+    expect(build.ammo.bullets).toBe(1); // and half of the second is already behind it
+    stepBuild(build, FORGE_MS / 2);
+    expect(build.ammo.bullets).toBe(2);
+  });
+
+  // An idle forge has exactly one representation, which is what lets anything reading this state
+  // tell "nothing is being made" from "a bullet is nearly done" without a second field.
+  test("an emptied forge leaves no clock behind", () => {
+    const build = funded(BULLET_COST);
+    enqueueForge(build);
+    runForge(build, FORGE_MS * 3); // long since finished, and left running
+    expect(build.ammo).toEqual({ bullets: 1, queued: 0, forgeMs: 0 });
+  });
+
+  test("draining the forge loses what was queued and refunds nothing", () => {
+    const build = funded(3 * BULLET_COST);
+    for (let i = 0; i < 3; i++) enqueueForge(build);
+    drainForge(build.ammo);
+    expect(build.ammo.queued).toBe(0);
+    expect(build.bank.metal).toBe(0); // the Metal went at enqueue and there is no way back
+    runForge(build, FORGE_MS * 3);
+    expect(build.ammo.bullets).toBe(0);
+  });
+
+  test("a bullet already forged survives the drain — only the queue is thrown away", () => {
+    const build = funded(2 * BULLET_COST);
+    enqueueForge(build);
+    runForge(build, FORGE_MS);
+    enqueueForge(build);
+    drainForge(build.ammo);
+    expect(build.ammo.bullets).toBe(1);
+  });
+
+  test("spending takes exactly one bullet, and an empty pool refuses", () => {
+    const build = funded(BULLET_COST);
+    enqueueForge(build);
+    runForge(build, FORGE_MS);
+    expect(spendBullet(build.ammo)).toBe(true);
+    expect(build.ammo.bullets).toBe(0);
+    expect(spendBullet(build.ammo)).toBe(false);
+    expect(build.ammo.bullets).toBe(0); // refusing never runs the pool negative
   });
 });
