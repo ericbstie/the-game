@@ -1,11 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import type { Avatar, BuildableKind, RenderedEnemy, Vec2, WorldSnapshot } from "../lobby/protocol";
+import type {
+  Avatar,
+  BuildableKind,
+  OreKind,
+  RenderedEnemy,
+  Tile,
+  Vec2,
+  WorldSnapshot,
+} from "../lobby/protocol";
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
-import { tileKey } from "./build";
+import { tileKey, tileOf } from "./build";
 import type { Camera, Viewport } from "./camera";
 import { drawWorld, grassAt, type ShotSource } from "./draw";
 import { FLOAT_MS, type MetalFloat } from "./floats";
+import {
+  MINIMAP_COVERAGE_U,
+  MINIMAP_ORE_CELL_U,
+  MINIMAP_SIZE,
+  minimapWindow,
+  projectRect,
+} from "./minimap";
 
 // happy-dom returns null from getContext('2d'), so the draw path is exercised against a
 // spy that records the calls and lets any property be assigned.
@@ -50,6 +65,13 @@ function spyCtx() {
     strokeText: record("strokeText"),
     drawImage: record("drawImage"),
     closePath: record("closePath"),
+    // The minimap holds its layers inside its plate with a clip, so the spy has to carry the
+    // path-and-state calls that takes. They are recorded like everything else and restore nothing:
+    // a spy has no drawing state to unwind, and nothing here leans on it having one.
+    save: record("save"),
+    restore: record("restore"),
+    rect: record("rect"),
+    clip: record("clip"),
   };
   return ctx as unknown as CanvasRenderingContext2D & { calls: Call[] };
 }
@@ -103,6 +125,24 @@ function stubSprites(boxes: Partial<Record<SpriteName, number>>): SpriteSource {
   };
 }
 
+// Where the corner map begins in a frame's log. `drawWorld` puts it up after everything in the
+// world, so this is the seam between an assertion about the arena and an assertion about the map.
+// Everything the world layer claims is counted below it, or the map's own marks would answer for it.
+//
+// The plate is found by walking back from the map's clip — the only one a frame makes — rather than
+// forward to the first fill at the plate's size. Forward, a 200 px viewport would match the floor
+// fill instead, and every world-layer assertion built on `worldCalls` would go on passing against an
+// empty log.
+const mapStart = (ctx: { calls: Call[] }) => {
+  for (let i = ctx.calls.findIndex((c) => c.fn === "clip"); i >= 0; i--) {
+    const c = ctx.calls[i];
+    if (c.fn === "fillRect" && c.args[2] === MINIMAP_SIZE && c.args[3] === MINIMAP_SIZE) return i;
+  }
+  return ctx.calls.length;
+};
+const worldCalls = (ctx: { calls: Call[] }) => ctx.calls.slice(0, mapStart(ctx));
+const mapCalls = (ctx: { calls: Call[] }) => ctx.calls.slice(mapStart(ctx));
+
 const blits = (ctx: { calls: Call[] }) =>
   ctx.calls
     .filter((c) => c.fn === "drawImage")
@@ -129,6 +169,7 @@ const world: WorldSnapshot = {
     { id: "n2", pos: { x: 20_000, y: 20_000 }, radius: 48, hp: 600, alive: true, sector: 1 }, // off-screen
   ],
   exit: { x: 0, y: 1100, width: 98, height: 936 },
+  exitRevealed: false,
   ore: new Map(),
   structures: [],
 };
@@ -465,11 +506,11 @@ describe("drawWorld with sprites", () => {
     };
     const options = { selfId: "p1", camera, viewport };
     drawWorld(withHalo, one, { ...options, sprites: stubSprites({ ...everything, halo: 40 }) });
-    expect(withHalo.calls.filter((c) => c.fn === "stroke").length).toBe(0);
+    expect(worldCalls(withHalo).filter((c) => c.fn === "stroke").length).toBe(0);
 
     const withoutHalo = spyCtx();
     drawWorld(withoutHalo, one, { ...options, sprites: stubSprites(everything) });
-    expect(withoutHalo.calls.filter((c) => c.fn === "stroke").length).toBe(1);
+    expect(worldCalls(withoutHalo).filter((c) => c.fn === "stroke").length).toBe(1);
   });
 
   test("flags a turret holding a target it has no power to fire on", () => {
@@ -1558,5 +1599,355 @@ describe("an off-screen teammate's arrow", () => {
     expect(arrow).toBeGreaterThan(-1);
     expect(arrow).toBeLessThan(name);
     expect(ctx.globalAlpha).toBe(1);
+  });
+});
+
+// --- The corner minimap (#93) -------------------------------------------------------------
+
+// The map's discs — the squad and the nests — as centre, radius and the fill they went out under.
+const mapDiscs = (ctx: { calls: Call[] }) => {
+  const calls = mapCalls(ctx);
+  const discs: { x: number; y: number; r: number; fill: unknown }[] = [];
+  for (let i = 0; i < calls.length; i++) {
+    const c = calls[i];
+    if (c.fn !== "arc") continue;
+    const next = calls[i + 1];
+    if (next?.fn !== "fill") continue;
+    discs.push({
+      x: c.args[0] as number,
+      y: c.args[1] as number,
+      r: c.args[2] as number,
+      fill: next.fill,
+    });
+  }
+  return discs;
+};
+
+// The map's ink squares — ore cells, structures and the door — as their rects.
+const mapRects = (ctx: { calls: Call[] }) =>
+  mapCalls(ctx)
+    .filter((c) => c.fn === "fillRect" && c.fill === "#000")
+    .map((c) => ({
+      x: c.args[0] as number,
+      y: c.args[1] as number,
+      width: c.args[2] as number,
+      height: c.args[3] as number,
+    }));
+
+const SELF = world.players[0];
+const near = (pos: Vec2, dx: number, dy = 0) => ({ x: pos.x + dx, y: pos.y + dy });
+const struct = (id: string, kind: BuildableKind, tile: Tile) => ({ id, kind, tile, hp: 400 });
+
+describe("the minimap", () => {
+  test("draws nothing without a player to centre the window on", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport });
+    expect(mapCalls(ctx)).toHaveLength(0);
+  });
+
+  test("plates a square in the viewport's top-right corner, paper inside a hard rule", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport, selfId: "p1" });
+    const win = minimapWindow(SELF.pos, camera, viewport, MINIMAP_COVERAGE_U);
+    const plate = mapCalls(ctx)[0];
+    expect(plate.fill).toBe("#ffffff");
+    expect(plate.args.slice(0, 4)).toEqual([win.x, win.y, MINIMAP_SIZE, MINIMAP_SIZE]);
+    expect(
+      ctx.calls.some(
+        (c) =>
+          c.fn === "strokeRect" &&
+          c.stroke === "#000" &&
+          c.args[0] === win.x &&
+          c.args[2] === MINIMAP_SIZE,
+      ),
+    ).toBe(true);
+  });
+
+  test("opens centred on the player, at 1×", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport, selfId: "p1" });
+    const win = minimapWindow(SELF.pos, camera, viewport, MINIMAP_COVERAGE_U);
+    expect(win.coverage).toBe(7_800);
+    const self = mapDiscs(ctx).find((d) => d.fill === "#4f8cff");
+    expect(self).toBeDefined();
+    expect(self?.x).toBeCloseTo(win.x + MINIMAP_SIZE / 2, 6);
+    expect(self?.y).toBeCloseTo(win.y + MINIMAP_SIZE / 2, 6);
+  });
+
+  test("marks the squad in slot colours, and rings the self the way the world does", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport, selfId: "p1" });
+    const discs = mapDiscs(ctx);
+    expect(discs.some((d) => d.fill === "#4f8cff")).toBe(true); // slot 1, the self
+    expect(discs.some((d) => d.fill === "#ff5d5d")).toBe(true); // slot 2, a peer
+    const rings = mapCalls(ctx).filter((c) => c.fn === "arc");
+    const self = discs.find((d) => d.fill === "#4f8cff");
+    expect(rings.some((c) => c.args[0] === self?.x && (c.args[2] as number) > (self?.r ?? 0))).toBe(
+      true,
+    );
+  });
+
+  test("leaves a teammate outside the window off the map rather than pinning them to its edge", () => {
+    const far = { ...world.players[1], pos: near(SELF.pos, 10_000) };
+    const ctx = spyCtx();
+    drawWorld(ctx, { ...world, players: [SELF, far] }, { camera, viewport, selfId: "p1" });
+    expect(mapDiscs(ctx).some((d) => d.fill === "#ff5d5d")).toBe(false);
+  });
+
+  test("draws no enemy at any count", () => {
+    const swarm: RenderedEnemy[] = Array.from({ length: 240 }, (_, i) => ({
+      ...POSE,
+      id: `e${i}`,
+      kind: "grunt",
+      pos: near(SELF.pos, (i % 60) * 30, Math.floor(i / 60) * 30),
+      radius: 16,
+      hp: 30,
+      sector: 0,
+    }));
+    const bare = spyCtx();
+    const swarmed = spyCtx();
+    drawWorld(bare, world, { camera, viewport, selfId: "p1" });
+    drawWorld(swarmed, { ...world, enemies: swarm }, { camera, viewport, selfId: "p1" });
+    expect(mapCalls(swarmed)).toHaveLength(mapCalls(bare).length);
+  });
+
+  test("writes nothing anywhere on it", () => {
+    const ctx = spyCtx();
+    drawWorld(
+      ctx,
+      { ...world, exitRevealed: true, structures: [struct("s1", "turret", { tx: 74, ty: 74 })] },
+      { camera, viewport, selfId: "p1" },
+    );
+    expect(mapCalls(ctx).some((c) => c.fn === "fillText" || c.fn === "strokeText")).toBe(false);
+  });
+
+  describe("the door", () => {
+    // A door on the west wall, with the squad standing beside it so it falls inside the window.
+    const doorside = {
+      ...world,
+      players: [{ ...SELF, pos: { x: 1_500, y: 15_800 } }],
+      exit: { x: 0, y: 15_400, width: 98, height: 936 },
+    };
+    const doorRect = (ctx: { calls: Call[] }) => {
+      const win = minimapWindow(doorside.players[0].pos, camera, viewport, MINIMAP_COVERAGE_U);
+      const box = projectRect(win, doorside.exit);
+      return mapRects(ctx).find(
+        (r) => box && Math.abs(r.x - box.x) < 1 && Math.abs(r.height - box.height) < 1,
+      );
+    };
+
+    test("is not drawn before it has been revealed", () => {
+      const ctx = spyCtx();
+      drawWorld(ctx, { ...doorside, exitRevealed: false }, { camera, viewport, selfId: "p1" });
+      expect(doorRect(ctx)).toBeUndefined();
+    });
+
+    test("is drawn as the bar in the wall it is, once revealed", () => {
+      const ctx = spyCtx();
+      drawWorld(ctx, { ...doorside, exitRevealed: true }, { camera, viewport, selfId: "p1" });
+      const bar = doorRect(ctx);
+      expect(bar).toBeDefined();
+      expect(bar?.height).toBeGreaterThan(bar?.width ?? 0);
+    });
+
+    test("is simply absent when it falls outside the window — never clamped to the map edge", () => {
+      const away = { ...doorside, players: [{ ...SELF, pos: { x: 15_600, y: 15_600 } }] };
+      const ctx = spyCtx();
+      drawWorld(ctx, { ...away, exitRevealed: true }, { camera, viewport, selfId: "p1" });
+      const win = minimapWindow(away.players[0].pos, camera, viewport, MINIMAP_COVERAGE_U);
+      // Nothing tall stands on the rim where a clamped door would have been pinned.
+      expect(mapRects(ctx).some((r) => r.height > 10 && Math.abs(r.x - win.x) < 3)).toBe(false);
+    });
+  });
+
+  test("reads a nest as alive or silenced", () => {
+    const nests = [
+      { id: "n1", pos: near(SELF.pos, 500), radius: 48, hp: 600, alive: true, sector: 0 },
+      { id: "n2", pos: near(SELF.pos, -500), radius: 48, hp: 0, alive: false, sector: 1 },
+    ];
+    const ctx = spyCtx();
+    drawWorld(ctx, { ...world, nests }, { camera, viewport, selfId: "p1" });
+    const discs = mapDiscs(ctx);
+    expect(discs.some((d) => d.fill === "#8e44ad")).toBe(true); // alive, inked in
+    // Silenced is hollow rather than a second dark colour: at this size a fill/no-fill pair reads
+    // where two near-black inks would not.
+    expect(discs.filter((d) => d.fill === "#ffffff")).toHaveLength(1);
+  });
+
+  test("shows own structures as they are placed and drops them as they are destroyed", () => {
+    const tiles: Tile[] = [
+      { tx: 74, ty: 74 },
+      { tx: 76, ty: 74 },
+      { tx: 78, ty: 74 },
+    ];
+    const marks = (n: number) => {
+      const ctx = spyCtx();
+      drawWorld(
+        ctx,
+        { ...world, structures: tiles.slice(0, n).map((t, i) => struct(`s${i}`, "wall", t)) },
+        { camera, viewport, selfId: "p1" },
+      );
+      return mapRects(ctx).length;
+    };
+    expect(marks(3) - marks(0)).toBe(3);
+    expect(marks(1) - marks(0)).toBe(1);
+  });
+
+  test("reads ore as density, never as tiles", () => {
+    // Two cells beside the player, both laid on the lattice: one solid, one carrying a single tile.
+    const ore = new Map<number, OreKind>();
+    const cellTiles = MINIMAP_ORE_CELL_U / 15;
+    const base = tileOf(SELF.pos);
+    const tx0 = Math.floor(base.tx / cellTiles) * cellTiles;
+    const ty0 = Math.floor(base.ty / cellTiles) * cellTiles;
+    for (let i = 0; i < cellTiles * cellTiles; i++) {
+      ore.set(tileKey({ tx: tx0 + (i % cellTiles), ty: ty0 + Math.floor(i / cellTiles) }), "metal");
+    }
+    ore.set(tileKey({ tx: tx0 + cellTiles * 2, ty: ty0 }), "power");
+    const ctx = spyCtx();
+    drawWorld(ctx, { ...world, ore }, { camera, viewport, selfId: "p1" });
+    const rects = mapRects(ctx);
+    expect(rects).toHaveLength(2);
+    const [dense, sparse] = [...rects].sort((a, b) => b.width - a.width);
+    expect(dense.width).toBeGreaterThan(sparse.width);
+    // A full cell of ore is one mark, not 64 — the whole point of the layer.
+    expect(dense.width).toBeLessThanOrEqual(
+      MINIMAP_ORE_CELL_U * (MINIMAP_SIZE / MINIMAP_COVERAGE_U),
+    );
+  });
+
+  // The plate's corner is snapped to a device pixel and every mark is projected off it, so the
+  // expectation has to be the snapped corner rather than the window's.
+  const onDevicePixel = (world: number, cameraAxis: number, dpr: number) =>
+    cameraAxis + Math.round((world - cameraAxis) * dpr) / dpr;
+
+  test("projects onto the same plate at dpr 1, 2 and 3, and at any viewport size", () => {
+    for (const dpr of [1, 2, 3]) {
+      for (const view of [
+        { width: 800, height: 600 },
+        { width: 1920, height: 1080 },
+        // A real HiDPI `getBoundingClientRect()` returns fractions, and one is needed here or the
+        // device ratio does not reach this test at all: on a whole-pixel viewport the plate already
+        // sits on a device pixel at every ratio, so the loop would assert one thing three times.
+        { width: 1512.5, height: 945.5 },
+      ]) {
+        const ctx = spyCtx();
+        drawWorld(ctx, world, { camera, viewport: view, selfId: "p1", dpr });
+        const win = minimapWindow(SELF.pos, camera, view, MINIMAP_COVERAGE_U);
+        const x = onDevicePixel(win.x, camera.x, dpr);
+        const y = onDevicePixel(win.y, camera.y, dpr);
+        expect(mapCalls(ctx)[0].args.slice(0, 4)).toEqual([x, y, MINIMAP_SIZE, MINIMAP_SIZE]);
+        const self = mapDiscs(ctx).find((d) => d.fill === "#4f8cff");
+        expect(self?.x).toBeCloseTo(x + MINIMAP_SIZE / 2, 6);
+        expect(self?.y).toBeCloseTo(y + MINIMAP_SIZE / 2, 6);
+      }
+    }
+  });
+
+  // A frame with something of every layer pressed against the rim of the window, which is the only
+  // place a projection that was off by anything at all would put ink on the floor beside the map.
+  const crowded = () => {
+    const centre = { x: 15_600, y: 15_600 };
+    const cam = { x: centre.x - viewport.width / 2, y: centre.y - viewport.height / 2 };
+    const win = minimapWindow(centre, cam, viewport, MINIMAP_COVERAGE_U);
+    const edge = MINIMAP_COVERAGE_U / 2 - 1; // a world unit inside the window, on every side
+    const peer = (slot: number, dx: number, dy: number) => ({
+      ...POSE,
+      id: `p${slot}`,
+      slot,
+      name: `P${slot}`,
+      pos: near(centre, dx, dy),
+      radius: 14,
+      hp: 100,
+    });
+    const nest = (id: string, dx: number, dy: number, alive: boolean) => ({
+      id,
+      pos: near(centre, dx, dy),
+      radius: 48,
+      hp: alive ? 600 : 0,
+      alive,
+      sector: 0,
+    });
+    // Ore laid over the window's left and top rim, where a cell is half on the plate and half off.
+    const ore = new Map<number, OreKind>();
+    const cellTiles = MINIMAP_ORE_CELL_U / 15;
+    const rimTx = Math.floor(win.worldX / 15);
+    const rimTy = Math.floor(win.worldY / 15);
+    for (let i = 0; i < cellTiles; i++) {
+      ore.set(tileKey({ tx: rimTx + i, ty: rimTy + i }), "metal");
+      ore.set(tileKey({ tx: rimTx + cellTiles + i, ty: rimTy + i }), "power");
+    }
+    const snapshot: WorldSnapshot = {
+      ...world,
+      players: [
+        { ...SELF, pos: centre },
+        peer(2, edge, 0),
+        peer(3, -edge, 0),
+        peer(4, 0, edge),
+        peer(5, 0, -edge),
+      ],
+      nests: [nest("n1", -edge, -edge, true), nest("n2", edge, edge, false)],
+      ore,
+      structures: [rimTx, rimTx + 1, rimTx + 2].map((tx, i) =>
+        struct(`s${i}`, "wall", { tx, ty: rimTy + cellTiles * 2 }),
+      ),
+      // A door straddling the rim, so the clipped bar is drawn as well as the whole one.
+      exit: { x: win.worldX - 50, y: centre.y - 400, width: 98, height: 936 },
+      exitRevealed: true,
+    };
+    const ctx = spyCtx();
+    drawWorld(ctx, snapshot, { camera: cam, viewport, selfId: "p1" });
+    return { ctx, win };
+  };
+
+  test("keeps every layer inside the plate", () => {
+    const { ctx, win } = crowded();
+    expect(
+      mapCalls(ctx).some(
+        (c) =>
+          c.fn === "rect" &&
+          c.args[0] === win.x &&
+          c.args[1] === win.y &&
+          c.args[2] === MINIMAP_SIZE &&
+          c.args[3] === MINIMAP_SIZE,
+      ),
+    ).toBe(true);
+    expect(mapCalls(ctx).some((c) => c.fn === "clip")).toBe(true);
+
+    // Every mark is anchored on the plate. A mark also has a size the projection knows nothing
+    // about, so one on the rim hangs over it by up to its own width — that overhang is what the
+    // clip is there to trim, and one ore cell, the widest thing drawn, bounds it.
+    const slop = MINIMAP_ORE_CELL_U * win.scale;
+    const marks = mapCalls(ctx).filter((c) => c.fn === "arc" || c.fn === "fillRect");
+    for (const c of marks) {
+      const over = c.fn === "arc" ? 0 : slop;
+      expect(c.args[0] as number).toBeGreaterThanOrEqual(win.x - over);
+      expect(c.args[1] as number).toBeGreaterThanOrEqual(win.y - over);
+      expect(c.args[0] as number).toBeLessThanOrEqual(win.x + MINIMAP_SIZE + over);
+      expect(c.args[1] as number).toBeLessThanOrEqual(win.y + MINIMAP_SIZE + over);
+    }
+    // …and the scene really does press the rim, or the bounds above are asserting nothing.
+    const discs = mapDiscs(ctx);
+    const xs = discs.map((d) => d.x);
+    const ys = discs.map((d) => d.y);
+    expect(Math.min(...xs)).toBeLessThan(win.x + 1);
+    expect(Math.max(...xs)).toBeGreaterThan(win.x + MINIMAP_SIZE - 1);
+    expect(Math.min(...ys)).toBeLessThan(win.y + 1);
+    expect(Math.max(...ys)).toBeGreaterThan(win.y + MINIMAP_SIZE - 1);
+  });
+
+  test("closes the clip it opened, so the rest of the match is not drawn inside the plate", () => {
+    const { ctx } = crowded();
+    // `GameScreen` re-runs `setTransform` every frame and nothing else in `drawWorld` saves or
+    // restores — and `setTransform` does not drop a clip region. A `restore` the map failed to
+    // reach would therefore crop every later frame of the match to this 200 px square.
+    let depth = 0;
+    for (const c of ctx.calls) {
+      if (c.fn === "save") depth++;
+      else if (c.fn === "restore") depth--;
+      else if (c.fn === "clip") expect(depth).toBeGreaterThan(0); // clipped with nothing to undo it
+      expect(depth).toBeGreaterThanOrEqual(0);
+    }
+    expect(depth).toBe(0);
   });
 });

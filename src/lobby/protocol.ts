@@ -260,6 +260,15 @@ export interface MapDelta {
   power?: Power;
   aims?: TurretAim[];
   shots?: PeerShot[];
+  // The squad has found the door (#93). `WorldInit.exit` reached every client on the first frame,
+  // so this says nothing about *where* it is — only that the squad has now earned the right to be
+  // shown it. Sparse on the same terms as the bank, and more so: it flips once per match and never
+  // back, so it rides exactly one tick of a whole run.
+  //
+  // Typed `true` rather than `boolean` deliberately. There is no representable message that
+  // un-reveals the door, so "it never returns to hidden" is a property of the wire contract rather
+  // than a rule the receiver has to keep.
+  exitRevealed?: true;
 }
 
 // A render-model enemy the client assembles each frame (not a wire type). Its position is
@@ -297,6 +306,10 @@ export interface WorldSnapshot {
   enemies: RenderedEnemy[];
   nests: RenderedNest[];
   exit: Exit;
+  // Whether the squad has found the door (#93). `exit` has been here since the first frame, so this
+  // is the only thing standing between a renderer and giving the door away — which makes withholding
+  // it a decision the render layer takes, and this the flag it takes it on.
+  exitRevealed: boolean;
   ore: Map<number, OreKind>;
   // A turret's streamed aim rides along so the render layer can draw its line and its unpowered
   // lightning. Spelled out rather than imported from `build.ts` because this module is the wire
@@ -416,10 +429,19 @@ export type GamePeerHealth = Envelope<
   { id: PlayerId; hp: number; seq: number }
 >;
 // The reconnect keyframe (M3): the session's live enemy/nest/wave state, so a (re)joiner rebuilds
-// the world as it actually is now. `tick` seeds the client's apply-if-newer cursor.
+// the world as it actually is now. `tick` seeds the client's apply-if-newer cursor. `exitRevealed`
+// rides here too (#93): the delta that announced the door went out on one tick, long before this
+// client's socket existed, so without it a reconnecter would land in a squad that has found the
+// door and be the only one who cannot see it. Absent means not found — same shape as on the delta.
 export type GameEnemyInit = Envelope<
   "game/enemy-init",
-  { tick: number; enemies: EnemySnapshot[]; nests: NestSnapshot[]; wave: WaveDelta }
+  {
+    tick: number;
+    enemies: EnemySnapshot[];
+    nests: NestSnapshot[];
+    wave: WaveDelta;
+    exitRevealed?: true;
+  }
 >;
 // The economy keyframe (M4): the live shared bank and every placed building, so a (re)joiner
 // rebuilds the base as it actually stands. Ore is derived from `WorldInit.oreSeed`, so it is

@@ -129,6 +129,9 @@ export function demoWorld(): WorldSnapshot {
       { id: "n2", pos: { x: 16_020, y: 15_900 }, radius: 48, hp: 0, alive: false, sector: 1 },
     ],
     exit: { x: 0, y: 15_000, width: 98, height: 936 },
+    // The scene is staged at the arena's centre, and the nearest avatar in it is ~15,400 u from
+    // that door — nobody here has been anywhere near enough to find it.
+    exitRevealed: false,
     ore: demoOre(),
     structures: [
       { id: "b1", kind: "generator", tile: { tx: 1042, ty: 1030 }, hp: 300 },

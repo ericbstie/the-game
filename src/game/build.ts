@@ -33,6 +33,13 @@ export function tileKey(tile: Tile): number {
   return tile.tx * KEY_STRIDE + tile.ty;
 }
 
+// The tile a packed key came from. Lookups never need this — the grid is asked about a tile it
+// already has — but aggregating the grid does, and the unpacking belongs beside the packing rather
+// than wherever the stride is next needed (#93).
+export function tileFromKey(key: number): Tile {
+  return { tx: Math.floor(key / KEY_STRIDE), ty: key % KEY_STRIDE };
+}
+
 export function tileOf(pos: Vec2): Tile {
   return { tx: Math.floor(pos.x / TILE), ty: Math.floor(pos.y / TILE) };
 }

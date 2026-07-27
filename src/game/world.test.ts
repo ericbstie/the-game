@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
   ARENA,
+  EXIT_REVEAL_RADIUS,
   generateWorld,
   insideExit,
   PLAYER_RADIUS,
   PLAYER_SPEED,
   pushOutOfBodies,
+  revealsExit,
   stepPos,
 } from "./world";
 
@@ -189,5 +191,48 @@ describe("insideExit (M4-T11: standing in the door)", () => {
     const { exit: placed } = generateWorld(players(1), { rng: () => 0.5 });
     const centre = { x: placed.x + placed.width / 2, y: placed.y + placed.height / 2 };
     expect(insideExit(centre, placed)).toBe(true);
+  });
+});
+
+describe("revealsExit (#93: coming close enough to find the door)", () => {
+  // A door on the left wall: 98 deep, 936 long, so the face it presents to the arena is x = 98.
+  const exit = { x: 0, y: 1_000, width: 98, height: 936 };
+  const face = exit.x + exit.width;
+  const midY = exit.y + exit.height / 2;
+
+  test("standing in the door is as close as it gets", () => {
+    expect(revealsExit({ x: 50, y: midY }, exit)).toBe(true);
+  });
+
+  test("1,800 u from the door reveals it and 1,801 u does not", () => {
+    expect(revealsExit({ x: face + 1_800, y: midY }, exit)).toBe(true);
+    expect(revealsExit({ x: face + 1_801, y: midY }, exit)).toBe(false);
+  });
+
+  test("distance is to the nearest point of the door, not to its centre", () => {
+    // Level with the door's near end and 1,800 u out from its face. The door's centre is 1,907 u
+    // from here and its face's midpoint 1,860 u, so either of those measures would leave it
+    // hidden; against the door itself it is exactly 1,800.
+    expect(revealsExit({ x: face + 1_800, y: exit.y }, exit)).toBe(true);
+  });
+
+  test("running past the far end of the door counts the length of the wall too", () => {
+    // Diagonally off the door's far corner, so both axes carry distance. Every other case here
+    // sits square to the face with nothing in the along-wall term — which is exactly the term a
+    // player sprinting the length of a wall 1,800 u out is judged on, and the one that would let
+    // a door 13,000 u away announce itself if it were dropped.
+    const corner = { x: face, y: exit.y + exit.height };
+    expect(revealsExit({ x: corner.x + 1_272, y: corner.y + 1_272 }, exit)).toBe(true);
+    expect(revealsExit({ x: corner.x + 1_273, y: corner.y + 1_273 }, exit)).toBe(false);
+  });
+
+  test("the reveal distance is its own number, not AGGRO_RADIUS", () => {
+    // The requirement is about a future retune: move `AGGRO_RADIUS` and this must not follow. That
+    // is what pinning the value catches — write `EXIT_REVEAL_RADIUS = AGGRO_RADIUS`, retune aggro,
+    // and this line fails. Its twin in `enemies.test.ts` pins the other end, so a retune shows up
+    // as one file changing and not the other. Reading the source for an import instead would fail
+    // on a type-only one, which carries no value at all, and would still miss a shared third
+    // module — a weaker test that looks stronger.
+    expect(EXIT_REVEAL_RADIUS).toBe(1_800);
   });
 });

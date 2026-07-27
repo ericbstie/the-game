@@ -21,6 +21,7 @@ import {
   tileOf,
 } from "./build";
 import {
+  AGGRO_RADIUS,
   ATTACK_POS_TOLERANCE,
   type Attack,
   admitAttack,
@@ -205,6 +206,13 @@ describe("waves (the ~30 s escalating drumbeat)", () => {
 const HOLD_EDGE = Math.min(ARENA.width, ARENA.height) * (0.5 - 0.08); // 13,104 u from center
 
 describe("stepEnemies AI (ENGAGED / MARCH / HOLD)", () => {
+  // The other half of #93's independence check, which lives in `world.test.ts`. The two numbers
+  // agree today, so only a retune can tell them apart — and a retune that moves this one has to
+  // change this line and leave the other alone, which is the whole of what was asked.
+  test("AGGRO_RADIUS is its own number, not the door's reveal distance", () => {
+    expect(AGGRO_RADIUS).toBe(1_800);
+  });
+
   test("ENGAGED: a player within AGGRO_RADIUS pulls the nearest enemy into a chase", () => {
     const near = { x: C.x + 1000, y: C.y };
     const s = stateWith([grunt("e1", { ...near })]);

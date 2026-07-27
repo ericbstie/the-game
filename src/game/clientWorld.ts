@@ -114,6 +114,11 @@ export class ClientWorld {
   private readonly enemies = new Map<string, EnemyRecord>();
   private readonly shots: ShotEvent[] = []; // squadmates' shots; the render layer ages them itself
   readonly build: BuildState; // server-owned; mirrored here so the ghost tests placement locally
+  // Whether the squad has found the door (#93). Server-held: the only writes are the two below,
+  // each of them inside a handler for a message the server sent, and each of them writing `true`
+  // and nothing else. There is no setter and no local rule that could reach it, so a client can
+  // neither reveal the door on its own nor take it back once told.
+  private exitRevealed = false;
   private lastTick = -1; // highest applied map-delta tick; guards apply-if-newer
   private selfHp: number; // client-authoritative: the owner judges its own contact damage
   // Client clock, stamped when a `structHits` entry last landed. See `structureUnderAttack`.
@@ -286,6 +291,7 @@ export class ClientWorld {
         nest.alive = nd.alive;
       }
     }
+    if (delta.exitRevealed) this.exitRevealed = true;
     if (delta.bank) this.build.bank.metal = delta.bank.metal;
     // Tested against undefined, not truthiness: an emptied pool arrives as a 0, which is exactly
     // the value the trigger has to see.
@@ -448,7 +454,15 @@ export class ClientWorld {
   // Rebuild live enemy/nest state from the reconnect keyframe — world-init only carries the
   // initial static set, so a mid-match (re)joiner needs this to see enemies that moved/died/
   // spawned and nests that were silenced. Seeds `lastTick` so the first live delta isn't dropped.
-  initEnemies(msg: { tick: number; enemies: EnemySnapshot[]; nests: NestSnapshot[] }): void {
+  // The door's reveal is adopted and never cleared: a keyframe that omits it is silent about the
+  // door, not a denial, so a rebuild cannot hide a door this client has already been shown.
+  initEnemies(msg: {
+    tick: number;
+    enemies: EnemySnapshot[];
+    nests: NestSnapshot[];
+    exitRevealed?: true;
+  }): void {
+    if (msg.exitRevealed) this.exitRevealed = true;
     this.enemies.clear();
     for (const e of msg.enemies) {
       this.enemies.set(e.id, {
@@ -504,6 +518,7 @@ export class ClientWorld {
       enemies: this.renderEnemies(now),
       nests: this.nests.map(renderNest),
       exit: this.exit,
+      exitRevealed: this.exitRevealed,
       ore: this.ore,
       structures: [...this.build.structures.values()],
     };
