@@ -35,6 +35,36 @@ When a version ships, close its tracking issue and open the next one. That new i
 becomes the root for everything after it. Fold anything deliberately left behind into
 the new tracker, saying why it was left.
 
+### Writing an issue — the author's stance, and nothing else
+
+An issue states **what was asked for** and **how the result gets checked**. It does not
+design the solution. Keep it short and exact: the implementing agent is capable, and the
+ticket's job is to bound the work, not to do it.
+
+Write only:
+
+- **The ask**, in the author's words and at the author's level of detail.
+- **Verification** — the interface, and the checks that decide when it is done.
+- **Constraints that already exist** — an ADR, a wire format, a seam in the code. Cite
+  these `file:line` so they can be checked rather than trusted.
+- **Open questions** — anything the author has not taken a stance on. Ask it and leave
+  it unanswered.
+
+Never:
+
+- **Invent a requirement.** A default you chose, a threshold you picked, a behaviour you
+  think is sensible — none of these are the ask. If the ticket cannot be built without
+  one, that is an open question, not a decision you get to make.
+- **Prescribe an implementation** that was not asked for. No suggested data structures,
+  no recommended approach, no "do it this way". The agent picks.
+- **Guess at a number.** "Something in the 60–120 ms range" is an invention. Ask.
+- **Pad with rationale.** Do not re-argue the design or restate its consequences. It was
+  asked for; that is enough.
+
+This governs rewriting and triaging existing issues too, not just new ones. An issue that
+says less is not weaker — everything added that the author never said is a claim someone
+will later mistake for a decision.
+
 ### Claiming an issue
 
 **Before writing any code for an issue, do all three:**

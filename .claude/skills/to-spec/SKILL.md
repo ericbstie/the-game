@@ -26,7 +26,7 @@ decisions in one place a builder can act on. Turn one into the other.
 
 - Capture what was *decided*, not every option discussed. The spec is the conclusion, not the transcript.
 - Write behavior, not implementation. "The squad escapes only when all members are at the door" belongs here; "use a Set of playerIds" does not.
-- If a decision was never actually made, list it under open questions rather than inventing one — then resolve the open questions before building.
+- If a decision was never actually made, list it under open questions rather than inventing one — then resolve the open questions before building. This is the hard rule, not a preference (CLAUDE.md, *Writing an issue*): a default you chose reads as a decision the author made.
 - Publish to the issue tracker (GitHub issues here) as one spec issue; fall back to a `spec/<name>.md` doc if there's no tracker. Link the source discussion.
 
 Hand a finished spec to `/to-tickets` to break it into buildable work.

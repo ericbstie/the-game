@@ -19,6 +19,7 @@ A spec is one big thing; tickets are the order you actually build it. Slice for
 - **Small.** `XS` or `S` — one module, one behaviour (CLAUDE.md, *Sizing*). If you can't state its "done when" in a sentence, split it. A ticket that sizes `L` or larger is usually two tickets wearing one title.
 - **Independently verifiable.** It has an observable result you can check — not "set up the state machine" but "a grunt walks toward the nearest miner."
 - **Named in the domain's language** (`domain-modeling`).
+- **Only the author's stance** (CLAUDE.md, *Writing an issue*). A ticket carries the ask, its verification, the constraints that already exist, and the open questions — nothing else. Do not invent a requirement, prescribe an implementation, or guess a number to make a ticket look finished. Where the author has taken no stance, ask; the implementing agent decides the rest.
 
 ## Declare the edges
 
