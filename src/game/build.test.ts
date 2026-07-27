@@ -8,6 +8,7 @@ import {
   BUILD_SLOTS,
   BUILDABLES,
   type BuildableSpec,
+  creditMetal,
   DEMOLISH_CADENCE_MS,
   DEMOLISH_HOLD_MS,
   demolishStructure,
@@ -415,6 +416,128 @@ describe("placing and stepping structures", () => {
     const before = build.bank.metal;
     for (let i = 0; i < 20; i++) stepBuild(build, 50);
     expect(build.bank.metal - before).toBeCloseTo(metalRate(build), 6);
+  });
+});
+
+// #102: the bank holds whole Metal and nothing else, so a 4.9999 balance cannot exist and a cost
+// boundary is decided by an integer comparison. The sub-unit remainder is carried by the accumulator
+// rather than dropped, and the whole-Metal crossing that falls out of it is the beat #99 floats a
+// `+1` on and #109 arms its pin from.
+describe("the bank is whole Metal", () => {
+  const ore = generateOre(ARENA, SEED);
+  const metalTile = (() => {
+    for (const [key, kind] of ore) if (kind === "metal") return untileKey(key);
+    throw new Error("no metal ore");
+  })();
+  const MINER = BUILDABLES.miner as BuildableSpec;
+  const WALL = BUILDABLES.wall as BuildableSpec;
+
+  // Three miners at 20 Hz is the case a plain floating-point accumulator gets wrong: 0.6 a tick
+  // sums to 119.99999999999973 over ten seconds, banking 119 where the squad earned 120.
+  const threeMiners = () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 3 * MINER.cost;
+    for (let i = 0; i < 3; i++) {
+      placeStructure(build, "miner", { tx: metalTile.tx + 2 * i, ty: metalTile.ty }, MINER);
+    }
+    return build;
+  };
+
+  test("a fresh bank starts empty and whole", () => {
+    expect(freshBuildState(ARENA).bank.metal).toBe(0);
+  });
+
+  test("no partial tick can leave a fraction in the bank", () => {
+    const build = threeMiners();
+    for (const dtMs of [7, 13, 1, 50, 3, 111, 29, 50, 50, 17]) {
+      stepBuild(build, dtMs);
+      expect(Number.isInteger(build.bank.metal)).toBe(true);
+    }
+  });
+
+  test("three miners bank exactly ten seconds of their rate — the remainder carries", () => {
+    const build = threeMiners();
+    build.bank.metal = 0;
+    for (let i = 0; i < 200; i++) stepBuild(build, 50); // ten seconds at 20 Hz
+    expect(build.bank.metal).toBe(10 * metalRate(build));
+  });
+
+  test("accrual does not drift over a long match", () => {
+    const build = threeMiners();
+    build.bank.metal = 0;
+    for (let i = 0; i < 6_000; i++) stepBuild(build, 50); // five minutes at 20 Hz
+    expect(build.bank.metal).toBe(300 * metalRate(build));
+  });
+
+  test("a credit under one Metal banks nothing yet loses nothing", () => {
+    const build = freshBuildState(ARENA);
+    expect(creditMetal(build, 0.4)).toBe(0);
+    expect(build.bank.metal).toBe(0);
+    expect(creditMetal(build, 0.6)).toBe(1);
+    expect(build.bank.metal).toBe(1);
+  });
+
+  // The amount T17's 1 metal/s hand-mining pays in per 100 ms report.
+  test("two hundred fractional credits bank their exact total", () => {
+    const build = freshBuildState(ARENA);
+    let crossings = 0;
+    for (let i = 0; i < 200; i++) crossings += creditMetal(build, 0.1);
+    expect(build.bank.metal).toBe(20);
+    expect(crossings).toBe(20);
+  });
+
+  test("creditMetal reports the whole Metal it banked, so a crossing is observable", () => {
+    const build = freshBuildState(ARENA);
+    expect(creditMetal(build, 2.5)).toBe(2);
+    expect(creditMetal(build, 2.5)).toBe(3); // the carried .5 completes the third
+    expect(build.bank.metal).toBe(5);
+  });
+
+  test("stepBuild reports the whole Metal that crossed on that tick, not the rate", () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = MINER.cost;
+    placeStructure(build, "miner", metalTile, MINER); // MINER_TRICKLE a second, 0.2 a tick
+    const crossings = [];
+    for (let i = 0; i < 5; i++) crossings.push(stepBuild(build, 50));
+    expect(crossings).toEqual([0, 0, 0, 0, 1]);
+  });
+
+  test("an idle grid reports no crossing", () => {
+    expect(stepBuild(freshBuildState(ARENA), 1_000)).toBe(0);
+  });
+
+  // The point of the whole change: affordability is an integer comparison, so there is no balance
+  // that displays as 10 but refuses a 10-Metal wall.
+  test("a cost boundary reached by accrual is exact", () => {
+    const build = freshBuildState(ARENA);
+    const bare = { tx: 0, ty: 0 };
+    for (let i = 0; i < 99; i++) creditMetal(build, 0.1); // 9.9 Metal earned
+    expect(build.bank.metal).toBe(WALL.cost - 1);
+    expect(placementError("wall", bare, ore, build, null)).toBe("unaffordable");
+    creditMetal(build, 0.1);
+    expect(build.bank.metal).toBe(WALL.cost);
+    expect(placementError("wall", bare, ore, build, null)).toBeNull();
+  });
+
+  // Spending and refunding move whole Metal only, so neither may disturb the remainder a miner has
+  // part-earned: a demolish must not reset the progress toward the next Metal, nor round it away.
+  test("spending and refunding leave the pending remainder untouched", () => {
+    const build = threeMiners();
+    build.bank.metal = 0;
+    const ticks = 37; // deliberately not a whole second, so a remainder is outstanding throughout
+    for (let i = 0; i < ticks; i++) stepBuild(build, 50);
+    const earned = ticks * 50 * metalRate(build); // thousandths, by the rate rather than the code
+    expect(build.bank.metal).toBe(Math.floor(earned / 1_000));
+    expect(build.metalThousandths).toBe(earned % 1_000);
+    expect(build.metalThousandths).toBeGreaterThan(0);
+
+    const wall = placeStructure(build, "wall", { tx: metalTile.tx, ty: metalTile.ty + 4 }, WALL);
+    expect(build.bank.metal).toBe(Math.floor(earned / 1_000) - WALL.cost);
+    expect(build.metalThousandths).toBe(earned % 1_000);
+
+    const refund = demolishStructure(build, wall);
+    expect(build.bank.metal).toBe(Math.floor(earned / 1_000) - WALL.cost + refund);
+    expect(build.metalThousandths).toBe(earned % 1_000);
   });
 });
 

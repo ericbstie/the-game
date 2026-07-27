@@ -290,7 +290,8 @@ export interface BuildState {
   arena: Arena;
   structures: Map<string, Structure>;
   occupancy: Map<number, string>; // tileKey → structure id, so overlap is a lookup, not a scan
-  bank: Bank;
+  bank: Bank; // whole Metal only; `creditMetal` is the sole way in
+  metalThousandths: number; // the unbanked remainder, in [0, 1000). Owned by `creditMetal`.
   power: Power;
   nextId: number;
 }
@@ -301,6 +302,7 @@ export function freshBuildState(arena: Arena): BuildState {
     structures: new Map(),
     occupancy: new Map(),
     bank: { metal: 0 },
+    metalThousandths: 0,
     power: { generation: 0, consumption: 0 },
     nextId: 1,
   };
@@ -441,15 +443,42 @@ export function removeStructure(build: BuildState, id: string): Structure | null
   return structure;
 }
 
+// --- Banking Metal --------------------------------------------------------------------------
+// The bank holds whole Metal and nothing else, so a 4.9999 balance cannot exist and every
+// affordability test is an integer comparison. Income is fractional, though — a miner earns 0.2
+// Metal on a 50 ms tick — so the sub-unit remainder is carried here rather than dropped, and the
+// squad is paid its exact rate no matter how the ticks fall.
+
+// The remainder is counted in thousandths of a Metal because that is the exact quantum every
+// producer lands on: rates are whole Metal per second and the clock is whole milliseconds, so
+// `rate × ms` is always an integer count of thousandths. Accumulating that integer is what makes
+// the total exact — carrying the remainder as a plain float instead banks 119 of an earned 120
+// over ten seconds, because 0.6 added two hundred times lands at 119.99999999999973.
+const THOUSANDTHS_PER_METAL = 1_000;
+
+// Pay Metal into the shared bank, returning the whole Metal that just landed in it — 0 on a tick
+// that only moved the remainder. That return is the "a whole Metal was banked" crossing: it is the
+// beat #99 floats a `+1` on and the discrete receipt #109 arms its pin from.
+export function creditMetal(build: BuildState, metal: number): number {
+  build.metalThousandths += Math.round(metal * THOUSANDTHS_PER_METAL);
+  const whole = Math.floor(build.metalThousandths / THOUSANDTHS_PER_METAL);
+  build.metalThousandths -= whole * THOUSANDTHS_PER_METAL;
+  build.bank.metal += whole;
+  return whole;
+}
+
 // Advance the economy one tick: miners trickle Metal into the shared bank, and the energy ceiling
 // is recomputed from the generators actually standing. Recomputing rather than accumulating is
 // what makes Energy a rate and not a bank — a generator destroyed or demolished drops the ceiling
 // the same tick, with no reserve left over. Deterministic in (state, dtMs); no clock.
-export function stepBuild(build: BuildState, dtMs: number): void {
+//
+// Returns the whole Metal that crossed into the bank this tick, usually 0.
+export function stepBuild(build: BuildState, dtMs: number): number {
   let generators = 0;
   for (const s of build.structures.values()) if (s.kind === "generator") generators++;
-  build.bank.metal += (metalRate(build) * dtMs) / 1000;
+  const banked = creditMetal(build, (metalRate(build) * dtMs) / 1000);
   build.power.generation = generators * GENERATOR_OUTPUT;
+  return banked;
 }
 
 // Metal per second the standing miners pay into the bank: what `stepBuild` accumulates, stated as a
@@ -580,7 +609,7 @@ export function admitDemolish(
 export function demolishStructure(build: BuildState, structure: Structure): number {
   const refund = Math.floor((BUILDABLES[structure.kind]?.cost ?? 0) * DEMOLISH_REFUND);
   removeStructure(build, structure.id);
-  build.bank.metal += refund;
+  creditMetal(build, refund);
   return refund;
 }
 

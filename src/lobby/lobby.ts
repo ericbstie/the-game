@@ -4,6 +4,7 @@ import {
   admitMine,
   type BuildGuard,
   type BuildState,
+  creditMetal,
   type DemolishGuard,
   demolishStructure,
   freshBuildGuard,
@@ -436,8 +437,10 @@ export class LobbyHub {
     // its admission checks read a grid byte-identical to the one under the player's cursor.
     session.ore = generateOre(session.worldInit.arena, session.worldInit.oreSeed);
     session.build = freshBuildState(session.worldInit.arena);
-    session.build.bank.metal = this.startingMetal;
-    session.sentMetal = this.startingMetal;
+    // Seeded through the same door every other Metal comes in by, so the bank is whole because of
+    // how it is written rather than because every caller happened to pass a round number.
+    creditMetal(session.build, this.startingMetal);
+    session.sentMetal = session.build.bank.metal;
 
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
     session.sim = spawnEnemyState(session.worldInit, this.rng);
@@ -483,9 +486,9 @@ export class LobbyHub {
     if (removals.length > 0) delta.removals = removals;
     if (events.wave) delta.wave = events.wave;
     if (session.build) {
-      // The bank accrues fractionally but is spent and shown in whole Metal, so it rides only
-      // when the whole figure actually moves — a sparse event, not a per-tick field.
-      const metal = Math.floor(session.build.bank.metal);
+      // The bank is whole Metal, and the remainder never leaves the server, so it rides only when
+      // the figure actually moves — a sparse event, not a per-tick field.
+      const metal = session.build.bank.metal;
       if (metal !== session.sentMetal) {
         session.sentMetal = metal;
         delta.bank = { metal };
@@ -566,7 +569,8 @@ export class LobbyHub {
       session.mineGuards.set(player.id, guard);
     }
     const lastPos = session.positions.get(player.id)?.pos ?? null;
-    session.build.bank.metal += admitMine(guard, { tile, seq }, lastPos, session.ore, Date.now());
+    const earned = admitMine(guard, { tile, seq }, lastPos, session.ore, Date.now());
+    creditMetal(session.build, earned);
   }
 
   // A reported placement: re-run the same rule the client's ghost used, then debit the bank and
@@ -695,7 +699,7 @@ export class LobbyHub {
       this.transport.send(socketId, {
         type: "game/build-init",
         tick: session.tickNo,
-        bank: { metal: Math.floor(session.build.bank.metal) },
+        bank: { metal: session.build.bank.metal },
         power: { ...session.build.power },
         structures: snapshotStructures(session.build),
         aims: snapshotAims(session.build),
