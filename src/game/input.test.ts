@@ -56,8 +56,9 @@ describe("keyToBuildSlot", () => {
     expect(keyToBuildSlot("4", 4)).toBe(3);
   });
 
-  test("Escape cancels the selection", () => {
-    expect(keyToBuildSlot("Escape", 4)).toBe("cancel");
+  // #100 moved Escape to the menu, so it is no longer the build bar's cancel — right-click is.
+  test("Escape is not a build key", () => {
+    expect(keyToBuildSlot("Escape", 4)).toBeNull();
   });
 
   test("a number past the last slot is not a build key", () => {

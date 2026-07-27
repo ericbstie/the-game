@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { LobbyState } from "../lobby/client";
-import type { WorldInit } from "../lobby/protocol";
-import { BUILD_SLOTS, BUILDABLES, MINER_TRICKLE } from "./build";
+import type { MoveInput, WorldInit } from "../lobby/protocol";
+import { BUILD_SLOTS, BUILDABLES, MINE_CADENCE_MS, MINER_TRICKLE, tileKey } from "./build";
 import { ClientWorld } from "./clientWorld";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { GameScreen } from "./GameScreen";
+import { NO_MOVE } from "./input";
 import { ARENA } from "./world";
 
 const init: WorldInit = {
@@ -22,8 +23,12 @@ const init: WorldInit = {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const POS_SEND_MS = 50; // the HUD mirror's cadence, matching the component's own constant
 
-// A live match with nothing selected on the build bar, so left-click means shoot.
-function inMatch(onAttack: () => void, world = new ClientWorld(init, "me")): HTMLElement {
+// A live match, returning the arena canvas. Every callback defaults to a no-op, so a test names
+// only the one it is watching.
+function renderMatch(
+  handlers: Partial<Omit<React.ComponentProps<typeof GameScreen>, "state">> = {},
+  world = new ClientWorld(init, "me"),
+): HTMLElement {
   const state: LobbyState = {
     status: "lobby",
     code: "ABCD",
@@ -35,15 +40,42 @@ function inMatch(onAttack: () => void, world = new ClientWorld(init, "me")): HTM
       state={state}
       onLeave={() => {}}
       onPos={() => {}}
-      onAttack={onAttack}
+      onAttack={() => {}}
       onHealth={() => {}}
       onMine={() => {}}
       onBuild={() => {}}
       onDemolish={() => {}}
+      {...handlers}
     />,
   );
   return screen.getByLabelText("Game arena");
 }
+
+// A live match with nothing selected on the build bar, so left-click means shoot.
+function inMatch(onAttack: () => void, world = new ClientWorld(init, "me")): HTMLElement {
+  return renderMatch({ onAttack }, world);
+}
+
+// The cursor sits at the canvas origin under happy-dom (every rect is zero and the camera never
+// leaves 0,0), so this is the one tile a test can put something harvestable on.
+const CURSOR_TILE = { tx: 0, ty: 0 };
+
+// Every MoveInput the render loop stepped the avatar with, newest last.
+function recordMoves(world: ClientWorld): MoveInput[] {
+  const moves: MoveInput[] = [];
+  const stepSelf = world.stepSelf.bind(world);
+  world.stepSelf = (dt, input, now) => {
+    moves.push(input);
+    stepSelf(dt, input, now);
+  };
+  return moves;
+}
+
+// Let real time pass with React watching: the HUD's 20 Hz interval keeps setting state while a
+// test waits, and once the component has re-rendered once React wants those inside `act`.
+const settle = (ms: number) => act(async () => await sleep(ms));
+
+const nextFrames = () => settle(60);
 
 afterEach(cleanup);
 
@@ -197,5 +229,112 @@ describe("#98: a build slot states its cost and its name", () => {
       // And nothing else: the cost and the name are the only words ADR 0001 grants a slot.
       expect(slot.textContent).toBe(`${BUILDABLES[kind]?.cost}${NAMES[kind]}`);
     }
+  });
+});
+
+describe("#100: Escape opens the menu", () => {
+  test("Escape opens it and Escape closes it", () => {
+    renderMatch();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  test("neither opening nor closing it clears a selected buildable", () => {
+    renderMatch();
+    const wall = screen.getByLabelText("wall");
+    fireEvent.click(wall);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(wall.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(wall.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  test("it holds Leave and nothing else", () => {
+    renderMatch();
+    fireEvent.keyDown(window, { key: "Escape" });
+    const menu = screen.getByRole("dialog");
+    expect(
+      within(menu)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Leave"]);
+  });
+
+  test("Leave ends the match on the click, with no confirmation in between", () => {
+    const onLeave = mock(() => {});
+    renderMatch({ onLeave });
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Leave" }));
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  test("leaving is reachable only through the menu — the header button is gone", () => {
+    renderMatch();
+    expect(screen.queryByRole("button", { name: "Leave" })).toBeNull();
+  });
+
+  test("focus enters the menu on open and returns to the arena on close", () => {
+    const canvas = renderMatch();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Leave" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(document.activeElement).toBe(canvas);
+  });
+
+  test("opening it releases held movement — the next step sees NO_MOVE", async () => {
+    const world = new ClientWorld(init, "me");
+    const moves = recordMoves(world);
+    renderMatch({}, world);
+    fireEvent.keyDown(window, { key: "w" });
+    await nextFrames();
+    expect(moves.at(-1)?.up).toBe(true);
+    fireEvent.keyDown(window, { key: "Escape" });
+    await nextFrames();
+    expect(moves.at(-1)).toEqual(NO_MOVE);
+  });
+
+  test("movement is never locked while it is open, and works again once it closes", async () => {
+    const world = new ClientWorld(init, "me");
+    const moves = recordMoves(world);
+    renderMatch({}, world);
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(window, { key: "d" });
+    await nextFrames();
+    expect(moves.at(-1)?.right).toBe(true);
+    fireEvent.keyUp(window, { key: "d" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(window, { key: "w" });
+    await nextFrames();
+    expect(moves.at(-1)?.up).toBe(true);
+  });
+});
+
+describe("#100: right-click cancels a selected buildable", () => {
+  test("it clears the selection and arms no harvest", async () => {
+    const onMine = mock(() => {});
+    const world = new ClientWorld(init, "me");
+    world.ore.set(tileKey(CURSOR_TILE), "metal");
+    const canvas = renderMatch({ onMine }, world);
+    const wall = screen.getByLabelText("wall");
+    fireEvent.click(wall);
+    fireEvent.mouseDown(canvas, { button: 2 });
+    expect(wall.getAttribute("aria-pressed")).toBe("false");
+    // The button is still down. If the cancel had armed the hold, the harvest loop would report
+    // mining on its very next tick.
+    await settle(MINE_CADENCE_MS * 3);
+    expect(onMine).toHaveBeenCalledTimes(0);
+  });
+
+  test("with nothing selected it still harvests, as it always did", async () => {
+    const onMine = mock(() => {});
+    const world = new ClientWorld(init, "me");
+    world.ore.set(tileKey(CURSOR_TILE), "metal");
+    const canvas = renderMatch({ onMine }, world);
+    fireEvent.mouseDown(canvas, { button: 2 });
+    await settle(MINE_CADENCE_MS * 3);
+    expect(onMine).toHaveBeenCalled();
   });
 });

@@ -328,11 +328,16 @@ button:disabled {
   pointer-events: none;
 }
 
-.game-header .leave {
-  margin-left: auto;
-  pointer-events: auto;
-  padding: 0.4rem 0.8rem;
-  font-size: 0.6rem;
+/* Escape's menu: a small torn-out page over the match. `<dialog>` centres and plates itself, so
+   this only sets the padding — and clears the backdrop, because a wash over the arena would come
+   out as the grey this palette does not have, and because the match behind it is still being
+   played and has to stay watchable. */
+.game-menu {
+  padding: 1.5rem;
+}
+
+.game-menu::backdrop {
+  background: transparent;
 }
 
 /* The two HUD icons — the under-attack bell and the reconnecting broken link. Both report a
