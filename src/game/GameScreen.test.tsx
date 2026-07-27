@@ -152,6 +152,182 @@ describe("M5-I5: the client holds itself to the weapon's cadence before firing",
   });
 });
 
+// #103: left-click became a hold. One shot leaves per `RANGED_CADENCE_MS` for as long as the
+// button is down, aimed wherever the pointer is at the moment each one goes.
+describe("#103: holding left-click auto-fires at one shot per cadence", () => {
+  type Shot = { at: number; pos: Vec2; dir: Vec2 };
+
+  // Press and hold the trigger, collecting every shot the component sent with the instant it left.
+  // The button stays down until a test releases it.
+  function holdFire(world = new ClientWorld(init, "me")) {
+    const shots: Shot[] = [];
+    const onAttack = (pos: Vec2, dir: Vec2) => shots.push({ at: Date.now(), pos, dir });
+    const canvas = renderMatch({ onAttack }, world);
+    const pressedAt = Date.now();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    return { canvas, shots, pressedAt };
+  }
+
+  // Six cadences: the three-second hold the ticket counts six shots over.
+  const HOLD_MS = 6 * RANGED_CADENCE_MS;
+
+  test("a three-second hold sends exactly six shots", async () => {
+    const { shots, pressedAt } = holdFire();
+    await settle(HOLD_MS + RANGED_CADENCE_MS / 2); // held past the window, so a stall reads as one
+    fireEvent.mouseUp(window);
+    // Counted from the press rather than from the first shot's own timestamp, which is read a
+    // moment after the clock the cadence was charged against. That skew is under a millisecond, but
+    // the seventh shot falls exactly on the far edge of the window, and it is enough to pull it in.
+    // The press provably precedes every shot, so the edge is exact in the one direction that counts.
+    expect(shots.filter((s) => s.at - pressedAt < HOLD_MS)).toHaveLength(6);
+  });
+
+  test("no two shots of a hold are closer than the floor the server admits on", async () => {
+    const { shots } = holdFire();
+    await settle(3 * RANGED_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(shots.length).toBeGreaterThan(2);
+    // `RANGED_CADENCE_MS` is `admitAttack`'s own floor, imported rather than restated, so this is
+    // the client held to the very number that would refuse it — a refusal being a line drawn for
+    // damage nobody took (#85). The millisecond of slack is the harness's, not the client's: each
+    // timestamp is taken after the clock the shot was charged against, never the clock itself. It
+    // still catches what matters, since a trigger paced by counting frames drifts by tens of
+    // milliseconds rather than one.
+    const OBSERVED_SKEW_MS = 1;
+    const gaps = shots.slice(1).map((s, i) => s.at - (shots[i]?.at ?? 0));
+    expect(gaps.filter((gap) => gap < RANGED_CADENCE_MS - OBSERVED_SKEW_MS)).toEqual([]);
+  });
+
+  test("moving the pointer mid-hold re-aims the next shot", async () => {
+    const { canvas, shots } = holdFire();
+    fireEvent.mouseMove(canvas, { clientX: 300, clientY: 400 });
+    await settle(RANGED_CADENCE_MS + 60);
+    fireEvent.mouseUp(window);
+    expect(shots).toHaveLength(2);
+    expect(shots[1]?.dir).not.toEqual(shots[0]?.dir as Vec2);
+  });
+
+  test("releasing the button stops the fire", async () => {
+    const { shots } = holdFire();
+    fireEvent.mouseUp(window);
+    await settle(2 * RANGED_CADENCE_MS);
+    expect(shots).toHaveLength(1);
+  });
+
+  test("blur stops the fire, so a button let go off-canvas does not hold the trigger", async () => {
+    const { shots } = holdFire();
+    fireEvent.blur(window);
+    await settle(2 * RANGED_CADENCE_MS);
+    expect(shots).toHaveLength(1);
+  });
+
+  test("opening the Escape menu stops the fire, and none goes into it (#100)", async () => {
+    const { shots } = holdFire();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await settle(2 * RANGED_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(shots).toHaveLength(1);
+  });
+
+  test("dying mid-hold stops the fire", async () => {
+    const world = new ClientWorld(init, "me");
+    const { shots } = holdFire(world);
+    world.applyPeerHealth("me", 0, 1);
+    await settle(2 * RANGED_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(shots).toHaveLength(1); // the one that left before it went down
+  });
+
+  test("a dead player fires nothing while the button is held", async () => {
+    const world = new ClientWorld(init, "me", 0);
+    const { shots } = holdFire(world);
+    await settle(3 * RANGED_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(shots).toEqual([]);
+  });
+
+  test("standing up under a still-held button fires no free shot", async () => {
+    const world = new ClientWorld(init, "me", 0);
+    const { shots } = holdFire(world);
+    await settle(RANGED_CADENCE_MS);
+    world.reviveSelf();
+    // The elapsed gate is satisfied the instant this comes back — `RESPAWN_DELAY_MS` is forty
+    // cadences — so anything still armed would fire on the very next frame with no new input.
+    await settle(2 * RANGED_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(shots).toEqual([]);
+  });
+
+  test("firing again after a respawn takes a fresh press", async () => {
+    const world = new ClientWorld(init, "me", 0);
+    const { canvas, shots } = holdFire(world);
+    world.reviveSelf();
+    await settle(RANGED_CADENCE_MS);
+    fireEvent.mouseDown(canvas, { button: 0 });
+    fireEvent.mouseUp(window);
+    expect(shots).toHaveLength(1);
+  });
+
+  test("selecting a buildable mid-hold stops the fire and places nothing on its own", async () => {
+    const onBuild = mock(() => {});
+    const shots: Shot[] = [];
+    const onAttack = (pos: Vec2, dir: Vec2) => shots.push({ at: Date.now(), pos, dir });
+    const canvas = renderMatch({ onBuild, onAttack });
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(shots).toHaveLength(1);
+    fireEvent.keyDown(window, { key: "1" }); // the build bar takes the button mid-hold
+    await settle(2 * RANGED_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(shots).toHaveLength(1);
+    expect(onBuild).not.toHaveBeenCalled(); // and the hold does not place what it just selected
+  });
+
+  test("a stalled frame delays the next shot rather than banking the ones it spanned", async () => {
+    const { shots } = holdFire();
+    const stallUntil = Date.now() + 3 * RANGED_CADENCE_MS;
+    // Block the loop outright, which is what a frame long enough to skip whole cadences does to it.
+    // A trigger counting ticks, or paying down an accumulator, would let the backlog out at once.
+    while (Date.now() < stallUntil) {
+      /* spin */
+    }
+    await nextFrames();
+    fireEvent.mouseUp(window);
+    expect(shots).toHaveLength(2); // the stall costs one shot, not the three it covered
+  });
+
+  test("mining and firing are held independently — releasing one keeps the other", async () => {
+    const world = new ClientWorld(init, "me");
+    world.ore.set(tileKey(CURSOR_TILE), "metal");
+    const onMine = mock(() => {});
+    const shots: Shot[] = [];
+    const onAttack = (pos: Vec2, dir: Vec2) => shots.push({ at: Date.now(), pos, dir });
+    const canvas = renderMatch({ onMine, onAttack }, world);
+    fireEvent.mouseDown(canvas, { button: 2 });
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    const mined = onMine.mock.calls.length;
+    expect(mined).toBeGreaterThan(0); // both holds were live
+    fireEvent.mouseUp(window, { button: 2 }); // let go of the mine, keep the trigger
+    await settle(2 * RANGED_CADENCE_MS);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalledTimes(mined); // mining stopped
+    expect(shots.length).toBeGreaterThan(1); // firing did not
+  });
+
+  test("with a buildable selected, holding left-click places and never fires", async () => {
+    const onBuild = mock(() => {});
+    const shots: Shot[] = [];
+    const onAttack = (pos: Vec2, dir: Vec2) => shots.push({ at: Date.now(), pos, dir });
+    const canvas = renderMatch({ onBuild, onAttack });
+    fireEvent.keyDown(window, { key: "1" });
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(2 * RANGED_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(shots).toEqual([]);
+    expect(onBuild).toHaveBeenCalledTimes(1); // placed once; the run of them is #104, not this
+  });
+});
+
 describe("#105: hovering the Metal readout shows Metal per second", () => {
   const withMiners = (count: number) => {
     const world = new ClientWorld(init, "me");
@@ -410,7 +586,7 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
     await settle(MINE_CADENCE_MS * 3);
     expect(moves.at(-1)).toEqual(NO_MOVE);
     const released = moves.length;
-    fireEvent.mouseUp(window);
+    fireEvent.mouseUp(window, { button: 2 });
     await nextFrames();
     expect(moves[released]?.up).toBe(true);
   });
@@ -498,7 +674,7 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
     await settle(MINE_CADENCE_MS * 3);
     expect(moves.at(-1)).toEqual(NO_MOVE);
     fireEvent.keyDown(window, { key: "Escape" });
-    fireEvent.mouseUp(window);
+    fireEvent.mouseUp(window, { button: 2 });
     fireEvent.keyDown(window, { key: "w" });
     const released = moves.length;
     await nextFrames();

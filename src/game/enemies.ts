@@ -88,8 +88,10 @@ export function enemyContactCadenceMs(kind: EnemyKind): number {
 // hand-mining): a hitscan ray — no projectile entity, no per-tick wire state. Reach + DPS.
 export const RANGED_RANGE = 700; // how far the ray reaches from the origin
 export const RANGED_HALFWIDTH = 24; // the ray's half-thickness; an enemy within it is on-line
-export const RANGED_DAMAGE = 1;
-export const RANGED_CADENCE_MS = 180;
+export const RANGED_DAMAGE = 3;
+// Both the client's own gate and the server's admission floor (#103) — one number, so a held
+// trigger can never pace itself into shots `admitAttack` refuses.
+export const RANGED_CADENCE_MS = 500;
 
 // The server's loose anti-teleport-aim tolerance: a reported swing origin this far from the
 // player's last relayed position is rejected. Generous enough to survive relay lag (a player
