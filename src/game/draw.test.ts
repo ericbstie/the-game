@@ -126,14 +126,19 @@ function stubSprites(boxes: Partial<Record<SpriteName, number>>): SpriteSource {
 }
 
 // Where the corner map begins in a frame's log. `drawWorld` puts it up after everything in the
-// world, and its plate is the one square fill at exactly the plate's size — so this is the seam
-// between an assertion about the arena and an assertion about the map. Everything the world layer
-// claims is counted below it, or the map's own marks would answer for it.
+// world, so this is the seam between an assertion about the arena and an assertion about the map.
+// Everything the world layer claims is counted below it, or the map's own marks would answer for it.
+//
+// The plate is found by walking back from the map's clip — the only one a frame makes — rather than
+// forward to the first fill at the plate's size. Forward, a 200 px viewport would match the floor
+// fill instead, and every world-layer assertion built on `worldCalls` would go on passing against an
+// empty log.
 const mapStart = (ctx: { calls: Call[] }) => {
-  const at = ctx.calls.findIndex(
-    (c) => c.fn === "fillRect" && c.args[2] === MINIMAP_SIZE && c.args[3] === MINIMAP_SIZE,
-  );
-  return at < 0 ? ctx.calls.length : at;
+  for (let i = ctx.calls.findIndex((c) => c.fn === "clip"); i >= 0; i--) {
+    const c = ctx.calls[i];
+    if (c.fn === "fillRect" && c.args[2] === MINIMAP_SIZE && c.args[3] === MINIMAP_SIZE) return i;
+  }
+  return ctx.calls.length;
 };
 const worldCalls = (ctx: { calls: Call[] }) => ctx.calls.slice(0, mapStart(ctx));
 const mapCalls = (ctx: { calls: Call[] }) => ctx.calls.slice(mapStart(ctx));
@@ -1811,38 +1816,138 @@ describe("the minimap", () => {
     );
   });
 
+  // The plate's corner is snapped to a device pixel and every mark is projected off it, so the
+  // expectation has to be the snapped corner rather than the window's.
+  const onDevicePixel = (world: number, cameraAxis: number, dpr: number) =>
+    cameraAxis + Math.round((world - cameraAxis) * dpr) / dpr;
+
   test("projects onto the same plate at dpr 1, 2 and 3, and at any viewport size", () => {
     for (const dpr of [1, 2, 3]) {
       for (const view of [
         { width: 800, height: 600 },
         { width: 1920, height: 1080 },
+        // A real HiDPI `getBoundingClientRect()` returns fractions, and one is needed here or the
+        // device ratio does not reach this test at all: on a whole-pixel viewport the plate already
+        // sits on a device pixel at every ratio, so the loop would assert one thing three times.
+        { width: 1512.5, height: 945.5 },
       ]) {
         const ctx = spyCtx();
         drawWorld(ctx, world, { camera, viewport: view, selfId: "p1", dpr });
         const win = minimapWindow(SELF.pos, camera, view, MINIMAP_COVERAGE_U);
-        expect(mapCalls(ctx)[0].args.slice(0, 4)).toEqual([
-          win.x,
-          win.y,
-          MINIMAP_SIZE,
-          MINIMAP_SIZE,
-        ]);
+        const x = onDevicePixel(win.x, camera.x, dpr);
+        const y = onDevicePixel(win.y, camera.y, dpr);
+        expect(mapCalls(ctx)[0].args.slice(0, 4)).toEqual([x, y, MINIMAP_SIZE, MINIMAP_SIZE]);
         const self = mapDiscs(ctx).find((d) => d.fill === "#4f8cff");
-        expect(self?.x).toBeCloseTo(win.x + MINIMAP_SIZE / 2, 6);
-        expect(self?.y).toBeCloseTo(win.y + MINIMAP_SIZE / 2, 6);
+        expect(self?.x).toBeCloseTo(x + MINIMAP_SIZE / 2, 6);
+        expect(self?.y).toBeCloseTo(y + MINIMAP_SIZE / 2, 6);
       }
     }
   });
 
-  test("keeps every layer inside the plate", () => {
+  // A frame with something of every layer pressed against the rim of the window, which is the only
+  // place a projection that was off by anything at all would put ink on the floor beside the map.
+  const crowded = () => {
+    const centre = { x: 15_600, y: 15_600 };
+    const cam = { x: centre.x - viewport.width / 2, y: centre.y - viewport.height / 2 };
+    const win = minimapWindow(centre, cam, viewport, MINIMAP_COVERAGE_U);
+    const edge = MINIMAP_COVERAGE_U / 2 - 1; // a world unit inside the window, on every side
+    const peer = (slot: number, dx: number, dy: number) => ({
+      ...POSE,
+      id: `p${slot}`,
+      slot,
+      name: `P${slot}`,
+      pos: near(centre, dx, dy),
+      radius: 14,
+      hp: 100,
+    });
+    const nest = (id: string, dx: number, dy: number, alive: boolean) => ({
+      id,
+      pos: near(centre, dx, dy),
+      radius: 48,
+      hp: alive ? 600 : 0,
+      alive,
+      sector: 0,
+    });
+    // Ore laid over the window's left and top rim, where a cell is half on the plate and half off.
+    const ore = new Map<number, OreKind>();
+    const cellTiles = MINIMAP_ORE_CELL_U / 15;
+    const rimTx = Math.floor(win.worldX / 15);
+    const rimTy = Math.floor(win.worldY / 15);
+    for (let i = 0; i < cellTiles; i++) {
+      ore.set(tileKey({ tx: rimTx + i, ty: rimTy + i }), "metal");
+      ore.set(tileKey({ tx: rimTx + cellTiles + i, ty: rimTy + i }), "power");
+    }
+    const snapshot: WorldSnapshot = {
+      ...world,
+      players: [
+        { ...SELF, pos: centre },
+        peer(2, edge, 0),
+        peer(3, -edge, 0),
+        peer(4, 0, edge),
+        peer(5, 0, -edge),
+      ],
+      nests: [nest("n1", -edge, -edge, true), nest("n2", edge, edge, false)],
+      ore,
+      structures: [rimTx, rimTx + 1, rimTx + 2].map((tx, i) =>
+        struct(`s${i}`, "wall", { tx, ty: rimTy + cellTiles * 2 }),
+      ),
+      // A door straddling the rim, so the clipped bar is drawn as well as the whole one.
+      exit: { x: win.worldX - 50, y: centre.y - 400, width: 98, height: 936 },
+      exitRevealed: true,
+    };
     const ctx = spyCtx();
-    drawWorld(ctx, world, { camera, viewport, selfId: "p1" });
-    const clip = mapCalls(ctx).find((c) => c.fn === "clip");
-    expect(clip).toBeDefined();
-    const win = minimapWindow(SELF.pos, camera, viewport, MINIMAP_COVERAGE_U);
+    drawWorld(ctx, snapshot, { camera: cam, viewport, selfId: "p1" });
+    return { ctx, win };
+  };
+
+  test("keeps every layer inside the plate", () => {
+    const { ctx, win } = crowded();
     expect(
       mapCalls(ctx).some(
-        (c) => c.fn === "rect" && c.args[0] === win.x && c.args[2] === MINIMAP_SIZE,
+        (c) =>
+          c.fn === "rect" &&
+          c.args[0] === win.x &&
+          c.args[1] === win.y &&
+          c.args[2] === MINIMAP_SIZE &&
+          c.args[3] === MINIMAP_SIZE,
       ),
     ).toBe(true);
+    expect(mapCalls(ctx).some((c) => c.fn === "clip")).toBe(true);
+
+    // Every mark is anchored on the plate. A mark also has a size the projection knows nothing
+    // about, so one on the rim hangs over it by up to its own width — that overhang is what the
+    // clip is there to trim, and one ore cell, the widest thing drawn, bounds it.
+    const slop = MINIMAP_ORE_CELL_U * win.scale;
+    const marks = mapCalls(ctx).filter((c) => c.fn === "arc" || c.fn === "fillRect");
+    for (const c of marks) {
+      const over = c.fn === "arc" ? 0 : slop;
+      expect(c.args[0] as number).toBeGreaterThanOrEqual(win.x - over);
+      expect(c.args[1] as number).toBeGreaterThanOrEqual(win.y - over);
+      expect(c.args[0] as number).toBeLessThanOrEqual(win.x + MINIMAP_SIZE + over);
+      expect(c.args[1] as number).toBeLessThanOrEqual(win.y + MINIMAP_SIZE + over);
+    }
+    // …and the scene really does press the rim, or the bounds above are asserting nothing.
+    const discs = mapDiscs(ctx);
+    const xs = discs.map((d) => d.x);
+    const ys = discs.map((d) => d.y);
+    expect(Math.min(...xs)).toBeLessThan(win.x + 1);
+    expect(Math.max(...xs)).toBeGreaterThan(win.x + MINIMAP_SIZE - 1);
+    expect(Math.min(...ys)).toBeLessThan(win.y + 1);
+    expect(Math.max(...ys)).toBeGreaterThan(win.y + MINIMAP_SIZE - 1);
+  });
+
+  test("closes the clip it opened, so the rest of the match is not drawn inside the plate", () => {
+    const { ctx } = crowded();
+    // `GameScreen` re-runs `setTransform` every frame and nothing else in `drawWorld` saves or
+    // restores — and `setTransform` does not drop a clip region. A `restore` the map failed to
+    // reach would therefore crop every later frame of the match to this 200 px square.
+    let depth = 0;
+    for (const c of ctx.calls) {
+      if (c.fn === "save") depth++;
+      else if (c.fn === "restore") depth--;
+      else if (c.fn === "clip") expect(depth).toBeGreaterThan(0); // clipped with nothing to undo it
+      expect(depth).toBeGreaterThanOrEqual(0);
+    }
+    expect(depth).toBe(0);
   });
 });

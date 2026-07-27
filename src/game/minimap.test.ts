@@ -187,6 +187,24 @@ describe("the ore cells a window covers", () => {
     }
   });
 
+  test("reaches the partial cell at the far rim of a window off the lattice", () => {
+    // 7,800 u is a whole 65 cells, so a window that starts on the lattice covers 65 columns and one
+    // that does not covers 66 — and off the lattice is where the player is on all but the frames
+    // they happen to stand on a 120 u boundary.
+    const w = win();
+    expect((w.worldX / MINIMAP_ORE_CELL_U) % 1).not.toBe(0);
+    const cellTiles = MINIMAP_ORE_CELL_U / TILE;
+    const lastCol = Math.floor((w.worldX + w.coverage) / MINIMAP_ORE_CELL_U);
+    const lastRow = Math.floor((w.worldY + w.coverage) / MINIMAP_ORE_CELL_U);
+    const rim: OreGrid = new Map([
+      [tileKey({ tx: lastCol * cellTiles, ty: lastRow * cellTiles }), "metal"],
+    ]);
+    const [cell] = oreCells(w, oreDensity(rim, arena));
+    expect(cell).toBeDefined();
+    expect(w.worldX + (cell.x - w.x) / w.scale).toBeCloseTo(lastCol * MINIMAP_ORE_CELL_U, 6);
+    expect(w.worldY + (cell.y - w.y) / w.scale).toBeCloseTo(lastRow * MINIMAP_ORE_CELL_U, 6);
+  });
+
   test("aggregates rather than drawing tiles: a 7,800 u window is never per-tile", () => {
     const w = minimapWindow({ x: 22_000, y: 15_600 }, camera, viewport, MINIMAP_COVERAGE_U);
     const cells = oreCells(w, oreDensity(real, arena));

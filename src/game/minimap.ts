@@ -26,9 +26,10 @@ export const MINIMAP_SIZE = 200;
 export const MINIMAP_MARGIN = 16;
 
 // How coarsely the ore is counted: one cell per 8 × 8 tiles. The field is 0.19% of the arena by
-// area and lies in patches of 30–80 tiles, so this is the largest cell that still leaves a patch
-// spread over several of them — coarser and a patch collapses to one mark, finer and the walk
-// grows without the texture reading any better. At 1× a cell is 3.1 px on the plate.
+// area and lies in patches of 30–80 tiles of metal and 10–20 of power (`build.ts`), so this is the
+// largest cell that still leaves a metal patch spread over several of them — coarser and metal
+// collapses to one mark too, the way a power patch already does at any size worth walking. Finer
+// and the walk grows without the texture reading any better. At 1× a cell is 3.1 px on the plate.
 export const MINIMAP_ORE_CELL_U = 8 * TILE;
 
 // Where the map is and what it looks at. World coordinates throughout, because `drawWorld` paints
