@@ -480,16 +480,6 @@ describe("#100: Escape opens the menu", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  test("neither opening nor closing it clears a selected buildable", () => {
-    renderMatch();
-    const wall = screen.getByLabelText("wall");
-    fireEvent.click(wall);
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(wall.getAttribute("aria-pressed")).toBe("true");
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(wall.getAttribute("aria-pressed")).toBe("true");
-  });
-
   test("it holds Leave and nothing else", () => {
     renderMatch();
     fireEvent.keyDown(window, { key: "Escape" });
@@ -574,6 +564,39 @@ describe("#100: right-click cancels a selected buildable", () => {
     fireEvent.mouseDown(canvas, { button: 2 });
     await settle(MINE_CADENCE_MS * 3);
     expect(onMine).toHaveBeenCalled();
+  });
+});
+
+// #117 reverses the stance #100 shipped: Escape cancels a selected buildable, and reaches the menu
+// only once there is nothing to cancel. Right-click keeps the job #100 gave it, so both do it now.
+describe("#117: Escape cancels a selected buildable first", () => {
+  test("with one selected it clears the selection and opens nothing", () => {
+    renderMatch();
+    const wall = screen.getByLabelText("wall");
+    fireEvent.click(wall);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(wall.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  test("the next Escape, with the selection gone, opens the menu", () => {
+    renderMatch();
+    fireEvent.click(screen.getByLabelText("wall"));
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  test("an open menu closes on Escape even with the build bar taken behind it", () => {
+    renderMatch();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    // The build bar's keys still reach the window listener from behind the modal. A selection taken
+    // there must not cost the menu its own key, or Escape would no longer close what it opened.
+    fireEvent.keyDown(window, { key: "2" });
+    expect(screen.getByLabelText("wall").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 
@@ -859,11 +882,14 @@ describe("#104: hold and drag left-click to place a run of buildables", () => {
   test("opening the Escape menu ends the drag, and none of it is laid in behind (#100)", async () => {
     const { canvas, asked } = drag("wall");
     fireEvent.mouseMove(canvas, atTile(19));
-    // Inside `act` so the menu's own effect has provably run before the clock is let go — the
-    // assertion is about what the drag does after the menu is up, not about the race to open it.
+    // Two, because a drag always has the bar taken and the first Escape is spent cancelling that
+    // selection (#117). Both inside one `act` so no frame runs between them and the drag is still
+    // armed when the menu opens — the state this test exists to catch.
     act(() => {
       fireEvent.keyDown(window, { key: "Escape" });
+      fireEvent.keyDown(window, { key: "Escape" });
     });
+    expect(screen.getByRole("dialog")).toBeTruthy(); // the menu really is up, not merely the bar cleared
     await settle(5 * BUILD_CADENCE_MS);
     fireEvent.mouseUp(window);
     expect(tilesOf(asked)).toEqual([{ tx: 0, ty: 0 }]);

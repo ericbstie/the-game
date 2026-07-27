@@ -146,6 +146,7 @@ export function GameScreen({
   const [selected, setSelected] = useState<BuildableKind | null>(null);
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuOpenRef = useRef(menuOpen); // the key listener reads it un-stale, as it does the selection
   const menuRef = useRef<HTMLDialogElement>(null);
   const leaveRef = useRef<HTMLButtonElement>(null);
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
@@ -170,6 +171,7 @@ export function GameScreen({
   onBuildRef.current = onBuild;
   onDemolishRef.current = onDemolish;
   selectedRef.current = selected;
+  menuOpenRef.current = menuOpen;
 
   // Keyboard → held MoveInput, plus the build bar's 1–4 and the menu's Escape. Nothing is sent
   // per key.
@@ -182,10 +184,18 @@ export function GameScreen({
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         // A shown `<dialog>` closes itself on an Escape the page did not consume, which would fight
-        // this toggle for the same key. Cancelling the event suppresses that close request and
-        // leaves the menu's open state to exactly one owner.
+        // this for the same key. Cancelling the event suppresses that close request and leaves the
+        // menu's open state to exactly one owner.
         e.preventDefault();
-        setMenuOpen((open) => !open);
+        // An open menu answers first, before anything else Escape does (#117). `1`–`4` still reach
+        // this listener from behind the modal, so a selection taken there would otherwise eat the
+        // key the menu is closed with. Only with the menu down does Escape cancel the selected
+        // buildable, and only with nothing to cancel does it open the menu.
+        if (menuOpenRef.current) setMenuOpen(false);
+        else if (selectedRef.current) {
+          selectedRef.current = null; // the ghost must go this frame, not on the next render
+          setSelected(null);
+        } else setMenuOpen(true);
         return;
       }
       const slot = keyToBuildSlot(e.key, BUILD_SLOTS.length);
