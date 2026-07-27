@@ -12,7 +12,7 @@ import { ARENA } from "./world";
 // player crosses the edge and sees either two of themselves or none.
 
 // The arrowhead, in world units, small enough to read as a mark on the edge of the screen rather
-// than as a HUD: two thirds of a player's 28 u width, so it never competes with a body. The notch
+// than as a HUD: 18 u against a player's 28 u width, so it never competes with a body. The notch
 // is what makes it a drawn arrowhead instead of an isoceles triangle — the tail is cut in toward
 // the tip, which is how the period's printed arrows were struck.
 export const MARKER_LENGTH = 18;
