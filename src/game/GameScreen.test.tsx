@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { LobbyState } from "../lobby/client";
 import type { WorldInit } from "../lobby/protocol";
-import { MINER_TRICKLE } from "./build";
+import { BUILD_SLOTS, BUILDABLES, MINER_TRICKLE } from "./build";
 import { ClientWorld } from "./clientWorld";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { GameScreen } from "./GameScreen";
@@ -174,5 +174,28 @@ describe("#105: hovering the Metal readout shows Metal per second", () => {
     expect(readout.tabIndex).toBeGreaterThanOrEqual(0);
     readout.focus();
     expect(document.activeElement).toBe(readout);
+  });
+});
+
+describe("#98: a build slot states its cost and its name", () => {
+  // `mine`, not `miner` — the author's wording for the label. The domain type stays `miner`.
+  const NAMES: Record<string, string> = {
+    miner: "mine",
+    wall: "wall",
+    turret: "turret",
+    generator: "generator",
+  };
+
+  test("puts the registry's Metal cost in the circle and the one-word name under the art", () => {
+    inMatch(() => {});
+    for (const kind of BUILD_SLOTS) {
+      const slot = screen.getByLabelText(kind);
+      // Read through the registry, so a rebalance moves the circle with it (#101 is coming for the
+      // turret). In the circle, not merely in the slot: a loose numeral would pass either way.
+      expect(slot.querySelector(".build-cost")?.textContent).toBe(String(BUILDABLES[kind]?.cost));
+      expect(slot.querySelector(".build-name")?.textContent).toBe(NAMES[kind]);
+      // And nothing else: the cost and the name are the only words ADR 0001 grants a slot.
+      expect(slot.textContent).toBe(`${BUILDABLES[kind]?.cost}${NAMES[kind]}`);
+    }
   });
 });

@@ -397,7 +397,7 @@ button:disabled {
   background: repeating-linear-gradient(-45deg, var(--ink) 0 3px, var(--paper) 3px 6px);
 }
 
-/* Metal and Energy: the only readouts the in-match allowlist grants. */
+/* The Metal and Energy readouts. */
 .banks {
   position: absolute;
   bottom: 1rem;
@@ -498,19 +498,66 @@ button:disabled {
   transform: translateX(-50%);
   z-index: 2;
   display: flex;
-  gap: 0.4rem;
+  /* Wider than the 0.95rem a cost circle hangs off its slot's corner, so the circle still leaves
+     paper between itself and the rule of the slot before it. */
+  gap: 1rem;
 }
 
-/* A slot is its buildable's own sprite in a hard black box. The names and the number keys are
-   gone (ADR 0001), so the art is the whole label. */
+/* A slot is its buildable's own sprite over its one-word name, with its Metal cost in a circle
+   sitting on the top-left corner (#98). The number keys stay gone (ADR 0001).
+
+   The name sets this width, not the circle and not the art: `generator` measures 47px at a 16px
+   root, which is why the 3rem slot the sprites alone were happy in had to grow. */
 .build-slot {
+  position: relative;
   display: grid;
+  /* The art takes whatever the name leaves, so the name's band is exactly the name — there is no
+     reserved strip to keep in step with its font size. */
+  grid-template-rows: 1fr auto;
   place-items: center;
-  width: 3rem;
-  height: 3rem;
-  padding: 0;
+  width: 3.5rem;
+  height: 3.5rem;
+  padding: 0 0 0.2rem; /* the name off the bottom rule */
   border: var(--rule);
   background: var(--paper);
+  color: var(--ink); /* the ink-block button colour is paper, and this slot is plated in paper */
+}
+
+/* Nearly half the circle hangs off the corner: it reads as a price flash pinned to the slot rather
+   than a number tucked inside it. That much hang is also what carries the arc outside the icon's
+   box, with a pixel to spare — the wall and generator sprites ink their own corner pixel, and the
+   circle paints over the art, so an arc inside that box takes ink off the drawing.
+
+   0.75rem is the floor at which all four numerals read at 1x: below it Playfair's `1` loses the
+   flag that tells it from `I`, and `120` and `150` come out the same shape. What makes any size
+   work is lining tabular figures, which the shared `button` rule restores — Chromium's UA `font`
+   shorthand drops the pair `body` sets, and old-style figures set `10` as an x-height `I` beside an
+   x-height `o` at every size. The diameter holds three digits clear of the rule; a fourth
+   overflows, which is #101's problem when it gets there. */
+.build-cost {
+  position: absolute;
+  top: -0.95rem;
+  left: -0.95rem;
+  display: grid;
+  place-items: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  border: var(--rule);
+  border-radius: 50%;
+  background: var(--paper);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0; /* the shared button rule tracks capitals, which pulls the digits apart */
+}
+
+/* Lowercase and untracked, as the author wrote them: `generator` set as the magazine's small caps
+   at their own 0.22em runs half again as wide as a slot. The size is the small-caps size, inherited
+   — the tracking is what did not fit, not the size. */
+.build-name {
+  grid-row: 2;
+  letter-spacing: normal;
+  text-transform: none;
+  line-height: 1;
 }
 
 .build-slot:hover:not(:disabled) {
@@ -522,13 +569,25 @@ button:disabled {
 }
 
 /* Selected reverses to white-on-black, which is why the icon is inverted with it — the sprite is
-   black ink on nothing, and it would vanish into a filled slot otherwise. */
-.build-slot[aria-pressed="true"] {
+   black ink on nothing, and it would vanish into a filled slot otherwise. The name reverses too;
+   the cost circle keeps its own paper and needs nothing.
+
+   The `:hover` selector carries no styling of its own: it is there to outrank the two rules that
+   paint a hovered button paper — `button:hover:not(:disabled)` and `.build-slot`'s own — either of
+   which beats a bare `[aria-pressed="true"]`. Without it the pointer left resting on the slot it
+   just chose gets paper behind a name that is still set in paper, and the slot reads as neither
+   named nor selected. */
+.build-slot[aria-pressed="true"],
+.build-slot[aria-pressed="true"]:hover {
   background: var(--ink);
 }
 
 .build-slot[aria-pressed="true"] canvas {
   filter: invert(1);
+}
+
+.build-slot[aria-pressed="true"] .build-name {
+  color: var(--paper);
 }
 
 /* ── The end screen ───────────────────────────────────────────────────────────────────────────
