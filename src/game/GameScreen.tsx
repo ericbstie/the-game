@@ -7,6 +7,7 @@ import { SPRITES } from "../sprite/registry";
 import { SpriteIcon } from "../sprite/SpriteIcon";
 import warningIcon from "../sprite/warning";
 import {
+  BUILD_CADENCE_MS,
   BUILD_SLOTS,
   BUILDABLES,
   DEMOLISH_HOLD_MS,
@@ -17,6 +18,7 @@ import {
   resolveHarvest,
   tileCenter,
   tileOf,
+  tilesBetween,
   withinReach,
 } from "./build";
 import { type Camera, computeCamera } from "./camera";
@@ -53,6 +55,24 @@ const slotCosts = (world: ClientWorld | undefined): number[] =>
 // It bakes nothing until something is drawn, so importing this costs nothing under `bun test`,
 // where there is no canvas to bake into.
 const spriteCache = createSpriteCache(SPRITES);
+
+// A run of buildables being laid by a held left-click (#104). `at` is the far end of the path the
+// cursor has walked, so each pointer sample only has to fill the gap since the last one; `pending`
+// is what that path has crossed and the build cadence has not yet let out. `kind` is latched at the
+// press rather than read live, because taking the build bar mid-drag must not lay the other thing
+// on tiles that were crossed before it was chosen.
+//
+// `next` is the read cursor rather than `shift`: the queue is deliberately unbounded — every tile in
+// it was asked for — and a drain that shifted would cost O(n) a tile, which a gesture jittering over
+// a tile a structure already stands on pays in one synchronous frame. Consumed entries are left
+// where they are; the whole array goes when the button does.
+interface BuildDrag {
+  kind: BuildableKind;
+  at: Tile;
+  pending: Tile[];
+  next: number;
+  lastAt: number;
+}
 
 interface GameScreenProps {
   state: LobbyState;
@@ -99,6 +119,9 @@ export function GameScreen({
   // the harvest hold's timestamp: nothing here cares how long it has been down, only that a shot
   // is due.
   const firingRef = useRef(false);
+  // The run left-click is dragging out, or null if it is not (#104). Never live at the same time as
+  // `firingRef`: the press reads the build bar once and arms exactly one of the two.
+  const dragRef = useRef<BuildDrag | null>(null);
   // When the last shot actually went out. The cadence is enforced here as well as in the server's
   // `admitAttack` because a fast-clicking player would otherwise send, and draw a line for, shots
   // the server refused. A drawn line must never imply damage nobody applied.
@@ -192,6 +215,7 @@ export function GameScreen({
     // The trigger goes with it (#103). Escape brings no `mouseup`, so a hold armed before the menu
     // opened would keep firing behind it at whatever the pointer was last over.
     firingRef.current = false;
+    dragRef.current = null; // and the run with it, for the same want of a `mouseup` (#104)
     menuRef.current?.showModal();
     // Focus is placed rather than left to `showModal`'s own focusing step, which not every DOM
     // implements. Escape has no invoking element to hand focus back to on close, so it goes to the
@@ -229,6 +253,43 @@ export function GameScreen({
     const dir = aimDir(pointerRef.current, self, camera);
     ownShotRef.current = { at: now, from: { ...self }, dir };
     onAttackRef.current({ ...self }, dir);
+  }, []);
+
+  // One placement out of the drag's queue, or none. The press and the held frames both come through
+  // here, so a run is paced in exactly one place — `BUILD_CADENCE_MS` is `admitBuild`'s own floor,
+  // and a client that outran it would have most of what it sent dropped and lay a run full of holes.
+  //
+  // The queue is what makes a fast drag whole: the pointer crosses tiles far quicker than ten a
+  // second, so they wait here rather than being lost to the sample that overtook them.
+  const placeIfDue = useCallback((now: number) => {
+    const drag = dragRef.current;
+    const world = worldRef.current;
+    if (!drag || !world) return;
+    // The build bar taken mid-drag ends the gesture rather than switching what it lays. Every tile
+    // still queued was crossed while the old kind was up, and the new one was never asked for there.
+    if (selectedRef.current !== drag.kind) {
+      dragRef.current = null;
+      return;
+    }
+    if (now - drag.lastAt < BUILD_CADENCE_MS) return;
+    while (drag.next < drag.pending.length) {
+      const tile = drag.pending[drag.next++];
+      // The same rule the ghost paints and the server admits on, read off the mirrored bank — so a
+      // turret's price climbing under its own run (#101) is felt here as the run is laid.
+      const refusal = placementError(drag.kind, tile, world.ore, world.build, aimRef.current.self);
+      // Cost is the one refusal that ends the gesture instead of being stepped over. Anything else
+      // is a tile the run passes through, and stepping over it spends no cadence — a wall's 2×2
+      // footprint blocks the tile after every one it lays, and paying a cadence for each of those
+      // would halve the speed of every straight drag.
+      if (refusal === "unaffordable") {
+        dragRef.current = null;
+        return;
+      }
+      if (refusal !== null) continue;
+      drag.lastAt = now;
+      onBuildRef.current(drag.kind, tile);
+      return;
+    }
   }, []);
 
   // Track the CSS viewport size and size the backing store to device pixels (crisp HiDPI).
@@ -272,9 +333,12 @@ export function GameScreen({
         const move = pinned ? NO_MOVE : heldRef.current;
         if (!world.isDead()) world.stepSelf(dt, move, clock); // a downed player holds still
         world.updateHealth(clock); // judge contact damage at the owner's true position
-        // Held left-click auto-fires (#103), on the same frame clock the pin above is read on and
-        // outside the draw, so a frame that renders nothing still keeps the trigger's rate honest.
+        // Held left-click is one of two things and never both: a run of buildables when the bar has
+        // one selected (#104), a shot when it does not (#103). Both are spent on the same frame
+        // clock the pin above is read on, and outside the draw, so a frame that renders nothing
+        // still keeps their rates honest.
         if (firingRef.current) fireIfDue(clock);
+        if (dragRef.current) placeIfDue(clock);
         const { w, h } = viewRef.current;
         const ctx = w > 0 && h > 0 ? canvas.getContext("2d") : null;
         if (ctx) {
@@ -332,7 +396,7 @@ export function GameScreen({
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, [fireIfDue]);
+  }, [fireIfDue, placeIfDue]);
 
   useEffect(() => {
     let lastHp = PLAYER_MAX_HP;
@@ -409,11 +473,15 @@ export function GameScreen({
   useEffect(() => {
     const release = (e: MouseEvent) => {
       if (e.button === 2) harvestingRef.current = null;
-      if (e.button === 0) firingRef.current = false;
+      if (e.button === 0) {
+        firingRef.current = false;
+        dragRef.current = null; // the path still queued behind the cursor goes with the button
+      }
     };
     const releaseAll = () => {
       harvestingRef.current = null;
       firingRef.current = false;
+      dragRef.current = null;
     };
     window.addEventListener("mouseup", release);
     window.addEventListener("blur", releaseAll);
@@ -426,16 +494,36 @@ export function GameScreen({
   const trackPointer = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     pointerRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const drag = dragRef.current;
+    if (!drag) return;
+    // Every tile between this sample and the last, never only the one under the cursor: a pointer
+    // outruns both the frame and the build cadence, and the tiles it crossed on the way are most
+    // of what a drag was asked for. A sample that has not left its tile adds nothing, which is what
+    // keeps the tile the press already laid from being laid a second time.
+    const tile = cursorTile(pointerRef.current, aimRef.current.camera);
+    for (const crossed of tilesBetween(drag.at, tile)) drag.pending.push(crossed);
+    drag.at = tile;
+  };
+  const endDrag = () => {
+    dragRef.current = null;
   };
   const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     trackPointer(e);
     if (e.button === 0) {
       const kind = selectedRef.current;
-      // Left-click is one button with two jobs: place the selected buildable, or shoot when
-      // nothing is selected. Shooting arms the hold and takes its first shot in the same breath —
-      // waiting for the next frame would put a click's worth of lag on a single tap.
+      // Left-click is one button with two jobs: lay a run of the selected buildable, or shoot when
+      // nothing is selected. Either way the hold is armed and spent in the same breath — waiting
+      // for the next frame would put a click's worth of lag on a single tap.
       if (kind) {
-        onBuildRef.current(kind, cursorTile(pointerRef.current, aimRef.current.camera));
+        const tile = cursorTile(pointerRef.current, aimRef.current.camera);
+        dragRef.current = {
+          kind,
+          at: tile,
+          pending: [tile],
+          next: 0,
+          lastAt: Number.NEGATIVE_INFINITY,
+        };
+        placeIfDue(Date.now());
       } else {
         firingRef.current = true;
         fireIfDue(Date.now());
@@ -480,6 +568,7 @@ export function GameScreen({
         tabIndex={-1}
         onMouseMove={trackPointer}
         onMouseDown={onMouseDown}
+        onMouseLeave={endDrag}
         onContextMenu={(e) => e.preventDefault()}
       />
       {/* Escape's menu (#100). Leave is the whole of it — ADR 0001 grants nothing else a place

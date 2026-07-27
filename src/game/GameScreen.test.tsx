@@ -1,13 +1,18 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { LobbyState } from "../lobby/client";
-import type { MoveInput, Vec2, WorldInit } from "../lobby/protocol";
+import type { BuildableKind, MoveInput, Tile, Vec2, WorldInit } from "../lobby/protocol";
 import {
+  BUILD_CADENCE_MS,
   BUILD_SLOTS,
   BUILDABLES,
+  type BuildableSpec,
   INTERACT_REACH,
+  insertStructure,
   MINE_CADENCE_MS,
   MINER_TRICKLE,
+  placeStructure,
+  TILE,
   tileKey,
 } from "./build";
 import { ClientWorld } from "./clientWorld";
@@ -318,13 +323,20 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
     const onBuild = mock(() => {});
     const shots: Shot[] = [];
     const onAttack = (pos: Vec2, dir: Vec2) => shots.push({ at: Date.now(), pos, dir });
-    const canvas = renderMatch({ onBuild, onAttack });
+    // Metal in the bank and ore under the cursor, because a placement the ghost paints red is one
+    // the drag refuses to send (#104) — a squad with nothing banked would place nothing here and
+    // the "never fires" half would pass for the wrong reason.
+    const world = new ClientWorld(init, "me");
+    world.ore.set(tileKey(CURSOR_TILE), "metal");
+    world.build.bank.metal = 1_000;
+    const canvas = renderMatch({ onBuild, onAttack }, world);
     fireEvent.keyDown(window, { key: "1" });
     fireEvent.mouseDown(canvas, { button: 0 });
     await settle(2 * RANGED_CADENCE_MS);
     fireEvent.mouseUp(window);
     expect(shots).toEqual([]);
-    expect(onBuild).toHaveBeenCalledTimes(1); // placed once; the run of them is #104, not this
+    // Once: the cursor never left its tile. The run a moving cursor lays is #104's own describe.
+    expect(onBuild).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -679,5 +691,222 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
     const released = moves.length;
     await nextFrames();
     expect(moves[released]?.up).toBe(true);
+  });
+});
+
+describe("#104: hold and drag left-click to place a run of buildables", () => {
+  type Placement = { kind: BuildableKind; tile: Tile };
+  const SLOT_KEY: Record<BuildableKind, string> = {
+    miner: "1",
+    wall: "2",
+    turret: "3",
+    generator: "4",
+  };
+  const WALL_COST = (BUILDABLES.wall as BuildableSpec).cost;
+  // The canvas rect is all zeros under happy-dom and the camera never leaves the origin, so a
+  // client coordinate is its own world coordinate and a tile is `TILE` pixels wide.
+  const atTile = (tx: number, ty = 0) => ({ clientX: tx * TILE, clientY: ty * TILE });
+  const tilesOf = (asked: Placement[]) => asked.map((p) => p.tile);
+  // The Manhattan step between each placement and the one before it. A run with any step but 1 has
+  // a hole in it.
+  const steps = (tiles: Tile[]) =>
+    tiles.slice(1).map((t, i) => {
+      const prev = tiles[i] as Tile;
+      return Math.abs(t.tx - prev.tx) + Math.abs(t.ty - prev.ty);
+    });
+
+  const funded = (metal: number) => {
+    const world = new ClientWorld(init, "me");
+    world.build.bank.metal = metal;
+    return world;
+  };
+
+  // Press left-click at tile 0,0 with `kind` selected, watching every placement the drag asks for.
+  // Nothing is mirrored back, so the tiles asked for are the path the drag walked and nothing else.
+  function drag(kind: BuildableKind, world = funded(100_000)) {
+    const asked: Placement[] = [];
+    const canvas = renderMatch({ onBuild: (k, tile) => asked.push({ kind: k, tile }) }, world);
+    fireEvent.keyDown(window, { key: SLOT_KEY[kind] });
+    fireEvent.mouseDown(canvas, { button: 0, ...atTile(0) });
+    return { canvas, asked, world };
+  }
+
+  // The same drag with each placement applied to the mirror the way the server's delta would — the
+  // bank debited at the price `buildCost` quotes, the structure standing. The drag reads its own
+  // affordability off that mirror, so an economy test has to keep it honest.
+  function dragBanked(kind: BuildableKind, world: ClientWorld) {
+    const asked: Placement[] = [];
+    const canvas = renderMatch(
+      {
+        onBuild: (k, tile) => {
+          asked.push({ kind: k, tile });
+          placeStructure(world.build, k, tile, BUILDABLES[k] as BuildableSpec);
+        },
+      },
+      world,
+    );
+    fireEvent.keyDown(window, { key: SLOT_KEY[kind] });
+    fireEvent.mouseDown(canvas, { button: 0, ...atTile(0) });
+    return { canvas, asked, world };
+  }
+
+  test("a fast drag places all twenty tiles of a straight path, in order and with no gaps", async () => {
+    const { canvas, asked } = drag("wall");
+    // Nineteen tiles crossed between two pointer reads. A drag that placed where the cursor is
+    // would place two of these twenty; the path between the samples is what the rest come from.
+    fireEvent.mouseMove(canvas, atTile(19));
+    await settle(20 * BUILD_CADENCE_MS + 500);
+    fireEvent.mouseUp(window);
+    expect(tilesOf(asked)).toEqual(Array.from({ length: 20 }, (_, tx) => ({ tx, ty: 0 })));
+  });
+
+  test("a diagonal drag lays a connected run — no corner an enemy could walk through", async () => {
+    const { canvas, asked } = drag("wall");
+    fireEvent.mouseMove(canvas, atTile(5, 4));
+    await settle(10 * BUILD_CADENCE_MS + 400);
+    fireEvent.mouseUp(window);
+    expect(tilesOf(asked).at(-1)).toEqual({ tx: 5, ty: 4 });
+    expect(steps(tilesOf(asked)).filter((step) => step !== 1)).toEqual([]);
+  });
+
+  test("the tile the drag started on is placed exactly once", async () => {
+    const { canvas, asked } = drag("wall");
+    fireEvent.mouseMove(canvas, { clientX: TILE - 1, clientY: TILE - 1 }); // moved, same tile
+    await settle(3 * BUILD_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(tilesOf(asked)).toEqual([{ tx: 0, ty: 0 }]);
+  });
+
+  test("a tile that cannot be built on is skipped, and the drag carries on past it", async () => {
+    const world = funded(100_000);
+    // Already standing across tiles 4 and 5 of the row. A 2×2 wall starting on 3, 4 or 5 overlaps
+    // it and nothing else on the row does, so the run has a known hole in a known place.
+    insertStructure(world.build, { id: "standing", kind: "wall", tile: { tx: 4, ty: 0 }, hp: 400 });
+    const { canvas, asked } = drag("wall", world);
+    fireEvent.mouseMove(canvas, atTile(8));
+    await settle(9 * BUILD_CADENCE_MS + 400);
+    fireEvent.mouseUp(window);
+    expect(tilesOf(asked).map((t) => t.tx)).toEqual([0, 1, 2, 6, 7, 8]);
+  });
+
+  test("running out of Metal ends the drag, and income arriving mid-gesture does not restart it", async () => {
+    const world = funded(3 * WALL_COST);
+    const { canvas, asked } = dragBanked("wall", world);
+    fireEvent.mouseMove(canvas, atTile(19));
+    await settle(8 * BUILD_CADENCE_MS + 300);
+    expect(asked).toHaveLength(3);
+    world.build.bank.metal = 10_000; // the squad's miners pay in, with the button still down
+    // And the gesture carries on over fresh tiles it could now afford. A drag that had merely
+    // stepped over the tiles it could not pay for would take these; one that ended does not.
+    fireEvent.mouseMove(canvas, atTile(40));
+    await settle(8 * BUILD_CADENCE_MS + 300);
+    fireEvent.mouseUp(window);
+    expect(asked).toHaveLength(3);
+  });
+
+  test("the bank never goes negative, however far the drag is pulled", async () => {
+    const world = funded(4 * WALL_COST + 5); // the fifth wall is what the drag has to refuse
+    const { canvas, asked } = dragBanked("wall", world);
+    fireEvent.mouseMove(canvas, atTile(19));
+    await settle(12 * BUILD_CADENCE_MS + 400);
+    fireEvent.mouseUp(window);
+    expect(asked).toHaveLength(4);
+    expect(world.build.bank.metal).toBe(5);
+  });
+
+  test("dragging turrets escalates the price and ends when the bank cannot cover the next", async () => {
+    const world = funded(200);
+    const { canvas, asked } = dragBanked("turret", world);
+    fireEvent.mouseMove(canvas, atTile(19));
+    await settle(8 * BUILD_CADENCE_MS + 400);
+    fireEvent.mouseUp(window);
+    // 60 then 78 leaves 62 against a third at 101 — the escalation is what ends this drag, and it
+    // moved during the drag itself.
+    expect(asked).toHaveLength(2);
+    expect(world.build.bank.metal).toBe(62);
+    expect(world.buildCost("turret")).toBe(101);
+  });
+
+  test("releasing the button ends the drag, queued path and all", async () => {
+    const { canvas, asked } = drag("wall");
+    fireEvent.mouseMove(canvas, atTile(19));
+    fireEvent.mouseUp(window, { button: 0 });
+    await settle(5 * BUILD_CADENCE_MS);
+    expect(tilesOf(asked)).toEqual([{ tx: 0, ty: 0 }]);
+  });
+
+  test("blur ends the drag, so a button let go off-canvas does not keep placing", async () => {
+    const { canvas, asked } = drag("wall");
+    fireEvent.mouseMove(canvas, atTile(19));
+    fireEvent.blur(window);
+    await settle(5 * BUILD_CADENCE_MS);
+    expect(tilesOf(asked)).toEqual([{ tx: 0, ty: 0 }]);
+  });
+
+  // #100's menu is opened by a key, so it arrives with no `mouseup` to drop the button under it —
+  // the same hole #103 closed for the trigger. A drag left armed would go on laying tiles behind an
+  // open modal, at whatever the pointer was last over.
+  test("opening the Escape menu ends the drag, and none of it is laid in behind (#100)", async () => {
+    const { canvas, asked } = drag("wall");
+    fireEvent.mouseMove(canvas, atTile(19));
+    // Inside `act` so the menu's own effect has provably run before the clock is let go — the
+    // assertion is about what the drag does after the menu is up, not about the race to open it.
+    act(() => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    await settle(5 * BUILD_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(tilesOf(asked)).toEqual([{ tx: 0, ty: 0 }]);
+  });
+
+  test("the pointer leaving the arena ends the drag", async () => {
+    const { canvas, asked } = drag("wall");
+    fireEvent.mouseMove(canvas, atTile(19));
+    fireEvent.mouseLeave(canvas);
+    await settle(5 * BUILD_CADENCE_MS);
+    expect(tilesOf(asked)).toEqual([{ tx: 0, ty: 0 }]);
+  });
+
+  test("switching the build bar mid-drag places neither the old kind nor the new", async () => {
+    const { canvas, asked } = drag("wall");
+    fireEvent.mouseMove(canvas, atTile(19));
+    await settle(2 * BUILD_CADENCE_MS + 60);
+    const laid = asked.length;
+    expect(laid).toBeGreaterThan(1); // the drag was running when the bar was taken
+    fireEvent.keyDown(window, { key: "3" }); // the turret takes the bar with the button still down
+    await settle(5 * BUILD_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(asked).toHaveLength(laid);
+    expect(asked.every((p) => p.kind === "wall")).toBe(true);
+  });
+
+  test("right-clicking the selection away mid-drag ends it too", async () => {
+    const { canvas, asked } = drag("wall");
+    fireEvent.mouseMove(canvas, atTile(19));
+    await settle(2 * BUILD_CADENCE_MS + 60);
+    const laid = asked.length;
+    fireEvent.mouseDown(canvas, { button: 2 });
+    await settle(5 * BUILD_CADENCE_MS);
+    fireEvent.mouseUp(window);
+    expect(asked).toHaveLength(laid);
+  });
+
+  test("no two placements of a drag are closer than the floor the server admits on", async () => {
+    const at: number[] = [];
+    const world = funded(100_000);
+    const canvas = renderMatch({ onBuild: () => at.push(Date.now()) }, world);
+    fireEvent.keyDown(window, { key: "2" });
+    fireEvent.mouseDown(canvas, { button: 0, ...atTile(0) });
+    fireEvent.mouseMove(canvas, atTile(19));
+    await settle(8 * BUILD_CADENCE_MS + 200);
+    fireEvent.mouseUp(window);
+    expect(at.length).toBeGreaterThan(4);
+    // `BUILD_CADENCE_MS` is `admitBuild`'s own floor, imported rather than restated: a drag that
+    // outran it would have the server drop most of what it sent, and the run would come out full
+    // of holes. The millisecond of slack is the harness's — each stamp is read after the clock the
+    // placement was charged against.
+    const OBSERVED_SKEW_MS = 1;
+    const gaps = at.slice(1).map((t, i) => t - (at[i] ?? 0));
+    expect(gaps.filter((gap) => gap < BUILD_CADENCE_MS - OBSERVED_SKEW_MS)).toEqual([]);
   });
 });

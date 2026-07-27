@@ -51,6 +51,36 @@ export function oreAt(grid: OreGrid, tile: Tile): OreKind | null {
   return grid.get(tileKey(tile)) ?? null;
 }
 
+// The tiles a straight move from `from` to `to` crosses, in order, excluding `from` and including
+// `to`. A drag places across every tile the cursor crosses (#104), and a pointer read once a frame
+// leaps several tiles between reads — so the path between two samples is what gets placed, not the
+// pair of endpoints. A sample that has not left its tile yields nothing, which is what keeps the
+// tile a drag started on from being placed a second time on its first move.
+//
+// Bresenham, stepping one axis per iteration rather than both: the resulting staircase is
+// 4-connected, so a diagonal drag lays a wall with no corner an enemy could walk diagonally
+// through. The true 8-connected line is shorter and would leave exactly those holes.
+export function tilesBetween(from: Tile, to: Tile): Tile[] {
+  const path: Tile[] = [];
+  let { tx, ty } = from;
+  const dx = Math.abs(to.tx - tx);
+  const dy = Math.abs(to.ty - ty);
+  const sx = Math.sign(to.tx - tx);
+  const sy = Math.sign(to.ty - ty);
+  let err = dx - dy;
+  while (tx !== to.tx || ty !== to.ty) {
+    if (2 * err > -dy) {
+      err -= dy;
+      tx += sx;
+    } else {
+      err += dx;
+      ty += sy;
+    }
+    path.push({ tx, ty });
+  }
+  return path;
+}
+
 // --- Ore generation ---------------------------------------------------------------------
 // Patches are blobs grown by accretion from a seed tile, scattered with a real center→edge
 // gradient: DESIGN.md puts the riches at the dangerous wall, so pushing outward pays. A handful

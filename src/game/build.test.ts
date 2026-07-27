@@ -45,6 +45,7 @@ import {
   tileKey,
   tileOf,
   tileOrigin,
+  tilesBetween,
 } from "./build";
 import { ARENA } from "./world";
 
@@ -74,6 +75,55 @@ describe("the tile grid", () => {
     expect(tileKey({ tx: 1, ty: 0 })).not.toBe(tileKey({ tx: 0, ty: 1 }));
     expect(tileKey({ tx: 2079, ty: 2079 })).toBe(tileKey({ tx: 2079, ty: 2079 }));
     expect(Number.isSafeInteger(tileKey({ tx: 2079, ty: 2079 }))).toBe(true);
+  });
+});
+
+// #104: a drag places across every tile the cursor crosses, and a pointer sampled at 60 Hz jumps
+// several tiles between samples. This is what turns two samples back into the path between them.
+describe("tilesBetween", () => {
+  const steps = (path: Tile[], from: Tile) =>
+    path.map((t, i) => {
+      const prev = path[i - 1] ?? from;
+      return Math.abs(t.tx - prev.tx) + Math.abs(t.ty - prev.ty);
+    });
+
+  test("a sample that has not left its tile adds nothing, so the first tile is placed once", () => {
+    expect(tilesBetween({ tx: 7, ty: 3 }, { tx: 7, ty: 3 })).toEqual([]);
+  });
+
+  test("fills a straight run, excluding where it starts and including where it ends", () => {
+    expect(tilesBetween({ tx: 4, ty: 9 }, { tx: 7, ty: 9 })).toEqual([
+      { tx: 5, ty: 9 },
+      { tx: 6, ty: 9 },
+      { tx: 7, ty: 9 },
+    ]);
+  });
+
+  test("a pointer that jumped twenty tiles in one sample yields all twenty, in order", () => {
+    const path = tilesBetween({ tx: 0, ty: 0 }, { tx: 20, ty: 0 });
+    expect(path).toEqual(Array.from({ length: 20 }, (_, i) => ({ tx: i + 1, ty: 0 })));
+  });
+
+  test("a diagonal run is a connected staircase — never a step a wall could be walked through", () => {
+    const from = { tx: 0, ty: 0 };
+    const path = tilesBetween(from, { tx: 6, ty: 4 });
+    expect(path.at(-1)).toEqual({ tx: 6, ty: 4 });
+    expect(steps(path, from).filter((step) => step !== 1)).toEqual([]);
+  });
+
+  test("every direction is connected and lands exactly on its end", () => {
+    const from = { tx: 30, ty: 30 };
+    for (const to of [
+      { tx: 25, ty: 22 },
+      { tx: 41, ty: 27 },
+      { tx: 30, ty: 18 },
+      { tx: 12, ty: 30 },
+      { tx: 31, ty: 44 },
+    ]) {
+      const path = tilesBetween(from, to);
+      expect(path.at(-1)).toEqual(to);
+      expect(steps(path, from).filter((step) => step !== 1)).toEqual([]);
+    }
   });
 });
 
