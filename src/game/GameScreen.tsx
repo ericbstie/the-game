@@ -98,6 +98,9 @@ export function GameScreen({
   const ownShotRef = useRef<OwnShot | null>(null);
   const [selected, setSelected] = useState<BuildableKind | null>(null);
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDialogElement>(null);
+  const leaveRef = useRef<HTMLButtonElement>(null);
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
   const [metal, setMetal] = useState(0); // the shared bank, mirrored into React for the HUD
   const [metalRate, setMetalRate] = useState(0); // shown on the reveal behind the total (#105)
@@ -119,7 +122,8 @@ export function GameScreen({
   onDemolishRef.current = onDemolish;
   selectedRef.current = selected;
 
-  // Keyboard → held MoveInput, plus the build bar's 1–4 and Escape. Nothing is sent per key.
+  // Keyboard → held MoveInput, plus the build bar's 1–4 and the menu's Escape. Nothing is sent
+  // per key.
   useEffect(() => {
     const setHeld = (direction: keyof MoveInput, down: boolean) => {
       const next = { ...heldRef.current, [direction]: down };
@@ -127,9 +131,17 @@ export function GameScreen({
       heldRef.current = next;
     };
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        // A shown `<dialog>` closes itself on an Escape the page did not consume, which would fight
+        // this toggle for the same key. Cancelling the event suppresses that close request and
+        // leaves the menu's open state to exactly one owner.
+        e.preventDefault();
+        setMenuOpen((open) => !open);
+        return;
+      }
       const slot = keyToBuildSlot(e.key, BUILD_SLOTS.length);
       if (slot !== null) {
-        setSelected(slot === "cancel" ? null : BUILD_SLOTS[slot]);
+        setSelected(BUILD_SLOTS[slot]);
         return;
       }
       const direction = keyToDirection(e.key);
@@ -149,6 +161,21 @@ export function GameScreen({
       window.removeEventListener("keyup", onKeyUp);
     };
   }, []);
+
+  // The menu is a real modal — `showModal` is what puts it in the top layer and makes the match
+  // behind it inert to the pointer — over a match that is still running. Nothing pauses: the
+  // world is server-authoritative and the squad is still playing, so the only thing opening it
+  // changes is that held movement is let go and you stand still.
+  useEffect(() => {
+    if (!menuOpen) return;
+    heldRef.current = NO_MOVE;
+    menuRef.current?.showModal();
+    // Focus is placed rather than left to `showModal`'s own focusing step, which not every DOM
+    // implements. Escape has no invoking element to hand focus back to on close, so it goes to the
+    // arena — the surface the menu was opened over, and where the keys were already going.
+    leaveRef.current?.focus();
+    return () => canvasRef.current?.focus();
+  }, [menuOpen]);
 
   // Track the CSS viewport size and size the backing store to device pixels (crisp HiDPI).
   // ResizeObserver reports content-box changes without a per-frame layout read; the loop
@@ -335,7 +362,15 @@ export function GameScreen({
         onAttackRef.current({ ...self }, dir);
       }
     } else if (e.button === 2) {
-      harvestingRef.current = Date.now(); // right-click harvests for as long as it is held
+      // Right-click is one button with two jobs too: cancel the selected buildable, or harvest
+      // when nothing is selected. Cancelling deliberately falls through to neither — arming the
+      // hold here would start mining the tile the cancelled ghost was standing on.
+      if (selectedRef.current) {
+        selectedRef.current = null; // the ghost must go this frame, not on the next render
+        setSelected(null);
+      } else {
+        harvestingRef.current = Date.now(); // right-click harvests for as long as it is held
+      }
     }
   };
 
@@ -356,18 +391,27 @@ export function GameScreen({
             </span>
           )}
         </div>
-        <button type="button" className="leave" onClick={onLeave}>
-          Leave
-        </button>
       </header>
+      {/* Focusable only in code: closing the menu hands focus back here, and it is never a stop on
+          the way through the HUD with Tab. */}
       <canvas
         ref={canvasRef}
         className="arena"
         aria-label="Game arena"
+        tabIndex={-1}
         onMouseMove={trackPointer}
         onMouseDown={onMouseDown}
         onContextMenu={(e) => e.preventDefault()}
       />
+      {/* Escape's menu (#100). Leave is the whole of it — ADR 0001 grants nothing else a place
+          here — and it acts on the click, with nothing to confirm. */}
+      {menuOpen && (
+        <dialog ref={menuRef} className="sheet game-menu" aria-label="Menu">
+          <button ref={leaveRef} type="button" onClick={onLeave}>
+            Leave
+          </button>
+        </dialog>
+      )}
       {/* The bar stays and its written HP reading goes: #76 signals health with an ink bar, and
           ADR 0001 removed the label beside it. */}
       <div className="hud" role="status" aria-label="Health">
