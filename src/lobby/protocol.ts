@@ -242,9 +242,16 @@ export interface MapDelta {
   nests?: NestDelta[];
   wave?: WaveDelta;
   bank?: Bank;
-  // The squad's spendable bullets (#102). A bare count: the forge queue behind it is server-only,
-  // and this rides on the same "only when it moved" terms as the bank rather than every tick.
+  // The squad's spendable bullets (#102). A bare count: the countdown on the bullet being forged is
+  // server-only, and this rides on the same "only when it moved" terms as the bank.
   ammo?: number;
+  // How many bullets are ordered and still forging (#102). It is here because no client can work it
+  // out: a bullet arriving says one finished, never whether another is behind it, and a client that
+  // guessed from its own presses would be wrong the moment the bank refused one or a squadmate
+  // ordered. Its *phase* is deliberately absent — `FORGE_MS` is a constant both sides compile
+  // against, so the client anchors a clock at the arrival that restarted the head bullet. Streaming
+  // the countdown instead would move every tick and still only step at 20 Hz.
+  queued?: number;
   // Buildings are near-static next to enemy motion, so they ride as sparse events rather than a
   // full per-tick set like `moves`. `removals` covers a structure destroyed or demolished.
   builds?: StructureSpawn[];
@@ -429,7 +436,8 @@ export type GameBuildInit = Envelope<
   {
     tick: number;
     bank: Bank;
-    ammo: number; // spendable bullets; the queue still forging them stays on the server
+    ammo: number; // spendable bullets
+    queued: number; // ordered and paid for, still forging; the countdown on them stays on the server
     power: Power;
     structures: StructureSpawn[];
     aims: TurretAim[];

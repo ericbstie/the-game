@@ -11,6 +11,7 @@ import {
   BUILD_SLOTS,
   BUILDABLES,
   DEMOLISH_HOLD_MS,
+  FORGE_MS,
   type HarvestTarget,
   INTERACT_REACH,
   MINE_CADENCE_MS,
@@ -36,6 +37,8 @@ const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the a
 // between bites, and short enough that the bell stops soon after the last spider is off it.
 const UNDER_ATTACK_MS = 2000;
 const BUILD_ICON_PX = 26; // the buildable's own sprite, shrunk to fit a slot
+const AMMO_ICON_PX = 26; // the ammo box's icon, sized as a build slot's so the two squares agree
+const ammoIcon = SPRITES.ammo;
 // What a slot is called on screen (#98) — the author's wording, one word each. `mine` is the label
 // for a `miner`: a display string, so the domain type keeps the name the whole build path uses.
 const BUILD_NAMES: Record<BuildableKind, string> = {
@@ -83,6 +86,7 @@ interface GameScreenProps {
   onMine: (tile: Tile) => void;
   onBuild: (kind: BuildableKind, tile: Tile) => void;
   onDemolish: (id: string) => void;
+  onForge: () => void;
 }
 
 // The in-match screen: a fullscreen camera that follows your Avatar through the giant box.
@@ -101,6 +105,7 @@ export function GameScreen({
   onMine,
   onBuild,
   onDemolish,
+  onForge,
 }: GameScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const heldRef = useRef<MoveInput>(NO_MOVE);
@@ -148,6 +153,7 @@ export function GameScreen({
   const [metalRate, setMetalRate] = useState(0); // shown on the reveal behind the total (#105)
   const [power, setPower] = useState({ generation: 0, consumption: 0 }); // the live energy rate
   const [costs, setCosts] = useState(() => slotCosts(state.world)); // the build bar's cost circles
+  const [ammo, setAmmo] = useState({ bullets: 0, queued: 0, forgeAt: null as number | null }); // #102
   const [underAttack, setUnderAttack] = useState(false); // drives the HUD's warning bell
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
   const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
@@ -441,6 +447,21 @@ export function GameScreen({
         const next = slotCosts(world);
         return next.every((cost, i) => cost === shown[i]) ? shown : next;
       });
+      // Held as one object so an unmoved pool returns the same one and React bails out. `forgeAt`
+      // is an anchor rather than a countdown, so this settles the moment a bullet starts and the
+      // overlay is left to the browser's own clock for the whole second it takes.
+      setAmmo((shown) => {
+        const next = {
+          bullets: world.ammo(),
+          queued: world.queuedBullets(),
+          forgeAt: world.forgeStartedAt(),
+        };
+        return next.bullets === shown.bullets &&
+          next.queued === shown.queued &&
+          next.forgeAt === shown.forgeAt
+          ? shown
+          : next;
+      });
       // A downed player stops streaming position — peers hold its last pos as a corpse.
       if (!world.isDead()) {
         const pos = world.selfPos();
@@ -613,12 +634,47 @@ export function GameScreen({
             </span>
           </span>
         </button>
-        <span className="bank">
-          <span className="bank-label">Energy</span>
-          <strong>
-            {power.consumption}/{power.generation}
-          </strong>
-        </span>
+        {/* The ammo box stacks on the Energy readout (#102): one square that states the squad's
+            bullets, orders another, counts what is still forging in the circle on its corner, and
+            veils itself while that bullet is being made. */}
+        <div className="bank-stack">
+          <button
+            type="button"
+            className="ammo"
+            aria-label="Forge a bullet"
+            onClick={onForge}
+            // Enter activates a button on *keydown*, so the OS's key repeat fires a click per
+            // repeat — a held Enter ordered eight bullets in one press in a real browser. That is
+            // the hold-to-repeat `game/forge` has no cadence and no `seq` to survive (#102), so it
+            // is refused here. The first press has `repeat` false and still orders; Space is
+            // unaffected either way, since it activates on keyup and keyup does not repeat.
+            onKeyDown={(e) => {
+              if (e.repeat) e.preventDefault();
+            }}
+          >
+            {ammoIcon && <SpriteIcon subject={ammoIcon} px={AMMO_ICON_PX} />}
+            <strong>{ammo.bullets}</strong>
+            {/* Keyed on the anchor so a new bullet restarts the animation, and only then: React
+                keeps the element across every other mirror tick, which is what leaves the browser
+                running one uninterrupted second rather than the HUD stepping it twenty times. The
+                length is inlined from `FORGE_MS` so the bar cannot drift from the forge it draws. */}
+            {ammo.forgeAt !== null && (
+              <span
+                key={ammo.forgeAt}
+                className="ammo-forge"
+                style={{ animationDuration: `${FORGE_MS}ms` }}
+              />
+            )}
+            {/* After the veil, so the circle stays legible through it without a stacking context. */}
+            {ammo.queued > 0 && <span className="ammo-queued">{ammo.queued}</span>}
+          </button>
+          <span className="bank">
+            <span className="bank-label">Energy</span>
+            <strong>
+              {power.consumption}/{power.generation}
+            </strong>
+          </span>
+        </div>
       </div>
       {/* A slot is its buildable's sprite, its Metal cost in a circle on the top-left corner, and
           its one-word name underneath (#98). The words and the numerals are an ADR 0001 exception,

@@ -2,6 +2,7 @@ import { BUILDABLES, TILE } from "../game/build";
 import { ELITE_RADIUS, GRUNT_RADIUS, NEST_RADIUS } from "../game/enemies";
 import { PLAYER_RADIUS } from "../game/world";
 import type { BuildableKind } from "../lobby/protocol";
+import ammo from "./ammo";
 import elite from "./elite";
 import generator from "./generator";
 import grass from "./grass";
@@ -45,6 +46,7 @@ export type SpriteName =
   | "grass"
   | "room" // the perimeter wall unfolded outward, and the escape door
   | "halo" // the barely-yellow self marker
+  | "ammo" // HUD: the squad's forged bullets
   | "warning" // HUD: a structure is under attack
   | "reconnecting" // HUD: the socket dropped and the client is trying to get back in
   | "unpowered"; // in-world: a turret with no energy
@@ -81,6 +83,7 @@ export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
 // here. A module sitting in this directory without an entry is a sprite nobody can see, so
 // `registry.test.ts` fails on one rather than letting it pass for art that has not landed yet.
 export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
+  ammo,
   grass,
   elite,
   generator,

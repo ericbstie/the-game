@@ -2075,4 +2075,66 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
     expect(keyframe).toMatchObject({ type: "game/build-init", ammo: 4 });
     hub.dispose();
   });
+
+  // #102 stage 3. The HUD's queue circle counts bullets ordered and not yet forged, and no client
+  // can work that out for itself: a bullet arriving says one finished, never whether another is
+  // behind it. So the count rides, on the bank's terms — only on the ticks it actually moved.
+  describe("stage 3: the queue's depth rides the wire, and the phase behind it does not", () => {
+    const queuedStream = (t: Capture, socketId = "s1") =>
+      deltas(t, socketId)
+        .map((d) => d.queued)
+        .filter((q) => q !== undefined);
+
+    test("an order raises the queue, and the bullet it becomes lowers it again", () => {
+      const { t, hub, clock } = match({ startingMetal: BULLET_COST });
+      hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+      clock.advance(TICK);
+      expect(queuedStream(t)).toEqual([1]);
+      clock.advance(FORGE_MS);
+      expect(queuedStream(t)).toEqual([1, 0]);
+      hub.dispose();
+    });
+
+    test("a settled tick carries no queue at all", () => {
+      const { t, hub, clock } = match({ startingMetal: BULLET_COST });
+      hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+      clock.advance(FORGE_MS * 3); // 60 ticks; the queue moved on exactly two of them
+      expect(queuedStream(t)).toEqual([1, 0]);
+      hub.dispose();
+    });
+
+    test("three orders drain one at a time, so the depth counts down rather than collapsing", () => {
+      const { t, hub, clock } = match({ startingMetal: 3 * BULLET_COST });
+      for (let i = 0; i < 3; i++) hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+      clock.advance(FORGE_MS * 4);
+      expect(queuedStream(t)).toEqual([3, 2, 1, 0]);
+      hub.dispose();
+    });
+
+    // The countdown on the head bullet is deliberately absent: it moves every tick, so putting it
+    // on the wire would turn a sparse field into a per-tick one and still only step at 20 Hz.
+    test("no per-tick forge countdown is broadcast", () => {
+      const { t, hub, clock } = match({ startingMetal: BULLET_COST });
+      hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+      clock.advance(FORGE_MS);
+      for (const d of deltas(t)) expect(d).not.toHaveProperty("forgeMs");
+      hub.dispose();
+    });
+
+    test("the reconnect keyframe carries the queue, so a rejoiner sees what is still coming", () => {
+      const { t, hub, clock } = match({ startingMetal: 2 * BULLET_COST });
+      hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+      hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+      clock.advance(TICK);
+      hub.handleMessage(
+        "s3",
+        JSON.stringify({ type: "lobby/join", code: created(t).code, name: "Cass" }),
+      );
+      const keyframe = t.sent.find(
+        (m) => m.socketId === "s3" && m.msg.type === "game/build-init",
+      )?.msg;
+      expect(keyframe).toMatchObject({ type: "game/build-init", ammo: 0, queued: 2 });
+      hub.dispose();
+    });
+  });
 });

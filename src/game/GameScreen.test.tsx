@@ -7,6 +7,7 @@ import {
   BUILD_SLOTS,
   BUILDABLES,
   type BuildableSpec,
+  FORGE_MS,
   INTERACT_REACH,
   insertStructure,
   MINE_CADENCE_MS,
@@ -65,6 +66,7 @@ function renderMatch(
       onMine={() => {}}
       onBuild={() => {}}
       onDemolish={() => {}}
+      onForge={() => {}}
       {...handlers}
     />,
   );
@@ -964,5 +966,131 @@ describe("#102: an empty pool refuses the trigger", () => {
     await settle(RANGED_CADENCE_MS * 2);
     fireEvent.mouseUp(window);
     expect(onAttack).toHaveBeenCalledTimes(1); // still 1: the hold has nothing left to spend
+  });
+});
+
+// #102 stage 3: the ammo box. It is the counter, the queue's circle, the forge's progress overlay
+// and the order button all in one square, which is what the ask describes — so every one of them
+// is read off the same element here.
+describe("#102: the ammo box counts the squad's bullets and orders more", () => {
+  const mirrored = () => settle(POS_SEND_MS + 30);
+  const box = () => screen.getByLabelText("Forge a bullet");
+  const count = () => box().querySelector("strong")?.textContent;
+  const circle = () => box().querySelector(".ammo-queued");
+  const overlay = () => box().querySelector(".ammo-forge") as HTMLElement | null;
+  const empty = () => new ClientWorld(init, "me");
+
+  test("shows the squad's spendable bullets, and moves as the pool does", async () => {
+    const world = empty();
+    renderMatch({}, world);
+    await mirrored();
+    expect(count()).toBe("0");
+    world.applyMapDelta({ tick: 1, moves: [], ammo: 12 }, Date.now());
+    await mirrored();
+    expect(count()).toBe("12");
+  });
+
+  // "Just above the Energy readout" is a fact about the stack, not about the pixels: the two share
+  // a parent and the box comes first. A box hoisted out beside the Metal readout would still look
+  // plausible in a screenshot and would be the wrong thing.
+  test("sits directly above the Energy readout", () => {
+    renderMatch({});
+    const energy = screen.getByText("Energy").parentElement as HTMLElement;
+    expect(box().parentElement).toBe(energy.parentElement);
+    expect(box().nextElementSibling).toBe(energy);
+  });
+
+  test("one press orders one bullet", () => {
+    const onForge = mock(() => {});
+    renderMatch({ onForge }, empty());
+    fireEvent.click(box());
+    expect(onForge).toHaveBeenCalledTimes(1);
+  });
+
+  // `game/forge` is the one player command the hub admits with no cadence and no `seq`, so a held
+  // button would be an unpaced path into the shared bank. Until that is settled, the press is the
+  // whole of it: holding orders nothing, and only the release's click spends.
+  test("holding the button orders nothing until it is released", async () => {
+    const onForge = mock(() => {});
+    renderMatch({ onForge }, empty());
+    fireEvent.mouseDown(box());
+    await settle(POS_SEND_MS * 8);
+    expect(onForge).toHaveBeenCalledTimes(0);
+    fireEvent.mouseUp(box());
+    fireEvent.click(box());
+    expect(onForge).toHaveBeenCalledTimes(1);
+  });
+
+  // The keyboard is the hole the mouse guard above cannot see. A focused button activates on Enter
+  // *keydown*, so OS key repeat fires a click per repeat — a held Enter took the count 0 → 8 in one
+  // press in headless Chromium. happy-dom does not synthesise native repeat, so this drives the
+  // flag the browser sets and asserts the button refuses to be activated by it; the same fix was
+  // then confirmed over CDP against a real key-repeat stream.
+  test("a repeated Enter is refused, so a held key cannot order a burst", () => {
+    const onForge = mock(() => {});
+    renderMatch({ onForge }, empty());
+    expect(fireEvent.keyDown(box(), { key: "Enter" })).toBe(true); // the press itself still orders
+    expect(fireEvent.keyDown(box(), { key: "Enter", repeat: true })).toBe(false);
+  });
+
+  test("the circle counts what is still being forged, and is absent with nothing queued", async () => {
+    const world = empty();
+    renderMatch({}, world);
+    await mirrored();
+    expect(circle()).toBeNull();
+    world.applyMapDelta({ tick: 1, moves: [], queued: 3 }, Date.now());
+    await mirrored();
+    expect(circle()?.textContent).toBe("3");
+    world.applyMapDelta({ tick: 2, moves: [], queued: 0, ammo: 3 }, Date.now());
+    await mirrored();
+    expect(circle()).toBeNull();
+  });
+
+  test("the overlay is up while a bullet is being forged and gone once the queue drains", async () => {
+    const world = empty();
+    renderMatch({}, world);
+    await mirrored();
+    expect(overlay()).toBeNull();
+    world.applyMapDelta({ tick: 1, moves: [], queued: 1 }, Date.now());
+    await mirrored();
+    expect(overlay()).not.toBeNull();
+    world.applyMapDelta({ tick: 2, moves: [], queued: 0, ammo: 1 }, Date.now());
+    await mirrored();
+    expect(overlay()).toBeNull();
+  });
+
+  // The box the ask wants cleared bottom to top over one forge has ~20 arrivals to do it in, and a
+  // bar recomputed on each of them steps visibly. So the overlay is handed the forge's length once
+  // and left alone: the same element, unchanged, across three HUD ticks. A per-tick height would
+  // fail on the style; a per-tick remount would fail on the identity.
+  test("runs on the forge's own clock rather than stepping with the stream", async () => {
+    const world = empty();
+    renderMatch({}, world);
+    world.applyMapDelta({ tick: 1, moves: [], queued: 2 }, Date.now());
+    await mirrored();
+    const first = overlay();
+    expect(first?.style.animationDuration).toBe(`${FORGE_MS}ms`);
+    const style = first?.getAttribute("style");
+    // The bank moves under it throughout, as it does in any real match, so the HUD is genuinely
+    // re-rendering on each of these ticks — rather than the overlay surviving because nothing
+    // anywhere on screen happened to change.
+    for (let tick = 2; tick <= 4; tick++) {
+      world.applyMapDelta({ tick, moves: [], bank: { metal: tick } }, Date.now());
+      await mirrored();
+    }
+    expect(overlay()).toBe(first);
+    expect(overlay()?.getAttribute("style")).toBe(style);
+  });
+
+  test("the bullet behind the one that just landed starts the overlay again", async () => {
+    const world = empty();
+    renderMatch({}, world);
+    world.applyMapDelta({ tick: 1, moves: [], queued: 2 }, Date.now());
+    await mirrored();
+    const first = overlay();
+    expect(first).not.toBeNull();
+    world.applyMapDelta({ tick: 2, moves: [], queued: 1, ammo: 1 }, Date.now());
+    await mirrored();
+    expect(overlay()).not.toBe(first);
   });
 });

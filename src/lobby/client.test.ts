@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { BULLET_COST } from "../game/build";
 import { LobbyClient, type LobbyClientOptions } from "./client";
-import type { LobbyServer } from "./server";
+import type { LobbyServer, ServeLobbyOptions } from "./server";
 import { makeClient, startServer, type TestClient, waitForState } from "./testing";
 
 const servers: LobbyServer[] = [];
@@ -19,8 +20,8 @@ afterEach(async () => {
   localStorage.clear(); // clients persist tokens; clear the shared happy-dom store
 });
 
-function spawn(graceMs?: number): LobbyServer {
-  const server = startServer(graceMs === undefined ? {} : { graceMs });
+function spawn(graceMs?: number, options: ServeLobbyOptions = {}): LobbyServer {
+  const server = startServer(graceMs === undefined ? options : { graceMs, ...options });
   servers.push(server);
   return server;
 }
@@ -289,5 +290,23 @@ describe("M2R: LobbyClient game flow", () => {
     await waitForState(hostClient, (s) => (s.snapshot?.players.length ?? 0) === 1);
     const remaining = hostClient.getState().world?.snapshot(Date.now()).players ?? [];
     expect(remaining.map((p) => p.id)).toEqual([hosted.self?.id ?? ""]);
+  });
+});
+
+// #102 stage 3: the whole order path end to end — the sender's wire shape, the hub's admission, and
+// the queue coming back in the mirror the HUD reads. `game/forge` carries no payload and no `seq`,
+// so a hub that stopped accepting it would fail silently rather than loudly.
+describe("#102: ordering a bullet", () => {
+  test("sendForge() spends Metal at the hub, and the queue arrives back in the mirror", async () => {
+    const server = spawn(undefined, { startingMetal: BULLET_COST });
+    const client = newClient({ wsUrl: server.url });
+    client.host("Ana");
+    await waitForState(client, (s) => s.status === "lobby");
+    client.start();
+    await waitForState(client, (s) => s.world !== undefined);
+
+    client.sendForge();
+    await poll(() => client.getState().world?.queuedBullets() === 1);
+    expect(client.getState().world?.metal()).toBe(0);
   });
 });
