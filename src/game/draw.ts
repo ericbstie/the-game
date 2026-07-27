@@ -31,6 +31,7 @@ import {
 } from "./build";
 import { type Camera, isVisible, type Viewport } from "./camera";
 import type { ShotEvent } from "./clientWorld";
+import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
 import { ELITE_HP, GRUNT_HP, NEST_HP, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
 import { PLAYER_MAX_HP } from "./world";
@@ -126,6 +127,15 @@ export interface DrawOptions {
   // Wall-clock ms, injected rather than read, so this stays a pure function of its arguments (the
   // `stepBuild` idiom). Only the flashing overlays use it; without it they sit on their first frame.
   now?: number;
+  // Which players the lobby roster says are actually at the keyboard, for the off-screen arrows
+  // (#94). A render input and not a wire one: presence rides the lobby snapshot and has never been
+  // part of `WorldSnapshot`, so it is handed in here rather than added to it.
+  //
+  // Absent, no arrow is drawn at all. A player inside the server's 45 s grace window still holds
+  // their slot and still stands in `players` with their avatar frozen where they dropped, and there
+  // is nothing in the snapshot that tells them apart from a teammate standing still — so without
+  // the roster the only honest arrow is none (#75).
+  connected?: ReadonlySet<PlayerId>;
 }
 
 // One thing standing on the floor, waiting for its turn to paint. `y` is its floor line — the
@@ -365,12 +375,19 @@ export function drawWorld(
   // after every body, because a halo is wider than the figure it marks and would otherwise cover a
   // squadmate's name — see `paintOverhead`.
   const overhead: (() => void)[] = [];
+  // The teammates this frame draws an edge arrow for instead of a body (#94).
+  const beyond: Avatar[] = [];
 
   for (const a of world.players) {
     // A dead player vanishes instantly — no corpse (#81). What replaced the M2 fade is the screen
     // darkening below, and it is the dying player's own view only: squadmates simply see you gone.
     if (a.hp <= 0) continue;
-    if (!isVisible(a.pos, a.radius * 2, camera, viewport, LABEL_PAD)) continue;
+    // One cull, two outcomes. Asking it twice — once for the body, once for the arrow — is what
+    // would let a player crossing the edge be drawn both ways or neither on the same frame.
+    if (!isVisible(a.pos, a.radius * 2, camera, viewport, LABEL_PAD)) {
+      if (a.id !== options.selfId && options.connected?.has(a.id)) beyond.push(a);
+      continue;
+    }
     standing.push({
       y: a.pos.y,
       paint: () => paintAvatar(ctx, a, a.id === options.selfId, sprites, blit, blitOver),
@@ -391,6 +408,10 @@ export function drawWorld(
   // Over the sort for the same reason a shot line is: a `+1` marks the miner that earned it rather
   // than standing on the floor beside it, and one half-hidden behind a spider says nothing.
   drawFloats(ctx, options.floats, now);
+
+  // Over the world for the same reason again: an arrow marks the edge of the screen rather than a
+  // spot on the floor, so nothing standing near that edge may bury it.
+  drawEdgeMarkers(ctx, beyond, camera, viewport);
 
   // Names last of everything in the world. They are on ADR 0001's short allowlist — almost nothing
   // else may be written on screen — so nothing the world draws is allowed to obscure one, the `+1`
@@ -514,6 +535,46 @@ function drawFloats(
     ctx.strokeText(FLOAT_TEXT, float.pos.x, y);
     ctx.fillStyle = INK;
     ctx.fillText(FLOAT_TEXT, float.pos.x, y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// A small arrow at the viewport edge for each teammate the camera has left behind (#94), pointing
+// at where the snapshot renders them — which for a peer is already the interpolated, render-delayed
+// sample (`ClientWorld.render`), so the arrow and the sprite are aimed by the same number and cannot
+// disagree on the frame one becomes the other.
+//
+// Slot colour inside an ink outline. The colour is the only identity channel ADR 0001 leaves open,
+// and the outline is there for the reason the health bar's ink frame is: the slot colours were
+// picked to tell six players apart, not to carry on white paper — four of the six are under 3:1
+// against it at full opacity, #f2c14e at 1.68 — so the outline is what the drawing is read by over
+// the floor, and the
+// fill is what it is read by over the ink of a wall or a spider.
+//
+// Painted per frame rather than baked. A bake is keyed by what it was drawn from and this one's
+// bearing is continuous, so caching it means quantising the rotation — which either steps visibly as
+// a teammate walks or holds a bake per degree per slot. Five four-point paths do not earn that.
+function drawEdgeMarkers(
+  ctx: CanvasRenderingContext2D,
+  peers: readonly Avatar[],
+  camera: Camera,
+  viewport: Viewport,
+): void {
+  if (peers.length === 0) return;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = MARKER_STROKE;
+  ctx.lineJoin = "round";
+  for (const peer of peers) {
+    const marker = edgeMarker(peer.pos, camera, viewport);
+    const points = markerPoints(marker);
+    ctx.globalAlpha = marker.alpha;
+    ctx.fillStyle = SLOT_COLORS[(peer.slot - 1) % SLOT_COLORS.length];
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
   }
   ctx.globalAlpha = 1;
 }

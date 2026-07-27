@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { BuildableKind, RenderedEnemy, WorldSnapshot } from "../lobby/protocol";
+import type { Avatar, BuildableKind, RenderedEnemy, Vec2, WorldSnapshot } from "../lobby/protocol";
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
 import { tileKey } from "./build";
@@ -49,6 +49,7 @@ function spyCtx() {
     fillText: record("fillText"),
     strokeText: record("strokeText"),
     drawImage: record("drawImage"),
+    closePath: record("closePath"),
   };
   return ctx as unknown as CanvasRenderingContext2D & { calls: Call[] };
 }
@@ -61,6 +62,22 @@ const lines = (ctx: { calls: Call[] }) => {
   for (const c of ctx.calls) {
     if (c.fn === "moveTo") from = c.args as [number, number];
     else if (c.fn === "lineTo" && from) drawn.push({ from, to: c.args as [number, number] });
+  }
+  return drawn;
+};
+
+// The filled polygons in a frame, in world coordinates, with the state each went out under. An
+// off-screen teammate's arrow is the only multi-point path `drawWorld` fills — a circle is an `arc`
+// and a shot line is two points and never filled — so this reads the arrows off the log.
+const polygons = (ctx: { calls: Call[] }) => {
+  const drawn: { points: [number, number][]; alpha: number; fill: unknown }[] = [];
+  let points: [number, number][] = [];
+  for (const c of ctx.calls) {
+    if (c.fn === "beginPath") points = [];
+    else if (c.fn === "moveTo" || c.fn === "lineTo") points.push(c.args as [number, number]);
+    else if (c.fn === "fill" && points.length > 2) {
+      drawn.push({ points, alpha: c.alpha, fill: c.fill });
+    }
   }
   return drawn;
 };
@@ -1384,5 +1401,162 @@ describe("a miner's floating +1", () => {
     const name = ctx.calls.findIndex((c) => c.fn === "strokeText" && c.args[0] === "Ana");
     expect(plus).toBeGreaterThan(lastBlit);
     expect(plus).toBeLessThan(name);
+  });
+});
+
+// #94: a small arrow at the viewport edge for each teammate the camera has left behind. Which
+// peers get one is decided here, off the same cull that decides whether their body draws, so an
+// arrow and a sprite can never both be up for the same player. Where the arrow goes and how faint
+// it is belongs to `edgeMarker` and is tested there.
+describe("an off-screen teammate's arrow", () => {
+  const connected = new Set(["p1", "p2", "p3", "p4", "p5", "p6"]);
+  const peer = (id: string, slot: number, pos: Vec2, hp = 100): Avatar => ({
+    ...POSE,
+    id,
+    slot,
+    name: id,
+    pos,
+    radius: 14,
+    hp,
+  });
+  const centre = { x: camera.x + viewport.width / 2, y: camera.y + viewport.height / 2 };
+  const arrowsFor = (players: Avatar[], selfId = "me") => {
+    const ctx = spyCtx();
+    drawWorld(ctx, { ...world, players, nests: [] }, { camera, viewport, selfId, connected });
+    return polygons(ctx);
+  };
+
+  test("appears for a connected teammate the camera has left behind", () => {
+    expect(arrowsFor([peer("p1", 1, { x: centre.x + 9000, y: centre.y })])).toHaveLength(1);
+  });
+
+  test("does not appear while that teammate is still on screen", () => {
+    expect(arrowsFor([peer("p1", 1, centre)])).toHaveLength(0);
+  });
+
+  test("never draws for both the arrow and the body at the edge the cull uses", () => {
+    // One unit either side of the exact frame the peer stops being drawn: a body, then an arrow.
+    const edge = camera.y + viewport.height + 14 * 2 + 30;
+    const inside = arrowsFor([peer("p1", 1, { x: centre.x, y: edge - 1 })]);
+    const outside = arrowsFor([peer("p1", 1, { x: centre.x, y: edge + 1 })]);
+    expect(inside).toHaveLength(0);
+    expect(outside).toHaveLength(1);
+  });
+
+  test("it is the camera that decides, so the same teammate comes and goes as it moves", () => {
+    const pos = { x: 20_000, y: 20_000 };
+    const shown = (at: Camera) => {
+      const ctx = spyCtx();
+      const players = [peer("p1", 1, pos)];
+      drawWorld(
+        ctx,
+        { ...world, players, nests: [] },
+        {
+          camera: at,
+          viewport,
+          selfId: "me",
+          connected,
+        },
+      );
+      return polygons(ctx).length;
+    };
+    expect(shown({ x: 0, y: 0 })).toBe(1);
+    expect(shown({ x: 19_000, y: 19_000 })).toBe(1);
+    expect(shown({ x: 19_700, y: 19_800 })).toBe(0); // now on screen — the body draws instead
+    expect(shown({ x: 20_000, y: 20_000 })).toBe(0);
+    expect(shown({ x: 25_000, y: 25_000 })).toBe(1);
+  });
+
+  test("a dead teammate gets nothing", () => {
+    expect(arrowsFor([peer("p1", 1, { x: centre.x + 9000, y: centre.y }, 0)])).toHaveLength(0);
+  });
+
+  test("a teammate frozen in the disconnect grace window gets nothing", () => {
+    const ctx = spyCtx();
+    const players = [peer("p1", 1, { x: centre.x + 9000, y: centre.y })];
+    // The roster still holds their slot, so they are still in `world.players` — but not connected.
+    drawWorld(
+      ctx,
+      { ...world, players, nests: [] },
+      {
+        camera,
+        viewport,
+        selfId: "me",
+        connected: new Set<string>(),
+      },
+    );
+    expect(polygons(ctx)).toHaveLength(0);
+  });
+
+  test("no arrow is drawn for yourself", () => {
+    expect(arrowsFor([peer("p1", 1, { x: centre.x + 9000, y: centre.y })], "p1")).toHaveLength(0);
+  });
+
+  test("nothing at all is drawn without a roster to read presence from", () => {
+    const ctx = spyCtx();
+    const players = [peer("p1", 1, { x: centre.x + 9000, y: centre.y })];
+    drawWorld(ctx, { ...world, players, nests: [] }, { camera, viewport, selfId: "me" });
+    expect(polygons(ctx)).toHaveLength(0);
+  });
+
+  test("five off-screen teammates give five arrows, each in its own slot colour", () => {
+    const away = [
+      { x: centre.x + 9000, y: centre.y },
+      { x: centre.x - 9000, y: centre.y },
+      { x: centre.x, y: centre.y + 9000 },
+      { x: centre.x, y: centre.y - 9000 },
+      { x: centre.x + 6000, y: centre.y + 6000 },
+    ];
+    const arrows = arrowsFor(away.map((pos, i) => peer(`p${i + 1}`, i + 1, pos)));
+    expect(arrows).toHaveLength(5);
+    expect(new Set(arrows.map((a) => a.fill)).size).toBe(5);
+  });
+
+  test("every arrow is clamped inside the viewport rect", () => {
+    const ring = Array.from({ length: 5 }, (_, i) => {
+      const angle = (i / 5) * Math.PI * 2 + 0.3;
+      return peer(`p${i + 1}`, i + 1, {
+        x: centre.x + Math.cos(angle) * 12_000,
+        y: centre.y + Math.sin(angle) * 12_000,
+      });
+    });
+    for (const arrow of arrowsFor(ring)) {
+      for (const [x, y] of arrow.points) {
+        expect(x).toBeGreaterThanOrEqual(camera.x);
+        expect(x).toBeLessThanOrEqual(camera.x + viewport.width);
+        expect(y).toBeGreaterThanOrEqual(camera.y);
+        expect(y).toBeLessThanOrEqual(camera.y + viewport.height);
+      }
+    }
+  });
+
+  test("points at the position the snapshot renders the peer at", () => {
+    // `WorldSnapshot.players[].pos` is already the render-delayed sample (`ClientWorld.render`), so
+    // the arrow and the sprite are aimed by the same number and cannot disagree.
+    const pos = { x: centre.x - 8000, y: centre.y + 6000 };
+    const [arrow] = arrowsFor([peer("p1", 1, pos)]);
+    const [tip] = arrow.points;
+    expect(Math.atan2(tip[1] - centre.y, tip[0] - centre.x)).toBeCloseTo(
+      Math.atan2(pos.y - centre.y, pos.x - centre.x),
+      6,
+    );
+  });
+
+  test("fades with distance, and is drawn under the names", () => {
+    const near = arrowsFor([peer("p1", 1, { x: centre.x + 1500, y: centre.y })]);
+    const far = arrowsFor([peer("p1", 1, { x: centre.x + 20_000, y: centre.y })]);
+    expect(far[0].alpha).toBeLessThan(near[0].alpha);
+
+    const ctx = spyCtx();
+    drawWorld(
+      ctx,
+      { ...world, players: [...world.players, peer("p5", 5, { x: centre.x + 9000, y: centre.y })] },
+      { camera, viewport, selfId: "p1", connected },
+    );
+    const arrow = ctx.calls.findIndex((c) => c.fn === "closePath");
+    const name = ctx.calls.findIndex((c) => c.fn === "strokeText");
+    expect(arrow).toBeGreaterThan(-1);
+    expect(arrow).toBeLessThan(name);
+    expect(ctx.globalAlpha).toBe(1);
   });
 });

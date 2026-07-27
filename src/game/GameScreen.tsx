@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LobbyState } from "../lobby/client";
-import type { Arena, BuildableKind, MoveInput, Tile, Vec2 } from "../lobby/protocol";
+import type { Arena, BuildableKind, MoveInput, PlayerId, Tile, Vec2 } from "../lobby/protocol";
 import { createSpriteCache } from "../sprite/cache";
 import reconnectingIcon from "../sprite/reconnecting";
 import { SPRITES } from "../sprite/registry";
@@ -111,6 +111,7 @@ export function GameScreen({
   const heldRef = useRef<MoveInput>(NO_MOVE);
   const worldRef = useRef(state.world);
   const selfIdRef = useRef(state.self?.id);
+  const connectedRef = useRef<ReadonlySet<PlayerId>>(new Set());
   const onPosRef = useRef(onPos);
   const onAttackRef = useRef(onAttack);
   const onHealthRef = useRef(onHealth);
@@ -164,6 +165,12 @@ export function GameScreen({
   }); // the render loop's latest camera + self world pos, so a click aims from the true origin
   worldRef.current = state.world;
   selfIdRef.current = state.self?.id;
+  // Who is actually at the keyboard, for the off-screen arrows (#94). Rebuilt on a React render
+  // rather than in the loop: the roster moves when a socket does, which is a handful of times a
+  // match, and the frame that reads it is running at 60 Hz.
+  connectedRef.current = new Set(
+    state.snapshot?.players.filter((p) => p.presence.status === "connected").map((p) => p.id),
+  );
   onPosRef.current = onPos;
   onAttackRef.current = onAttack;
   onHealthRef.current = onHealth;
@@ -396,6 +403,7 @@ export function GameScreen({
             viewport,
             ghost,
             dpr,
+            connected: connectedRef.current,
             now: clock,
             floats: stepMetalFloats(
               floatsRef.current,
