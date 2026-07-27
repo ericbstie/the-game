@@ -10,13 +10,17 @@ import {
   BUILD_SLOTS,
   BUILDABLES,
   DEMOLISH_HOLD_MS,
+  type HarvestTarget,
+  INTERACT_REACH,
   MINE_CADENCE_MS,
   placementError,
   resolveHarvest,
+  tileCenter,
   tileOf,
+  withinReach,
 } from "./build";
 import { type Camera, computeCamera } from "./camera";
-import { RESPAWN_DELAY_MS } from "./clientWorld";
+import { type ClientWorld, RESPAWN_DELAY_MS } from "./clientWorld";
 import { type BuildGhost, drawWorld, type OwnShot, SHOT_LINE_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { aimDir, keyToBuildSlot, keyToDirection, movesEqual, NO_MOVE } from "./input";
@@ -209,7 +213,14 @@ export function GameScreen({
         // given, and the shot lines resolve their targets against the same interpolation it renders
         // on — reading the clock twice would split that step and land a line off its own sprite.
         const clock = Date.now();
-        if (!world.isDead()) world.stepSelf(dt, heldRef.current, clock); // a downed player holds still
+        // Hand-mining pins you where you stand (#109). The pin is the harvest itself, read fresh
+        // every frame rather than latched, so it takes hold on the very frame the button goes down
+        // and is gone on the frame it comes up — with no stale flag for a blur or a death to strand.
+        const pinned =
+          liveHarvest(world, harvestingRef.current, pointerRef.current, aimRef.current.camera)
+            ?.kind === "mine";
+        const move = pinned ? NO_MOVE : heldRef.current;
+        if (!world.isDead()) world.stepSelf(dt, move, clock); // a downed player holds still
         world.updateHealth(clock); // judge contact damage at the owner's true position
         const { w, h } = viewRef.current;
         const ctx = w > 0 && h > 0 ? canvas.getContext("2d") : null;
@@ -309,11 +320,14 @@ export function GameScreen({
   // cadence. The server decides what that is worth — the client only ever asks.
   useEffect(() => {
     const timer = setInterval(() => {
-      const world = worldRef.current;
       const heldSince = harvestingRef.current;
-      if (heldSince === null || !world || world.isDead()) return;
-      const tile = cursorTile(pointerRef.current, aimRef.current.camera);
-      const target = resolveHarvest(tile, world.ore, world.build);
+      if (heldSince === null) return;
+      const target = liveHarvest(
+        worldRef.current,
+        heldSince,
+        pointerRef.current,
+        aimRef.current.camera,
+      );
       if (target?.kind === "mine") onMineRef.current(target.tile);
       // Demolish waits out a hold: a stray right-click while running over your own wall must not
       // delete it. Mining needs no such guard — a single mine tick is harmless.
@@ -503,6 +517,25 @@ function applyBackingStore(canvas: HTMLCanvasElement, w: number, h: number, dpr:
   const bh = Math.round(h * dpr);
   if (canvas.width !== bw) canvas.width = bw;
   if (canvas.height !== bh) canvas.height = bh;
+}
+
+// What held right-click is harvesting this instant, or null if nothing is — a released button, a
+// world not up yet, a corpse, or a cursor over anything that yields nothing. The request loop and
+// the mining pin both read this one answer, so the pin can never outlast the harvest it follows.
+function liveHarvest(
+  world: ClientWorld | undefined,
+  heldSince: number | null,
+  pointer: Vec2,
+  camera: Camera,
+): HarvestTarget {
+  if (!world || heldSince === null || world.isDead()) return null;
+  const target = resolveHarvest(cursorTile(pointer, camera), world.ore, world.build);
+  if (target?.kind !== "mine") return target;
+  // `admitMine` refuses a report from further off than INTERACT_REACH (build.ts:209). Nothing here
+  // reads that as the player's true reach — it is an anti-teleport bound — but a mine it provably
+  // refuses is not a live harvest, and pinning on one would hold the player still banking nothing.
+  const self = world.selfPos();
+  return self && !withinReach(tileCenter(target.tile), self, INTERACT_REACH) ? null : target;
 }
 
 // The tile under the pointer. The camera maps CSS pixels to world units 1:1, so the pointer's

@@ -172,7 +172,7 @@ export function mulberry32(seed: number): () => number {
 // Holding right-click on a metal-ore tile mines it straight into the shared bank. Power ore has
 // no hand-mine path at all: Energy is a live rate with nowhere to store what you'd dig up.
 
-export const HAND_MINE_RATE = 8; // metal per second held
+export const HAND_MINE_RATE = 1; // metal per second held
 export const MINE_CADENCE_MS = 100; // server-side floor on how often a client may report mining
 export const MINE_WINDOW_MAX_MS = 250; // caps the accrual after a pause, so idling banks nothing
 // The one loose reach shared by mining, building and demolishing. "Whatever is on screen" is
@@ -212,7 +212,7 @@ export function admitMine(
   return (Math.min(elapsed, MINE_WINDOW_MAX_MS) / 1000) * HAND_MINE_RATE;
 }
 
-function withinReach(target: Vec2, from: Vec2, reach: number): boolean {
+export function withinReach(target: Vec2, from: Vec2, reach: number): boolean {
   return Math.hypot(target.x - from.x, target.y - from.y) <= reach;
 }
 
@@ -243,7 +243,7 @@ export interface BuildableSpec {
   requires: OreKind | null; // the ore at least one tile under the footprint must be
 }
 
-export const MINER_TRICKLE = 4; // metal/s — half the hand rate, but it never stops and it stacks
+export const MINER_TRICKLE = 4; // metal/s — it never stops and it stacks
 export const GENERATOR_OUTPUT = 400; // energy/s of ceiling each standing generator contributes
 
 // Turret fire. Range matches the player's own reach, and ~20 dps kills a 30 HP grunt in ~1.5 s.
@@ -457,8 +457,8 @@ export function removeStructure(build: BuildState, id: string): Structure | null
 const THOUSANDTHS_PER_METAL = 1_000;
 
 // Pay Metal into the shared bank, returning the whole Metal that just landed in it — 0 on a tick
-// that only moved the remainder. That return is the "a whole Metal was banked" crossing: it is the
-// beat #99 floats a `+1` on and the discrete receipt #109 arms its pin from.
+// that only moved the remainder. That return is the "a whole Metal was banked" crossing: the beat
+// #99 floats a `+1` on.
 export function creditMetal(build: BuildState, metal: number): number {
   build.metalThousandths += Math.round(metal * THOUSANDTHS_PER_METAL);
   const whole = Math.floor(build.metalThousandths / THOUSANDTHS_PER_METAL);
@@ -484,9 +484,9 @@ export function stepBuild(build: BuildState, dtMs: number): number {
 // Metal per second the standing miners pay into the bank: what `stepBuild` accumulates, stated as a
 // rate, so a reading of it cannot drift from what the bank is actually being paid.
 //
-// Hand-mining is deliberately not in it. It is 8/s while a button is held and 0 the instant it is
-// let go, so folding it in would make the readout jump between nothing and 30-odd depending on who
-// is digging — a worse answer to "is one more miner worth it" than no readout at all.
+// Hand-mining is deliberately not in it. It is HAND_MINE_RATE while a button is held and 0 the
+// instant it is let go, so folding it in would make the readout flicker with whoever is digging —
+// a worse answer to "is one more miner worth it" than no readout at all.
 export function metalRate(build: BuildState): number {
   let miners = 0;
   for (const s of build.structures.values()) if (s.kind === "miner") miners++;

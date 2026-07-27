@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { LobbyState } from "../lobby/client";
-import type { MoveInput, WorldInit } from "../lobby/protocol";
-import { BUILD_SLOTS, BUILDABLES, MINE_CADENCE_MS, MINER_TRICKLE, tileKey } from "./build";
+import type { MoveInput, Vec2, WorldInit } from "../lobby/protocol";
+import {
+  BUILD_SLOTS,
+  BUILDABLES,
+  INTERACT_REACH,
+  MINE_CADENCE_MS,
+  MINER_TRICKLE,
+  tileKey,
+} from "./build";
 import { ClientWorld } from "./clientWorld";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { GameScreen } from "./GameScreen";
@@ -336,5 +343,132 @@ describe("#100: right-click cancels a selected buildable", () => {
     fireEvent.mouseDown(canvas, { button: 2 });
     await settle(MINE_CADENCE_MS * 3);
     expect(onMine).toHaveBeenCalled();
+  });
+});
+
+describe("#109: hand-mining Metal ore pins the player where it stands", () => {
+  const overMetal = (self: Vec2 = init.spawns[0].pos) => {
+    const world = new ClientWorld({ ...init, spawns: [{ ...init.spawns[0], pos: self }] }, "me");
+    world.ore.set(tileKey(CURSOR_TILE), "metal");
+    return world;
+  };
+
+  // Start the mine, then try to walk out of it. The events are synchronous and no frame has run
+  // between them, so the position captured here is the one the whole hold is measured against.
+  function mineAndWalk(world: ClientWorld, handlers = {}) {
+    const moves = recordMoves(world);
+    const canvas = renderMatch(handlers, world);
+    fireEvent.mouseDown(canvas, { button: 2 });
+    fireEvent.keyDown(window, { key: "w" });
+    return { canvas, moves, from: world.selfPos() as Vec2 };
+  }
+
+  test("movement input is ignored while the button is held, and the player does not move", async () => {
+    const world = overMetal();
+    const { moves, from } = mineAndWalk(world);
+    await settle(MINE_CADENCE_MS * 3);
+    expect(moves.at(-1)).toEqual(NO_MOVE);
+    expect(world.selfPos()).toEqual(from);
+  });
+
+  test("releasing it restores movement on the very next input read, with no tail", async () => {
+    const world = overMetal();
+    const { moves } = mineAndWalk(world);
+    await settle(MINE_CADENCE_MS * 3);
+    expect(moves.at(-1)).toEqual(NO_MOVE);
+    const released = moves.length;
+    fireEvent.mouseUp(window);
+    await nextFrames();
+    expect(moves[released]?.up).toBe(true);
+  });
+
+  test("blur mid-mine releases the harvest and the pin together", async () => {
+    const onMine = mock(() => {});
+    const world = overMetal();
+    const { moves } = mineAndWalk(world, { onMine });
+    await settle(MINE_CADENCE_MS * 3);
+    expect(moves.at(-1)).toEqual(NO_MOVE);
+    const blurred = moves.length;
+    onMine.mockClear();
+    fireEvent.blur(window);
+    await settle(MINE_CADENCE_MS * 3);
+    expect(onMine).toHaveBeenCalledTimes(0);
+    expect(moves[blurred]?.up).toBe(true);
+  });
+
+  test("a player who dies mid-mine is not pinned on respawn", async () => {
+    const world = overMetal();
+    const { moves } = mineAndWalk(world);
+    await settle(MINE_CADENCE_MS * 3);
+    expect(moves.at(-1)).toEqual(NO_MOVE);
+    world.applyPeerHealth("me", 0, 1); // down mid-mine, with right-click still held
+    await settle(MINE_CADENCE_MS * 2);
+    world.reviveSelf();
+    // Respawning snaps you to the arena centre, half the map from the ore you died on — so the
+    // harvest cannot resume even with the button still down, and nothing carries the pin over.
+    const revived = moves.length;
+    await nextFrames();
+    expect(moves[revived]?.up).toBe(true);
+  });
+
+  // The server refuses a mine reported from further off than INTERACT_REACH (build.ts:209). A pin
+  // there would freeze the player banking nothing, so the client asks for nothing either.
+  test("Metal ore beyond INTERACT_REACH starts no harvest, and so imposes no pin", async () => {
+    const onMine = mock(() => {});
+    const { moves } = mineAndWalk(overMetal({ x: INTERACT_REACH * 2, y: 300 }), { onMine });
+    await settle(MINE_CADENCE_MS * 3);
+    expect(onMine).toHaveBeenCalledTimes(0);
+    expect(moves.at(-1)?.up).toBe(true);
+  });
+
+  // The pin follows whether a harvest is running, not whether the button is down. Every one of
+  // these holds right-click on something that resolves to no mine.
+  test("bare grass starts no harvest and imposes no pin", async () => {
+    const onMine = mock(() => {});
+    const { moves } = mineAndWalk(new ClientWorld(init, "me"), { onMine });
+    await settle(MINE_CADENCE_MS * 3);
+    expect(onMine).toHaveBeenCalledTimes(0);
+    expect(moves.at(-1)?.up).toBe(true);
+  });
+
+  test("power ore starts no harvest and imposes no pin", async () => {
+    const onMine = mock(() => {});
+    const world = new ClientWorld(init, "me");
+    world.ore.set(tileKey(CURSOR_TILE), "power");
+    const { moves } = mineAndWalk(world, { onMine });
+    await settle(MINE_CADENCE_MS * 3);
+    expect(onMine).toHaveBeenCalledTimes(0);
+    expect(moves.at(-1)?.up).toBe(true);
+  });
+
+  test("an occupied tile is a demolish, not a mine, so it imposes no pin", async () => {
+    const onMine = mock(() => {});
+    const world = overMetal(); // a miner sits on metal ore by definition
+    world.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        builds: [{ id: "m1", kind: "miner", tile: CURSOR_TILE, hp: 200 }],
+      },
+      Date.now(),
+    );
+    const { moves } = mineAndWalk(world, { onMine });
+    await settle(MINE_CADENCE_MS * 3);
+    expect(onMine).toHaveBeenCalledTimes(0);
+    expect(moves.at(-1)?.up).toBe(true);
+  });
+
+  // #100 lets held movement go when the menu opens; the pin must not outlive the button under it.
+  test("the escape menu opened mid-mine leaves nothing pinned once the button is up", async () => {
+    const world = overMetal();
+    const { moves } = mineAndWalk(world);
+    await settle(MINE_CADENCE_MS * 3);
+    expect(moves.at(-1)).toEqual(NO_MOVE);
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.mouseUp(window);
+    fireEvent.keyDown(window, { key: "w" });
+    const released = moves.length;
+    await nextFrames();
+    expect(moves[released]?.up).toBe(true);
   });
 });
