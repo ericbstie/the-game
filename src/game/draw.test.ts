@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { BuildableKind, WorldSnapshot } from "../lobby/protocol";
+import type { BuildableKind, RenderedEnemy, WorldSnapshot } from "../lobby/protocol";
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
 import { tileKey } from "./build";
@@ -17,6 +17,7 @@ interface Call {
   alpha: number;
   fill: unknown;
   stroke: unknown;
+  composite: unknown;
 }
 function spyCtx() {
   const calls: Call[] = [];
@@ -30,6 +31,7 @@ function spyCtx() {
         alpha: (ctx.globalAlpha as number | undefined) ?? 1,
         fill: ctx.fillStyle,
         stroke: ctx.strokeStyle,
+        composite: ctx.globalCompositeOperation ?? "source-over",
       });
     };
   ctx = {
@@ -66,12 +68,20 @@ const lines = (ctx: { calls: Call[] }) => {
 // tagged so a call log says *which* sprite was blitted and in what order. Sprites the game has
 // not been given fall through to the shapes it has drawn since M2, which is what a name left out
 // of `boxes` reproduces.
+// A rim wider than the one production bakes, and a number nothing in `draw.ts` knows: the flash
+// blit's destination has to come off the sprite it was handed, never be worked out again there.
+const STUB_FLASH_RIM = 3;
+
 function stubSprites(boxes: Partial<Record<SpriteName, number>>): SpriteSource {
-  return (name, facing, frame) => {
+  return (name, facing, frame, variant = "ink") => {
     const size = boxes[name];
     if (size === undefined) return null;
-    const image = { tag: `${name}/${facing}/${frame}` } as unknown as CanvasImageSource;
-    return { image, size } satisfies BakedSprite;
+    const flash = variant === "flash";
+    const tag = flash ? `${name}/${facing}/${frame}/flash` : `${name}/${facing}/${frame}`;
+    return {
+      image: { tag } as unknown as CanvasImageSource,
+      size: flash ? size + 2 * STUB_FLASH_RIM : size,
+    } satisfies BakedSprite;
   };
 }
 
@@ -85,9 +95,9 @@ const blits = (ctx: { calls: Call[] }) =>
       width: c.args[3] as number,
       height: c.args[4] as number,
     }));
-// Facing and walk frame are derived in ClientWorld, not here — drawWorld reads them off the
-// snapshot, so any value serves these fixtures.
-const POSE = { facing: 2, frame: 0 };
+// Facing, walk frame and whether the hit flash is up are all derived in ClientWorld, not here —
+// drawWorld reads them off the snapshot, so any value serves these fixtures.
+const POSE = { facing: 2, frame: 0, flashing: false };
 
 const world: WorldSnapshot = {
   arena: { width: 31_200, height: 31_200 },
@@ -1223,5 +1233,91 @@ describe("shot lines", () => {
         { ...none, peers: [{ shot: { id: "p2", dir: { x: -1, y: 0 }, hit: "e1" }, at: 1000 }] },
       ).length,
     ).toBe(1);
+  });
+});
+
+// A spider turns white for a split second when it takes damage (#107). The floor is white paper, so
+// the flash cannot be a white spider: it is the ink bake inverted with a rim of ink left standing,
+// derived once as its own cached variant rather than composited into every frame. What the draw layer
+// owes is therefore small and exact — wear the variant for the pose the spider is in, in one blit,
+// landed where the ink bake would have gone. Whether the rim *reads* is a question for the eye, and
+// `bun run sprite:frame` is where it is asked.
+describe("the hit flash", () => {
+  const grunt = (over: Partial<RenderedEnemy>): WorldSnapshot => ({
+    ...world,
+    players: [],
+    nests: [],
+    // Wounded, so the health bar is in the picture and cannot be mistaken for part of the flash.
+    enemies: [
+      { ...POSE, id: "e1", kind: "grunt", pos: { x: 1150, y: 1200 }, radius: 16, hp: 12, ...over },
+    ],
+  });
+  const flash = (flashing: boolean, dpr = 2) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, grunt({ flashing }), {
+      camera,
+      viewport,
+      dpr,
+      sprites: stubSprites({ grunt: 32 }),
+    });
+    return ctx;
+  };
+  // Where a grunt's 32 px box lands when it is centred on (1150, 1200) …
+  const CENTRE = { x: 1134, y: 1184 };
+  // … and the wider box its flash variant has to land in to stay centred on the same point.
+  const FLASH_BOX = 32 + 2 * STUB_FLASH_RIM;
+  const FLASH_CENTRE = { x: 1150 - FLASH_BOX / 2, y: 1200 - FLASH_BOX / 2 };
+
+  test("an unhurt spider is one plain blit of the ink bake", () => {
+    expect(blits(flash(false))).toEqual([{ tag: "grunt/2/0", ...CENTRE, width: 32, height: 32 }]);
+  });
+
+  // The destination is the whole of it, not just that a blit happened. A box of the wrong size or off
+  // its centre resamples the bake and drags the silhouette off the ink one it stands in for — and
+  // #107's first attempt hid a see-through hole through every flashing spider behind exactly that
+  // gap in the assertions.
+  test("a hit spider is one blit of the flash variant, in its own box, on the same centre", () => {
+    expect(blits(flash(true))).toEqual([
+      { tag: "grunt/2/0/flash", ...FLASH_CENTRE, width: FLASH_BOX, height: FLASH_BOX },
+    ]);
+  });
+
+  test("in logical px, so the rim is the same weight on a retina display", () => {
+    for (const dpr of [1, 2, 3]) {
+      expect(blits(flash(true, dpr))).toEqual([
+        { tag: "grunt/2/0/flash", ...FLASH_CENTRE, width: FLASH_BOX, height: FLASH_BOX },
+      ]);
+    }
+  });
+
+  test("the variant is the one for the pose the spider is standing in", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, grunt({ facing: 5, frame: 1, flashing: true }), {
+      camera,
+      viewport,
+      dpr: 2,
+      sprites: stubSprites({ grunt: 32 }),
+    });
+    expect(blits(ctx).map((b) => b.tag)).toEqual(["grunt/5/1/flash"]);
+  });
+
+  // The old mechanism dilated, punched and back-filled in nine blits and two mode switches, at ~70 µs
+  // a spider — and left the context in a mode the health bar after it had to survive. A derived bake
+  // is none of that, and this is what says so.
+  test("touches no compositing mode: the flash is a blit like any other", () => {
+    expect(flash(true).calls.every((c) => c.composite === "source-over")).toBe(true);
+  });
+
+  test("hangs the health bar off the plain box, so it does not hop as the flash comes and goes", () => {
+    const bar = (ctx: { calls: Call[] }) =>
+      ctx.calls.filter((c) => c.fn === "fillRect").map((c) => c.args.slice(0, 4));
+    expect(bar(flash(true))).toEqual(bar(flash(false)));
+  });
+
+  test("costs nothing when a sprite has not landed: the M2 shape is unchanged", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, grunt({ flashing: true }), { camera, viewport, sprites: stubSprites({}) });
+    expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(1);
+    expect(ctx.calls.every((c) => c.composite === "source-over")).toBe(true);
   });
 });

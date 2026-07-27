@@ -56,6 +56,12 @@ export const BUFFER_MS = 500; // keep this much peer history; older samples are 
 // anything drawing for the full window. Must stay clear of any lifetime a caller might ask for.
 export const SHOT_RETENTION_MS = 250;
 export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their 20 Hz stream
+// How long a spider stays white after it is hit (#107). Three frames at 60 Hz — enough to register
+// — and well under the 180 ms weapon cadence, so consecutive hits read as separate flashes instead
+// of one continuous white spider. It lives here rather than in the render layer because the clock it
+// is measured against is this class's: the flash has to be judged on the delayed instant the sprite
+// is interpolated to, not on the instant the event arrived.
+export const HIT_FLASH_MS = 90;
 // Dead this long, then the client snaps back to center. With a stopwatch for a score and a base
 // to defend, the long walk back from centre is the penalty — at 3 s (M3) dying was free.
 export const RESPAWN_DELAY_MS = 20_000;
@@ -74,7 +80,9 @@ interface AvatarRecord {
 
 // A server-owned enemy the client renders. Its position is buffered and interpolated exactly
 // like a peer; kind and hp arrive once via a spawn and update via events. `lastContactAt` is
-// the client-local time this enemy last dealt the owner contact damage (per-enemy cadence).
+// the client-local time this enemy last dealt the owner contact damage (per-enemy cadence), and
+// `lastHitAt` the client-local time it last took damage itself, which is the whole of the hit
+// flash's state.
 interface EnemyRecord {
   id: string;
   kind: EnemyKind;
@@ -82,6 +90,7 @@ interface EnemyRecord {
   pos: Vec2; // spawn fallback until the first move sample buffers
   buffer: PosSample[];
   lastContactAt: number;
+  lastHitAt: number;
   gait: Gait; // dies with the record, so 240 enemies a wave cost nothing to track
 }
 
@@ -248,6 +257,7 @@ export class ClientWorld {
           pos: { ...s.pos },
           buffer: [],
           lastContactAt: Number.NEGATIVE_INFINITY,
+          lastHitAt: Number.NEGATIVE_INFINITY,
           gait: freshGait(s.id, s.pos),
         });
       }
@@ -258,7 +268,9 @@ export class ClientWorld {
     }
     for (const hit of delta.hits ?? []) {
       const enemy = this.enemies.get(hit.id);
-      if (enemy) enemy.hp = hit.hp;
+      if (!enemy) continue;
+      enemy.hp = hit.hp;
+      enemy.lastHitAt = now; // arrival, not render time: `renderEnemies` is what applies the delay
     }
     for (const id of delta.deaths ?? []) this.enemies.delete(id);
     for (const nd of delta.nests ?? []) {
@@ -383,6 +395,7 @@ export class ClientWorld {
         pos: { ...e.pos },
         buffer: [],
         lastContactAt: Number.NEGATIVE_INFINITY,
+        lastHitAt: Number.NEGATIVE_INFINITY,
         gait: freshGait(e.id, e.pos),
       });
     }
@@ -458,6 +471,10 @@ export class ClientWorld {
     return [...this.enemies.values()].map((e) => {
       const pos = interpolateAt(e.buffer, renderTime) ?? { ...e.pos };
       updateFacing(e.gait, pos, now);
+      // Measured on `renderTime`, the instant this sprite is being interpolated to, rather than on
+      // `now`: a hit rides the 20 Hz tick while the sprite it belongs to is a render delay behind
+      // it, so timing the flash off arrival would fire it 50 ms ahead of the drawing (#107).
+      const sinceHit = renderTime - e.lastHitAt;
       return {
         id: e.id,
         kind: e.kind,
@@ -466,6 +483,7 @@ export class ClientWorld {
         pos,
         facing: e.gait.facing,
         frame: e.gait.frame,
+        flashing: sinceHit >= 0 && sinceHit < HIT_FLASH_MS,
       };
     });
   }
