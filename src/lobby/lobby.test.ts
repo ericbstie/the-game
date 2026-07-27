@@ -12,7 +12,7 @@ import {
 import { ATTACK_POS_TOLERANCE, NEST_COUNT, RANGED_CADENCE_MS } from "../game/enemies";
 import { ARENA } from "../game/world";
 import { type LobbyConfig, LobbyHub, livePlayers, type Transport } from "./lobby";
-import type { EnemySpawn, ServerMessage, Tile, Vec2 } from "./protocol";
+import type { EnemySpawn, Exit, ServerMessage, Tile, Vec2 } from "./protocol";
 import type { LobbyServer } from "./server";
 import {
   expectMessage,
@@ -2136,5 +2136,171 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
       expect(keyframe).toMatchObject({ type: "game/build-init", ammo: 0, queued: 2 });
       hub.dispose();
     });
+  });
+});
+
+// #93: the door is revealed to the whole squad the moment anyone comes close enough, and stays
+// revealed for the rest of the match. Virtual time throughout — the assertion is about the tick a
+// flag rides on, which a real interval cannot promise.
+describe("#93: finding the door", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+
+  const TICK = 50;
+  const CENTRE = { x: ARENA.width / 2, y: ARENA.height / 2 };
+
+  const deltas = (t: Capture, socketId: string) =>
+    t.sent
+      .filter((m) => m.socketId === socketId && m.msg.type === "game/map-delta")
+      .map((m) => m.msg as Extract<ServerMessage, { type: "game/map-delta" }>);
+  const reveals = (t: Capture, socketId: string) =>
+    deltas(t, socketId).filter((d) => d.exitRevealed !== undefined);
+  const keyframeFor = (t: Capture, socketId: string) =>
+    t.sent.find((m) => m.socketId === socketId && m.msg.type === "game/enemy-init")?.msg as
+      | Extract<ServerMessage, { type: "game/enemy-init" }>
+      | undefined;
+
+  // A started match of `count` players. The wave clock is left at its default, so nothing spawns:
+  // this block is about a distance to a door, and a wave marching into it would only add noise.
+  function match(count: number) {
+    const t = new Capture();
+    const clock = new ManualScheduler();
+    const hub = new LobbyHub(t, { tickMs: TICK, scheduler: clock });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "P1" }));
+    const created = t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+    const tokens = [created.you.token];
+    for (let i = 2; i <= count; i++) {
+      hub.handleMessage(
+        `s${i}`,
+        JSON.stringify({ type: "lobby/join", code: created.code, name: `P${i}` }),
+      );
+      const joined = t.sent.find((m) => m.socketId === `s${i}` && m.msg.type === "lobby/joined")
+        ?.msg as Extract<ServerMessage, { type: "lobby/joined" }>;
+      tokens.push(joined.you.token);
+    }
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    const init = t.sent.find((m) => m.msg.type === "game/world-init")?.msg as Extract<
+      ServerMessage,
+      { type: "game/world-init" }
+    >;
+    return { t, hub, clock, code: created.code, tokens, exit: init.init.exit };
+  }
+
+  // A point exactly `away` units from the nearest edge of the door, straight out from the face it
+  // presents to the arena — so the number under test is the distance itself, not an approximation.
+  function offDoor(exit: Exit, away: number): Vec2 {
+    if (exit.width > exit.height) {
+      // The door lies along the top or bottom wall.
+      return { x: exit.x + exit.width / 2, y: exit.y === 0 ? exit.height + away : exit.y - away };
+    }
+    return { x: exit.x === 0 ? exit.width + away : exit.x - away, y: exit.y + exit.height / 2 };
+  }
+
+  const walkTo = (hub: LobbyHub, socketId: string, pos: Vec2, seq = 1) =>
+    hub.handleMessage(socketId, JSON.stringify({ type: "game/pos", pos, seq }));
+
+  test("a squad nowhere near the door is never told where it is", () => {
+    const { t, hub, clock } = match(1);
+    walkTo(hub, "s1", CENTRE);
+    clock.advance(TICK * 10);
+    expect(reveals(t, "s1")).toHaveLength(0);
+    hub.dispose();
+  });
+
+  test("1,800 u from the door finds it", () => {
+    const { t, hub, clock, exit } = match(1);
+    walkTo(hub, "s1", offDoor(exit, 1_800));
+    clock.advance(TICK);
+    expect(reveals(t, "s1").map((d) => d.exitRevealed)).toEqual([true]);
+    hub.dispose();
+  });
+
+  test("1,801 u does not", () => {
+    const { t, hub, clock, exit } = match(1);
+    walkTo(hub, "s1", offDoor(exit, 1_801));
+    clock.advance(TICK * 5);
+    expect(reveals(t, "s1")).toHaveLength(0);
+    hub.dispose();
+  });
+
+  test("one player finding it reveals it on every other client", () => {
+    const { t, hub, clock, exit } = match(3);
+    walkTo(hub, "s1", CENTRE);
+    walkTo(hub, "s2", CENTRE);
+    walkTo(hub, "s3", offDoor(exit, 100));
+    clock.advance(TICK);
+    for (const socketId of ["s1", "s2", "s3"]) {
+      expect(reveals(t, socketId).map((d) => d.exitRevealed)).toEqual([true]);
+    }
+    hub.dispose();
+  });
+
+  test("the flag rides the one tick it flips and never again", () => {
+    const { t, hub, clock, exit } = match(1);
+    walkTo(hub, "s1", offDoor(exit, 100));
+    clock.advance(TICK * 40);
+    expect(deltas(t, "s1").length).toBeGreaterThan(30); // the stream really did keep running
+    expect(reveals(t, "s1")).toHaveLength(1);
+    hub.dispose();
+  });
+
+  test("any player counts — one who found it and dropped in the same breath still found it", () => {
+    const { t, hub, clock, exit } = match(2);
+    walkTo(hub, "s2", offDoor(exit, 500));
+    hub.handleClose("s2"); // their socket goes before the tick that would have noticed
+    clock.advance(TICK);
+    expect(reveals(t, "s1").map((d) => d.exitRevealed)).toEqual([true]);
+    hub.dispose();
+  });
+
+  test("the finder's death does not take the door back", () => {
+    const { t, hub, clock, exit, code } = match(2);
+    walkTo(hub, "s2", offDoor(exit, 200));
+    clock.advance(TICK);
+    hub.handleMessage("s2", JSON.stringify({ type: "game/health", hp: 0, seq: 1 }));
+    clock.advance(TICK * 10);
+    expect(reveals(t, "s1")).toHaveLength(1); // still exactly the one, and never a retraction
+    hub.handleMessage("s9", JSON.stringify({ type: "lobby/join", code, name: "Late" }));
+    expect(keyframeFor(t, "s9")?.exitRevealed).toBe(true);
+    hub.dispose();
+  });
+
+  test("the reconnect keyframe carries it, so the door survives a disconnect", () => {
+    const { t, hub, clock, exit, code, tokens } = match(2);
+    walkTo(hub, "s2", offDoor(exit, 200));
+    clock.advance(TICK);
+    hub.handleClose("s2");
+    hub.handleMessage(
+      "s3",
+      JSON.stringify({ type: "lobby/join", code, name: "P2", token: tokens[1] }),
+    );
+    expect(keyframeFor(t, "s3")?.exitRevealed).toBe(true);
+    hub.dispose();
+  });
+
+  test("the door outlives the player who found it leaving the match entirely", () => {
+    const { t, hub, clock, exit, code } = match(2);
+    walkTo(hub, "s2", offDoor(exit, 200));
+    clock.advance(TICK);
+    hub.handleMessage("s2", JSON.stringify({ type: "lobby/leave" })); // position deleted with them
+    clock.advance(TICK * 10);
+    hub.handleMessage("s9", JSON.stringify({ type: "lobby/join", code, name: "Late" }));
+    expect(keyframeFor(t, "s9")?.exitRevealed).toBe(true);
+    hub.dispose();
+  });
+
+  test("a keyframe from a match where nobody has found it says nothing about the door", () => {
+    const { t, hub, clock, code } = match(1);
+    walkTo(hub, "s1", CENTRE);
+    clock.advance(TICK);
+    hub.handleMessage("s9", JSON.stringify({ type: "lobby/join", code, name: "Late" }));
+    expect(keyframeFor(t, "s9")).toBeDefined();
+    expect(keyframeFor(t, "s9")).not.toHaveProperty("exitRevealed");
+    hub.dispose();
   });
 });

@@ -933,3 +933,53 @@ describe("#102: the forge queue is mirrored, and its clock anchors on what arriv
     expect(w.forgeStartedAt()).toBeNull();
   });
 });
+
+// #93: the door's reveal is server-held. The client mirrors what it was told and has no path of
+// its own to decide the door is found — nor any to decide it is lost again.
+describe("the door's reveal is mirrored, never decided here", () => {
+  const revealed = (w: ClientWorld) => w.snapshot(0).exitRevealed;
+  const keyframe = (tick: number, exitRevealed?: true) => ({
+    tick,
+    enemies: [],
+    nests: [],
+    exitRevealed,
+  });
+
+  test("a fresh world has the door hidden, even though world-init carried its position", () => {
+    const w = new ClientWorld(init(), "self");
+    expect(w.snapshot(0).exit).toEqual({ x: 0, y: 100, width: 18, height: 96 });
+    expect(revealed(w)).toBe(false);
+  });
+
+  test("the flag on a delta reveals it", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], exitRevealed: true }, 0);
+    expect(revealed(w)).toBe(true);
+  });
+
+  test("every later delta omits the flag, and the door stays found", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], exitRevealed: true }, 0);
+    for (let tick = 2; tick <= 20; tick++) w.applyMapDelta({ tick, moves: [] }, tick * 50);
+    expect(revealed(w)).toBe(true);
+  });
+
+  test("the reconnect keyframe reveals a door found before this client arrived", () => {
+    const w = new ClientWorld(init(), "self");
+    w.initEnemies(keyframe(40, true));
+    expect(revealed(w)).toBe(true);
+  });
+
+  test("a keyframe that says nothing about the door cannot take it back", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], exitRevealed: true }, 0);
+    w.initEnemies(keyframe(40));
+    expect(revealed(w)).toBe(true);
+  });
+
+  test("a keyframe from a match where nobody has found it yet leaves it hidden", () => {
+    const w = new ClientWorld(init(), "self");
+    w.initEnemies(keyframe(40));
+    expect(revealed(w)).toBe(false);
+  });
+});

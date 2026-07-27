@@ -33,11 +33,12 @@ import {
   spawnEnemyState,
   stepEnemies,
 } from "../game/enemies";
-import { generateWorld, insideExit, PLAYER_MAX_HP } from "../game/world";
+import { generateWorld, insideExit, PLAYER_MAX_HP, revealsExit } from "../game/world";
 import { generateCode, normalizeCode } from "./code";
 import {
   type BuildableKind,
   type Exit,
+  type GameEnemyInit,
   type LobbyCode,
   type LobbyErrorCode,
   type LobbySnapshot,
@@ -146,6 +147,7 @@ interface SessionRecord {
   buildGuards: Map<PlayerId, BuildGuard>; // per-player placement cadence/seq state
   demolishGuards: Map<PlayerId, DemolishGuard>; // per-player demolish cadence/seq state
   pendingRemovals: string[]; // demolished ids awaiting broadcast, merged with the sim's own
+  exitRevealed: boolean; // latched the tick anyone first came within EXIT_REVEAL_RADIUS of the door
   startedAt?: number; // wall clock at game/start; elapsed time from it is the match's score
   result?: { outcome: MatchOutcome; elapsedMs: number }; // set once, at match end; re-sent on rejoin
 }
@@ -304,6 +306,7 @@ export class LobbyHub {
       buildGuards: new Map(),
       demolishGuards: new Map(),
       pendingRemovals: [],
+      exitRevealed: false,
     };
     this.sessions.set(code, session);
     this.sockets.set(socketId, { code, playerId: player.id });
@@ -542,6 +545,14 @@ export class LobbyHub {
       delta.builds = session.pendingBuilds;
       session.pendingBuilds = [];
     }
+    // Finding the door is a discovery, not a condition: it is only looked for while it is still
+    // hidden, and setting the latch and putting it on the wire are the same statement — which is
+    // what makes it ride exactly one tick of a match and never a second. Once latched, no position
+    // is read for it again, so the finder may then die, drop, or leave the session entirely.
+    if (session.worldInit && !session.exitRevealed && exitFound(session, session.worldInit.exit)) {
+      session.exitRevealed = true;
+      delta.exitRevealed = true;
+    }
     this.broadcast(session, { type: "game/map-delta", ...delta });
 
     if (session.worldInit && squadEscaped(session, session.worldInit.exit)) {
@@ -746,7 +757,12 @@ export class LobbyHub {
     }
     if (session.sim) {
       const snap = snapshotEnemies(session.sim);
-      this.transport.send(socketId, { type: "game/enemy-init", tick: session.tickNo, ...snap });
+      const keyframe: GameEnemyInit = { type: "game/enemy-init", tick: session.tickNo, ...snap };
+      // The delta that announced the door rode one tick, possibly before this socket existed. The
+      // keyframe is the only other place it can be told, so a reconnecter is not the one player in
+      // a squad that has found the door who cannot see it.
+      if (session.exitRevealed) keyframe.exitRevealed = true;
+      this.transport.send(socketId, keyframe);
     }
     if (session.build) {
       // The economy keyframe. Ore is derived from the seed, so only the bank and the placed
@@ -895,6 +911,16 @@ function squadEscaped(session: SessionRecord, exit: Exit): boolean {
 function squadWiped(session: SessionRecord): boolean {
   const squad = connectedPlayers(session);
   return squad.length > 0 && squad.every((p) => !isAlive(session, p.id));
+}
+
+// Has anyone found the door? Any player's last-known position within `EXIT_REVEAL_RADIUS` of it.
+//
+// Deliberately unfiltered, where `squadEscaped` reads only the connected: that is a simultaneity
+// check about who is standing in the door right now, and this is a fact about the match. Someone
+// who walked up to the door and dropped a moment later still found it, and their held position is
+// the only record of it — refusing to read it would lose a discovery that genuinely happened.
+function exitFound(session: SessionRecord, exit: Exit): boolean {
+  return [...session.positions.values()].some((sample) => revealsExit(sample.pos, exit));
 }
 
 function connectedPlayers(session: SessionRecord): PlayerRecord[] {

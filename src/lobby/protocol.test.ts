@@ -145,3 +145,25 @@ describe("parseClientMessage: game/forge carries nothing", () => {
     expect(parsed).toEqual({ type: "game/forge" });
   });
 });
+
+// #93: the door's reveal is server-held. No inbound command carries it, so the narrowing here is
+// where "a client cannot announce it alone" is actually enforced rather than merely intended.
+describe("parseClientMessage: no command can reveal the door", () => {
+  test("a reveal flag smuggled onto a command is dropped, not honoured", () => {
+    const parsed = parseClientMessage(
+      JSON.stringify({ type: "game/pos", pos: { x: 1, y: 2 }, seq: 1, exitRevealed: true }),
+    );
+    expect(parsed).toEqual({ type: "game/pos", pos: { x: 1, y: 2 }, seq: 1 });
+  });
+
+  test("no client message shape has a field for it at all", () => {
+    const attempts = [
+      { type: "game/start", exitRevealed: true },
+      { type: "game/forge", exitRevealed: true },
+      { type: "game/health", hp: 100, seq: 1, exitRevealed: true },
+    ];
+    for (const raw of attempts) {
+      expect(parseClientMessage(JSON.stringify(raw))).not.toHaveProperty("exitRevealed");
+    }
+  });
+});

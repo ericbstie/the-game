@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
   ARENA,
+  EXIT_REVEAL_RADIUS,
   generateWorld,
   insideExit,
   PLAYER_RADIUS,
   PLAYER_SPEED,
   pushOutOfBodies,
+  revealsExit,
   stepPos,
 } from "./world";
 
@@ -189,5 +191,39 @@ describe("insideExit (M4-T11: standing in the door)", () => {
     const { exit: placed } = generateWorld(players(1), { rng: () => 0.5 });
     const centre = { x: placed.x + placed.width / 2, y: placed.y + placed.height / 2 };
     expect(insideExit(centre, placed)).toBe(true);
+  });
+});
+
+describe("revealsExit (#93: coming close enough to find the door)", () => {
+  // A door on the left wall: 98 deep, 936 long, so the face it presents to the arena is x = 98.
+  const exit = { x: 0, y: 1_000, width: 98, height: 936 };
+  const face = exit.x + exit.width;
+  const midY = exit.y + exit.height / 2;
+
+  test("standing in the door is as close as it gets", () => {
+    expect(revealsExit({ x: 50, y: midY }, exit)).toBe(true);
+  });
+
+  test("1,800 u from the door reveals it and 1,801 u does not", () => {
+    expect(revealsExit({ x: face + 1_800, y: midY }, exit)).toBe(true);
+    expect(revealsExit({ x: face + 1_801, y: midY }, exit)).toBe(false);
+  });
+
+  test("distance is to the nearest point of the door, not to its centre", () => {
+    // Level with the door's near end and 1,800 u out from its face. Against the centre this is
+    // ~1,860 u away and would stay hidden; against the door itself it is exactly 1,800.
+    expect(revealsExit({ x: face + 1_800, y: exit.y }, exit)).toBe(true);
+  });
+
+  test("the reveal distance is its own number, not AGGRO_RADIUS", async () => {
+    // Both are 1,800 today, so no comparison of values can tell them apart: `EXIT_REVEAL_RADIUS
+    // === 1800` beside `AGGRO_RADIUS === 1800` would pass just as happily if one were defined as
+    // the other, and asserting they differ is impossible while they agree. What can be asserted is
+    // that no path exists — the value is a literal, and the module holding it imports nothing from
+    // the enemy sim, so there is no expression for a retuned `AGGRO_RADIUS` to travel down.
+    const source = await Bun.file(`${import.meta.dir}/world.ts`).text();
+    expect(EXIT_REVEAL_RADIUS).toBe(1_800);
+    expect(source).toContain("export const EXIT_REVEAL_RADIUS = 1_800;");
+    expect(source).not.toContain('from "./enemies"');
   });
 });

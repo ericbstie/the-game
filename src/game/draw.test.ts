@@ -129,6 +129,7 @@ const world: WorldSnapshot = {
     { id: "n2", pos: { x: 20_000, y: 20_000 }, radius: 48, hp: 600, alive: true, sector: 1 }, // off-screen
   ],
   exit: { x: 0, y: 1100, width: 98, height: 936 },
+  exitRevealed: false,
   ore: new Map(),
   structures: [],
 };

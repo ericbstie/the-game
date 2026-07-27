@@ -64,6 +64,21 @@ export function stepPos(pos: Vec2, input: MoveInput, dtMs: number, arena: Arena)
   };
 }
 
+// How close a player has to come before the squad is told where the door is (#93). Its own number
+// on purpose: it is the same 1,800 as `AGGRO_RADIUS` today, and retuning how far a spider notices
+// you must not quietly change how hard the door is to find. This module names nothing in the enemy
+// sim, which is what keeps the two apart — a shared value would only look independent.
+export const EXIT_REVEAL_RADIUS = 1_800;
+
+// Has a player come close enough to find the door? Measured to the nearest point of the door's
+// rectangle, like `insideExit` and unlike a centre distance: standing in it is zero, and walking up
+// to one end of a 936 u door is as much a discovery as walking up to the middle.
+export function revealsExit(pos: Vec2, exit: Exit): boolean {
+  const dx = Math.max(exit.x - pos.x, 0, pos.x - (exit.x + exit.width));
+  const dy = Math.max(exit.y - pos.y, 0, pos.y - (exit.y + exit.height));
+  return Math.hypot(dx, dy) <= EXIT_REVEAL_RADIUS;
+}
+
 // Is an avatar standing in the escape door? Measured on its centre, which is generous enough at
 // a 98 × 936 door that "I'm clearly in it" and "the check passes" never disagree.
 export function insideExit(pos: Vec2, exit: Exit): boolean {
