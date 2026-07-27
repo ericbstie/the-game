@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { LobbyState } from "../lobby/client";
 import type { Arena, BuildableKind, MoveInput, Tile, Vec2 } from "../lobby/protocol";
 import { createSpriteCache } from "../sprite/cache";
@@ -95,14 +95,18 @@ export function GameScreen({
   // When right-click went down, or null if it is up. A timestamp rather than a flag because
   // demolish only fires once the button has been held a while.
   const harvestingRef = useRef<number | null>(null);
+  // Whether left-click is down on an empty build bar — the trigger held (#103). A flag rather than
+  // the harvest hold's timestamp: nothing here cares how long it has been down, only that a shot
+  // is due.
+  const firingRef = useRef(false);
   // When the last shot actually went out. The cadence is enforced here as well as in the server's
   // `admitAttack` because a fast-clicking player would otherwise send, and draw a line for, shots
   // the server refused. A drawn line must never imply damage nobody applied.
   //
   // Exactly `RANGED_CADENCE_MS`, not a hair more: the server measures arrival-to-arrival where
-  // this measures click-to-click, so a shot sent right on the boundary can still land early under
-  // negative jitter and be refused. Widening the gate here would cut the sustained rate of fire,
-  // and M5 (#81) permits no balance change. The boundary case is accepted.
+  // this measures shot-to-shot, so a shot sent right on the boundary can still land early under
+  // negative jitter and be refused. Widening the gate here would cut the sustained rate of fire.
+  // The boundary case is accepted.
   const lastAttackRef = useRef(Number.NEGATIVE_INFINITY);
   // Your own last shot, kept so its line can be drawn from here rather than from the relay the
   // server sends back to the whole squad. `drawWorld` ages it; nothing has to clear it.
@@ -185,6 +189,9 @@ export function GameScreen({
   useEffect(() => {
     if (!menuOpen) return;
     heldRef.current = NO_MOVE;
+    // The trigger goes with it (#103). Escape brings no `mouseup`, so a hold armed before the menu
+    // opened would keep firing behind it at whatever the pointer was last over.
+    firingRef.current = false;
     menuRef.current?.showModal();
     // Focus is placed rather than left to `showModal`'s own focusing step, which not every DOM
     // implements. Escape has no invoking element to hand focus back to on close, so it goes to the
@@ -192,6 +199,37 @@ export function GameScreen({
     leaveRef.current?.focus();
     return () => canvasRef.current?.focus();
   }, [menuOpen]);
+
+  // One shot, or none. A click and a held trigger both come through here, so the cadence is spent
+  // in exactly one place and a held shot is indistinguishable from a clicked one. It reads nothing
+  // but refs, so it is stable for the life of the match and the render loop below can hold it.
+  //
+  // The gap is measured shot-to-shot off the clock rather than counted in ticks: a long frame
+  // delays the next shot instead of letting two through, and no accumulator survives a stall to
+  // pay its backlog out as a burst. Two shots are therefore never closer than the floor
+  // `admitAttack` enforces — the property that keeps a drawn line from outrunning admission (#85).
+  const fireIfDue = useCallback((now: number) => {
+    const world = worldRef.current;
+    if (!world) return;
+    // Dying drops the trigger rather than merely refusing to pull it. The cadence gate is measured
+    // against the last real shot, and `RESPAWN_DELAY_MS` is forty times it, so a button still held
+    // while waiting — the natural thing to do — would satisfy the gate the instant you stood up and
+    // send a shot nobody asked for. Coming back up takes a fresh press, as it did when firing was a
+    // discrete click.
+    if (world.isDead()) {
+      firingRef.current = false;
+      return;
+    }
+    // A selected buildable makes left-click a placement (#104). Read before the cadence, so holding
+    // over the build bar never spends it and costs the first shot after the bar is cleared.
+    if (selectedRef.current) return;
+    if (now - lastAttackRef.current < RANGED_CADENCE_MS) return;
+    lastAttackRef.current = now;
+    const { camera, self } = aimRef.current;
+    const dir = aimDir(pointerRef.current, self, camera);
+    ownShotRef.current = { at: now, from: { ...self }, dir };
+    onAttackRef.current({ ...self }, dir);
+  }, []);
 
   // Track the CSS viewport size and size the backing store to device pixels (crisp HiDPI).
   // ResizeObserver reports content-box changes without a per-frame layout read; the loop
@@ -234,6 +272,9 @@ export function GameScreen({
         const move = pinned ? NO_MOVE : heldRef.current;
         if (!world.isDead()) world.stepSelf(dt, move, clock); // a downed player holds still
         world.updateHealth(clock); // judge contact damage at the owner's true position
+        // Held left-click auto-fires (#103), on the same frame clock the pin above is read on and
+        // outside the draw, so a frame that renders nothing still keeps the trigger's rate honest.
+        if (firingRef.current) fireIfDue(clock);
         const { w, h } = viewRef.current;
         const ctx = w > 0 && h > 0 ? canvas.getContext("2d") : null;
         if (ctx) {
@@ -291,7 +332,7 @@ export function GameScreen({
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [fireIfDue]);
 
   useEffect(() => {
     let lastHp = PLAYER_MAX_HP;
@@ -361,17 +402,24 @@ export function GameScreen({
     return () => clearInterval(timer);
   }, []);
 
-  // A right-click released outside the canvas (or with the tab hidden) must still stop the hold,
-  // or harvesting would continue with a stale cursor.
+  // A button released outside the canvas (or with the tab hidden) must still stop its hold, or that
+  // hold would continue with a stale cursor. The two holds are independent — mining and firing read
+  // the pointer without contending — so a release drops only the button that came up. A blur has no
+  // button and no way to learn one, so it drops both.
   useEffect(() => {
-    const stop = () => {
-      harvestingRef.current = null;
+    const release = (e: MouseEvent) => {
+      if (e.button === 2) harvestingRef.current = null;
+      if (e.button === 0) firingRef.current = false;
     };
-    window.addEventListener("mouseup", stop);
-    window.addEventListener("blur", stop);
+    const releaseAll = () => {
+      harvestingRef.current = null;
+      firingRef.current = false;
+    };
+    window.addEventListener("mouseup", release);
+    window.addEventListener("blur", releaseAll);
     return () => {
-      window.removeEventListener("mouseup", stop);
-      window.removeEventListener("blur", stop);
+      window.removeEventListener("mouseup", release);
+      window.removeEventListener("blur", releaseAll);
     };
   }, []);
 
@@ -382,21 +430,15 @@ export function GameScreen({
   const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     trackPointer(e);
     if (e.button === 0) {
-      const { camera, self } = aimRef.current;
       const kind = selectedRef.current;
       // Left-click is one button with two jobs: place the selected buildable, or shoot when
-      // nothing is selected.
-      const now = Date.now();
+      // nothing is selected. Shooting arms the hold and takes its first shot in the same breath —
+      // waiting for the next frame would put a click's worth of lag on a single tap.
       if (kind) {
-        onBuildRef.current(kind, cursorTile(pointerRef.current, camera));
-        // A downed player holds still and cannot mine; it does not shoot either. Death is read
-        // first, so waiting to respawn never spends the cadence and costs the first shot back on
-        // your feet — and no line is drawn for a shot the server now refuses (#85).
-      } else if (!worldRef.current?.isDead() && now - lastAttackRef.current >= RANGED_CADENCE_MS) {
-        lastAttackRef.current = now;
-        const dir = aimDir(pointerRef.current, self, camera);
-        ownShotRef.current = { at: now, from: { ...self }, dir };
-        onAttackRef.current({ ...self }, dir);
+        onBuildRef.current(kind, cursorTile(pointerRef.current, aimRef.current.camera));
+      } else {
+        firingRef.current = true;
+        fireIfDue(Date.now());
       }
     } else if (e.button === 2) {
       // Right-click is one button with two jobs too: cancel the selected buildable, or harvest

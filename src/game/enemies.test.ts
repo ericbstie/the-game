@@ -272,6 +272,18 @@ describe("stepEnemies shot resolution (hitscan ray)", () => {
     expect(at(s, "far")?.hp).toBe(GRUNT_HP); // single-target, no cleave
   });
 
+  // #103: auto-fire slowed the weapon to one shot per 0.5 s, and RANGED_DAMAGE went 1 → 3 to
+  // hold sustained DPS roughly where clicking already had it.
+  test("a grunt takes ten shots to die at RANGED_DAMAGE 3", () => {
+    expect(RANGED_DAMAGE).toBe(3);
+    const s = stateWith([grunt("e1", { x: 200, y: 100 })]);
+    const fire = () => step(s, [shot({ x: 100, y: 100 }, { x: 1, y: 0 })]);
+    for (let i = 1; i < 10; i++) {
+      expect(fire().hits).toEqual([{ id: "e1", hp: GRUNT_HP - i * RANGED_DAMAGE }]);
+    }
+    expect(fire().deaths).toEqual(["e1"]);
+  });
+
   test("misses an enemy off the ray line (beyond the half-width)", () => {
     const offLine = { x: 300, y: 100 + RANGED_HALFWIDTH + GRUNT_RADIUS + 1 };
     const s = stateWith([grunt("e1", offLine)]);
