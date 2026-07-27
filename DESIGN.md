@@ -64,7 +64,9 @@ Score is your escape time.
 
 ## Win / lose & the clock
 
-- **Stopwatch — score = escape time.** No hard time limit; leaderboard by fastest run.
+- **Stopwatch — score = escape time.** No hard time limit. The score is **shown at the end
+  of the run and not recorded anywhere** — there is no leaderboard and no persistence, so a
+  run on custom world settings is scored exactly like any other.
 - **Respawn on a timer at center.** Dying = the long walk back = a real time penalty.
 - **Escape requires the whole squad at the door** — every connected, living player standing in
   it at the same moment. Forces a final regroup; no one left behind.
