@@ -927,11 +927,12 @@ describe("#104: hold and drag left-click to place a run of buildables", () => {
     expect(asked).toHaveLength(laid);
   });
 
-  test("no two placements of a drag are closer than the floor the server admits on", async () => {
+  test("a drag's nth placement lands no sooner than n of the floors the server admits on", async () => {
     const at: number[] = [];
     const world = funded(100_000);
     const canvas = renderMatch({ onBuild: () => at.push(Date.now()) }, world);
     fireEvent.keyDown(window, { key: "2" });
+    const pressedAt = Date.now();
     fireEvent.mouseDown(canvas, { button: 0, ...atTile(0) });
     fireEvent.mouseMove(canvas, atTile(19));
     await settle(8 * BUILD_CADENCE_MS + 200);
@@ -939,11 +940,13 @@ describe("#104: hold and drag left-click to place a run of buildables", () => {
     expect(at.length).toBeGreaterThan(4);
     // `BUILD_CADENCE_MS` is `admitBuild`'s own floor, imported rather than restated: a drag that
     // outran it would have the server drop most of what it sent, and the run would come out full
-    // of holes. The millisecond of slack is the harness's — each stamp is read after the clock the
-    // placement was charged against.
-    const OBSERVED_SKEW_MS = 1;
-    const gaps = at.slice(1).map((t, i) => t - (at[i] ?? 0));
-    expect(gaps.filter((gap) => gap < BUILD_CADENCE_MS - OBSERVED_SKEW_MS)).toEqual([]);
+    // of holes. Measured from the press rather than gap to gap, because the harness can only stamp
+    // *after* the frame clock the cadence was charged against — a stall in between is charged to
+    // the stamp and not to the drag, so a gap reads short on a cadence that was paid in full.
+    // Against the press that same stall can only push a stamp later, so nothing but a drag really
+    // outrunning the floor can drive one below its due time.
+    const slack = at.map((t, i) => t - pressedAt - i * BUILD_CADENCE_MS);
+    expect(slack.filter((ms) => ms < 0)).toEqual([]);
   });
 });
 

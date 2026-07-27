@@ -5,23 +5,39 @@ What one frame of the game is allowed to cost, and what it costs today. First me
 with `bun run frame:budget`.
 
 The budget exists because Milestone 5 draws into this frame from several tickets at once, each
-written by an agent who cannot see what the others are spending. The health bars and the shot lines
-of [#74](https://github.com/ericbstie/the-game/issues/74) have landed and are measured below; the
-restyled HUD has not, and is the last thing still owed a number.
+written by an agent who cannot see what the others are spending. Everything below is measured
+**through the shipped `drawWorld`** rather than reserved beside it, so nothing here is an allowance:
+the health bars and shot lines of [#74](https://github.com/ericbstie/the-game/issues/74),
+[#99](https://github.com/ericbstie/the-game/issues/99)'s miner floats and
+[#93](https://github.com/ericbstie/the-game/issues/93)'s minimap are all in the frame, drawn by the
+code the game runs. The HUD is not in it and never will be — it is DOM and CSS beside the canvas
+(`src/game/GameScreen.tsx:630`), so no canvas budget prices it.
 
 ## The number
 
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
-6.2 ms — 37% of it, leaving 10.5 ms of headroom.**
+6.3 ms — 38% of it, leaving 10.4 ms of headroom.**
+
+That is the **median of eleven runs** on an idle machine: 6.27 ms, spread 6.09–7.76, mean 6.42. The
+mean is the worse statistic here — one run of the eleven read 7.76 ms on its own and drags it — and
+a run taken while the machine was under load read 6.83 ms and is not in the set at all.
 
 The worst case is not hypothetical: 240 enemies (`ENEMY_CAP`, the hard governor), 40 structures,
 6 players and 4 nests, *all inside the viewport so nothing is culled*, over the full grass-and-ore
 floor, everything standing passing through the Y-sort — and every one of them damaged, so every one
-of them carries a bar. 290 sorted entities, 845 blits, 286 health bars, 50 shot lines.
+of them carries a bar. The script reports it as **290 standing entities, 845 blits, 286 health bars,
+61 shot lines, 10 miner floats**.
 
-The in-world render layer is now complete, so this is measured **through the shipped `drawWorld`**
-rather than reserved beside it. The health bars and shot lines below are no longer allowances: they
-are in the frame, drawn by the code the game runs.
+**61 is a count of stroked paths, not of shot lines.** Fifty are shot lines — 45 relayed squadmate
+shots and 5 generated turret pulses, which is the `SHOT_LINES` the fixture asks for. The other
+eleven are the minimap's marks: four nest rings, six squad dots and the self ring.
+
+**The minimap is inside every figure on this page, the paper baseline included.** `drawWorld` draws
+it whenever the frame's `selfId` names one of the players (`src/game/draw.ts:471`), and the fixture
+puts six players in every world it measures, `p0` among them (`scripts/frame-budget.ts:171`). On the
+full frame that is 54 fills, 21 arcs, 11 strokes and a rule, in the first row and in every row after
+it. The total is honest; nothing attributes it. Isolating it would take a sixth measured layer with
+`selfId` unset, and that delta would carry the self halo with it.
 
 ## Measured under
 
@@ -32,52 +48,76 @@ are in the frame, drawn by the code the game runs.
 - **A forced readback per iteration.** Canvas 2D defers rasterisation, so timing the draw calls
   alone measures queueing rather than painting. Each iteration ends in a 1 × 1 `getImageData` so
   the frame is actually painted before the clock stops.
-- Run-to-run variance is roughly **±15%**. Treat these as the right order of magnitude, not as
-  constants.
+- Run-to-run variance is roughly **±15%**, so **a single run is not a measurement**. Every figure
+  here is a median over eleven runs on an idle machine. CPU contention inflates all of them, and a
+  contended run has to be thrown out rather than averaged in. Treat these as the right order of
+  magnitude, not as constants.
 
 ## Where it goes
 
-| Layer | ms | What it is |
-| --- | ---: | --- |
-| Paper | 1.9 | `clearRect` + the white `fillRect`, over 1.92 M device pixels, twice |
-| Grass and ore | 0.8 | ~200 tuft blits at one per 12 tiles, and ~330 ore tiles |
-| Everything standing | 2.2 | 290 entities: sort, cull, ~500 sprite blits and 286 health bars |
-| Shot lines | 1.3 | 50 concurrent — 5 generated turret pulses, 45 relayed squadmate shots |
-| **Total** | **6.2** | **37% of a 16.67 ms frame** |
+Each row is the whole frame up to that point, which is what the script prints; **adds** is the
+difference from the row above.
 
-The **Y-sort itself is not a cost**: 35 µs at 290 entities, 0.2% of the frame. [#71](https://github.com/ericbstie/the-game/issues/71)
+| Layer | ms | adds | What it is |
+| --- | ---: | ---: | --- |
+| Paper, grass, the squad and the map (`paper only`) | 1.7 | 1.7 | `clearRect` + the white `fillRect`, over 1.92 M device pixels, twice; 217 grass tufts; the 6 avatars with their names and bars; the 4 nests; the whole minimap |
+| + ore (`+ grass and ore`) | 3.0 | 1.3 | 332 ore tiles, one blit each, and the 13 density cells they put on the map |
+| + everything standing | 4.8 | 1.9 | 240 enemies and 40 structures join the sort: 285 more blits, 280 more health bars, 40 more marks on the map |
+| + the shot lines | 6.3 | 1.4 | 50 concurrent — 5 generated turret pulses, 45 relayed squadmate shots |
+| + the miner floats | 6.3 | ≈0 | 10 `+1`s, each stroked and filled — see below |
+| **Total** | **6.3** | | **38% of a 16.67 ms frame** |
+
+**The script's printed labels for the first two rows are wrong, and the names in brackets above are
+what it prints.** `drawWorld` draws the grass unconditionally (`src/game/draw.ts:329`) while the
+fixture's `withOre` flag controls only the ore, so "paper only" already carries the whole floor
+cover and "+ grass and ore" is the ore alone. Drawn against an otherwise empty world, an 800 × 600
+viewport takes 217 tufts.
+
+**The small deltas do not survive the noise.** Each is a difference between two readings that each
+vary by ±15%, and the floats row is the plain case: across eleven runs its delta came out *negative*
+in five of them — the frame with ten `+1`s in it measured cheaper than the same frame without them.
+Ten floats cost something; this instrument cannot see what. Read the cumulative column, and treat
+any single delta under about 0.3 ms as zero.
+
+The **Y-sort itself is not a cost**: 38.6 µs at 290 entities, 0.2% of the frame. [#71](https://github.com/ericbstie/the-game/issues/71)
 measured the same sort at 36.6 µs for 250. Sorting is free; painting is not.
 
-**The health bars are close to free.** Adding 286 of them moved the standing layer by roughly a
-tenth of a millisecond, because each is two axis-aligned fills on integer edges and those carry no
-anti-aliasing at all.
+**The health bars are close to free, per bar.** The script prices them on their own: 60 cost
+0.08 ms and 240 cost 0.32 ms, so a bar is ~1.3 µs — two axis-aligned fills on integer edges, and
+those carry no anti-aliasing at all. The frame's 286 of them come to about 0.38 ms, some 2% of it.
 
 **The hit flash is not a row of its own**, because it is not a layer: a flashing spider is one blit
 of a cached variant instead of one blit of its ink bake, so the standing layer above already contains
 it whether anything is flashing or not. It earned rule 6 by being measured the other way round first.
 
-**The shot lines are not.** Fifty cost 1.3 ms — a fifth of the whole frame for fifty marks — which
-is what "the most expensive thing in the frame per unit" means in practice. A standalone stroke of
-150 lines measures 4.2 ms on its own. That ratio is why the 100 ms lifetime in `draw.ts`
-(`SHOT_LINE_MS`) is a budget and not a look: at 150 shot events a second it is what holds the
-concurrent count near 50 instead of near 150.
+**The shot lines are not.** Fifty add 1.4 ms to the frame — better than a fifth of it for fifty
+marks — which is what "the most expensive thing in the frame per unit" means in practice. Stroked on
+their own the per-line cost is flat in the count: ~23 µs at ten, ~25 µs at fifty, ~26 µs at 150,
+where 150 lines come to 3.8 ms. Flat per line is exactly why the 100 ms lifetime in `draw.ts`
+(`SHOT_LINE_MS`) is a budget and not a look — nothing about drawing more of them gets cheaper, so
+the count is the only lever. At 150 shot events a second it is what holds that count near 50
+instead of near 150.
 
 ## The rules
 
 1. **Shot lines are the most expensive thing in the frame, per unit** — and one effect has already
-   beaten them, which is how the rule below got written. ~26 µs each: one costs what a dozen sprite
-   blits cost, because a stroked line across the viewport covers far more pixels than a 32 px
-   sprite. The **lifetime** is therefore the control, not the wire shape: at 150 shot events a
-   second, a 1-frame line means ~3 on screen and a 1-second line means ~150, which is the difference
-   between 0.1 ms and 4.2 ms. **`SHOT_LINE_MS` is 100 and the budget is 50 concurrent.** Above ~150
-   the frame stops being comfortable.
-2. **Nothing new gets a full-viewport pass.** The paper fill is already the single most expensive
-   item at 1.9 ms, because it touches every pixel. A second full-screen pass — a vignette, a tint,
-   a darkening overlay for the downed player — costs about the same again. The downed-player
-   darkening (#81) is the one such effect the spec asks for, and it is drawn; it is affordable
-   precisely because only the dying player's own client draws it, and only while they are down.
-   That also means the worst case above is **not** the worst case for a player who is dead — add
-   about a paper fill to it, and they are looking at a screen with nothing happening on it.
+   beaten them, which is how the rule below got written. ~25 µs each: one costs about five sprite
+   blits, because a stroked line across the viewport covers far more pixels than a 32 px sprite.
+   (The standing row adds 1.9 ms for 285 blits and 280 bars, and the bars are 0.37 ms of it, so a
+   blit is ~5 µs.) The **lifetime** is therefore the control, not the wire shape: at 150 shot events
+   a second, a 1-frame line means ~3 on screen and a 1-second line means ~150, which is the
+   difference between under 0.1 ms and 3.8 ms. **`SHOT_LINE_MS` is 100 and the budget is 50
+   concurrent.** Above ~150 the frame stops being comfortable.
+2. **Nothing new gets a full-viewport pass.** The clear and the paper fill are two of them already,
+   1.92 M device pixels each. What one of them costs on its own is **not measured here**: the
+   script's first row carries the grass, the squad, the nests and the map alongside them and cannot
+   be broken down further. For the scale of a single full-screen pass, the grass table below —
+   #72's, not re-measured — put full-viewport composites at 0.68–0.76 ms, and a vignette, a tint or
+   a darkening overlay each buy one. The downed-player darkening (#81) is the one the spec asks for,
+   and it is drawn (`src/game/draw.ts:477`); it is affordable precisely because only the dying
+   player's own client draws it, and only while they are down. That also means the worst case above
+   is **not** the worst case for a player who is dead — add a full-viewport fill to it, and they are
+   looking at a screen with nothing happening on it.
 3. **Cost stays independent of world size.** Every floor pass is bounded to visible tiles, and
    everything else is culled by the camera. A 31,200² arena costs what an 800 px one does. Anything
    added to the floor keeps that property.
@@ -87,17 +127,17 @@ concurrent count near 50 instead of near 150.
    flips. See the grass note below.
 5. **Measure, do not reason.** Every number here contradicted at least one confident guess. The
    pattern fill was expected to be nearly free and is not; the per-tuft blit was expected to be the
-   slow one and is the fastest; the Y-sort was the flagged risk and is 0.4% of the frame.
+   slow one and is the fastest; the Y-sort was the flagged risk and is 0.2% of the frame.
 6. **A change to how a sprite looks is baked, not composited every frame.** A composite is billed
    per frame per unit and a bake is billed once, so the two are not close. The hit flash (#107)
    settled it with numbers: composited — the bake dilated out to a rim, punched back out of its own
    ink, paper filled in behind — it cost **~70 µs a flashing spider**, nine blits and two mode
-   switches, *twice a shot line* and the dearest thing in the frame per unit. Derived once into a
-   cached variant instead, it is **one blit, under 5 µs**, indistinguishable from drawing the spider
-   at all. Sixteen simultaneous flashes went from ~1.1 ms to under the noise floor. What it costs
-   instead is a **one-off ~310 µs (grunt) or ~380 µs (elite) per facing and frame**, about one to two
-   ordinary bakes, and only for the poses something is actually hit in — the same lazy bill the
-   sprite cache already pays for the ink bakes, and it goes with the ratio the same way.
+   switches, *nearly three shot lines* and the dearest thing in the frame per unit. Derived once
+   into a cached variant instead, it is **one blit, under 5 µs**, indistinguishable from drawing
+   the spider at all. Sixteen simultaneous flashes went from ~1.1 ms to under the noise floor. What
+   it costs instead is a **one-off ~310 µs (grunt) or ~380 µs (elite) per facing and frame**, one
+   to two ordinary bakes, and only for the poses something is actually hit in — the same lazy
+   bill the sprite cache already pays for the ink bakes, and it goes with the ratio the same way.
 
 ## How the grass mechanism was chosen
 
