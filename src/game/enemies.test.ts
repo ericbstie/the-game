@@ -4,6 +4,7 @@ import {
   BUILDABLES,
   type BuildableSpec,
   type BuildState,
+  buildCost,
   demolishStructure,
   freshBuildState,
   placeStructure,
@@ -550,6 +551,27 @@ describe("M4-T3: enemies leave the front line to chew on your structures", () =>
     expect(build.occupancy.size).toBe(0); // its tiles freed
   });
 
+  // #101: the turret price is read off the live structure map, so the sim removing a chewed-down
+  // turret has to move it exactly as demolishing one does — no bookkeeping of its own.
+  test("a turret chewed down by an enemy drops the next turret's price by one step", () => {
+    const spec = BUILDABLES.turret as BuildableSpec;
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 1_000_000;
+    const spot = { x: C.x + 5_000, y: C.y };
+    const tile = tileOf({ x: spot.x - TILE, y: spot.y - TILE });
+    const turret = placeStructure(build, "turret", tile, spec);
+    placeStructure(build, "turret", { tx: tile.tx + 40, ty: tile.ty }, spec); // well out of the way
+    expect(buildCost("turret", build)).toBe(101); // two standing
+
+    const s = stateWith([grunt("e1", { x: spot.x + 200, y: spot.y })]);
+    let removals: string[] = [];
+    for (let i = 0; i < 600 && removals.length === 0; i++) {
+      removals = stepWith(s, [], build).removals; // no generation, so neither turret fires back
+    }
+    expect(removals).toEqual([turret.id]);
+    expect(buildCost("turret", build)).toBe(78); // one standing
+  });
+
   test("damage lands on the enemy's own contact cadence, not once per tick", () => {
     const minerAt = { x: C.x + 5_000, y: C.y };
     const { build, miner } = withMiner(minerAt);
@@ -665,7 +687,7 @@ describe("M4-T8: a turret shoots the nearest enemy, through walls, and sieges ne
     stepEnemies(s, [], [], dtMs, build).events;
 
   test("the turret is a 2×2 placeable anywhere", () => {
-    expect(TURRET).toEqual({ footprint: 2, cost: 120, hp: 250, requires: null });
+    expect(TURRET).toEqual({ footprint: 2, cost: 60, hp: 250, requires: null });
   });
 
   test("it picks the nearest of several enemies", () => {

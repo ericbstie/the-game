@@ -8,6 +8,8 @@ import {
   BUILD_SLOTS,
   BUILDABLES,
   type BuildableSpec,
+  type BuildState,
+  buildCost,
   creditMetal,
   DEMOLISH_CADENCE_MS,
   DEMOLISH_HOLD_MS,
@@ -273,6 +275,117 @@ describe("the buildable registry", () => {
       { tx: 4, ty: 5 },
     ]);
     expect(footprintTiles({ tx: 0, ty: 0 }, 5)).toHaveLength(25);
+  });
+});
+
+describe("#101: a turret costs more Metal for each turret already standing", () => {
+  const ore = generateOre(ARENA, SEED);
+  const TURRET = BUILDABLES.turret as BuildableSpec;
+  const rich = (metal: number) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = metal;
+    return build;
+  };
+  // A turret needs no ore, so a row of bare tiles two apart stands any number of them up.
+  const stand = (build: BuildState, count: number) =>
+    Array.from({ length: count }, (_, i) =>
+      placeStructure(build, "turret", { tx: 2 * i, ty: 0 }, TURRET),
+    );
+  const NEXT_TILE = { tx: 200, ty: 0 }; // clear of every turret `stand` puts down
+  const squad = (standing: number) => {
+    const build = rich(1_000_000);
+    stand(build, standing);
+    return build;
+  };
+
+  // The author's table, and the whole of the rounding rule: 60 × 1.3³ is 131.82, which rounds to
+  // 132 and would floor to 131, so the table itself says which rounding this is.
+  const PRICES: ReadonlyArray<readonly [number, number]> = [
+    [0, 60],
+    [1, 78],
+    [2, 101],
+    [3, 132],
+    [4, 171],
+    [5, 223],
+    [8, 489],
+    [10, 827],
+  ];
+
+  test("prices the next turret at base 60 × 1.3 per standing turret, rounded whole", () => {
+    for (const [standing, cost] of PRICES) {
+      expect([standing, buildCost("turret", squad(standing))]).toEqual([standing, cost]);
+    }
+  });
+
+  test("admission refuses one Metal below that price and admits at exactly it", () => {
+    for (const [standing, cost] of PRICES) {
+      const build = squad(standing);
+      build.bank.metal = cost - 1;
+      expect(placementError("turret", NEXT_TILE, ore, build, null)).toBe("unaffordable");
+      build.bank.metal = cost;
+      expect(placementError("turret", NEXT_TILE, ore, build, null)).toBeNull();
+    }
+  });
+
+  test("placing debits that same price, leaving a bank that could just afford it empty", () => {
+    for (const [standing, cost] of PRICES) {
+      const build = squad(standing);
+      build.bank.metal = cost;
+      placeStructure(build, "turret", NEXT_TILE, TURRET);
+      expect([standing, build.bank.metal]).toEqual([standing, 0]);
+    }
+  });
+
+  test("demolishing a turret drops the next one's price by exactly one step", () => {
+    const build = squad(5);
+    expect(buildCost("turret", build)).toBe(223);
+    const [first] = [...build.structures.values()];
+    demolishStructure(build, first);
+    expect(buildCost("turret", build)).toBe(171); // the n = 4 price
+  });
+
+  test("a turret lost from the map drops it the same way, whoever took it", () => {
+    const build = squad(3);
+    const [first] = [...build.structures.values()];
+    removeStructure(build, first.id); // the sim's own path when an enemy chews one down
+    expect(buildCost("turret", build)).toBe(101); // the n = 2 price
+  });
+
+  test("counts the squad's turrets, not one player's — every placer walks the same curve", () => {
+    const build = rich(1_000_000);
+    const alice = freshBuildGuard();
+    const bob = freshBuildGuard();
+    const prices: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const guard = i % 2 === 0 ? alice : bob; // the two take turns
+      prices.push(buildCost("turret", build));
+      const tile = { tx: 2 * i, ty: 0 };
+      const spec = admitBuild(
+        guard,
+        { kind: "turret", tile, seq: i },
+        null,
+        ore,
+        build,
+        i * BUILD_CADENCE_MS,
+      );
+      placeStructure(build, "turret", tile, spec as BuildableSpec);
+    }
+    expect(prices).toEqual([60, 78, 101, 132]);
+  });
+
+  test("leaves every other buildable at a flat price, however many turrets stand", () => {
+    for (const [standing] of PRICES) {
+      const build = squad(standing);
+      expect([standing, buildCost("miner", build)]).toEqual([standing, 50]);
+      expect([standing, buildCost("wall", build)]).toEqual([standing, 10]);
+      expect([standing, buildCost("generator", build)]).toEqual([standing, 150]);
+    }
+  });
+
+  test("only turrets count — a standing wall does not move the turret's price", () => {
+    const build = rich(1_000_000);
+    placeStructure(build, "wall", { tx: 300, ty: 0 }, BUILDABLES.wall as BuildableSpec);
+    expect(buildCost("turret", build)).toBe(60);
   });
 });
 
