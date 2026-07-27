@@ -34,6 +34,14 @@ import type { ShotEvent } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
 import { ELITE_HP, GRUNT_HP, NEST_HP, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
+import {
+  MINIMAP_COVERAGE_U,
+  minimapWindow,
+  oreCells,
+  oreDensity,
+  project,
+  projectRect,
+} from "./minimap";
 import { PLAYER_MAX_HP } from "./world";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
@@ -228,6 +236,22 @@ const DOWNED_DIM = "rgba(0, 0, 0, 0.55)";
 // than introducing the second channel #81 set out to remove.
 const GHOST_VALID_ALPHA = 0.85;
 const GHOST_BLOCKED_ALPHA = 0.45;
+
+// The corner map's marks (#93), all of them fixed sizes rather than the world drawn smaller: at
+// 1:39 a 15 u tile is 0.38 px, so a scaled drawing of anything would be sub-pixel mush. The plate's
+// rule is 2 to match `--rule` in `styles.css`, because the map is one more of the HUD's boxes and a
+// second border weight beside them would read as a different game.
+const MAP_RULE = 2;
+const MAP_DOT = 3; // a squad member, and a nest
+const MAP_SELF_RING = 6; // your own ring, struck outside your dot as the world strikes it outside your body
+const MAP_STRUCTURE = 3; // one building — a base is the blot forty of these make, not any one of them
+// Most of a cell an ore mark is allowed to take. Held under the structure square so the two layers
+// never draw the same mark: a base has to stay a solid blot against the ore's graduated scatter.
+const MAP_ORE_FILL = 0.8;
+// The thinnest the door may draw. It is drawn at its true projected size — 98 u is 2.5 px at 1× —
+// and #110's wider levels take that below a pixel, where the one thing on the map worth walking to
+// would fade out exactly as the squad zoomed out to look for it.
+const MAP_DOOR_MIN = 2;
 
 // One colour per enemy kind; the elite reads darker and, with its larger radius, distinct.
 const ENEMY_COLORS: Record<EnemyKind, string> = { grunt: "#e8643c", elite: "#a01f1f" };
@@ -441,8 +465,14 @@ export function drawWorld(
     ctx.globalAlpha = 1;
   }
 
-  // Last of all, and only ever on the dying player's own screen.
+  // Over the world entire, because it is not in it: the map is a corner of the *screen*, drawn in
+  // world coordinates only because that is the space this whole file paints in. Without a player
+  // to centre on there is no window and nothing is drawn at all.
   const self = world.players.find((p) => p.id === options.selfId);
+  if (self) drawMinimap(ctx, world, self, options);
+
+  // Last of all, and only ever on the dying player's own screen. It falls over the map too — a
+  // player who is down is out of the fight, and reading the arena is part of the fight.
   if (self && self.hp <= 0) {
     ctx.fillStyle = DOWNED_DIM;
     ctx.fillRect(camera.x, camera.y, viewport.width, viewport.height);
@@ -577,6 +607,116 @@ function drawEdgeMarkers(
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+}
+
+// The corner map (#93): the squad, the nests, the ore as density, the base, and the door once the
+// squad has found it. **No enemy, at any count** — the arena is read for where things are, not for
+// what is coming — and no word anywhere on it, which ADR 0001 settles by not granting the map a
+// line in its allowlist.
+//
+// Every decision about *where* is `minimap.ts`'s, and this is only the ink. That split is what
+// keeps the layers below thin enough to read as a list of marks: a projection that answers null
+// outside the window is what makes "a revealed door 14,352 u out is simply not on your map" a
+// property of the geometry rather than a check repeated in five painters.
+//
+// Cheap for the reason the health bars are (`docs/frame-budget.md`): almost all of it is
+// axis-aligned fills on a 200 px square, and the ore — the only layer whose size the world sets —
+// is read out of a field derived once instead of aggregated per frame.
+function drawMinimap(
+  ctx: CanvasRenderingContext2D,
+  world: WorldSnapshot,
+  self: Avatar,
+  { camera, viewport, dpr = 1 }: DrawOptions,
+): void {
+  const placed = minimapWindow(self.pos, camera, viewport, MINIMAP_COVERAGE_U);
+  // The plate's own corner has to land on a device pixel or its rule — the hard edge that stops it
+  // dissolving into the white floor — comes out soft. Snapped here and not in `minimap.ts`, which
+  // is deliberately free of the device ratio; every mark is projected off this origin, so moving it
+  // moves the whole map together and the projection stays exact.
+  const win = {
+    ...placed,
+    x: snap(placed.x, camera.x, dpr),
+    y: snap(placed.y, camera.y, dpr),
+  };
+
+  ctx.fillStyle = PAPER;
+  ctx.fillRect(win.x, win.y, win.size, win.size);
+
+  // Nothing may reach past the plate. A mark has a size the projection knows nothing about — a dot
+  // reaches MAP_DOT past wherever its centre landed — so a squadmate at the very edge of the window would
+  // otherwise spill onto the floor outside the map.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(win.x, win.y, win.size, win.size);
+  ctx.clip();
+
+  ctx.fillStyle = INK;
+  for (const cell of oreCells(win, oreDensity(world.ore, world.arena))) {
+    // Ink *area* proportional to the share of the cell that is ore, which is what makes the mark
+    // the density rather than a marker standing beside it. It is also the period's own answer to a
+    // palette with no greys in it (#72): a graduated stipple is how a 1930s plate prints a tone.
+    const side = cell.size * MAP_ORE_FILL * Math.sqrt(cell.density);
+    ctx.fillRect(cell.x + (cell.size - side) / 2, cell.y + (cell.size - side) / 2, side, side);
+  }
+
+  // Every structure, because every structure is the squad's: the bank is communal and a building
+  // carries no owner (`build.ts`). "Where the base is" is what forty of these in one place says.
+  for (const s of world.structures) {
+    const spec = BUILDABLES[s.kind];
+    if (!spec) continue;
+    const at = project(win, footprintCenter(s.tile, spec.footprint));
+    if (!at) continue;
+    ctx.fillRect(at.x - MAP_STRUCTURE / 2, at.y - MAP_STRUCTURE / 2, MAP_STRUCTURE, MAP_STRUCTURE);
+  }
+
+  // The door, at its true projected size, so it is the bar set into the wall rather than a symbol
+  // for one — and nothing at all until the squad has been near enough to find it.
+  if (world.exitRevealed) {
+    const door = projectRect(win, world.exit);
+    if (door) {
+      ctx.fillRect(
+        door.x,
+        door.y,
+        Math.max(door.width, MAP_DOOR_MIN),
+        Math.max(door.height, MAP_DOOR_MIN),
+      );
+    }
+  }
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = INK;
+  // Nothing here knows how many nests there are or where they were laid out, which is what #111
+  // needs: fifty at random read exactly as eight on a ring do.
+  for (const nest of world.nests) {
+    const at = project(win, nest.pos);
+    if (!at) continue;
+    // Filled against hollow, not two colours. At 6 u across, `NEST` and `NEST_DEAD` are the same
+    // dark dot, and a state has to survive being printed the size of a full stop.
+    ctx.fillStyle = nest.alive ? NEST : PAPER;
+    fillCircle(ctx, at.x, at.y, MAP_DOT);
+    strokeCircle(ctx, at.x, at.y, MAP_DOT);
+  }
+
+  for (const player of world.players) {
+    if (player.hp <= 0) continue; // no corpse on the map either (#81)
+    const at = project(win, player.pos);
+    if (!at) continue;
+    // Slot colour inside an ink outline, exactly as an edge arrow is drawn and for the same reason:
+    // four of the six colours are under 3:1 against paper, so the outline is what the mark is read
+    // by and the fill is what it is told apart by.
+    ctx.fillStyle = SLOT_COLORS[(player.slot - 1) % SLOT_COLORS.length];
+    fillCircle(ctx, at.x, at.y, MAP_DOT);
+    strokeCircle(ctx, at.x, at.y, MAP_DOT);
+    if (player.id === self.id) strokeCircle(ctx, at.x, at.y, MAP_SELF_RING);
+  }
+
+  ctx.restore();
+
+  // The rule last, over everything the clip let through, so the plate's edge stays the hard line
+  // the rest of the HUD is boxed in rather than whatever happened to run into it.
+  ctx.lineWidth = MAP_RULE;
+  ctx.strokeStyle = INK;
+  ctx.strokeRect(win.x, win.y, win.size, win.size);
 }
 
 // Where a shot that hit nothing ends: full range along the aim vector, which the server admitted as

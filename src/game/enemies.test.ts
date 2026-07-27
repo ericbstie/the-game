@@ -21,8 +21,8 @@ import {
   tileOf,
 } from "./build";
 import {
-  ATTACK_POS_TOLERANCE,
   AGGRO_RADIUS,
+  ATTACK_POS_TOLERANCE,
   type Attack,
   admitAttack,
   angleOf,
