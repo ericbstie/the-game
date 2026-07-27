@@ -23,6 +23,7 @@ import { type Camera, computeCamera } from "./camera";
 import { type ClientWorld, RESPAWN_DELAY_MS } from "./clientWorld";
 import { type BuildGhost, drawWorld, type OwnShot, SHOT_LINE_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
+import { freshMetalFloats, stepMetalFloats } from "./floats";
 import { aimDir, keyToBuildSlot, keyToDirection, movesEqual, NO_MOVE } from "./input";
 import { PLAYER_MAX_HP } from "./world";
 
@@ -100,6 +101,10 @@ export function GameScreen({
   // Your own last shot, kept so its line can be drawn from here rather than from the relay the
   // server sends back to the whole squad. `drawWorld` ages it; nothing has to clear it.
   const ownShotRef = useRef<OwnShot | null>(null);
+  // The `+1`s the squad's miners are throwing up (#99). Client-derived from the mirrored structure
+  // set, so it lives with the loop that draws it rather than on the wire or in `ClientWorld` — the
+  // beat is the same one the bank is paid on, but which miners *emit* is a question about the camera.
+  const floatsRef = useRef(freshMetalFloats());
   const [selected, setSelected] = useState<BuildableKind | null>(null);
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   const [menuOpen, setMenuOpen] = useState(false);
@@ -258,6 +263,13 @@ export function GameScreen({
             ghost,
             dpr,
             now: clock,
+            floats: stepMetalFloats(
+              floatsRef.current,
+              snapshot.structures,
+              camera,
+              viewport,
+              clock,
+            ),
             sprites: spriteCache.source(dpr),
             shots: {
               // Aged to the line's own lifetime, never to the buffer's longer retention window.

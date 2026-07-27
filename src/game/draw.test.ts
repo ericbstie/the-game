@@ -5,6 +5,7 @@ import type { SpriteName } from "../sprite/registry";
 import { tileKey } from "./build";
 import type { Camera, Viewport } from "./camera";
 import { drawWorld, grassAt, type ShotSource } from "./draw";
+import { FLOAT_MS, type MetalFloat } from "./floats";
 
 // happy-dom returns null from getContext('2d'), so the draw path is exercised against a
 // spy that records the calls and lets any property be assigned.
@@ -1319,5 +1320,69 @@ describe("the hit flash", () => {
     drawWorld(ctx, grunt({ flashing: true }), { camera, viewport, sprites: stubSprites({}) });
     expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(1);
     expect(ctx.calls.every((c) => c.composite === "source-over")).toBe(true);
+  });
+});
+
+// #99: one `+1` per whole Metal, rising off the miner that earned it. The render layer holds no
+// state, so it is handed the floats already accrued and only ages, places and fades them.
+describe("a miner's floating +1", () => {
+  const MINER: WorldSnapshot["structures"][number] = {
+    id: "b1",
+    kind: "miner",
+    tile: { tx: 70, ty: 70 },
+    hp: 200,
+  };
+  const mining: WorldSnapshot = { ...world, players: [], nests: [], structures: [MINER] };
+  const sprites = stubSprites({ miner: 30, player: 28, halo: 52 });
+  const NOW = 5_000;
+  const float = (over: Partial<MetalFloat> = {}): MetalFloat => ({
+    id: "b1",
+    pos: { x: 1_065, y: 1_050 },
+    at: NOW,
+    ...over,
+  });
+  const drawn = (floats: MetalFloat[], snapshot = mining, now = NOW) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, snapshot, { camera, viewport, sprites, now, floats });
+    return ctx;
+  };
+
+  test("reads +1, in the game's own typeface", () => {
+    const ctx = drawn([float()]);
+    expect(ctx.calls.filter((c) => c.fn === "fillText").map((c) => c.args[0])).toEqual(["+1"]);
+    expect(ctx.font).toContain("Playfair Display");
+  });
+
+  test("is cut out of paper, so it reads over the ink it passes", () => {
+    const ctx = drawn([float()]);
+    const stroked = ctx.calls.find((c) => c.fn === "strokeText");
+    const filled = ctx.calls.find((c) => c.fn === "fillText");
+    expect(stroked?.stroke).toBe("#ffffff");
+    expect(filled?.fill).toBe("#000");
+    expect(ctx.calls.indexOf(stroked as Call)).toBeLessThan(ctx.calls.indexOf(filled as Call));
+  });
+
+  test("rises from its own miner and fades as it goes", () => {
+    const young = drawn([float()]).calls.find((c) => c.fn === "fillText");
+    const old = drawn([float()], mining, NOW + FLOAT_MS / 2).calls.find((c) => c.fn === "fillText");
+    expect(young?.args[1]).toBe(1_065); // the miner's own centre, not a shared point
+    expect(old?.args[1]).toBe(1_065);
+    expect(old?.args[2] as number).toBeLessThan(young?.args[2] as number);
+    expect(old?.alpha as number).toBeLessThan(young?.alpha as number);
+  });
+
+  test("is gone once its life is up, and leaves the context at full opacity", () => {
+    const ctx = drawn([float()], mining, NOW + FLOAT_MS);
+    expect(ctx.calls.filter((c) => c.fn === "fillText").length).toBe(0);
+    expect(ctx.globalAlpha).toBe(1);
+  });
+
+  test("draws over the world rather than sorted into it, and under the names", () => {
+    const ctx = drawn([float()], { ...mining, players: world.players });
+    const lastBlit = ctx.calls.findLastIndex((c) => c.fn === "drawImage");
+    const plus = ctx.calls.findIndex((c) => c.fn === "strokeText" && c.args[0] === "+1");
+    const name = ctx.calls.findIndex((c) => c.fn === "strokeText" && c.args[0] === "Ana");
+    expect(plus).toBeGreaterThan(lastBlit);
+    expect(plus).toBeLessThan(name);
   });
 });

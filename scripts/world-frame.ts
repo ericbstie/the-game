@@ -87,7 +87,7 @@ export function entrySource(request: FrameRequest, modules = MODULES): string {
 import { drawWorld } from ${JSON.stringify(modules.draw)};
 import { createSpriteCache } from ${JSON.stringify(modules.cache)};
 import { SPRITES } from ${JSON.stringify(modules.registry)};
-import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoShots, demoWorld } from ${JSON.stringify(modules.world)};
+import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoFloats, demoShots, demoWorld } from ${JSON.stringify(modules.world)};
 
 const dpr = ${request.dpr};
 const camera = ${JSON.stringify(request.at)} ?? DEMO_CAMERA;
@@ -125,6 +125,7 @@ drawWorld(ctx, world, {
   now: DEMO_NOW,
   ghost: DEMO_GHOST,
   shots: demoShots(world, DEMO_NOW),
+  floats: demoFloats(world, DEMO_NOW),
   // The real registry, so the frame is the game as it actually stands. Anything named on the
   // command line is layered over it — a sprite under review, or one nobody has wired yet.
   sprites: createSpriteCache({ ...SPRITES, ${table} }).source(dpr),
