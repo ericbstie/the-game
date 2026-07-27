@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   BUILDABLES,
+  BULLET_COST,
+  FORGE_MS,
   generateOre,
   HAND_MINE_RATE,
   MINE_CADENCE_MS,
@@ -9,7 +11,7 @@ import {
 } from "../game/build";
 import { ATTACK_POS_TOLERANCE, NEST_COUNT, RANGED_CADENCE_MS } from "../game/enemies";
 import { ARENA } from "../game/world";
-import { LobbyHub, livePlayers, type Transport } from "./lobby";
+import { type LobbyConfig, LobbyHub, livePlayers, type Transport } from "./lobby";
 import type { EnemySpawn, ServerMessage, Tile, Vec2 } from "./protocol";
 import type { LobbyServer } from "./server";
 import {
@@ -845,7 +847,7 @@ describe("M3: enemy sim tick lifecycle", () => {
     const t = new Capture();
     const clock = new ManualScheduler();
     // Fire the first wave almost at once, then step past it.
-    const hub = new LobbyHub(t, { tickMs: 10, firstWaveMs: 5, scheduler: clock });
+    const hub = new LobbyHub(t, { tickMs: 10, firstWaveMs: 5, scheduler: clock, startingAmmo: 9 });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
     clock.advance(30);
@@ -1689,6 +1691,7 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
       tickMs: TICK,
       firstWaveMs: 5,
       startingMetal: 1_000,
+      startingAmmo: 9, // these are weapon tests; the pool is #102's own business
       rng: () => 0.75,
     });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
@@ -1724,6 +1727,7 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
       tickMs: TICK,
       firstWaveMs: 5,
       startingMetal: 1_000,
+      startingAmmo: 9, // these are weapon tests; the pool is #102's own business
       rng: () => 0.75,
     });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));
@@ -1914,5 +1918,161 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     const keyframe = buildInit(t, "s2");
     expect(keyframe.aims).toHaveLength(1);
     expect(keyframe.aims[0][2]).toBe(0);
+  });
+});
+
+// #102 stage 2: the squad's bullets are server state. The client may ask for one and may report a
+// shot, but only the hub decides whether either is paid for.
+describe("#102: bullets are server-owned, and a shot spends one", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+  const TICK = 50;
+  // One socket's stream. Every delta is broadcast to the whole squad, so reading the raw capture
+  // would count each one twice in a two-player match.
+  const deltas = (t: Capture, socketId = "s1") =>
+    t.sent
+      .filter((m) => m.socketId === socketId && m.msg.type === "game/map-delta")
+      .map((m) => m.msg as Extract<ServerMessage, { type: "game/map-delta" }>);
+  const ammoStream = (t: Capture, socketId = "s1") =>
+    deltas(t, socketId)
+      .map((d) => d.ammo)
+      .filter((a) => a !== undefined);
+  const created = (t: Capture) =>
+    t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+
+  // A live two-player match with a manual clock, so a one-second forge is twenty virtual ticks
+  // rather than a real second of sleeping. Ben never reports HP, so he is alive and the match
+  // cannot end while Ana is being knocked around.
+  function match(config: Partial<LobbyConfig> = {}) {
+    const t = new Capture();
+    const clock = new ManualScheduler();
+    const hub = new LobbyHub(t, {
+      tickMs: TICK,
+      firstWaveMs: 5,
+      scheduler: clock,
+      rng: () => 0.75,
+      ...config,
+    });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));
+    hub.handleMessage(
+      "s2",
+      JSON.stringify({ type: "lobby/join", code: created(t).code, name: "Ben" }),
+    );
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    return { t, hub, clock };
+  }
+
+  // The same match, one wave in, with Ana standing on a grunt so her shots reach it.
+  function fighting(config: Partial<LobbyConfig> = {}) {
+    const { t, hub, clock } = match(config);
+    clock.advance(TICK);
+    const grunt = deltas(t).flatMap((d) => d.spawns ?? [])[0];
+    if (!grunt) throw new Error("the first wave spawned nothing");
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: grunt.pos, seq: 1 }));
+    const toCentre = {
+      x: ARENA.width / 2 - grunt.pos.x,
+      y: ARENA.height / 2 - grunt.pos.y,
+    };
+    const len = Math.hypot(toCentre.x, toCentre.y) || 1;
+    return { t, hub, clock, grunt, dir: { x: toCentre.x / len, y: toCentre.y / len } };
+  }
+
+  const shoot = (hub: LobbyHub, at: Vec2, dir: Vec2, seq = 1) =>
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: at, dir, seq }));
+
+  test("Metal leaves the bank at the order, and the bullet arrives a forge later", () => {
+    const { t, hub, clock } = match({ startingMetal: BULLET_COST });
+    hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+    clock.advance(TICK);
+    expect(deltas(t).at(-1)?.bank).toEqual({ metal: 0 }); // charged before any bullet exists
+    expect(ammoStream(t)).toEqual([]);
+
+    clock.advance(FORGE_MS - TICK);
+    expect(ammoStream(t)).toEqual([1]);
+    hub.dispose();
+  });
+
+  test("an order the bank cannot cover changes nothing", () => {
+    const { t, hub, clock } = match({ startingMetal: BULLET_COST - 1 });
+    hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+    clock.advance(FORGE_MS * 2);
+    expect(ammoStream(t)).toEqual([]);
+    expect(deltas(t).flatMap((d) => (d.bank ? [d.bank] : []))).toEqual([]); // bank never moved
+    hub.dispose();
+  });
+
+  test("ammo rides a delta only on the ticks it moved", () => {
+    const { t, hub, clock } = match({ startingMetal: 2 * BULLET_COST });
+    hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+    clock.advance(FORGE_MS * 3); // 60 ticks, two of which deliver a bullet
+    expect(ammoStream(t)).toEqual([1, 2]);
+    hub.dispose();
+  });
+
+  test("a client at zero ammo cannot shoot — no damage reaches the enemy, and no line is drawn", () => {
+    const { t, hub, clock, grunt, dir } = fighting({ startingMetal: 1_000 });
+    shoot(hub, grunt.pos, dir);
+    clock.advance(TICK * 3);
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]);
+    expect(deltas(t).flatMap((d) => d.hits ?? [])).toEqual([]);
+    hub.dispose();
+  });
+
+  test("with a bullet in the pool the same shot lands, and the pool drops by exactly one", () => {
+    const { t, hub, clock, grunt, dir } = fighting({ startingAmmo: 2 });
+    shoot(hub, grunt.pos, dir);
+    clock.advance(TICK * 3);
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toHaveLength(1);
+    expect(ammoStream(t)).toEqual([1]);
+    hub.dispose();
+  });
+
+  test("the pool empties, and the shot after the last bullet is refused", () => {
+    const { t, hub, clock, grunt, dir } = fighting({ startingAmmo: 1 });
+    shoot(hub, grunt.pos, dir, 1);
+    clock.advance(RANGED_CADENCE_MS + TICK);
+    shoot(hub, grunt.pos, dir, 2);
+    clock.advance(TICK * 3);
+    expect(deltas(t).flatMap((d) => d.shots ?? [])).toHaveLength(1);
+    expect(ammoStream(t)).toEqual([0]);
+    hub.dispose();
+  });
+
+  test("the queue keeps forging through the death of whoever ordered it", () => {
+    const { t, hub, clock } = match({ startingMetal: BULLET_COST });
+    hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/health", hp: 0, seq: 1 }));
+    clock.advance(FORGE_MS);
+    expect(ammoStream(t)).toEqual([1]);
+    hub.dispose();
+  });
+
+  test("and through their disconnect — the queue is the squad's, not theirs", () => {
+    const { t, hub, clock } = match({ startingMetal: BULLET_COST });
+    hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+    hub.handleClose("s1");
+    clock.advance(FORGE_MS);
+    expect(ammoStream(t, "s2")).toEqual([1]);
+    hub.dispose();
+  });
+
+  test("the reconnect keyframe carries the live pool, so a rejoiner can shoot", () => {
+    const { t, hub, clock } = match({ startingAmmo: 4 });
+    clock.advance(TICK);
+    hub.handleMessage(
+      "s3",
+      JSON.stringify({ type: "lobby/join", code: created(t).code, name: "Cass" }),
+    );
+    const keyframe = t.sent.find(
+      (m) => m.socketId === "s3" && m.msg.type === "game/build-init",
+    )?.msg;
+    expect(keyframe).toMatchObject({ type: "game/build-init", ammo: 4 });
+    hub.dispose();
   });
 });

@@ -242,6 +242,9 @@ export interface MapDelta {
   nests?: NestDelta[];
   wave?: WaveDelta;
   bank?: Bank;
+  // The squad's spendable bullets (#102). A bare count: the forge queue behind it is server-only,
+  // and this rides on the same "only when it moved" terms as the bank rather than every tick.
+  ammo?: number;
   // Buildings are near-static next to enemy motion, so they ride as sparse events rather than a
   // full per-tick set like `moves`. `removals` covers a structure destroyed or demolished.
   builds?: StructureSpawn[];
@@ -346,6 +349,10 @@ export type GameBuild = Envelope<"game/build", { kind: BuildableKind; tile: Tile
 // Demolish (M4): held right-click over a structure. Fully communal — no ownership check — and
 // it reuses the `removals` and `bank` deltas rather than adding wire shapes of its own.
 export type GameDemolish = Envelope<"game/demolish", { id: string; seq: number }>;
+// Order a bullet (#102): Metal leaves the shared bank at once and the bullet joins the squad's
+// serial forge queue. No payload and, unlike every other command, no `seq` — the request carries no
+// state that could arrive stale or out of order, and two of them simply mean two bullets.
+export type GameForge = Envelope<"game/forge">;
 export type ClientMessage =
   | CreateLobby
   | JoinLobby
@@ -356,7 +363,8 @@ export type ClientMessage =
   | GameHealth
   | GameMine
   | GameBuild
-  | GameDemolish;
+  | GameDemolish
+  | GameForge;
 
 export type LobbyErrorCode = "lobby-not-found" | "lobby-full" | "slot-released" | "invalid";
 
@@ -418,7 +426,14 @@ export type GameMatchEnd = Envelope<"game/match-end", { outcome: MatchOutcome; e
 // kept so the keyframe is self-consistent on arrival, not one the client's resolution depends on.
 export type GameBuildInit = Envelope<
   "game/build-init",
-  { tick: number; bank: Bank; power: Power; structures: StructureSpawn[]; aims: TurretAim[] }
+  {
+    tick: number;
+    bank: Bank;
+    ammo: number; // spendable bullets; the queue still forging them stays on the server
+    power: Power;
+    structures: StructureSpawn[];
+    aims: TurretAim[];
+  }
 >;
 
 export type ServerMessage =
@@ -503,6 +518,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       if (typeof msg.id !== "string" || !isFiniteNumber(msg.seq)) return null;
       return { type: "game/demolish", id: msg.id, seq: msg.seq };
     }
+    case "game/forge":
+      return { type: "game/forge" };
     default:
       return null;
   }

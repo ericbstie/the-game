@@ -247,6 +247,12 @@ export function GameScreen({
     // A selected buildable makes left-click a placement (#104). Read before the cadence, so holding
     // over the build bar never spends it and costs the first shot after the bar is cleared.
     if (selectedRef.current) return;
+    // A shot spends a bullet from the squad's pool, and the server refuses one it cannot pay for
+    // (#102). Read before the cadence for the same reason the build bar is: an empty pool must not
+    // cost the first shot after a bullet lands. The mirror is at worst one tick behind the pool it
+    // is gating on, so two players racing for the last bullet can still both draw — the same
+    // boundary the cadence gate already accepts, and the only case a round-trip could close.
+    if (world.ammo() <= 0) return;
     if (now - lastAttackRef.current < RANGED_CADENCE_MS) return;
     lastAttackRef.current = now;
     const { camera, self } = aimRef.current;

@@ -26,6 +26,9 @@ const TICK_MS = 50; // the 20 Hz sim tick
 const TICKS_PER_SECOND = 1000 / TICK_MS;
 const PLAYERS = 6; // the design's full squad
 const TURRETS = 30;
+// The pool the ammo field is measured at. Nothing about that field varies but its digits — it is
+// `,"ammo":N` and no more — so this is a well-supplied squad rather than an achievable ceiling.
+const AMMO_POOL = 999;
 
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
 const deflated = (value: unknown): number =>
@@ -42,6 +45,14 @@ export interface Reading {
 export interface Report {
   trimmed: Reading; // what ships today
   full: Reading; // the same tick at float64 coordinates and full-precision aim
+  // The same tick with one sparse economy field riding, so the cost of each can be read off
+  // against `trimmed`, which carries neither. Their cost is invisible on a settled tick by
+  // construction: the bank rides only when whole Metal crosses and ammo only when a bullet is
+  // forged or spent, so a benchmark of the steady state can never show either one.
+  bankTick: Reading;
+  ammoTick: Reading;
+  bankMetal: number; // what the bank held when `bankTick` was taken
+  ammoBullets: number; // and what the pool held for `ammoTick`
   deflateMsPerTick: number; // CPU to compress one tick's delta, once
 }
 
@@ -59,7 +70,13 @@ function timeDeflate(delta: MapDelta, samples = 400): number {
 // One worst-case tick: the sim at ENEMY_CAP with a full squad, a turret line engaged, and every
 // player firing. Returns the delta the hub would broadcast, plus the same delta rebuilt at full
 // float64 precision so the two can be compared byte for byte.
-export function worstCaseTick(): { trimmed: MapDelta; full: MapDelta; enemies: number } {
+export function worstCaseTick(): {
+  trimmed: MapDelta;
+  full: MapDelta;
+  bankTick: MapDelta;
+  ammoTick: MapDelta;
+  enemies: number;
+} {
   const roster = Array.from({ length: PLAYERS }, (_, i) => ({
     id: `p${i + 1}`,
     slot: i + 1,
@@ -69,6 +86,7 @@ export function worstCaseTick(): { trimmed: MapDelta; full: MapDelta; enemies: n
   const state = spawnEnemyState(world, mulberry32(11));
   const build = freshBuildState(world.arena);
   build.bank.metal = 1_000_000;
+  build.ammo.bullets = AMMO_POOL;
 
   // A turret line, placed clear of the arena centre so the wave marching inward engages it.
   const spec = BUILDABLES.turret as BuildableSpec;
@@ -100,8 +118,12 @@ export function worstCaseTick(): { trimmed: MapDelta; full: MapDelta; enemies: n
 
   // Assembled exactly as `LobbyHub.tick` does it: `moves` always rides, everything else only
   // when non-empty.
-  const assemble = (moves: MapDelta["moves"], peerShots: MapDelta["shots"]): MapDelta => {
-    const delta: MapDelta = { tick: 12_345, moves };
+  const assemble = (
+    moves: MapDelta["moves"],
+    peerShots: MapDelta["shots"],
+    economy: Pick<MapDelta, "bank" | "ammo"> = {},
+  ): MapDelta => {
+    const delta: MapDelta = { tick: 12_345, moves, ...economy };
     if (events.spawns.length > 0) delta.spawns = events.spawns;
     if (events.hits.length > 0) delta.hits = events.hits;
     if (events.deaths.length > 0) delta.deaths = events.deaths;
@@ -121,12 +143,14 @@ export function worstCaseTick(): { trimmed: MapDelta; full: MapDelta; enemies: n
   return {
     trimmed: assemble(events.moves, events.shots),
     full: assemble(fullMoves, fullShots),
+    bankTick: assemble(events.moves, events.shots, { bank: { metal: build.bank.metal } }),
+    ammoTick: assemble(events.moves, events.shots, { ammo: build.ammo.bullets }),
     enemies: state.enemies.size,
   };
 }
 
 export function measure(): Report {
-  const { trimmed, full, enemies } = worstCaseTick();
+  const { trimmed, full, bankTick, ammoTick, enemies } = worstCaseTick();
   const reading = (delta: MapDelta): Reading => ({
     enemies,
     turrets: TURRETS,
@@ -137,6 +161,10 @@ export function measure(): Report {
   return {
     trimmed: reading(trimmed),
     full: reading(full),
+    bankTick: reading(bankTick),
+    ammoTick: reading(ammoTick),
+    bankMetal: bankTick.bank?.metal ?? 0,
+    ammoBullets: ammoTick.ammo ?? 0,
     deflateMsPerTick: timeDeflate(trimmed),
   };
 }
@@ -145,9 +173,12 @@ const kib = (perTick: number) => (perTick * TICKS_PER_SECOND) / 1024;
 const pct = (from: number, to: number) => ((to - from) / from) * 100;
 
 export function format(report: Report): string {
-  const { full, trimmed } = report;
+  const { full, trimmed, bankTick, ammoTick } = report;
   const row = (label: string, b: number) =>
     `  ${label.padEnd(30)}${`${b.toLocaleString()} B`.padStart(12)}${`${kib(b).toFixed(1)} KiB/s`.padStart(14)}`;
+  // Against `trimmed`, which carries neither field — so this is what the field itself costs.
+  const extra = (label: string, r: Reading) =>
+    `  ${label.padEnd(30)}${`+${r.raw - trimmed.raw} B`.padStart(12)}${`+${r.compressed - trimmed.compressed} B deflate`.padStart(20)}`;
   return [
     `game/map-delta at the caps the game supports`,
     `  ${trimmed.enemies} enemies (ENEMY_CAP ${ENEMY_CAP}), ${trimmed.players} players, ${trimmed.turrets} turrets, ${TICKS_PER_SECOND} Hz`,
@@ -161,6 +192,10 @@ export function format(report: Report): string {
     `  trimming coordinates      ${pct(full.raw, trimmed.raw).toFixed(1)}%`,
     `  deflate, on trimmed       ${pct(trimmed.raw, trimmed.compressed).toFixed(1)}%`,
     `  both, against the old raw ${pct(full.raw, trimmed.compressed).toFixed(1)}%`,
+    ``,
+    `what a sparse economy field costs on the tick it moves — a settled tick carries neither:`,
+    extra(`bank, at ${report.bankMetal.toLocaleString()} Metal`, bankTick),
+    extra(`ammo, at ${report.ammoBullets.toLocaleString()} bullets`, ammoTick),
     ``,
     `what deflate costs, which bytes alone cannot show:`,
     `  ${report.deflateMsPerTick.toFixed(3)} ms per tick per client`,

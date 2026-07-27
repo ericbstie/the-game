@@ -132,3 +132,16 @@ describe("parseClientMessage: game/attack carries no weapon (M4 retired melee)",
     expect(parsed).not.toHaveProperty("weapon");
   });
 });
+
+describe("parseClientMessage: game/forge carries nothing", () => {
+  test("accepts a bare request — one recipe, one queue", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "game/forge" }))).toEqual({
+      type: "game/forge",
+    });
+  });
+
+  test("ignores anything a client attaches to it", () => {
+    const parsed = parseClientMessage(JSON.stringify({ type: "game/forge", count: 99, seq: 3 }));
+    expect(parsed).toEqual({ type: "game/forge" });
+  });
+});
