@@ -45,10 +45,10 @@ export function movesEqual(a: MoveInput, b: MoveInput): boolean {
   return a.up === b.up && a.down === b.down && a.left === b.left && a.right === b.right;
 }
 
-// The build bar's keys: `1`–`4` pick a slot (returned zero-indexed), Escape clears the selection.
-// Anything else is not a build key, so movement and the rest of the game keep it.
-export function keyToBuildSlot(key: string, slots: number): number | "cancel" | null {
-  if (key === "Escape") return "cancel";
+// The build bar's keys: `1`–`4` pick a slot, returned zero-indexed. Anything else is not a build
+// key, so movement and the rest of the game keep it — Escape included, which opens the menu (#100)
+// and leaves cancelling a selection to right-click.
+export function keyToBuildSlot(key: string, slots: number): number | null {
   const slot = Number(key);
   if (!Number.isInteger(slot) || key.trim() === "") return null;
   return slot >= 1 && slot <= slots ? slot - 1 : null;
