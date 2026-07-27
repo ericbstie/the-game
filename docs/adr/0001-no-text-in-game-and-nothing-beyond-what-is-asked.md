@@ -29,15 +29,22 @@ sparingly rather than as a replacement vocabulary for the sentences they displac
 |---|---|
 | Main menu | Text as needed |
 | Lobby screen | Text as needed, **including the 4-character lobby code** — it cannot be shared to join without being read |
-| In match | The **name label above each player**; the **Metal and Energy readouts**; the **escape time on the end screen**; the words **`metal / s`** on the Metal-per-second box the Metal readout reveals (granted on request, [#105](https://github.com/ericbstie/the-game/issues/105)) |
+| In match | The **name label above each player**; the **Metal and Energy readouts**; the **escape time on the end screen**; the words **`metal / s`** on the Metal-per-second box the Metal readout reveals (granted on request, [#105](https://github.com/ericbstie/the-game/issues/105)); and on each build slot, its **Metal cost as a numeral** and its **one-word name** — `mine` · `generator` · `wall` · `turret` (granted on request, [#98](https://github.com/ericbstie/the-game/issues/98)) |
 
 Everything not in that table goes, including the controls hint, the HP label and downed
-countdown, the build-slot names, and the in-match lobby-code header.
+countdown, and the in-match lobby-code header.
 
-The Metal-per-second box needed no grant for its figure — that is another Metal number, and the
-Metal readout was already allowed. Its unit did: a bare figure sliding out above the total reads
-as a second total, and `metal / s` is the only thing that says the number is a rate. Granted by
-explicit request in V2.0.
+The build-slot names were removed under this ADR in Milestone 5 and granted back by explicit
+request in V2.0, alongside the cost numerals, which had never been there. The two buy different
+things. A name identifies the building: it gives what the sprite draws a word, which the drawing
+itself cannot. A numeral states the price, which the player could otherwise only learn by trying to
+place a building and being refused, and which is what makes choosing between a 120 turret and a 150
+generator a judgement rather than a guess. The number keys the names used to carry stayed gone.
+
+The Metal-per-second box, asked for in the same version, needed a grant for only half of what it
+shows. Its figure needed none — that is one more Metal number on a readout already allowed. Its
+unit did: a bare figure sliding out above the total reads as a second total, and `metal / s` is the
+only thing that says the number is a rate.
 
 **3. Nothing is implemented that was not explicitly asked for.** Not features, not helpful
 extras, not "while I was in there" additions. When something seems necessary but was not

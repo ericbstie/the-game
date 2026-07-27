@@ -29,6 +29,14 @@ const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the a
 // between bites, and short enough that the bell stops soon after the last spider is off it.
 const UNDER_ATTACK_MS = 2000;
 const BUILD_ICON_PX = 26; // the buildable's own sprite, shrunk to fit a slot
+// What a slot is called on screen (#98) — the author's wording, one word each. `mine` is the label
+// for a `miner`: a display string, so the domain type keeps the name the whole build path uses.
+const BUILD_NAMES: Record<BuildableKind, string> = {
+  miner: "mine",
+  wall: "wall",
+  turret: "turret",
+  generator: "generator",
+};
 
 // One cache for the app: a baked sprite depends on the display, not on which screen is mounted.
 // It bakes nothing until something is drawn, so importing this costs nothing under `bun test`,
@@ -371,8 +379,7 @@ export function GameScreen({
           />
         </div>
       </div>
-      {/* Metal, Energy and the rate's `metal / s` are the words the in-match allowlist grants; the
-          match renders no others outside the name labels over players' heads. */}
+      {/* Metal, Energy and the rate's `metal / s` are the words the allowlist grants these readouts. */}
       <div className="banks" role="status" aria-label="Resources">
         {/* A button only so keyboard focus can reach the Metal-per-second reveal — the reveal itself
             is CSS, and the linter rejects `tabIndex` on a non-interactive element (#105). The span
@@ -395,11 +402,13 @@ export function GameScreen({
           </strong>
         </span>
       </div>
-      {/* The slot names and their number keys are gone. What a slot builds is now said by the
-          buildable's own sprite — the icon ADR 0001 asks for in place of the words it removed. */}
+      {/* A slot is its buildable's sprite, its Metal cost in a circle on the top-left corner, and
+          its one-word name underneath (#98). The words and the numerals are an ADR 0001 exception,
+          asked for explicitly and recorded in the allowlist — the number keys stay gone. */}
       <div className="build-bar" role="toolbar" aria-label="Buildables">
         {BUILD_SLOTS.map((kind) => {
           const icon = SPRITES[kind];
+          const spec = BUILDABLES[kind];
           return (
             <button
               key={kind}
@@ -408,10 +417,14 @@ export function GameScreen({
               aria-label={kind}
               aria-pressed={selected === kind}
               // A kind with no registry entry has not shipped: the slot shows, but is not usable.
-              disabled={!BUILDABLES[kind]}
+              disabled={!spec}
               onClick={() => setSelected(selected === kind ? null : kind)}
             >
+              {/* No spec, no circle: a kind that has not shipped has no cost to state, and an empty
+                  circle would read as "free". */}
+              {spec && <span className="build-cost">{spec.cost}</span>}
               {icon && <SpriteIcon subject={icon} px={BUILD_ICON_PX} />}
+              <span className="build-name">{BUILD_NAMES[kind]}</span>
             </button>
           );
         })}
