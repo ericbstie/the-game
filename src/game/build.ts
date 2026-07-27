@@ -158,7 +158,7 @@ function growPatch(
 // Mulberry32: the smallest well-known 32-bit PRNG that runs identically on the Bun server and in
 // the browser. `Math.imul` and the `>>> 0` coercions are what keep the two byte-identical —
 // without them the multiply would drift into float precision and the grids would diverge.
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;

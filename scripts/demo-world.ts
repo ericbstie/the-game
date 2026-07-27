@@ -1,19 +1,7 @@
-import { type OreGrid, TILE, tileKey } from "../src/game/build";
+import { mulberry32, type OreGrid, TILE, tileKey } from "../src/game/build";
 import type { BuildGhost, ShotSource } from "../src/game/draw";
 import { ELITE_HP } from "../src/game/enemies";
 import type { Tile, Vec2, WorldSnapshot } from "../src/lobby/protocol";
-
-// A local copy rather than exporting the sim's: this is a fixture, and widening `build.ts`'s
-// surface so a screenshot script can borrow a private helper is the wrong trade.
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 // A hand-built world for `sprite:frame` to paint. Not a fixture for `bun test` and not the real
 // game's state: a scene arranged so that the two things Milestone 5 changed about the draw order

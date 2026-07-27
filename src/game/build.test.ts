@@ -25,6 +25,7 @@ import {
   MINE_WINDOW_MAX_MS,
   MINER_TRICKLE,
   metalRate,
+  mulberry32,
   oreAt,
   placementError,
   placeStructure,
@@ -70,6 +71,19 @@ describe("the tile grid", () => {
     expect(tileKey({ tx: 1, ty: 0 })).not.toBe(tileKey({ tx: 0, ty: 1 }));
     expect(tileKey({ tx: 2079, ty: 2079 })).toBe(tileKey({ tx: 2079, ty: 2079 }));
     expect(Number.isSafeInteger(tileKey({ tx: 2079, ty: 2079 }))).toBe(true);
+  });
+});
+
+describe("mulberry32", () => {
+  // A golden stream, not a property. The server and every browser derive the ore grid from one
+  // `oreSeed` and never send it, so an edit that drops a `>>> 0` or an `imul` would still look
+  // like a fine PRNG while silently desyncing the map. These literals are what fails first.
+  test("yields a known sequence from a known seed", () => {
+    const rng = mulberry32(1);
+    expect(Array.from({ length: 8 }, rng)).toEqual([
+      0.6270739405881613, 0.002735721180215478, 0.5274470399599522, 0.9810509674716741,
+      0.9683778982143849, 0.281103502959013, 0.6128388606011868, 0.7207431411370635,
+    ]);
   });
 });
 
