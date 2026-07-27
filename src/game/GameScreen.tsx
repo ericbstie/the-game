@@ -92,6 +92,7 @@ export function GameScreen({
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   const [hp, setHp] = useState(PLAYER_MAX_HP); // mirrored into React only to drive the HUD
   const [metal, setMetal] = useState(0); // the shared bank, mirrored into React for the HUD
+  const [metalRate, setMetalRate] = useState(0); // shown on the reveal behind the total (#105)
   const [power, setPower] = useState({ generation: 0, consumption: 0 }); // the live energy rate
   const [underAttack, setUnderAttack] = useState(false); // drives the HUD's warning bell
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
@@ -253,6 +254,7 @@ export function GameScreen({
         onHealthRef.current(nextHp); // report it; hp <= 0 declares death, max declares the revive
       }
       setMetal(world.metal()); // React bails out when the whole-metal readout hasn't moved
+      setMetalRate(world.metalRate());
       const live = world.power();
       setPower((shown) =>
         shown.generation === live.generation && shown.consumption === live.consumption
@@ -369,13 +371,23 @@ export function GameScreen({
           />
         </div>
       </div>
-      {/* Metal and Energy are named on the in-match allowlist, so these two readouts are the only
-          words the match itself renders outside the name labels over players' heads. */}
+      {/* Metal, Energy and the rate's `metal / s` are the words the in-match allowlist grants; the
+          match renders no others outside the name labels over players' heads. */}
       <div className="banks" role="status" aria-label="Resources">
-        <span className="bank">
+        {/* A button only so keyboard focus can reach the Metal-per-second reveal — the reveal itself
+            is CSS, and the linter rejects `tabIndex` on a non-interactive element (#105). The span
+            around the rate box is the aperture it is drawn out of: the box is wider than the readout,
+            and this is what clips that overhang while the box is still level with it. */}
+        <button type="button" className="bank bank-metal">
           <span className="bank-label">Metal</span>
           <strong>{metal}</strong>
-        </span>
+          <span className="bank-reveal">
+            <span className="bank-rate">
+              <span className="bank-label">metal / s</span>
+              <strong>{metalRate}</strong>
+            </span>
+          </span>
+        </button>
         <span className="bank">
           <span className="bank-label">Energy</span>
           <strong>

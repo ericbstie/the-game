@@ -3,6 +3,7 @@ import type { MapDelta, Vec2, WorldInit } from "../lobby/protocol";
 import {
   BUILDABLES,
   type BuildableSpec,
+  MINER_TRICKLE,
   structureBlocking,
   TILE,
   tileOf,
@@ -751,5 +752,55 @@ describe("#107: the hit flash rides the clock the sprite is drawn on", () => {
       nests: [],
     });
     expect(flashing(w, 2000 + ENEMY_RENDER_DELAY_MS)).toBe(false);
+  });
+});
+
+// #105: the Metal-per-second reading the HUD slides up behind the Metal readout. Derived here, from
+// the structure set the deltas already mirror, so the rate costs nothing on the wire.
+describe("#105: the squad's Metal rate", () => {
+  const miner = (id: string, tx: number) => ({
+    id,
+    kind: "miner" as const,
+    tile: { tx, ty: 40 },
+    hp: 200,
+  });
+
+  test("is zero with nothing standing", () => {
+    expect(new ClientWorld(init(), "self").metalRate()).toBe(0);
+  });
+
+  test("counts every streamed miner, and only miners", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        builds: [
+          miner("m1", 40),
+          miner("m2", 44),
+          { id: "w1", kind: "wall", tile: { tx: 60, ty: 40 }, hp: 400 },
+        ],
+      },
+      1000,
+    );
+    expect(w.metalRate()).toBe(2 * MINER_TRICKLE);
+  });
+
+  test("a miner leaves the rate the tick it is removed, with nothing left trickling", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], builds: [miner("m1", 40)] }, 1000);
+    w.applyMapDelta({ tick: 2, moves: [], removals: ["m1"] }, 1050);
+    expect(w.metalRate()).toBe(0);
+  });
+
+  test("a reconnect keyframe rebuilds it", () => {
+    const w = new ClientWorld(init(), "self");
+    w.initBuild({
+      bank: { metal: 10 },
+      power: { generation: 0, consumption: 0 },
+      structures: [miner("m1", 40), miner("m2", 44), miner("m3", 48)],
+      aims: [],
+    });
+    expect(w.metalRate()).toBe(3 * MINER_TRICKLE);
   });
 });

@@ -24,6 +24,7 @@ import {
   MINE_CADENCE_MS,
   MINE_WINDOW_MAX_MS,
   MINER_TRICKLE,
+  metalRate,
   oreAt,
   placementError,
   placeStructure,
@@ -368,6 +369,38 @@ describe("placing and stepping structures", () => {
     removeStructure(build, miner.id);
     stepBuild(build, 1_000);
     expect(build.bank.metal).toBe(0);
+  });
+
+  // #105: the rate the HUD shows on hover. It is the same arithmetic `stepBuild` accumulates, named
+  // so the readout cannot drift from what the bank is actually being paid.
+  test("metalRate is the standing miners' trickle, and nothing else's", () => {
+    const build = freshBuildState(ARENA);
+    expect(metalRate(build)).toBe(0);
+    build.bank.metal = 500;
+    placeStructure(build, "miner", metalTile, spec);
+    expect(metalRate(build)).toBe(MINER_TRICKLE);
+    const second = placeStructure(build, "miner", { tx: metalTile.tx + 2, ty: metalTile.ty }, spec);
+    expect(metalRate(build)).toBe(2 * MINER_TRICKLE);
+    // A wall banks nothing, so it must not move the reading.
+    placeStructure(
+      build,
+      "wall",
+      { tx: metalTile.tx, ty: metalTile.ty + 2 },
+      BUILDABLES.wall as BuildableSpec,
+    );
+    expect(metalRate(build)).toBe(2 * MINER_TRICKLE);
+    removeStructure(build, second.id);
+    expect(metalRate(build)).toBe(MINER_TRICKLE);
+  });
+
+  test("and it is exactly what one second of stepBuild pays in", () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 200;
+    placeStructure(build, "miner", metalTile, spec);
+    placeStructure(build, "miner", { tx: metalTile.tx + 2, ty: metalTile.ty }, spec);
+    const before = build.bank.metal;
+    for (let i = 0; i < 20; i++) stepBuild(build, 50);
+    expect(build.bank.metal - before).toBeCloseTo(metalRate(build), 6);
   });
 });
 

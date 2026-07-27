@@ -152,6 +152,11 @@ button {
   background: var(--ink);
   color: var(--paper);
   font-family: inherit;
+  /* The UA's `font` shorthand on a form control resets the page's figure style along with its face,
+     so a button holding a digit sets it in Playfair's old-style default — an x-height 0 beside a
+     descending 3 and 4 — where every other number on the page is lining. Taken back here, where any
+     button gets it, rather than at each site that happens to show one. */
+  font-variant-numeric: inherit;
   cursor: pointer;
 }
 
@@ -403,7 +408,9 @@ button:disabled {
   pointer-events: none;
 }
 
-.banks .bank {
+/* The rate box (#105) is the readout's own box repeated, so both are set here. */
+.banks .bank,
+.banks .bank-rate {
   display: flex;
   align-items: baseline;
   gap: 0.4rem;
@@ -412,9 +419,76 @@ button:disabled {
   background: var(--paper);
 }
 
+.banks .bank {
+  position: relative;
+}
+
 .banks .bank strong {
   font-size: 1.05rem;
   font-weight: 800;
+  /* Metal's readout is a button, so it inherits the letterspaced capitals of the shared `button`
+     rule — which tracks the digits out and stops the two totals matching each other. */
+  letter-spacing: 0;
+}
+
+/* The aperture the rate box is drawn out of (#105). It paints nothing; it clips. Fixing that clip one
+   line above the readout instead of carrying it on the moving box is what holds the box's extra width
+   — `metal / s` is wider than `Metal` — out of the 8px gap beside the readout while the box is still
+   level with it. Nothing of the box shows until it has risen past the readout's top rule, above which
+   the reveal belongs.
+
+   Content-sized from the start, so hovering moves the box and changes no geometry — a width switched
+   on hover instead applies at once, while the box is still level with the readout. The readout's
+   width is the floor: six figures of Metal make the readout the wider of the two. Negative left
+   inset because an absolute containing block is the readout's padding box, and these two must align
+   to the pixel. No pointer events, or the arena would go dead wherever this reaches. */
+.banks .bank-reveal {
+  position: absolute;
+  left: -2px;
+  bottom: 100%;
+  width: max-content;
+  min-width: calc(100% + 4px);
+  height: calc(100% + 4px);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Parked one box below the aperture's lower edge, where the clip leaves nothing of it to see. */
+.banks .bank-rate {
+  height: 100%;
+  transform: translateY(100%);
+  transition: transform 140ms ease-out;
+}
+
+/* Up to fill the aperture, which puts this box's bottom rule on the readout's top rule: the two
+   meet on one line of ink and read as one component rather than as a tooltip floating above it. */
+.banks .bank-metal:hover .bank-rate,
+.banks .bank-metal:focus-visible .bank-rate {
+  transform: translateY(0);
+}
+
+/* The Metal readout is the one thing in the HUD that takes pointer events back from `.banks`, which
+   is what lets it answer to hover. The cost, accepted: the ~112×34px it covers of the arena's
+   bottom-right corner swallows the click instead of firing, and aim holds while the pointer is over
+   it — the same trade the Leave button and the build bar already make. */
+.banks .bank-metal {
+  /* A button inherits the ink-block button colour, and this one is plated in paper like every other
+     readout — without this the whole reading is white on white. */
+  color: var(--ink);
+  pointer-events: auto;
+  cursor: default;
+}
+
+/* Inside the box, not 2px outside it: an outline outside the top edge crosses the revealed rate box,
+   which sits directly on the rule it would be drawn over. */
+.banks .bank-metal:focus-visible {
+  outline-offset: -3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .banks .bank-rate {
+    transition: none;
+  }
 }
 
 .build-bar {

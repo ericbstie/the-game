@@ -446,14 +446,22 @@ export function removeStructure(build: BuildState, id: string): Structure | null
 // what makes Energy a rate and not a bank — a generator destroyed or demolished drops the ceiling
 // the same tick, with no reserve left over. Deterministic in (state, dtMs); no clock.
 export function stepBuild(build: BuildState, dtMs: number): void {
-  let miners = 0;
   let generators = 0;
-  for (const s of build.structures.values()) {
-    if (s.kind === "miner") miners++;
-    else if (s.kind === "generator") generators++;
-  }
-  if (miners > 0) build.bank.metal += (miners * MINER_TRICKLE * dtMs) / 1000;
+  for (const s of build.structures.values()) if (s.kind === "generator") generators++;
+  build.bank.metal += (metalRate(build) * dtMs) / 1000;
   build.power.generation = generators * GENERATOR_OUTPUT;
+}
+
+// Metal per second the standing miners pay into the bank: what `stepBuild` accumulates, stated as a
+// rate, so a reading of it cannot drift from what the bank is actually being paid.
+//
+// Hand-mining is deliberately not in it. It is 8/s while a button is held and 0 the instant it is
+// let go, so folding it in would make the readout jump between nothing and 30-odd depending on who
+// is digging — a worse answer to "is one more miner worth it" than no readout at all.
+export function metalRate(build: BuildState): number {
+  let miners = 0;
+  for (const s of build.structures.values()) if (s.kind === "miner") miners++;
+  return miners * MINER_TRICKLE;
 }
 
 // --- Solidity ------------------------------------------------------------------------------
