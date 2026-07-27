@@ -210,20 +210,29 @@ describe("revealsExit (#93: coming close enough to find the door)", () => {
   });
 
   test("distance is to the nearest point of the door, not to its centre", () => {
-    // Level with the door's near end and 1,800 u out from its face. Against the centre this is
-    // ~1,860 u away and would stay hidden; against the door itself it is exactly 1,800.
+    // Level with the door's near end and 1,800 u out from its face. The door's centre is 1,907 u
+    // from here and its face's midpoint 1,860 u, so either of those measures would leave it
+    // hidden; against the door itself it is exactly 1,800.
     expect(revealsExit({ x: face + 1_800, y: exit.y }, exit)).toBe(true);
   });
 
-  test("the reveal distance is its own number, not AGGRO_RADIUS", async () => {
-    // Both are 1,800 today, so no comparison of values can tell them apart: `EXIT_REVEAL_RADIUS
-    // === 1800` beside `AGGRO_RADIUS === 1800` would pass just as happily if one were defined as
-    // the other, and asserting they differ is impossible while they agree. What can be asserted is
-    // that no path exists — the value is a literal, and the module holding it imports nothing from
-    // the enemy sim, so there is no expression for a retuned `AGGRO_RADIUS` to travel down.
-    const source = await Bun.file(`${import.meta.dir}/world.ts`).text();
+  test("running past the far end of the door counts the length of the wall too", () => {
+    // Diagonally off the door's far corner, so both axes carry distance. Every other case here
+    // sits square to the face with nothing in the along-wall term — which is exactly the term a
+    // player sprinting the length of a wall 1,800 u out is judged on, and the one that would let
+    // a door 13,000 u away announce itself if it were dropped.
+    const corner = { x: face, y: exit.y + exit.height };
+    expect(revealsExit({ x: corner.x + 1_272, y: corner.y + 1_272 }, exit)).toBe(true);
+    expect(revealsExit({ x: corner.x + 1_273, y: corner.y + 1_273 }, exit)).toBe(false);
+  });
+
+  test("the reveal distance is its own number, not AGGRO_RADIUS", () => {
+    // The requirement is about a future retune: move `AGGRO_RADIUS` and this must not follow. That
+    // is what pinning the value catches — write `EXIT_REVEAL_RADIUS = AGGRO_RADIUS`, retune aggro,
+    // and this line fails. Its twin in `enemies.test.ts` pins the other end, so a retune shows up
+    // as one file changing and not the other. Reading the source for an import instead would fail
+    // on a type-only one, which carries no value at all, and would still miss a shared third
+    // module — a weaker test that looks stronger.
     expect(EXIT_REVEAL_RADIUS).toBe(1_800);
-    expect(source).toContain("export const EXIT_REVEAL_RADIUS = 1_800;");
-    expect(source).not.toContain('from "./enemies"');
   });
 });

@@ -163,7 +163,11 @@ describe("parseClientMessage: no command can reveal the door", () => {
       { type: "game/health", hp: 100, seq: 1, exitRevealed: true },
     ];
     for (const raw of attempts) {
-      expect(parseClientMessage(JSON.stringify(raw))).not.toHaveProperty("exitRevealed");
+      const parsed = parseClientMessage(JSON.stringify(raw));
+      // A shape that stopped parsing altogether would satisfy the assertion below without the
+      // parser dropping anything, so the message has to survive before its silence means much.
+      expect(parsed).not.toBeNull();
+      expect(parsed).not.toHaveProperty("exitRevealed");
     }
   });
 });
