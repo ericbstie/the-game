@@ -52,6 +52,10 @@ measured the same sort at 36.6 µs for 250. Sorting is free; painting is not.
 tenth of a millisecond, because each is two axis-aligned fills on integer edges and those carry no
 anti-aliasing at all.
 
+**The hit flash is not a row of its own**, because it is not a layer: a flashing spider is one blit
+of a cached variant instead of one blit of its ink bake, so the standing layer above already contains
+it whether anything is flashing or not. It earned rule 6 by being measured the other way round first.
+
 **The shot lines are not.** Fifty cost 1.3 ms — a fifth of the whole frame for fifty marks — which
 is what "the most expensive thing in the frame per unit" means in practice. A standalone stroke of
 150 lines measures 4.2 ms on its own. That ratio is why the 100 ms lifetime in `draw.ts`
@@ -60,12 +64,13 @@ concurrent count near 50 instead of near 150.
 
 ## The rules
 
-1. **Shot lines are the most expensive thing in the frame, per unit.** ~26 µs each — one costs
-   what a dozen sprite blits cost, because a stroked line across the viewport covers far more
-   pixels than a 32 px sprite. The **lifetime** is therefore the control, not the wire shape: at
-   150 shot events a second, a 1-frame line means ~3 on screen and a 1-second line means ~150,
-   which is the difference between 0.1 ms and 4.2 ms. **`SHOT_LINE_MS` is 100 and the budget is 50
-   concurrent.** Above ~150 the frame stops being comfortable.
+1. **Shot lines are the most expensive thing in the frame, per unit** — and one effect has already
+   beaten them, which is how the rule below got written. ~26 µs each: one costs what a dozen sprite
+   blits cost, because a stroked line across the viewport covers far more pixels than a 32 px
+   sprite. The **lifetime** is therefore the control, not the wire shape: at 150 shot events a
+   second, a 1-frame line means ~3 on screen and a 1-second line means ~150, which is the difference
+   between 0.1 ms and 4.2 ms. **`SHOT_LINE_MS` is 100 and the budget is 50 concurrent.** Above ~150
+   the frame stops being comfortable.
 2. **Nothing new gets a full-viewport pass.** The paper fill is already the single most expensive
    item at 1.9 ms, because it touches every pixel. A second full-screen pass — a vignette, a tint,
    a darkening overlay for the downed player — costs about the same again. The downed-player
@@ -83,6 +88,16 @@ concurrent count near 50 instead of near 150.
 5. **Measure, do not reason.** Every number here contradicted at least one confident guess. The
    pattern fill was expected to be nearly free and is not; the per-tuft blit was expected to be the
    slow one and is the fastest; the Y-sort was the flagged risk and is 0.4% of the frame.
+6. **A change to how a sprite looks is baked, not composited every frame.** A composite is billed
+   per frame per unit and a bake is billed once, so the two are not close. The hit flash (#107)
+   settled it with numbers: composited — the bake dilated out to a rim, punched back out of its own
+   ink, paper filled in behind — it cost **~70 µs a flashing spider**, nine blits and two mode
+   switches, *twice a shot line* and the dearest thing in the frame per unit. Derived once into a
+   cached variant instead, it is **one blit, under 5 µs**, indistinguishable from drawing the spider
+   at all. Sixteen simultaneous flashes went from ~1.1 ms to under the noise floor. What it costs
+   instead is a **one-off ~310 µs (grunt) or ~380 µs (elite) per facing and frame**, about one to two
+   ordinary bakes, and only for the poses something is actually hit in — the same lazy bill the
+   sprite cache already pays for the ink bakes, and it goes with the ratio the same way.
 
 ## How the grass mechanism was chosen
 

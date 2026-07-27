@@ -1,5 +1,6 @@
 import { type OreGrid, TILE, tileKey } from "../src/game/build";
 import type { BuildGhost, ShotSource } from "../src/game/draw";
+import { ELITE_HP } from "../src/game/enemies";
 import type { Tile, Vec2, WorldSnapshot } from "../src/lobby/protocol";
 
 // A local copy rather than exporting the sim's: this is a fixture, and widening `build.ts`'s
@@ -84,6 +85,7 @@ export function demoWorld(): WorldSnapshot {
         frame: 0,
         radius: 16,
         hp: 30,
+        flashing: false,
       },
       {
         id: "e2",
@@ -93,6 +95,10 @@ export function demoWorld(): WorldSnapshot {
         frame: 0,
         radius: 16,
         hp: 11, // a grunt two thirds of the way down
+        // Mid hit flash, and one of each kind carries it: the flash inverts a silhouette against
+        // white paper, and whether it stays *readable* there can only be looked at (#107). A grunt
+        // is mostly leg and an elite mostly body, so one of them says nothing about the other.
+        flashing: true,
       },
       {
         id: "e3",
@@ -102,6 +108,21 @@ export function demoWorld(): WorldSnapshot {
         frame: 0,
         radius: 24,
         hp: 120,
+        flashing: true,
+      },
+      {
+        // The same elite, same facing, same frame, standing alongside the flashing one — because a
+        // flash is a *change*, and neither half of it can be judged without the other in the same
+        // picture. At full health on purpose: this is the scene's unflashed, unbarred elite, which is
+        // what makes this frame the channel for judging the elite's own art at real size (ADR 0002).
+        id: "e5",
+        kind: "elite",
+        pos: { x: 15_720, y: 15_940 },
+        facing: 2,
+        frame: 0,
+        radius: 24,
+        hp: ELITE_HP,
+        flashing: false,
       },
       {
         id: "e4",
@@ -111,6 +132,7 @@ export function demoWorld(): WorldSnapshot {
         frame: 0,
         radius: 16,
         hp: 30,
+        flashing: false,
       },
     ],
     nests: [

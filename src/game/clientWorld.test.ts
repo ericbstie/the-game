@@ -11,6 +11,7 @@ import {
 import {
   ClientWorld,
   ENEMY_RENDER_DELAY_MS,
+  HIT_FLASH_MS,
   RENDER_DELAY_MS,
   RESPAWN_DELAY_MS,
   SHOT_RETENTION_MS,
@@ -690,5 +691,65 @@ describe("ClientWorld structure-under-attack window", () => {
     const w = new ClientWorld(init(), "self");
     w.applyMapDelta({ tick: 1, moves: [], structHits: [{ id: "ghost", hp: 10 }] }, 1000);
     expect(w.structureUnderAttack(1000, WINDOW)).toBe(false);
+  });
+});
+
+// #107: a spider turns white for a split second when it takes damage. The events for it already
+// stream — `MapDelta.hits` — so all this state is, is when the last one landed. What the tests here
+// pin is *which clock it is measured on*: enemies render ENEMY_RENDER_DELAY_MS behind their stream,
+// so a flash timed off the raw arrival fires half a tick before the sprite it belongs to.
+describe("#107: the hit flash rides the clock the sprite is drawn on", () => {
+  const shot = (w: ClientWorld, tick: number, at: number, hp: number) =>
+    w.applyMapDelta({ tick, moves: [["e1", 10, 10]], hits: [{ id: "e1", hp }] }, at);
+  const spawned = () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [["e1", 10, 10]],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP, sector: 0 }],
+      },
+      1000,
+    );
+    return w;
+  };
+  const flashing = (w: ClientWorld, now: number) => enemyIn(w, now, "e1")?.flashing;
+
+  test("an enemy nobody has shot never flashes", () => {
+    expect(flashing(spawned(), 9999)).toBe(false);
+  });
+
+  test("the flash starts when the rendered position reaches the hit, not when the event lands", () => {
+    const w = spawned();
+    shot(w, 2, 2000, 12);
+    expect(flashing(w, 2000)).toBe(false); // the sprite on screen is still 50 ms short of the hit
+    expect(flashing(w, 2000 + ENEMY_RENDER_DELAY_MS)).toBe(true);
+  });
+
+  test("and lasts exactly HIT_FLASH_MS on that same clock", () => {
+    const w = spawned();
+    shot(w, 2, 2000, 12);
+    const last = 2000 + ENEMY_RENDER_DELAY_MS + HIT_FLASH_MS - 1;
+    expect(flashing(w, last)).toBe(true);
+    expect(flashing(w, last + 1)).toBe(false);
+  });
+
+  test("a second hit re-arms it, so sustained fire keeps flashing", () => {
+    const w = spawned();
+    shot(w, 2, 2000, 20);
+    shot(w, 3, 2000 + HIT_FLASH_MS, 12);
+    const after = 2000 + ENEMY_RENDER_DELAY_MS + HIT_FLASH_MS;
+    expect(flashing(w, after)).toBe(true); // the first flash has lapsed; the second is up
+  });
+
+  test("a reconnect keyframe brings enemies back unflashed", () => {
+    const w = spawned();
+    shot(w, 2, 2000, 12);
+    w.initEnemies({
+      tick: 100,
+      enemies: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: 12, sector: 0 }],
+      nests: [],
+    });
+    expect(flashing(w, 2000 + ENEMY_RENDER_DELAY_MS)).toBe(false);
   });
 });

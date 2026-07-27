@@ -262,6 +262,9 @@ export interface RenderedEnemy {
   hp: number;
   facing: number; // 0 = E, 1 = SE … 7 = NE — derived from the position stream, never on the wire
   frame: number; // walk cycle; 0 is the stance frame a stopped character parks on
+  // Whether the hit flash is up this frame (#107). Derived from the `hits` that already stream and
+  // the delayed clock this enemy renders on, so nothing was added to the wire for it.
+  flashing: boolean;
 }
 
 // A render-model nest (not a wire type). Position/sector are static (derived from the arena);

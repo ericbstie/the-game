@@ -832,17 +832,24 @@ function paintEnemy(
 ): void {
   const sprite = sprites?.(enemy.kind, enemy.facing, enemy.frame);
   if (sprite) {
+    // Freshly hit, a spider wears the inverted variant of this same bake (#107) — paper where its
+    // ink was, with a rim of ink standing, because the floor is white paper and a solid white spider
+    // would be an invisible one. It is one blit like any other: the variant is derived once and
+    // cached, never composited into the frame.
+    const flash = enemy.flashing ? sprites?.(enemy.kind, enemy.facing, enemy.frame, "flash") : null;
     // Centred, not foot-anchored, unlike everything else that stands up. A spider is the one
     // hybrid in the set: its body is upright but its legs splay *flat around* it, so the ring of
     // legs is its contact with the floor and that ring's centre is where the sim says it is.
     // Foot-anchoring it would hang the whole ring above `pos` and lift the body a full radius —
     // contact damage would land from a spider drawn half a body clear of you. The upright player
     // and the elevation structures are genuinely bottom-anchored and keep `blit`.
-    blitOver(sprite, enemy.pos.x, enemy.pos.y);
+    blitOver(flash ?? sprite, enemy.pos.x, enemy.pos.y);
   } else {
     ctx.fillStyle = ENEMY_COLORS[enemy.kind];
     fillCircle(ctx, enemy.pos.x, enemy.pos.y, enemy.radius);
   }
+  // Off the plain box at every moment, flashing or not, so the bar does not hop a px each time the
+  // flash's slightly wider box comes and goes.
   const half = sprite ? sprite.size / 2 : enemy.radius;
   healthBar(
     ctx,

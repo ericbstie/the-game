@@ -26,6 +26,13 @@ function counting() {
       baked.push(tag);
       return { tag } as unknown as CanvasImageSource;
     },
+    // The flash variant is derived from a bake rather than drawn, so what it records is which bake it
+    // was handed and how wide a rim it was asked for.
+    derive: (ink: CanvasImageSource, pixels: number, rim: number) => {
+      const tag = `${(ink as unknown as { tag: string }).tag}+flash/${pixels}/${rim}`;
+      baked.push(tag);
+      return { tag } as unknown as CanvasImageSource;
+    },
   };
 }
 
@@ -130,6 +137,70 @@ describe("createSpriteCache", () => {
     const cache = createSpriteCache({ player: subject("player", 28) }, counting().bake);
     expect(() => cache.source(0)).toThrow(/pixel ratio/);
     expect(() => cache.source(Number.NaN)).toThrow(/pixel ratio/);
+  });
+});
+
+// The variant a spider wears for the 90 ms after it is hit (#107). It is *derived* from the ink bake
+// rather than drawn — a sprite module hardcodes the ink colour it draws with — and derived only when
+// something is actually hit, which is what keeps a second image per facing per frame off the bill for
+// the two largest sprites in the set.
+describe("the hit flash variant", () => {
+  test("is derived from the ink bake of the same facing and frame, never drawn afresh", () => {
+    const { baked, bake, derive } = counting();
+    const cache = createSpriteCache({ grunt: subject("grunt", 32) }, bake, derive);
+    const flash = cache.source(2)("grunt", 3, 1, "flash");
+    expect(tagOf(flash)).toBe("grunt/3/1@2+flash/64/2");
+    expect(baked).toEqual(["grunt/3/1@2", "grunt/3/1@2+flash/64/2"]);
+  });
+
+  test("costs nothing until a spider is hit, and nothing again while it stays hit", () => {
+    const { baked, bake, derive } = counting();
+    const cache = createSpriteCache({ elite: subject("elite", 48) }, bake, derive);
+    const sprites = cache.source(2);
+    sprites("elite", 0, 0);
+    sprites("elite", 1, 0);
+    expect(baked).toEqual(["elite/0/0@2", "elite/1/0@2"]);
+    sprites("elite", 1, 0, "flash");
+    sprites("elite", 1, 0, "flash"); // the same spider, still flashing, the next frame
+    expect(baked).toEqual(["elite/0/0@2", "elite/1/0@2", "elite/1/0@2+flash/96/2"]);
+  });
+
+  test("re-derives at the new ratio when the display's pixel ratio changes", () => {
+    const { baked, bake, derive } = counting();
+    const cache = createSpriteCache({ grunt: subject("grunt", 32) }, bake, derive);
+    cache.source(2)("grunt", 0, 0, "flash");
+    expect(tagOf(cache.source(3)("grunt", 0, 0, "flash"))).toBe("grunt/0/0@3+flash/96/3");
+    expect(baked).toEqual([
+      "grunt/0/0@2",
+      "grunt/0/0@2+flash/64/2",
+      "grunt/0/0@3",
+      "grunt/0/0@3+flash/96/3",
+    ]);
+  });
+
+  // The rim stands *outside* the silhouette, so the variant is a wider box than the bake it came
+  // from — and it is `blitOver`'s destination, so it has to be a whole number of device pixels on
+  // each side or every edge of a flashing spider is resampled.
+  test("is a rim of whole device pixels wider on every side, and never a rim under one", () => {
+    const { bake, derive } = counting();
+    const cache = createSpriteCache({ grunt: subject("grunt", 32) }, bake, derive);
+    for (const [dpr, pixels, rim] of [
+      [1, 32, 1],
+      [2, 64, 2],
+      [3, 96, 3],
+      // Windows display scaling. A rim of a fraction of a device pixel would come out grey rather
+      // than thin, so it is floored at one whole pixel instead.
+      [1.5, 48, 2],
+      [1.25, 40, 1],
+    ] as const) {
+      const sprites = cache.source(dpr);
+      expect(tagOf(sprites("grunt", 0, 0, "flash"))).toBe(
+        `grunt/0/0@${dpr}+flash/${pixels}/${rim}`,
+      );
+      const grew =
+        (sprites("grunt", 0, 0, "flash")?.size ?? 0) - (sprites("grunt", 0, 0)?.size ?? 0);
+      expect(grew).toBeCloseTo((2 * rim) / dpr, 10);
+    }
   });
 });
 
