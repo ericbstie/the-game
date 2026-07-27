@@ -242,6 +242,18 @@ describe("admitMine", () => {
     const afterPause = admitMine(guard, { tile: metal, seq: 2 }, atTile(metal), grid, 60_000);
     expect(afterPause).toBeCloseTo((MINE_WINDOW_MAX_MS / 1000) * HAND_MINE_RATE, 6);
   });
+
+  // #109 drops the hand rate to 1: through `creditMetal` that is one whole Metal banked per
+  // second held, so a ten-second dig is worth exactly ten — a fifth of a miner.
+  test("mines one metal a second, so a ten-second hold banks ten whole Metal", () => {
+    expect(HAND_MINE_RATE).toBe(1);
+    const guard = freshMineGuard();
+    const build = freshBuildState(ARENA);
+    for (let t = 0; t <= 10_000; t += MINE_CADENCE_MS) {
+      creditMetal(build, admitMine(guard, { tile: metal, seq: t + 1 }, atTile(metal), grid, t));
+    }
+    expect(build.bank.metal).toBe(10);
+  });
 });
 
 describe("the buildable registry", () => {

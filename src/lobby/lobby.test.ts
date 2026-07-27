@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { BUILDABLES, generateOre, MINE_CADENCE_MS, tileCenter, tileOf } from "../game/build";
+import {
+  BUILDABLES,
+  generateOre,
+  HAND_MINE_RATE,
+  MINE_CADENCE_MS,
+  tileCenter,
+  tileOf,
+} from "../game/build";
 import { ATTACK_POS_TOLERANCE, NEST_COUNT, RANGED_CADENCE_MS } from "../game/enemies";
 import { ARENA } from "../game/world";
 import { LobbyHub, livePlayers, type Transport } from "./lobby";
@@ -1022,13 +1029,20 @@ describe("M4-T1: hand-mining fills the squad's shared Metal bank", () => {
     return best;
   }
 
-  // Hold right-click on `tile` for a few cadences — long enough to accrue whole Metal, since the
-  // bank only rides a delta when its whole-number readout actually moves.
-  async function holdMine(client: TestClient, tile: Tile, reports = 5): Promise<void> {
+  // Hold right-click on `tile` long enough to accrue whole Metal, since the bank only rides a
+  // delta when its whole-number readout actually moves. The count is derived from the rate rather
+  // than fixed, so a retune of `HAND_MINE_RATE` cannot leave this quietly banking fractions.
+  const MINE_GAP_MS = MINE_CADENCE_MS + 20; // clear of the server's floor, under its accrual cap
+  const REPORTS_FOR_ONE_METAL = Math.ceil(1_000 / (MINE_GAP_MS * HAND_MINE_RATE)) + 1;
+  async function holdMine(
+    client: TestClient,
+    tile: Tile,
+    reports = REPORTS_FOR_ONE_METAL,
+  ): Promise<void> {
     client.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
     for (let seq = 1; seq <= reports; seq++) {
       client.send({ type: "game/mine", tile, seq });
-      await new Promise((r) => setTimeout(r, MINE_CADENCE_MS + 20));
+      await new Promise((r) => setTimeout(r, MINE_GAP_MS));
     }
   }
 
