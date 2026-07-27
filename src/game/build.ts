@@ -412,8 +412,10 @@ export interface BuildState {
   occupancy: Map<number, string>; // tileKey → structure id, so overlap is a lookup, not a scan
   bank: Bank; // whole Metal only; `creditMetal` is the sole way in
   metalThousandths: number; // the unbanked remainder, in [0, 1000). Owned by `creditMetal`.
-  // The squad's bullets. Only `bullets` is streamed: the queue behind it is server-only, so a
-  // client's mirror carries it at zero — the same shape `metalThousandths` already has.
+  // The squad's bullets. `bullets` and `queued` both stream; `forgeMs` is server-only, so a
+  // client's mirror carries it at zero — the same shape `metalThousandths` already has. The
+  // countdown stays behind because it moves every tick, and the client reconstructs the phase it
+  // needs from `FORGE_MS` and the arrival that restarted the head bullet (#102).
   ammo: Ammo;
   power: Power;
   nextId: number;

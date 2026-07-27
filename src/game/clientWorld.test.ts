@@ -568,6 +568,7 @@ describe("M5-I5: the client adopts streamed aims and shots, and refuses to draw 
     w.initBuild({
       bank: { metal: 0 },
       ammo: 0,
+      queued: 0,
       power: { generation: 0, consumption: 0 },
       structures: [placed("b1")],
       aims: [["b1", "n3", 0]],
@@ -799,6 +800,7 @@ describe("#105: the squad's Metal rate", () => {
     w.initBuild({
       bank: { metal: 10 },
       ammo: 0,
+      queued: 0,
       power: { generation: 0, consumption: 0 },
       structures: [miner("m1", 40), miner("m2", 44), miner("m3", 48)],
       aims: [],
@@ -839,10 +841,95 @@ describe("#102: the squad's bullets are mirrored from the stream", () => {
     w.initBuild({
       bank: { metal: 10 },
       ammo: 7,
+      queued: 0,
       power: { generation: 0, consumption: 0 },
       structures: [],
       aims: [],
     });
     expect(w.ammo()).toBe(7);
+  });
+});
+
+// #102 stage 3: the HUD shows how many bullets are queued and how far the one at the head has got.
+// Neither is derivable from the bullet count — an increment says a bullet finished, never whether
+// another is behind it — so `queued` rides the wire. Its *phase* does not: `FORGE_MS` is a constant
+// both sides compile against, so the client anchors a clock at the arrival that restarted the head
+// bullet and integrates from there, rather than being told a countdown twenty times a second.
+describe("#102: the forge queue is mirrored, and its clock anchors on what arrived", () => {
+  const forging = (queued: number, at: number, ammo?: number) => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], queued, ammo }, at);
+    return w;
+  };
+
+  test("a fresh world has nothing queued and no forge running", () => {
+    const w = new ClientWorld(init(), "self");
+    expect(w.queuedBullets()).toBe(0);
+    expect(w.forgeStartedAt()).toBeNull();
+  });
+
+  test("a delta's queue replaces the mirror", () => {
+    expect(forging(2, 0).queuedBullets()).toBe(2);
+  });
+
+  test("an order landing on an idle forge starts the clock at that arrival", () => {
+    expect(forging(1, 1_000).forgeStartedAt()).toBe(1_000);
+  });
+
+  test("orders joining a forge already running leave the head bullet's clock alone", () => {
+    const w = forging(1, 1_000);
+    w.applyMapDelta({ tick: 2, moves: [], queued: 3 }, 1_050);
+    expect(w.forgeStartedAt()).toBe(1_000);
+  });
+
+  test("a bullet arriving restarts the clock for the one behind it", () => {
+    const w = forging(2, 1_000);
+    w.applyMapDelta({ tick: 2, moves: [], queued: 1, ammo: 1 }, 2_000);
+    expect(w.forgeStartedAt()).toBe(2_000);
+  });
+
+  // A completion and a fresh order can land on the same tick, which leaves `queued` exactly where
+  // it was. The bullet count is what says a forge finished, so the restart hangs on that rather
+  // than on the queue's shape — otherwise the overlay would run past the end of its bullet.
+  test("a completion masked by a new order in the same tick still restarts the clock", () => {
+    const w = forging(1, 1_000);
+    w.applyMapDelta({ tick: 2, moves: [], queued: 1, ammo: 1 }, 2_000);
+    expect(w.forgeStartedAt()).toBe(2_000);
+  });
+
+  test("a shot spending a bullet does not restart the clock", () => {
+    const w = forging(1, 1_000, 5);
+    w.applyMapDelta({ tick: 2, moves: [], ammo: 4 }, 1_500);
+    expect(w.forgeStartedAt()).toBe(1_000);
+  });
+
+  test("the last bullet leaving the queue stops the forge", () => {
+    const w = forging(1, 1_000);
+    w.applyMapDelta({ tick: 2, moves: [], queued: 0, ammo: 1 }, 2_000);
+    expect(w.queuedBullets()).toBe(0);
+    expect(w.forgeStartedAt()).toBeNull();
+  });
+
+  test("a tick that carries no queue leaves the mirror where it was", () => {
+    const w = forging(2, 1_000);
+    w.applyMapDelta({ tick: 2, moves: [] }, 1_050);
+    expect(w.queuedBullets()).toBe(2);
+  });
+
+  // A keyframe says how many are queued and nothing about how far the head has got, so the clock
+  // stays unanchored and the overlay holds off until the next bullet lands — at most one forge
+  // away. Anchoring here instead would draw a countdown from a phase the client never received.
+  test("the reconnect keyframe rebuilds the queue and leaves the clock unanchored", () => {
+    const w = forging(1, 1_000); // a clock already running, so the keyframe has one to clear
+    w.initBuild({
+      bank: { metal: 10 },
+      ammo: 2,
+      queued: 3,
+      power: { generation: 0, consumption: 0 },
+      structures: [],
+      aims: [],
+    });
+    expect(w.queuedBullets()).toBe(3);
+    expect(w.forgeStartedAt()).toBeNull();
   });
 });

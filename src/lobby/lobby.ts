@@ -139,6 +139,7 @@ interface SessionRecord {
   build?: BuildState; // the squad's economy — bank and buildings, written only by this hub
   sentMetal: number; // the last whole-Metal figure broadcast; the bank rides only when it moves
   sentAmmo: number; // the last bullet count broadcast; ammo rides on the same terms as the bank
+  sentQueued: number; // the last queue depth broadcast; likewise sparse, never a per-tick field
   sentPower: Power; // the last power figures broadcast; power rides only when they move
   pendingBuilds: StructureSpawn[]; // placements admitted since the last tick, awaiting broadcast
   mineGuards: Map<PlayerId, MineGuard>; // per-player hand-mine cadence/seq/accrual state
@@ -296,6 +297,7 @@ export class LobbyHub {
       pendingAttacks: [],
       sentMetal: 0,
       sentAmmo: 0,
+      sentQueued: 0,
       sentPower: { generation: 0, consumption: 0 },
       pendingBuilds: [],
       mineGuards: new Map(),
@@ -457,6 +459,10 @@ export class LobbyHub {
     session.sentMetal = session.build.bank.metal;
     session.build.ammo.bullets = this.startingAmmo;
     session.sentAmmo = session.build.ammo.bullets;
+    // Deliberately kept though it is provably `0 = 0` today — `freshBuildState` ran two lines up
+    // and there is no `startingQueued` knob for the queue the way there is for the pool. It reads
+    // the truth off the state rather than assuming it, so the mirror cannot desync if one appears.
+    session.sentQueued = session.build.ammo.queued;
 
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
     session.sim = spawnEnemyState(session.worldInit, this.rng);
@@ -515,6 +521,13 @@ export class LobbyHub {
       if (bullets !== session.sentAmmo) {
         session.sentAmmo = bullets;
         delta.ammo = bullets;
+      }
+      // The queue's depth, on the same terms again. `forgeMs` beside it deliberately never rides:
+      // it moves every tick, which would cost the settled tick a field to say nothing new.
+      const queued = session.build.ammo.queued;
+      if (queued !== session.sentQueued) {
+        session.sentQueued = queued;
+        delta.queued = queued;
       }
       const power = session.build.power;
       if (
@@ -746,6 +759,7 @@ export class LobbyHub {
         tick: session.tickNo,
         bank: { metal: session.build.bank.metal },
         ammo: session.build.ammo.bullets,
+        queued: session.build.ammo.queued,
         power: { ...session.build.power },
         structures: snapshotStructures(session.build),
         aims: snapshotAims(session.build),

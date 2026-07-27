@@ -134,6 +134,13 @@ export class LobbyClient {
     this.send({ type: "game/demolish", id, seq: ++this.demolishSeq });
   }
 
+  // Order a bullet. The Metal leaves the shared bank at the hub and the bullet joins the squad's
+  // serial forge queue; the client never writes either. No `seq` and no cadence — the order carries
+  // no state that can arrive stale, and two of them simply mean two bullets.
+  sendForge(): void {
+    this.send({ type: "game/forge" });
+  }
+
   // Report the client's own HP (it owns it). `hp <= 0` declares death. The server stores and
   // relays it; it never computes health. `seq` is monotonic, like sendPos.
   sendHealth(hp: number): void {

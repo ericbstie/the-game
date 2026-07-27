@@ -29,6 +29,9 @@ const TURRETS = 30;
 // The pool the ammo field is measured at. Nothing about that field varies but its digits — it is
 // `,"ammo":N` and no more — so this is a well-supplied squad rather than an achievable ceiling.
 const AMMO_POOL = 999;
+// And the depth the queue field is measured at (#102 stage 3). Same shape, same reasoning: three
+// digits of a squad dumping its bank into bullets, which is the widest this realistically gets.
+const FORGE_QUEUE = 999;
 
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
 const deflated = (value: unknown): number =>
@@ -51,8 +54,10 @@ export interface Report {
   // forged or spent, so a benchmark of the steady state can never show either one.
   bankTick: Reading;
   ammoTick: Reading;
+  queuedTick: Reading;
   bankMetal: number; // what the bank held when `bankTick` was taken
   ammoBullets: number; // and what the pool held for `ammoTick`
+  queuedBullets: number; // and how deep the forge queue was for `queuedTick`
   deflateMsPerTick: number; // CPU to compress one tick's delta, once
 }
 
@@ -75,6 +80,7 @@ export function worstCaseTick(): {
   full: MapDelta;
   bankTick: MapDelta;
   ammoTick: MapDelta;
+  queuedTick: MapDelta;
   enemies: number;
 } {
   const roster = Array.from({ length: PLAYERS }, (_, i) => ({
@@ -87,6 +93,7 @@ export function worstCaseTick(): {
   const build = freshBuildState(world.arena);
   build.bank.metal = 1_000_000;
   build.ammo.bullets = AMMO_POOL;
+  build.ammo.queued = FORGE_QUEUE;
 
   // A turret line, placed clear of the arena centre so the wave marching inward engages it.
   const spec = BUILDABLES.turret as BuildableSpec;
@@ -121,7 +128,7 @@ export function worstCaseTick(): {
   const assemble = (
     moves: MapDelta["moves"],
     peerShots: MapDelta["shots"],
-    economy: Pick<MapDelta, "bank" | "ammo"> = {},
+    economy: Pick<MapDelta, "bank" | "ammo" | "queued"> = {},
   ): MapDelta => {
     const delta: MapDelta = { tick: 12_345, moves, ...economy };
     if (events.spawns.length > 0) delta.spawns = events.spawns;
@@ -145,12 +152,13 @@ export function worstCaseTick(): {
     full: assemble(fullMoves, fullShots),
     bankTick: assemble(events.moves, events.shots, { bank: { metal: build.bank.metal } }),
     ammoTick: assemble(events.moves, events.shots, { ammo: build.ammo.bullets }),
+    queuedTick: assemble(events.moves, events.shots, { queued: build.ammo.queued }),
     enemies: state.enemies.size,
   };
 }
 
 export function measure(): Report {
-  const { trimmed, full, bankTick, ammoTick, enemies } = worstCaseTick();
+  const { trimmed, full, bankTick, ammoTick, queuedTick, enemies } = worstCaseTick();
   const reading = (delta: MapDelta): Reading => ({
     enemies,
     turrets: TURRETS,
@@ -163,8 +171,10 @@ export function measure(): Report {
     full: reading(full),
     bankTick: reading(bankTick),
     ammoTick: reading(ammoTick),
+    queuedTick: reading(queuedTick),
     bankMetal: bankTick.bank?.metal ?? 0,
     ammoBullets: ammoTick.ammo ?? 0,
+    queuedBullets: queuedTick.queued ?? 0,
     deflateMsPerTick: timeDeflate(trimmed),
   };
 }
@@ -173,7 +183,7 @@ const kib = (perTick: number) => (perTick * TICKS_PER_SECOND) / 1024;
 const pct = (from: number, to: number) => ((to - from) / from) * 100;
 
 export function format(report: Report): string {
-  const { full, trimmed, bankTick, ammoTick } = report;
+  const { full, trimmed, bankTick, ammoTick, queuedTick } = report;
   const row = (label: string, b: number) =>
     `  ${label.padEnd(30)}${`${b.toLocaleString()} B`.padStart(12)}${`${kib(b).toFixed(1)} KiB/s`.padStart(14)}`;
   // Against `trimmed`, which carries neither field — so this is what the field itself costs.
@@ -196,6 +206,7 @@ export function format(report: Report): string {
     `what a sparse economy field costs on the tick it moves — a settled tick carries neither:`,
     extra(`bank, at ${report.bankMetal.toLocaleString()} Metal`, bankTick),
     extra(`ammo, at ${report.ammoBullets.toLocaleString()} bullets`, ammoTick),
+    extra(`queued, at ${report.queuedBullets.toLocaleString()} ordered`, queuedTick),
     ``,
     `what deflate costs, which bytes alone cannot show:`,
     `  ${report.deflateMsPerTick.toFixed(3)} ms per tick per client`,

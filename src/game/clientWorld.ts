@@ -118,6 +118,9 @@ export class ClientWorld {
   private selfHp: number; // client-authoritative: the owner judges its own contact damage
   // Client clock, stamped when a `structHits` entry last landed. See `structureUnderAttack`.
   private lastStructHitAt = Number.NEGATIVE_INFINITY;
+  // Client clock, stamped when the bullet at the head of the forge queue was last seen to start.
+  // Null while nothing is forging. See `forgeStartedAt`.
+  private forgeAt: number | null = null;
 
   // `initialHp` carries the owner's HP across a reconnect rebuild (a fresh world defaults to full).
   // Without it, a mid-match reconnect would reset to full and the report loop could relay that heal
@@ -286,7 +289,18 @@ export class ClientWorld {
     if (delta.bank) this.build.bank.metal = delta.bank.metal;
     // Tested against undefined, not truthiness: an emptied pool arrives as a 0, which is exactly
     // the value the trigger has to see.
-    if (delta.ammo !== undefined) this.build.ammo.bullets = delta.ammo;
+    if (delta.ammo !== undefined) {
+      // A bullet arriving is what restarts the forge on the one behind it, and it is the only
+      // signal that survives a completion and a fresh order landing on the same tick — which
+      // leaves `queued` exactly where it was.
+      if (delta.ammo > this.build.ammo.bullets) this.forgeAt = now;
+      this.build.ammo.bullets = delta.ammo;
+    }
+    if (delta.queued !== undefined) {
+      if (this.build.ammo.queued === 0 && delta.queued > 0) this.forgeAt = now;
+      this.build.ammo.queued = delta.queued;
+    }
+    if (this.build.ammo.queued === 0) this.forgeAt = null;
     if (delta.power) this.build.power = { ...delta.power };
     for (const b of delta.builds ?? []) {
       if (!this.build.structures.has(b.id)) insertStructure(this.build, { ...b });
@@ -366,6 +380,7 @@ export class ClientWorld {
   initBuild(msg: {
     bank: Bank;
     ammo: number;
+    queued: number;
     power: Power;
     structures: StructureSpawn[];
     aims: TurretAim[];
@@ -374,6 +389,11 @@ export class ClientWorld {
     for (const s of msg.structures) insertStructure(this.build, { ...s });
     this.build.bank.metal = msg.bank.metal;
     this.build.ammo.bullets = msg.ammo;
+    // How many are queued, and nothing about how far the one at the head has got — the keyframe
+    // does not carry that and cannot be guessed. The clock stays unanchored until the next bullet
+    // lands, at most one forge away; anchoring here would draw a countdown from a phase nobody sent.
+    this.build.ammo.queued = msg.queued;
+    this.forgeAt = null;
     this.build.power = { ...msg.power };
     // Rebuilding a turret mints it un-aimed, so the keyframe's aims are what restore the lines and
     // the lightning a reconnecter would otherwise never be told about.
@@ -390,6 +410,20 @@ export class ClientWorld {
   // shot the server would refuse for want of a bullet is never drawn (#85).
   ammo(): number {
     return this.build.ammo.bullets;
+  }
+
+  // Bullets ordered, paid for, and still forging (#102) — the figure the HUD's circle states.
+  queuedBullets(): number {
+    return this.build.ammo.queued;
+  }
+
+  // When the bullet at the head of the queue was last seen to start forging, on this client's own
+  // clock, or null while nothing is forging. This is an *anchor*, not a countdown: the forge runs
+  // at `FORGE_MS` a bullet, so the HUD integrates from here and needs no per-tick figure. It is
+  // late by whatever the arrival was — at worst a tick plus the trip — and every completion resets
+  // it, so the error cannot accumulate.
+  forgeStartedAt(): number | null {
+    return this.forgeAt;
   }
 
   // Metal per second the squad's miners are paying in (#105). Per squad, not per player: the bank is

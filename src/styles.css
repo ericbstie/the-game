@@ -496,6 +496,77 @@ button:disabled {
   }
 }
 
+/* The ammo box sits on the Energy readout (#102), so that readout stops being a direct flex child
+   of `.banks` and becomes the bottom of a column. Right-aligned: the box is narrower than the
+   readout, and hanging both off the same rule is what makes them read as one stack. */
+.bank-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+/* A square, not a readout's oblong: this is the one thing in the HUD that is pressed as well as
+   read, and the build slots are the squares a player already presses. Their geometry exactly —
+   3.5rem, art over a figure — so the two agree without a second idiom to learn. */
+.banks .ammo {
+  position: relative;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  place-items: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  padding: 0 0 0.2rem;
+  border: var(--rule);
+  background: var(--paper);
+  /* A button inherits the ink-block colour, and this box is plated in paper like every readout. */
+  color: var(--ink);
+  /* With the Metal readout, the only thing that takes pointer events back from `.banks` — without
+     it the order never reaches the button. Same trade: the arena under it swallows the click. */
+  pointer-events: auto;
+}
+
+.banks .ammo strong {
+  grid-row: 2;
+  font-size: 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0; /* the shared button rule tracks capitals, which pulls the digits apart */
+  line-height: 1;
+}
+
+/* Craft progress. The box starts fully veiled and clears bottom to top over one forge, so the grey
+   that is left is the part of the bullet still to be made and its lower edge rises. Translucent
+   rather than opaque, so the icon stays visible underneath and the box reads as being worked on
+   rather than switched off.
+
+   `animation-duration` is set inline from `FORGE_MS`, so the bar cannot drift from the forge it
+   draws — and the browser then runs it continuously across the ~20 arrivals a forge gets, which is
+   the one thing a 20 Hz stream cannot do for itself. */
+.banks .ammo-forge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  /* A light grey rather than a translucent black: over the box's paper the two look the same, but
+     over the icon's ink only this one lightens, which is what makes the box read as being worked on
+     rather than merely shadowed. Provisional — a played match is what judges it. */
+  background: rgb(170 170 170 / 62%);
+  animation-name: ammo-forge;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+  pointer-events: none;
+}
+
+@keyframes ammo-forge {
+  from {
+    height: 100%;
+  }
+  to {
+    height: 0;
+  }
+}
+
 .build-bar {
   position: absolute;
   bottom: 1rem;
@@ -539,7 +610,8 @@ button:disabled {
    shorthand drops the pair `body` sets, and old-style figures set `10` as an x-height `I` beside an
    x-height `o` at every size. The diameter holds three digits clear of the rule; a fourth
    overflows, which is #101's problem when it gets there. */
-.build-cost {
+.build-cost,
+.ammo-queued {
   position: absolute;
   top: -0.95rem;
   left: -0.95rem;
