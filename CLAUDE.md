@@ -65,6 +65,20 @@ This governs rewriting and triaging existing issues too, not just new ones. An i
 says less is not weaker — everything added that the author never said is a claim someone
 will later mistake for a decision.
 
+### Balance numbers are provisional until they have been played
+
+A number only a played match can judge — a cost, a rate, an HP, a spawn timing, a damage
+value — is **provisional**. Write down the current value, say it is provisional, and move
+on. Do not hold a ticket open waiting for it to be justified, and do not press for a better
+one before anyone can play it. Arbitrary is fine; a number that has been played and kept is
+worth more than a number argued about.
+
+A **later change to one of these is a retune, not a correction** — nobody was wrong.
+
+This does not cover numbers the code fixes: a wire size, a cadence floor, an existing
+constant a feature has to match, a value derived from another. Those are constraints, and
+they are cited rather than chosen.
+
 ### Claiming an issue
 
 **Before writing any code for an issue, do all three:**
