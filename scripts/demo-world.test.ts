@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { PUFF_REACH } from "../src/game/fx";
 import { MINIMAP_COVERAGES, minimapWindow, oreCells, oreDensity } from "../src/game/minimap";
 import {
   DEMO_CAMERA,
@@ -6,6 +7,7 @@ import {
   DEMO_SELF,
   DEMO_VIEWPORT,
   demoBursts,
+  demoPuffs,
   demoWorld,
 } from "./demo-world";
 
@@ -38,5 +40,30 @@ describe("the scene the harness paints", () => {
     const flashing = world.enemies.filter((e) => e.flashing).map((e) => e.pos);
     expect(flashing.length).toBeGreaterThan(1); // a grunt and an elite; neither says much alone
     expect(demoBursts(world, DEMO_NOW).map((b) => b.pos)).toEqual(flashing);
+  });
+
+  // A puff stands where a spider *was*, so the one way this scene can be wrong is the mirror of the
+  // burst's: a cloud drawn over a spider that is still standing is a frame the game cannot produce,
+  // and it would also be the frame where nobody could tell whether the mark reads on bare paper.
+  test("strikes its puffs clear of every spider still standing", () => {
+    const world = demoWorld();
+    const puffs = demoPuffs(DEMO_NOW);
+    expect(puffs.length).toBeGreaterThan(0);
+    for (const puff of puffs) {
+      for (const enemy of world.enemies) {
+        const apart = Math.hypot(puff.pos.x - enemy.pos.x, puff.pos.y - enemy.pos.y);
+        expect(apart).toBeGreaterThan(PUFF_REACH + enemy.radius);
+      }
+    }
+  });
+
+  // Inside the frame the harness paints, or the picture answers nothing about a mark nobody sees.
+  test("strikes its puffs inside the viewport the harness captures", () => {
+    for (const puff of demoPuffs(DEMO_NOW)) {
+      expect(puff.pos.x).toBeGreaterThan(DEMO_CAMERA.x + PUFF_REACH);
+      expect(puff.pos.x).toBeLessThan(DEMO_CAMERA.x + DEMO_VIEWPORT.width - PUFF_REACH);
+      expect(puff.pos.y).toBeGreaterThan(DEMO_CAMERA.y + PUFF_REACH);
+      expect(puff.pos.y).toBeLessThan(DEMO_CAMERA.y + DEMO_VIEWPORT.height - PUFF_REACH);
+    }
   });
 });

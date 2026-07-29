@@ -26,6 +26,12 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > frame — a starburst on every connect. It is **0.09 ms** at the count the game's own cadences put
 > up, which is under this instrument's noise floor and is why the section below is stale by #114 and
 > not by #115. See [What an impact burst costs](#what-an-impact-burst-costs-115).
+>
+> [#116](https://github.com/ericbstie/the-game/issues/116) has added a third — an ink puff on every
+> death — at **0.05 ms**, under the noise floor for the same reason and by a wider margin: deaths are
+> an order of magnitude rarer than hits. It is nonetheless the **dearest mark in the frame per unit**,
+> which is a correction to rule 1 rather than a cost. See
+> [What a death puff costs](#what-a-death-puff-costs-116).
 
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
 6.3 ms — 38% of it, leaving 10.4 ms of headroom.**
@@ -38,13 +44,14 @@ The worst case is not hypothetical: 240 enemies (`ENEMY_CAP`, the hard governor)
 6 players and 4 nests, *all inside the viewport so nothing is culled*, over the full grass-and-ore
 floor, everything standing passing through the Y-sort — and every one of them damaged, so every one
 of them carries a bar. The script reports it as **290 standing entities, 847 blits, 286 health bars,
-62 stroked paths, 10 miner floats, 4 impact bursts**.
+63 stroked paths, 10 miner floats, 4 impact bursts, 1 death puff**.
 
-**62 is a count of stroked paths, not of shot lines.** Fifty are shot lines — 45 relayed squadmate
+**63 is a count of stroked paths, not of shot lines.** Fifty are shot lines — 45 relayed squadmate
 shots and 5 generated turret pulses, which is the `SHOT_LINES` the fixture asks for. Eleven are the
-minimap's marks: four nest rings, six squad dots and the self ring. The last one is **every impact
-burst in the frame**, however many there are: #115 bundles them into a single path on purpose, so
-the burst count moves the segments in that path and never the count of paths.
+minimap's marks: four nest rings, six squad dots and the self ring. The last two are **every impact
+burst in the frame** and **every death puff in it**, however many there are: #115 and #116 each
+bundle their own into a single path on purpose, so the mark count moves the segments in those paths
+and never the count of paths.
 
 **The minimap is inside every figure on this page, the paper baseline included.** `drawWorld` draws
 it whenever the frame's `selfId` names one of the players (`src/game/draw.ts:471`), and the fixture
@@ -94,6 +101,7 @@ difference from the row above.
 | + the shot lines | 6.3 | 1.4 | 50 concurrent — 5 generated turret pulses, 45 relayed squadmate shots |
 | + the miner floats | 6.3 | ≈0 | 10 `+1`s, each stroked and filled — see below |
 | + the impact bursts | — | ≈0 | 4 starbursts, one path (#115). Not in the run above; 0.09 ms isolated |
+| + the death puffs | — | ≈0 | 1 ink puff, one path (#116). Not in the run above; 0.05 ms isolated |
 | **Total** | **6.3** | | **38% of a 16.67 ms frame** |
 
 **The script's printed labels for the first two rows are wrong, and the names in brackets above are
@@ -189,7 +197,7 @@ read 2.67 ms at fifty against 2.73 at 240 — the same figure. That is expected 
 concurrent shot count is set by `SHOT_LINE_MS` against the shot *event* rate, not by how many enemies
 stand on the floor, so raising the cap moves the standing layer and leaves this one alone.
 
-**A shot is still one stroked path**, so the `61 stroked paths` above is unchanged; each of those
+**A shot is still one stroked path**, so the stroked-path count above is unchanged; each of those
 paths now carries about nine segments instead of one. The break is struck as geometry rather than
 left to `setLineDash`, which measured dearer for the identical pattern — 5.55 ms against 4.88 at
 fifty — and would leave a dash in force over every name, arrow and map rule drawn after it.
@@ -280,6 +288,105 @@ probability and no distance filter — the burst fires on every `EnemyHit` the c
 count is what the game's own cadences and `reapDamage` produce. The screenshot the probe writes is
 the frame those numbers were counted on.
 
+## What a death puff costs (#116)
+
+**An ink puff is 0.05 ms of the frame at the count the game's own cadences put up — and 70 µs each,
+which makes it the dearest mark in the frame per unit.** Those two facts are not in tension: the
+count is one. [#116](https://github.com/ericbstie/the-game/issues/116) strikes a puff where every
+enemy dies, and a death is what a run of connects ends in rather than what each of them is.
+
+**One is the count, and it is derived rather than budgeted.** `concurrentPuffs()` in
+`scripts/puff-ink.ts` is `concurrentBursts()` read from the other side of `reapDamage`
+(`src/game/enemies.ts`), which reports a killing connect as a death and drops it out of `hits`. A
+grunt takes `ceil(GRUNT_HP / damage)` connects, so the death rate is the connect rate divided by
+that: **5.5 deaths a second against 43.5 hits**, which at `PUFF_MS` 180 is one puff on screen. The
+same six players and five powered turrets produce fifty shot lines and four bursts.
+
+Medians of five runs, one machine, dpr 2, `--enemies 500`, all three marks in the same session so
+they are comparable rather than quoted across pages.
+
+| Concurrent | Death puffs (#116) | Impact bursts (#115) | Shot lines (#114) |
+| ---: | ---: | ---: | ---: |
+| 1 — **what the cadences put up** | 0.05 ms | — | — |
+| 4 — what they put up in bursts | — | 0.09 ms | — |
+| 25 | 1.67 ms | 0.73 ms | 1.35 ms |
+| 50 | 3.48 ms | 1.72 ms | 2.55 ms |
+| 150 — a wave clear, in one tick | 11.65 ms | 5.73 ms | 8.31 ms |
+
+**A puff costs twice a burst and 1.4 times a shot line, while laying 16% of a shot's ink and 95% of a
+burst's.** At fifty concurrent that is 69.5 µs a puff against 34.4 µs a burst and 51.1 µs a shot. It
+is **six arcs** against a burst's eight straight segments and a shot's ~fourteen, so counting the
+pieces predicts the cheapest of the three and measures the dearest — see the amendment to rule 1
+below. **The levers, if this ever has to get cheaper, are the lobe count and the lobe radii** — not
+the count alone. A swept arc is charged by how much it sweeps, so `PUFF_LARGE` and `PUFF_SMALL` move
+the price as directly as `PUFF_LOBES` does: at a fixed count of 300 arcs, dpr 2, cost ran 2.7 ms at
+radius 3, 4.5 ms at 9, 12.0 ms at 30 and 30.7 ms at 120. Shrinking the count while holding the radii
+would under-deliver. The ink and the geometry are both under the marks it is dearer than.
+
+**None of that matters at one.** A wave clear is the case to watch, and it is what the 150 row
+prices: 150 deaths landing inside one 180 ms window is 11.65 ms, which does not fit.
+
+**But 150 is not reachable by raising `ENEMY_CAP`, and an earlier draft of this section said it was.**
+A shot is single-target hitscan (`reapDamage`), so at most `SQUAD` 6 + 5 powered turrets = **11
+enemies can die per 20 Hz tick** — a ceiling of about 40 deaths inside a 180 ms window however many
+spiders are standing. That is the same argument this section already makes two paragraphs down: the
+count rides the death rate, not the population. `ENEMY_CAP` is a population governor, so #111 raising
+it cannot on its own put the frame at the 150 row. What would is anything that multiplies **kill
+throughput** — more shooters, more damage, or splash. If #111 carries one of those, this is the row
+to re-price against; if it only raises the cap, this row stays unreachable.
+
+**The count does not move with the enemy cap.** The identical ladder at the governor's 240 read
+0.053 / 1.697 / 3.567 / 12.207 against 0.047 / 1.673 / 3.477 / 11.652 at 500 — the same figures
+inside the noise. The concurrent puff count is set by the death rate against `PUFF_MS`, not by how
+many spiders stand on the floor, exactly as #114 and #115 found for their own marks.
+
+**The whole-frame instrument could not see this layer either, and this is the fourth independent
+reproduction.** Across the three cap-500 runs taken for this section, the cumulative `+ the puffs`
+row came back *cheaper* than the `+ the bursts` row it contains (10.735 against 10.768), and in
+another run the `+ the miner floats` row read dearer than the `+ the bursts` row above it (10.173
+against 9.460). Strict subsets cannot cost more than their supersets. Every figure in this section
+is from the isolated ladder. **The whole-frame totals on this machine — 9.4–10.7 ms at cap 500 — are
+a different machine from the 6.3 ms headline and are not comparable to it**, and the ticket's quoted
+6.2 ms / 37% is a third figure again, older than this page's own.
+
+### What a puff lays
+
+`bun run puff:ink` strokes the shipped `inkPuff` on a real canvas and counts what it puts on the
+paper, at dpr 1, 2 and 3. **Ink** is the sum of per-pixel coverage, so a pixel the rasteriser half
+covered counts as half a pixel; the shot it is held against is one at full reach, axis-aligned.
+
+| dpr | Puff ink (device px) | Against a shot's mark | Solid share |
+| ---: | ---: | ---: | ---: |
+| 1 | 219 | 16.0% | 30.5% |
+| 2 | 926 | 16.9% | 59.3% |
+| 3 | 2,065 | 16.7% | 70.3% |
+
+**Its ink length is 115 world units** — the six swept arcs summed, an eighth of a full-reach shot's
+719 — at every resolution, because geometry has no rasteriser in it.
+
+**It rasterises as lightly as a burst does, and for the same reason turned up a notch.** A burst is
+three quarters diagonal; a puff has no straight stretch anywhere on it at all, so every device pixel
+it touches is a partial one. At dpr 1 it comes out 30.5% solid where an axis-aligned shot line is
+69%. It is ink on white paper either way, and **dpr 1 is where to look first if it ever reads too
+faint** — the same warning the burst carries, and the puff is the fainter of the two.
+
+### It is not a wall of ink
+
+Asked with the same probe rather than an opinion, on the same 800 × 600 viewport this page measures.
+The wave-clear row is what `--puffs 40` is for: the cadences never average to it, and a cleared wave
+is exactly when it happens anyway.
+
+| dpr | 1 puff — what the cadences put up | 40 puffs — a wave clearing at once |
+| ---: | ---: | ---: |
+| 1 | 0.05% of the screen | 1.83% |
+| 2 | 0.05% | 1.90% |
+| 3 | 0.05% | 1.90% |
+
+**A twentieth of one percent of the screen at the rate the game kills, and under two percent when a
+whole wave goes at once.** Nothing was narrowed to get there: no cooldown, no cap, no probability and
+no distance filter — the puff fires on every death the client is streamed. The screenshot the probe
+writes is the frame those numbers were counted on.
+
 ## The rules
 
 1. **Shot lines are the most expensive thing in the frame, per unit** — and one effect has already
@@ -302,6 +409,15 @@ the frame those numbers were counted on.
    **67%** of it — 8 strokes against ~14 — and bundling every burst in a frame into one path changed
    nothing on the clock. Price a new mark by counting its segments; the ink tells you whether it will
    *read*, and nothing about what it will cost.
+
+   **#116 is the first mark this rule gets wrong, and the exception is curves.** A death puff is
+   **six arcs** — fewer pieces than a burst's eight and half a shot's fourteen — lays **16%** of a
+   shot's ink, and costs **136%** of it: 69.5 µs against 51.1 at fifty concurrent, the dearest thing
+   in the frame per unit. Neither axis predicts it, because `ctx.arc` is not one piece: the
+   rasteriser flattens a swept arc into as many segments as its radius and span need, and the mark
+   is charged for those rather than for the one call. **Count segments for a polyline; for anything
+   curved, measure it.** The lever on a curved mark is how many arcs it has, and that is all this
+   rule can still say.
 2. **Nothing new gets a full-viewport pass.** The clear and the paper fill are two of them already,
    1.92 M device pixels each. What one of them costs on its own is **not measured here**: the
    script's first row carries the grass, the squad, the nests and the map alongside them and cannot
@@ -396,6 +512,8 @@ bun run frame:budget --enemies 500                       # a cap the governor ha
 bun run shot:ink                                         # what a shot's mark lays, at dpr 1, 2 and 3
 bun run burst:ink                                        # what an impact burst lays, and its share of a screen
 bun run burst:ink --bursts 40                            # a density the cadences cannot reach today
+bun run puff:ink                                         # what a death puff lays, at dpr 1, 2 and 3
+bun run puff:ink --puffs 40                              # a wave clearing at once
 ```
 
 `--enemies` overrides `ENEMY_CAP` for the fixture alone and nothing else, so a frame can be priced
@@ -405,9 +523,10 @@ governor says today, which is what every unlabelled figure on this page was meas
 `frame:budget` prints the layer breakdown and the projected worst case, and writes the frame it
 measured to a PNG so the numbers can be checked against the picture that produced them.
 
-`shot:ink` and `burst:ink` answer the other axis and only that one — how much ink a mark lays, never
+`shot:ink`, `burst:ink` and `puff:ink` answer the other axis and only that one — how much ink a mark lays, never
 what it costs. Both take `--dpr` as often as you like (the default is the three above) and `--json`
 for the raw counts. Nothing in either is timed, so neither needs an idle machine: a pixel count is
 the same on a busy one, which is the whole reason the ink claims above can be trusted where a 1.3 ms
-layer could not. `burst:ink` also takes `--bursts` for a density the shipped cadences cannot reach,
-which is the only way to ask the wall-of-ink question about a retune before it lands.
+layer could not. `burst:ink` and `puff:ink` also take `--bursts` / `--puffs` for a density the
+shipped cadences cannot reach, which is the only way to ask the wall-of-ink question about a retune
+— or about a wave clear — before it lands.

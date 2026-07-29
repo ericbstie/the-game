@@ -70,6 +70,11 @@ export const HIT_FLASH_MS = 90;
 // to `impactMarks` (#74 §5). It has to clear `ENEMY_RENDER_DELAY_MS` on top of any lifetime a caller
 // might ask for, because a mark spends that delay waiting for its sprite before it is drawn at all.
 export const IMPACT_RETENTION_MS = 250;
+// The same memory bound for the marks left where enemies died (#116), and the same rule: it is not
+// the puff's lifetime, which the render layer owns and passes to `deathMarks`. It needs no clearance
+// for `ENEMY_RENDER_DELAY_MS`, unlike its twin above — a puff spends no time waiting for a sprite,
+// because the sprite it replaces is deleted the instant the death arrives.
+export const DEATH_RETENTION_MS = 250;
 // Dead this long, then the client snaps back to center. With a stopwatch for a score and a base
 // to defend, the long walk back from centre is the penalty — at 3 s (M3) dying was free.
 export const RESPAWN_DELAY_MS = 20_000;
@@ -136,6 +141,7 @@ export class ClientWorld {
   private readonly enemies = new Map<string, EnemyRecord>();
   private readonly shots: ShotEvent[] = []; // squadmates' shots; the render layer ages them itself
   private readonly impacts: Mark[] = []; // where shots have connected (#115); aged the same way
+  private readonly deaths: Mark[] = []; // where enemies have died (#116); the death-side twin
   readonly build: BuildState; // server-owned; mirrored here so the ghost tests placement locally
   // Whether the squad has found the door (#93). Server-held: the only writes are the two below,
   // each of them inside a handler for a message the server sent, and each of them writing `true`
@@ -312,7 +318,21 @@ export class ClientWorld {
       // move behind it yet falls back to the spawn position, which is what its sprite is showing.
       this.impacts.push({ pos: interpolateAt(enemy.buffer, now) ?? { ...enemy.pos }, at: now });
     }
-    for (const id of delta.deaths ?? []) this.enemies.delete(id);
+    for (const id of delta.deaths ?? []) {
+      const enemy = this.enemies.get(id);
+      // Sampled on the *delayed* clock, unlike an impact's mark: this is the last point the sprite
+      // was interpolated to before the line below took it off the screen, and it is a whole render
+      // delay short of where the stream has the spider by now. The puff stands in for a drawing, so
+      // it goes where that drawing was. An enemy killed before its first move sample falls back to
+      // the spawn position, which is what its sprite was showing.
+      if (enemy) {
+        this.deaths.push({
+          pos: interpolateAt(enemy.buffer, now - ENEMY_RENDER_DELAY_MS) ?? { ...enemy.pos },
+          at: now,
+        });
+      }
+      this.enemies.delete(id);
+    }
     for (const nd of delta.nests ?? []) {
       const nest = this.nests.find((n) => n.id === nd.id);
       if (nest) {
@@ -364,6 +384,8 @@ export class ClientWorld {
     // otherwise hold every mark it ever laid.
     const marked = now - IMPACT_RETENTION_MS;
     while (this.impacts.length > 0 && this.impacts[0].at < marked) this.impacts.shift();
+    const buried = now - DEATH_RETENTION_MS;
+    while (this.deaths.length > 0 && this.deaths[0].at < buried) this.deaths.shift();
   }
 
   // Adopt streamed turret aims. Only turrets carry a runtime, and an id for a structure this
@@ -431,6 +453,23 @@ export class ClientWorld {
       const since = renderTime - m.at;
       return since >= 0 && since < lifeMs;
     });
+  }
+
+  // The puffs still up — the ink struck where enemies died this frame (#116), oldest first.
+  //
+  // **Judged on `now` and never on `renderTime`, which is the one place this parts company with
+  // `impactMarks`.** A hit's sprite has yet to reach the blow, so its mark is held back for the
+  // render delay; a death's sprite is *deleted* by `applyMapDelta` the instant the delta lands, so
+  // there is nothing left for the puff to wait for. Held back the same way it would start
+  // `ENEMY_RENDER_DELAY_MS` after the spider it replaces had already gone, which is a visible hole
+  // in the frame. The delay is spent on the mark's *position* instead — see the deaths loop above —
+  // so the puff still stands where the drawing was rather than where the stream had got to.
+  //
+  // The lifetime is the caller's, like a shot line's and like a burst's. There is no floor under it
+  // as `impactMarks` has, because the floor is what holds a mark back and this one is never held:
+  // the frame that is somehow asking before the delta it is answering has already lost the spider.
+  deathMarks(now: number, lifeMs: number): Mark[] {
+    return this.deaths.filter((m) => now - m.at < lifeMs);
   }
 
   // Rebuild the economy from the reconnect keyframe: the bank and every building the squad has

@@ -11,6 +11,7 @@ import {
 } from "./build";
 import {
   ClientWorld,
+  DEATH_RETENTION_MS,
   ENEMY_RENDER_DELAY_MS,
   HIT_FLASH_MS,
   IMPACT_RETENTION_MS,
@@ -869,6 +870,163 @@ describe("#115: the mark left where a shot connects", () => {
     // Asked for on a window far longer than anything the render layer would ever pass, so this is
     // the buffer being empty rather than the query declining to hand its contents over.
     expect(w.impactMarks(swept, IMPACT_RETENTION_MS * 10)).toEqual([]);
+  });
+});
+
+// #116: an ink puff is struck where an enemy dies. The same `Mark` #115 holds, on its own list, with
+// one difference that is the whole of the ticket: a hit's sprite has yet to reach the blow, and a
+// death's sprite is *deleted* — so a puff waits for nothing, or it fires into a hole where the
+// spider used to be.
+describe("#116: the mark left where an enemy dies", () => {
+  const TICK_MS = 50;
+  const STEP = 8; // world units a grunt covers in one tick, near enough
+  // The stream at the 20 Hz it really runs at, with the enemy walking and dying on `diesOn`. It has
+  // to walk: a mark timed against the sprite and a mark timed against the stream are the same point
+  // only while nothing moves, and they are the two answers this describe block tells apart.
+  const walking = (diesOn: number | null, ticks = 6, from = 1_000) => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 500, y: 300 }, hp: GRUNT_HP, sector: 0 }],
+      },
+      from,
+    );
+    for (let i = 0; i < ticks; i++) {
+      w.applyMapDelta(
+        {
+          tick: 2 + i,
+          moves: [["e1", 500 + i * STEP, 300]],
+          ...(diesOn === i ? { deaths: ["e1"] } : {}),
+        },
+        from + i * TICK_MS,
+      );
+    }
+    return w;
+  };
+
+  const PUFF_LIFE = 180;
+  const DIES_ON = 3;
+  const killed = 1_000 + DIES_ON * TICK_MS; // the client instant the death arrived
+
+  test("a wave nothing has killed has no puffs up", () => {
+    const w = walking(null);
+    expect(w.deathMarks(1_000, PUFF_LIFE)).toEqual([]);
+    expect(w.deathMarks(1_000 + ENEMY_RENDER_DELAY_MS, PUFF_LIFE)).toEqual([]);
+    expect(w.deathMarks(9_999, PUFF_LIFE)).toEqual([]);
+  });
+
+  // The first of the two timing boxes: the puff stands where the *sprite* last stood, which is a
+  // render delay behind where the stream had got the spider to. Both sides are read off `snapshot`,
+  // on the frame before the death lands, so nothing here can pass by agreeing with itself.
+  test("the puff stands where the sprite stood, not where the stream had got to", () => {
+    const w = walking(null, DIES_ON);
+    const lastDrawn = enemyIn(w, killed, "e1")?.pos as Vec2;
+    w.applyMapDelta(
+      { tick: 90, moves: [["e1", 500 + DIES_ON * STEP, 300]], deaths: ["e1"] },
+      killed,
+    );
+    const puff = w.deathMarks(killed, PUFF_LIFE)[0]?.pos as Vec2;
+    expect(puff).toEqual(lastDrawn);
+    // And that this is a claim at all: the stream is a whole tick of walking further on.
+    expect(puff.x).toBeLessThan(500 + DIES_ON * STEP);
+  });
+
+  // The second box, and the one the render delay makes a trap. A hit's mark is held back until the
+  // sprite reaches it (`impactMarks`); a death's sprite never reaches anything, because the record
+  // is deleted the instant the delta lands. Held back the same way, the puff would start a render
+  // delay after the spider had already gone — the gap this test exists to close.
+  test("the puff is already up on the first frame the sprite is gone", () => {
+    const w = walking(null, DIES_ON);
+    expect(enemyIn(w, killed, "e1")).toBeDefined();
+    w.applyMapDelta({ tick: 90, moves: [], deaths: ["e1"] }, killed);
+    expect(enemyIn(w, killed, "e1")).toBeUndefined();
+    expect(w.deathMarks(killed, PUFF_LIFE).length).toBe(1);
+  });
+
+  // The seam between the two boxes, swept rather than sampled at its ends. The removal and the puff
+  // are judged on different clocks, so the frame to worry about is not either end of the life — it
+  // is every frame around the handover, and there must be no instant on which the spider is off the
+  // screen and nothing has taken its place.
+  test("no frame passes with the spider gone and nothing in its place", () => {
+    const w = walking(null, DIES_ON);
+    for (let now = killed - TICK_MS; now < killed; now++) {
+      expect(enemyIn(w, now, "e1")).toBeDefined();
+      expect(w.deathMarks(now, PUFF_LIFE).length).toBe(0);
+    }
+    w.applyMapDelta({ tick: 90, moves: [], deaths: ["e1"] }, killed);
+    for (let now = killed; now < killed + PUFF_LIFE; now++) {
+      expect(enemyIn(w, now, "e1")).toBeUndefined();
+      expect(w.deathMarks(now, PUFF_LIFE).length).toBe(1);
+    }
+  });
+
+  // Measured from the instant the death arrived, with no render delay anywhere in it. Both ends
+  // matter: the delay applied here would open the mark late (the box above) *and* retire it late,
+  // holding ink on the paper a twentieth of a second after the effect was meant to be over.
+  test("it lasts exactly the life asked for, with no render delay added to either end", () => {
+    const w = walking(DIES_ON);
+    const up = (now: number) => w.deathMarks(now, PUFF_LIFE).length;
+    expect(up(killed)).toBe(1);
+    expect(up(killed + PUFF_LIFE - 1)).toBe(1);
+    expect(up(killed + PUFF_LIFE)).toBe(0);
+  });
+
+  // It marks where the spider fell, not a point that keeps moving after it. Nothing is left to
+  // interpolate, so this is really a claim that the position was frozen when it was taken.
+  test("the puff holds its point for the whole of its life", () => {
+    const w = walking(DIES_ON);
+    const struck = w.deathMarks(killed, PUFF_LIFE)[0]?.pos as Vec2;
+    expect(w.deathMarks(killed + PUFF_LIFE - 1, PUFF_LIFE)[0]?.pos).toEqual(struck);
+  });
+
+  // A wave clear is many deaths on one tick, and each is its own mark.
+  test("a wave cleared at once puffs once per enemy, each where that enemy fell", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        spawns: [1, 2, 3].map((i) => ({
+          id: `e${i}`,
+          kind: "grunt" as const,
+          pos: { x: 500 + i * 40, y: 300 },
+          hp: GRUNT_HP,
+          sector: 0,
+        })),
+      },
+      1_000,
+    );
+    w.applyMapDelta({ tick: 2, moves: [], deaths: ["e1", "e2", "e3"] }, 1_050);
+    const marks = w.deathMarks(1_050, PUFF_LIFE);
+    expect(marks.map((m) => m.pos.x)).toEqual([540, 580, 620]);
+  });
+
+  // The same unknown-id guard `moves`, `hits` and `structHits` already apply. A death naming an id
+  // this client has never seen says nothing about where anything stood, so there is no point to
+  // strike a puff at — and a keyframe rebuild is exactly how a client ends up being told about one.
+  test("a death naming an enemy this client has never seen puffs nothing", () => {
+    const w = walking(null);
+    w.applyMapDelta({ tick: 99, moves: [], deaths: ["ghost"] }, 1_400);
+    expect(w.deathMarks(1_400, PUFF_LIFE)).toEqual([]);
+  });
+
+  test("a hit on its own leaves no puff here", () => {
+    const w = walking(null);
+    w.applyMapDelta({ tick: 99, moves: [], hits: [{ id: "e1", hp: 4 }] }, 1_400);
+    expect(w.deathMarks(1_400, PUFF_LIFE)).toEqual([]);
+  });
+
+  // A tab that is not drawing still takes every delta, so the puffs have to be pruned by the stream
+  // and not by the frame — the memory bound `shots` and `impacts` already have, for the same reason.
+  test("puffs are pruned by the stream, so a match that is never drawn cannot pile them up", () => {
+    const w = walking(2);
+    const swept = 1_000 + 2 * TICK_MS + DEATH_RETENTION_MS + 1;
+    w.applyMapDelta({ tick: 50, moves: [] }, swept);
+    // Asked for on a window far longer than anything the render layer would ever pass, so this is
+    // the buffer being empty rather than the query declining to hand its contents over.
+    expect(w.deathMarks(swept, DEATH_RETENTION_MS * 10)).toEqual([]);
   });
 });
 
