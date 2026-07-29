@@ -21,6 +21,11 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > below, so the delta is trustworthy and the sum is not. **Read [What a shot costs since
 > #114](#what-a-shot-costs-since-114) with this section**, and re-run `bun run frame:budget` on an
 > idle machine before quoting a total.
+>
+> [#115](https://github.com/ericbstie/the-game/issues/115) has since added a second mark to the
+> frame — a starburst on every connect. It is **0.09 ms** at the count the game's own cadences put
+> up, which is under this instrument's noise floor and is why the section below is stale by #114 and
+> not by #115. See [What an impact burst costs](#what-an-impact-burst-costs-115).
 
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
 6.3 ms — 38% of it, leaving 10.4 ms of headroom.**
@@ -33,11 +38,13 @@ The worst case is not hypothetical: 240 enemies (`ENEMY_CAP`, the hard governor)
 6 players and 4 nests, *all inside the viewport so nothing is culled*, over the full grass-and-ore
 floor, everything standing passing through the Y-sort — and every one of them damaged, so every one
 of them carries a bar. The script reports it as **290 standing entities, 847 blits, 286 health bars,
-61 shot lines, 10 miner floats**.
+62 stroked paths, 10 miner floats, 4 impact bursts**.
 
-**61 is a count of stroked paths, not of shot lines.** Fifty are shot lines — 45 relayed squadmate
-shots and 5 generated turret pulses, which is the `SHOT_LINES` the fixture asks for. The other
-eleven are the minimap's marks: four nest rings, six squad dots and the self ring.
+**62 is a count of stroked paths, not of shot lines.** Fifty are shot lines — 45 relayed squadmate
+shots and 5 generated turret pulses, which is the `SHOT_LINES` the fixture asks for. Eleven are the
+minimap's marks: four nest rings, six squad dots and the self ring. The last one is **every impact
+burst in the frame**, however many there are: #115 bundles them into a single path on purpose, so
+the burst count moves the segments in that path and never the count of paths.
 
 **The minimap is inside every figure on this page, the paper baseline included.** `drawWorld` draws
 it whenever the frame's `selfId` names one of the players (`src/game/draw.ts:471`), and the fixture
@@ -86,6 +93,7 @@ difference from the row above.
 | + everything standing | 4.8 | 1.9 | 240 enemies and 40 structures join the sort: 285 more blits, 280 more health bars, 40 more marks on the map |
 | + the shot lines | 6.3 | 1.4 | 50 concurrent — 5 generated turret pulses, 45 relayed squadmate shots |
 | + the miner floats | 6.3 | ≈0 | 10 `+1`s, each stroked and filled — see below |
+| + the impact bursts | — | ≈0 | 4 starbursts, one path (#115). Not in the run above; 0.09 ms isolated |
 | **Total** | **6.3** | | **38% of a 16.67 ms frame** |
 
 **The script's printed labels for the first two rows are wrong, and the names in brackets above are
@@ -186,6 +194,92 @@ paths now carries about nine segments instead of one. The break is struck as geo
 left to `setLineDash`, which measured dearer for the identical pattern — 5.55 ms against 4.88 at
 fifty — and would leave a dash in force over every name, arrow and map rule drawn after it.
 
+## What an impact burst costs (#115)
+
+**A starburst is 0.09 ms of the frame at the count the game's own cadences put up, and 8 strokes
+each if that count ever moves.** [#115](https://github.com/ericbstie/the-game/issues/115) strikes
+one where every shot connects — the effect this page's rule 1 is most exposed to, because it fires
+per *connect* rather than per death.
+
+**Four is the count, and it is derived rather than budgeted.** `concurrentBursts()` in
+`scripts/burst-ink.ts` computes it from constants the game already fixes: six players at
+`RANGED_CADENCE_MS` and the fixture's five powered turrets at `TURRET_CADENCE_MS`, times the share
+of connects that are *not* the killing one, times `BURST_MS`. Two things hold it far under the fifty
+concurrent shot lines the same fire produces — a burst lives 90 ms where a line lives 100, and, much
+the larger, **a connect that kills reports a death and not a hit**, so `reapDamage` drops the last
+shot into every grunt out of `hits` entirely. That connect belongs to
+[#116](https://github.com/ericbstie/the-game/issues/116).
+
+Medians of nine runs, one machine, dpr 2, `--enemies 500`, all counts in the same session. Shot
+lines are re-measured beside them so the two are comparable rather than quoted across sessions.
+
+| Concurrent | Impact bursts (#115) | Shot lines (#114) |
+| ---: | ---: | ---: |
+| 4 — **what the cadences put up** | 0.09 ms | — |
+| 25 | 0.73 ms | 1.34 ms |
+| 50 | 1.78 ms | 2.65 ms |
+| 150 | 6.05 ms | 9.17 ms |
+
+**A burst costs two thirds of a shot's mark while laying under a fifth of its ink**, which is rule 1
+stated as plainly as it has ever been measured. At fifty concurrent that is 35.6 µs a burst against
+52.9 µs a shot; a burst is 8 strokes to a shot's ~14, so the ratio is very nearly the stroke count
+and has almost nothing to do with the pixels. **Bundling every burst in the frame into one path buys
+nothing on the clock** — it was done for the count of paths, not for the count of segments — and the
+same arithmetic says the spike count is the only lever if this ever has to get cheaper.
+
+**The count does not move with the enemy cap.** The identical ladder at the governor's 240 read
+0.093 / 0.747 / 1.772 / 6.048 against 0.093 / 0.727 / 1.778 / 6.048 at 500 — the same figures. The
+concurrent burst count is set by the hit rate against `BURST_MS`, not by how many spiders stand on
+the floor, exactly as #114 found for the shot lines.
+
+**The whole-frame instrument could not see this layer, and said so twice.** Across those eighteen
+runs the cumulative rows came back in an order that cannot be true — at 500 the frame *with* the
+bursts read 10.182 ms against 10.058 for the same frame without them and 10.183 for the frame
+without the floats either, and at 240 the floats row read dearer than the bursts row that contains
+it. This is the third independent reproduction of the warning under the floats table, and the reason
+every figure above comes from the isolated probe. **The whole-frame totals on this machine — ~8.5 ms
+at cap 240, ~10.2 ms at cap 500 — are a different machine from the 6.3 ms headline and are not
+comparable to it.**
+
+### What a burst lays
+
+`bun run burst:ink` strokes the shipped `starburst` on a real canvas and counts what it puts on the
+paper, at dpr 1, 2 and 3. **Ink** is the sum of per-pixel coverage, so a pixel the rasteriser half
+covered counts as half a pixel; the shot it is held against is one at full reach, axis-aligned.
+
+| dpr | Burst ink (device px) | Against a shot's mark | Solid share |
+| ---: | ---: | ---: | ---: |
+| 1 | 254 | 18.6% | 32.3% |
+| 2 | 977 | 17.8% | 54.0% |
+| 3 | 2,237 | 18.1% | 69.7% |
+
+**Its ink length is 124 world units** — an eighth of a full-reach shot's 719 — at every resolution,
+because geometry has no rasteriser in it.
+
+**The mark rasterises far less solidly than a shot line does, and that is by construction.** Three
+quarters of a burst's ink is on the diagonal — the long spikes are the diagonal ones, so that
+nothing it strikes above a spider can cross the health bar sitting there — and a 2 px diagonal
+stroke is nearly all partial pixels. At dpr 1 it comes out 32% solid where an axis-aligned shot line
+is 69%. It is ink on white paper either way; it is a **lighter** mark than the line that caused it,
+and dpr 1 is where to look first if it ever reads too faint.
+
+### It is not a wall of ink
+
+The question #115 refuses to let an implementer settle by narrowing the trigger, answered with the
+same probe rather than an opinion. Four bursts scattered over the 800 × 600 viewport this page
+measures:
+
+| dpr | Ink, as a share of the screen | Pixels touched |
+| ---: | ---: | ---: |
+| 1 | 0.21% | 0.35% |
+| 2 | 0.21% | 0.28% |
+| 3 | 0.21% | 0.25% |
+
+**A fifth of one percent of the screen.** Nothing was narrowed to get there: no cooldown, no cap, no
+probability and no distance filter — the burst fires on every `EnemyHit` the client is sent, and the
+count is what the game's own cadences and `reapDamage` produce. The screenshot the probe writes is
+the frame those numbers were counted on.
+
 ## The rules
 
 1. **Shot lines are the most expensive thing in the frame, per unit** — and one effect has already
@@ -203,6 +297,11 @@ fifty — and would leave a dash in force over every name, arrow and map rule dr
    *reads* best (an 18/12 break, ~35 segments) cost 3.5× the plain line for a difference the eye has
    to hunt for. Anything that subdivides a mark pays per piece; anything that only moves ink around
    is closer to free.
+
+   **#115 is the clean confirmation.** An impact burst lays **18%** of a shot's ink and costs
+   **67%** of it — 8 strokes against ~14 — and bundling every burst in a frame into one path changed
+   nothing on the clock. Price a new mark by counting its segments; the ink tells you whether it will
+   *read*, and nothing about what it will cost.
 2. **Nothing new gets a full-viewport pass.** The clear and the paper fill are two of them already,
    1.92 M device pixels each. What one of them costs on its own is **not measured here**: the
    script's first row carries the grass, the squad, the nests and the map alongside them and cannot
@@ -295,6 +394,8 @@ bun run frame:budget --dpr 1                             # an ordinary, non-reti
 bun run frame:budget --map 15600                         # the corner map at its widest level
 bun run frame:budget --enemies 500                       # a cap the governor has not reached (#111)
 bun run shot:ink                                         # what a shot's mark lays, at dpr 1, 2 and 3
+bun run burst:ink                                        # what an impact burst lays, and its share of a screen
+bun run burst:ink --bursts 40                            # a density the cadences cannot reach today
 ```
 
 `--enemies` overrides `ENEMY_CAP` for the fixture alone and nothing else, so a frame can be priced
@@ -304,8 +405,9 @@ governor says today, which is what every unlabelled figure on this page was meas
 `frame:budget` prints the layer breakdown and the projected worst case, and writes the frame it
 measured to a PNG so the numbers can be checked against the picture that produced them.
 
-`shot:ink` answers the other axis and only that one — how much ink a shot's mark lays, never what it
-costs. It takes `--dpr` as often as you like (the default is the three above) and `--json` for the
-raw counts. Nothing in it is timed, so it does not need an idle machine: a pixel count is the same
-on a busy one, which is the whole reason the ink claim above can be trusted where a 1.3 ms layer
-could not.
+`shot:ink` and `burst:ink` answer the other axis and only that one — how much ink a mark lays, never
+what it costs. Both take `--dpr` as often as you like (the default is the three above) and `--json`
+for the raw counts. Nothing in either is timed, so neither needs an idle machine: a pixel count is
+the same on a busy one, which is the whole reason the ink claims above can be trusted where a 1.3 ms
+layer could not. `burst:ink` also takes `--bursts` for a density the shipped cadences cannot reach,
+which is the only way to ask the wall-of-ink question about a retune before it lands.
