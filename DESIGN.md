@@ -56,8 +56,9 @@ Score is your escape time.
   drops the pressure around it; clearing them all is not expected. A nest is a hunter nest or a
   wanderer nest, the far ones mostly wanderers, and the two look identical — you learn which it is
   from what comes out of it.
-- **Timed escalating waves.** Every ~30s all active nests send a bigger, mixed group — a
-  predictable drumbeat the squad preps for. Watchable tension.
+- **Timed escalating waves.** Nothing for the first minute, then **each nest on its own timer** —
+  no global clock, so fifty nests are fifty drumbeats. The waves come faster, bigger and with more
+  elites in them the longer the match runs. Watchable tension.
 - **Roster:** mostly a single grunt type in numbers, with the occasional **elite**. Readable, easy to expand later.
 
 ## Weapons & combat
