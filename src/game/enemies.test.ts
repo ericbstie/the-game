@@ -702,6 +702,7 @@ describe("M4-T8: a turret shoots the nearest enemy, through walls, and sieges ne
     const build = freshBuildState(ARENA);
     build.bank.metal = 100_000;
     build.power.generation = 10_000; // ample headroom; the budget itself is #65's subject
+    build.ammo.bullets = 100_000; // likewise: the pool is #102's subject, not this block's
     return { build, turret: placeStructure(build, "turret", tile, TURRET) };
   };
   const fire = (s: EnemyState, build: BuildState, dtMs = TURRET_CADENCE_MS) =>
@@ -790,6 +791,72 @@ describe("M4-T8: a turret shoots the nearest enemy, through walls, and sieges ne
   });
 });
 
+// #102 stage 4. A turret's shot is a bullet out of the squad's pool, not a free one — the same
+// pool a player shoots from, taken by whichever shot is admitted first.
+describe("#102: a turret spends the squad's bullets", () => {
+  const TURRET = BUILDABLES.turret as BuildableSpec;
+  const ORIGIN = { x: C.x + 5_000, y: C.y };
+
+  // `count` turrets in range of the same spot, on an ample grid, over a pool of `bullets`.
+  const armed = (bullets: number, count = 1) => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 1_000_000;
+    build.power.generation = 1_000_000;
+    build.ammo.bullets = bullets;
+    const turrets = Array.from({ length: count }, (_, i) =>
+      placeStructure(build, "turret", tileOf({ x: ORIGIN.x + i * TILE * 3, y: ORIGIN.y }), TURRET),
+    );
+    return { build, turrets };
+  };
+  // A sponge in range of every turret, so nothing dies and the pool is the only variable.
+  const sponge = () => stateWith([grunt("e1", { x: ORIGIN.x + 100, y: ORIGIN.y }, 1_000_000)]);
+  const fire = (s: EnemyState, build: BuildState, dtMs = TURRET_CADENCE_MS) =>
+    stepEnemies(s, [], [], dtMs, build).events;
+
+  test("a shot takes one bullet out of the pool", () => {
+    const { build } = armed(3);
+    fire(sponge(), build, 0);
+    expect(build.ammo.bullets).toBe(2);
+  });
+
+  test("an empty pool holds the turret's fire rather than letting it shoot free", () => {
+    const { build } = armed(0);
+    const s = sponge();
+    expect(fire(s, build, 0).hits).toEqual([]);
+    expect(only(s).hp).toBe(1_000_000);
+    expect(build.ammo.bullets).toBe(0); // and the pool is not driven negative
+  });
+
+  test("the held fire is not a spent shot — a bullet arriving is fired at once", () => {
+    const { build } = armed(0);
+    const s = sponge();
+    fire(s, build, 0);
+    build.ammo.bullets = 1;
+    expect(fire(s, build, 0).hits).toEqual([{ id: "e1", hp: 1_000_000 - TURRET_DAMAGE }]);
+  });
+
+  test("one bullet between two ready turrets is fired by exactly one of them", () => {
+    const { build } = armed(1, 2);
+    const s = sponge();
+    expect(fire(s, build, 0).hits).toEqual([{ id: "e1", hp: 1_000_000 - TURRET_DAMAGE }]);
+    expect(build.ammo.bullets).toBe(0);
+  });
+
+  test("a turret with nothing to shoot at spends nothing", () => {
+    const { build } = armed(3);
+    fire(stateWith([grunt("e1", { x: ORIGIN.x + TURRET_RANGE + 100, y: ORIGIN.y })]), build, 0);
+    expect(build.ammo.bullets).toBe(3);
+  });
+
+  test("a turret cooling down spends nothing either", () => {
+    const { build } = armed(3);
+    const s = sponge();
+    fire(s, build, 0);
+    fire(s, build, TURRET_CADENCE_MS - 1);
+    expect(build.ammo.bullets).toBe(2);
+  });
+});
+
 describe("M4-T9: the power budget decides which turrets get to fire", () => {
   const TURRET = BUILDABLES.turret as BuildableSpec;
   const ORIGIN = { x: C.x + 5_000, y: C.y };
@@ -799,6 +866,8 @@ describe("M4-T9: the power budget decides which turrets get to fire", () => {
     const build = freshBuildState(ARENA);
     build.bank.metal = 1_000_000;
     build.power.generation = generation;
+    build.ammo.bullets = 1_000_000; // energy is this block's variable; the pool is #102's
+
     const turrets = Array.from({ length: count }, (_, i) =>
       placeStructure(build, "turret", tileOf({ x: ORIGIN.x + i * TILE * 3, y: ORIGIN.y }), TURRET),
     );

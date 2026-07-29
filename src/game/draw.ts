@@ -105,6 +105,10 @@ export interface ShotSource {
   peers: ShotEvent[]; // `ClientWorld.peerShots(now, SHOT_LINE_MS)` — already aged
   own: OwnShot | null;
   resolve: (targetId: string) => Vec2 | null;
+  // The squad's spendable bullets, mirrored from the server (#102). Only the turret train reads
+  // it, and only to stop: a turret's shots are generated here rather than sent, so an empty pool
+  // is the one refusal this layer has to know about to keep from drawing shots nobody took.
+  ammo: number;
 }
 
 // The tile-snapped preview under the cursor while a buildable is selected. `valid` drives the
@@ -489,8 +493,11 @@ export function drawWorld(
 // pair is streamed as a transition, so the client generates the pulse train itself — one pulse
 // every `TURRET_CADENCE_MS` for as long as that state holds, each lasting `SHOT_LINE_MS` (#74 §5).
 // The generated phase can sit up to a cadence out of step with the server's real cooldown, which is
-// invisible at 200 ms and cannot misrepresent damage: the server is applying `TURRET_DAMAGE` on
-// exactly that cadence for as long as the state the pulse is derived from holds.
+// invisible at 200 ms and cannot misrepresent damage: while the squad has bullets, the server is
+// applying `TURRET_DAMAGE` on exactly that cadence for as long as that state holds.
+//
+// Ammo is the one firing precondition the transition does not carry, so the pool gates the train
+// here instead — see `ShotSource.ammo` and the amendment to ADR 0003 (#102).
 function drawShots(
   ctx: CanvasRenderingContext2D,
   world: WorldSnapshot,
@@ -533,12 +540,28 @@ function drawShots(
     if (to) line(from, to);
   }
 
+  // Turrets spend the squad's bullets, so the pool bounds how many of them can have fired: an empty
+  // one is the server holding every turret's fire, and one bullet across five ready turrets is four
+  // trains nobody took. The mirror lags the pool by at most one tick, which under-draws (a bullet
+  // forged and fired on the same tick never shows as spendable) rather than over-draws — the
+  // direction ADR 0003 cares about.
+  //
+  // *Which* turret got a scarce bullet is not knowable here and is not claimed: the pool is spent
+  // down `world.structures`, which is a map's insertion order and so names the same winners frame
+  // after frame. A rule that reshuffled — nearest, or newest — would flicker the train between
+  // turrets while the count stayed right, which is worse to look at than being wrong about one.
+  // Spent before the cull for the same reason: a bullet goes to a turret that fired, not to one the
+  // camera happens to be pointing at, so panning cannot hand it to somebody else.
   if (now % TURRET_CADENCE_MS >= SHOT_LINE_MS) return;
+  let spent = 0;
   for (const s of world.structures) {
+    if (spent >= shots.ammo) return;
     if (!s.turret?.powered || s.turret.targetId === null) continue;
     const spec = BUILDABLES[s.kind];
     const to = spec && shots.resolve(s.turret.targetId);
-    if (to) line(footprintCenter(s.tile, spec.footprint), to);
+    if (!to) continue;
+    spent++;
+    line(footprintCenter(s.tile, spec.footprint), to);
   }
 }
 

@@ -1151,7 +1151,7 @@ describe("shot lines", () => {
     drawWorld(ctx, { ...field, ...patch }, { camera, viewport, now, shots });
     return lines(ctx);
   };
-  const none = { peers: [], own: null, resolve: live };
+  const none = { peers: [], own: null, resolve: live, ammo: 9 };
 
   test("draws your own shot where you fired it, without waiting for the relay", () => {
     const drawn = fire({}, { ...none, own: { at: 960, from: shooter.pos, dir: { x: 1, y: 0 } } });
@@ -1254,6 +1254,46 @@ describe("shot lines", () => {
     test("draws nothing for a turret with no target or no power", () => {
       expect(fire(turreted({ powered: true, targetId: null }), none, 1000)).toEqual([]);
       expect(fire(turreted({ powered: false, targetId: "e1" }), none, 1000)).toEqual([]);
+    });
+
+    // #102 stage 4: a turret shoots the squad's bullets, and the server holds its fire when there
+    // are none. Nothing else would stop the train — it is generated from a state that says nothing
+    // about ammo — so an empty pool would otherwise draw shots nobody took (ADR 0003).
+    test("draws nothing while the squad's pool is empty and its fire is held", () => {
+      const engaged = turreted({ powered: true, targetId: "e1" });
+      expect(fire(engaged, { ...none, ammo: 0 }, 1000)).toEqual([]);
+      expect(fire(engaged, { ...none, ammo: 1 }, 1000)).toHaveLength(1);
+    });
+
+    // A pool too small to arm every ready turret is the server firing only some of them, so only
+    // that many trains draw. *Which* ones cannot be known here — the trade #74 §5 made was to send
+    // no per-shot event — so the pool is spent down the structure list, whose order holds between
+    // frames because it is a map's insertion order (`clientWorld.ts:523`).
+    test("draws no more trains than the squad has bullets", () => {
+      const ready = (i: number) => ({
+        id: `b${i}`,
+        kind: "turret" as const,
+        tile: { tx: 74 + i * 2, ty: 74 },
+        hp: 250,
+        turret: { powered: true, targetId: "e1" },
+      });
+      const five = { structures: [0, 1, 2, 3, 4].map(ready) };
+      expect(fire(five, { ...none, ammo: 1 }, 1000)).toEqual([
+        { from: [1125, 1125], to: [1300, 1200] },
+      ]);
+      expect(fire(five, { ...none, ammo: 3 }, 1000)).toHaveLength(3);
+      expect(fire(five, { ...none, ammo: 9 }, 1000)).toHaveLength(5);
+    });
+
+    // The gate is the turret's alone. Your own line is optimistic by decision and drawn at the
+    // click; a squadmate's is a shot the server has already admitted and already paid for.
+    test("an empty pool withholds no line the server has already resolved", () => {
+      const dry = { ...none, ammo: 0 };
+      expect(
+        fire({}, { ...dry, own: { at: 960, from: shooter.pos, dir: { x: 1, y: 0 } } }),
+      ).toHaveLength(1);
+      const peer = { shot: { id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }, at: 1000 };
+      expect(fire({}, { ...dry, peers: [peer] })).toHaveLength(1);
     });
   });
 

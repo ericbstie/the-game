@@ -72,3 +72,27 @@ invisible — it can change *what dies*, never what is drawn.
   `reviveSelf` and the position send happen in the same interval callback, position before any click
   can be processed; the death gate now covers the whole interval before it, which is when a player
   waiting to respawn would otherwise have been clicking.
+
+## Amendment — turrets spend ammo (2026-07-29, [#102](https://github.com/ericbstie/the-game/issues/102))
+
+A turret now fires a bullet out of the squad's shared pool and holds its fire when the pool is
+empty. That is a firing precondition the streamed `(target, powered)` transition does not carry, so
+the invariant in decision 1 no longer holds for turrets exactly. It now reads:
+
+> A shot line drawn for a **turret** is a shot the server admitted and applied damage for, except
+> that the pool it spends from is mirrored a tick behind. No more turret trains are drawn in a
+> frame than that mirror has bullets, and at zero none is.
+
+Two cases, both named rather than closed:
+
+- **A bullet forged and fired on the same tick never shows as spendable**, so the train is withheld
+  over fire that did happen. This under-draws, which is the safe direction: no line is a missing
+  depiction, a line is a claim.
+- **Which turret got a scarce bullet is a guess.** The count is right and the trains are real shots,
+  but with three bullets across five ready turrets the three drawn may not be the three that fired.
+
+Closing the second needs per-shot turret events on the wire, which #74 §5 traded away deliberately
+and this ADR does not reopen. It is left open because it misattributes a shot rather than inventing
+one: the count is what decision 1 is about. Ammo is not in the transition because it would put an
+aim delta on every engaged turret each time the pool crossed zero — routine in the scarce regime
+#102 designs for — on a field whose value is that it is sparse.

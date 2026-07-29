@@ -3,13 +3,16 @@ import {
   BUILDABLES,
   BULLET_COST,
   FORGE_MS,
+  footprintCenter,
   generateOre,
   HAND_MINE_RATE,
   MINE_CADENCE_MS,
+  TURRET_CADENCE_MS,
+  TURRET_DAMAGE,
   tileCenter,
   tileOf,
 } from "../game/build";
-import { ATTACK_POS_TOLERANCE, NEST_COUNT, RANGED_CADENCE_MS } from "../game/enemies";
+import { ATTACK_POS_TOLERANCE, NEST_COUNT, nestLayout, RANGED_CADENCE_MS } from "../game/enemies";
 import { ARENA } from "../game/world";
 import { type LobbyConfig, LobbyHub, livePlayers, type Transport } from "./lobby";
 import type { EnemySpawn, Exit, ServerMessage, Tile, Vec2 } from "./protocol";
@@ -2134,6 +2137,151 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
         (m) => m.socketId === "s3" && m.msg.type === "game/build-init",
       )?.msg;
       expect(keyframe).toMatchObject({ type: "game/build-init", ammo: 0, queued: 2 });
+      hub.dispose();
+    });
+  });
+
+  // #102 stage 4. A turret shoots the squad's bullets, not free ones — the same pool a player
+  // spends from, so the two genuinely compete for the last one.
+  //
+  // The turret is stood in front of a nest with no wave ever due, which is what makes the pool the
+  // only variable: a nest is a legitimate target that is always there, never moves and is damaged
+  // by nothing else in the match, so every `nests` delta below is a turret shot and each one is
+  // a bullet. The player shoots from the arena centre, ~14k units from the nearest nest and well
+  // beyond her own reach, so her ray can never touch the same observable.
+  describe("stage 4: turrets draw from the squad's pool", () => {
+    const CENTRE = { x: ARENA.width / 2, y: ARENA.height / 2 };
+    const NO_WAVE = 10_000_000; // no grunt ever spawns; the nest is the turret's only target
+
+    const worldInit = (t: Capture) =>
+      t.sent.find((m) => m.msg.type === "game/world-init")?.msg as Extract<
+        ServerMessage,
+        { type: "game/world-init" }
+      >;
+
+    // The nearest tile of power ore the generated grid actually holds, so the generator is placed
+    // through admission rather than around it.
+    function nearestPowerTile(oreSeed: number): Tile {
+      let best: Tile | null = null;
+      let bestDist = Number.POSITIVE_INFINITY;
+      for (const [key, kind] of generateOre(ARENA, oreSeed)) {
+        if (kind !== "power") continue;
+        const tile = { tx: Math.floor(key / 65_536), ty: key % 65_536 };
+        const c = tileCenter(tile);
+        const d = Math.hypot(c.x - CENTRE.x, c.y - CENTRE.y);
+        if (d < bestDist) {
+          bestDist = d;
+          best = tile;
+        }
+      }
+      if (!best) throw new Error("the generated grid holds no power ore");
+      return best;
+    }
+
+    // A match with one powered turret engaging a nest and no waves. Ana raises the grid and then
+    // stands at the centre; Ben places the turret, so the two placements never share a cadence.
+    function besieging(config: Partial<LobbyConfig> = {}) {
+      const { t, hub, clock } = match({ startingMetal: 1_000, firstWaveMs: NO_WAVE, ...config });
+      const power = nearestPowerTile(worldInit(t).init.oreSeed);
+      hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: tileCenter(power), seq: 1 }));
+      hub.handleMessage(
+        "s1",
+        JSON.stringify({ type: "game/build", kind: "generator", tile: power, seq: 1 }),
+      );
+      hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: CENTRE, seq: 2 }));
+
+      const nest = nestLayout(ARENA)[0];
+      const spot = tileOf({ x: nest.pos.x - 300, y: nest.pos.y });
+      hub.handleMessage(
+        "s2",
+        JSON.stringify({ type: "game/pos", pos: footprintCenter(spot, 2), seq: 1 }),
+      );
+      hub.handleMessage(
+        "s2",
+        JSON.stringify({ type: "game/build", kind: "turret", tile: spot, seq: 1 }),
+      );
+      return { t, hub, clock, nest };
+    }
+    // Every nest HP the squad has been told about. One entry per turret shot that landed.
+    const nestHps = (t: Capture) =>
+      deltas(t)
+        .flatMap((d) => d.nests ?? [])
+        .map((n) => n.hp);
+    const shotsFired = (t: Capture) => deltas(t).flatMap((d) => d.shots ?? []);
+    // The turret, aimed at the nest and holding a power slot. Asserted wherever a test's evidence
+    // is an *absent* nest delta, so "it held its fire" cannot be satisfied by a turret that was
+    // never standing, never targeting, or never powered.
+    const expectEngaged = (t: Capture) => {
+      const aim = deltas(t).flatMap((d) => d.aims ?? [])[0];
+      expect(aim?.[1]).toBe("n0");
+      expect(aim?.[2]).toBe(1);
+    };
+    const aimAt = (from: Vec2, to: Vec2): Vec2 => {
+      const len = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+      return { x: (to.x - from.x) / len, y: (to.y - from.y) / len };
+    };
+
+    test("a turret's shot comes out of the pool a player shoots from", () => {
+      const { t, hub, clock, nest } = besieging({ startingAmmo: 2 });
+      clock.advance(TICK);
+      expect(nestHps(t)).toEqual([nest.hp - TURRET_DAMAGE]);
+      expect(ammoStream(t)).toEqual([1]);
+      hub.dispose();
+    });
+
+    test("an empty pool holds the turret's fire — it does not shoot free", () => {
+      const { t, hub, clock } = besieging({ startingAmmo: 0 });
+      clock.advance(TURRET_CADENCE_MS * 10);
+      expectEngaged(t);
+      expect(nestHps(t)).toEqual([]);
+      hub.dispose();
+    });
+
+    test("and the first bullet the forge delivers is the one it fires", () => {
+      const { t, hub, clock, nest } = besieging({ startingAmmo: 0 });
+      clock.advance(TURRET_CADENCE_MS * 10);
+      hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
+      clock.advance(FORGE_MS);
+      expect(nestHps(t)).toEqual([nest.hp - TURRET_DAMAGE]);
+      hub.dispose();
+    });
+
+    // The race, both ways round, on one bullet. The turret spends on the tick and a player spends
+    // the instant their report is admitted, so which of the two happens first is the whole test —
+    // and it is the ordering of these two statements, not any rule about who outranks whom.
+    test("a player who asks before the tick takes the last bullet, and the turret holds fire", () => {
+      const { t, hub, clock } = besieging({ startingAmmo: 1 });
+      hub.handleMessage(
+        "s1",
+        JSON.stringify({
+          type: "game/attack",
+          pos: CENTRE,
+          dir: aimAt(CENTRE, { x: CENTRE.x + 1, y: CENTRE.y }),
+          seq: 1,
+        }),
+      );
+      clock.advance(TURRET_CADENCE_MS * 10);
+      expect(shotsFired(t)).toHaveLength(1); // hers, and only hers
+      expectEngaged(t);
+      expect(nestHps(t)).toEqual([]); // the turret found the pool empty
+      hub.dispose();
+    });
+
+    test("a turret that took it on the tick leaves the player's next shot refused", () => {
+      const { t, hub, clock, nest } = besieging({ startingAmmo: 1 });
+      clock.advance(TICK);
+      hub.handleMessage(
+        "s1",
+        JSON.stringify({
+          type: "game/attack",
+          pos: CENTRE,
+          dir: aimAt(CENTRE, { x: CENTRE.x + 1, y: CENTRE.y }),
+          seq: 1,
+        }),
+      );
+      clock.advance(TURRET_CADENCE_MS * 10);
+      expect(nestHps(t)).toEqual([nest.hp - TURRET_DAMAGE]); // one shot, from the one bullet
+      expect(shotsFired(t)).toEqual([]); // and nothing left for her
       hub.dispose();
     });
   });

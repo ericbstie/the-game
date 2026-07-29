@@ -21,6 +21,7 @@ import {
   pushOutOfSolids,
   removeStructure,
   type Structure,
+  spendBullet,
   structureBlocking,
   structureCenter,
   structureRadius,
@@ -484,10 +485,14 @@ function applyAttacks(
 // Nests are legitimate targets, so a forward turret line sieges one unattended.
 //
 // What the client draws is streamed from here as a transition: each turret's `(targetId, powered)`
-// pair is snapshotted before it moves and diffed once the power budget has settled. The line then
-// exists exactly while this function's own firing precondition holds — it is written by the same
-// pass that applies `TURRET_DAMAGE`, so it cannot outlive the damage by more than one tick.
-// Nothing is remembered between ticks: every client gets the same delta, every tick.
+// pair is snapshotted before it moves and diffed once the power budget has settled. It is written
+// by the same pass that applies `TURRET_DAMAGE`, so it cannot outlive the damage by more than one
+// tick. Nothing is remembered between ticks: every client gets the same delta, every tick.
+//
+// The ammo precondition below is deliberately *not* in that transition, and the client gates the
+// train on the pool it already mirrors instead. Putting it here would mean an aim transition per
+// engaged turret every time the pool crossed zero — which is every few ticks in exactly the scarce
+// regime #102 designs for, on a field whose whole point is that it is sparse.
 function stepTurrets(
   state: EnemyState,
   build: BuildState | null,
@@ -544,6 +549,10 @@ function stepTurrets(
     }
     const target = engaged.get(turret.id);
     if (!runtime.powered || !target || runtime.cooldownMs > 0) continue;
+    // The last precondition, and the one that is squad-wide: a turret shoots the same bullets a
+    // player does, and an empty pool holds its fire. Taken before the cadence is charged, so
+    // holding fire costs the turret nothing and the first bullet forged is fired at once.
+    if (!spendBullet(build.ammo)) continue;
     runtime.cooldownMs = TURRET_CADENCE_MS;
     if (target.enemy) {
       target.enemy.hp -= TURRET_DAMAGE;
