@@ -47,11 +47,19 @@ export function movesEqual(a: MoveInput, b: MoveInput): boolean {
 
 // The key that steps the corner map's zoom (#110). `m` for the map, chosen because it is free: the
 // match binds `WASD` and the arrows to movement, `1`–`4` to the build bar, `Escape` to the menu, and
-// `e` is spoken for by #120. **Provisional**, like the levels it steps through.
+// `e` is the gun's (#120). **Provisional**, like the levels it steps through.
 export const MINIMAP_ZOOM_KEY = "m";
 
 export function isMinimapZoomKey(key: string): boolean {
   return key === MINIMAP_ZOOM_KEY || key === MINIMAP_ZOOM_KEY.toUpperCase();
+}
+
+// The key that equips and stows the gun (#120), which is what decides whether left-click shoots or
+// mines. `e` is the key the ticket names.
+export const GUN_TOGGLE_KEY = "e";
+
+export function isGunToggleKey(key: string): boolean {
+  return key === GUN_TOGGLE_KEY || key === GUN_TOGGLE_KEY.toUpperCase();
 }
 
 // The build bar's keys: `1`–`4` pick a slot, returned zero-indexed. Anything else is not a build
