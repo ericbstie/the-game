@@ -1,5 +1,6 @@
 import { join, resolve } from "node:path";
 import { MINIMAP_COVERAGE_U } from "../src/game/minimap";
+import { concurrentBursts } from "./burst-ink";
 import { capture, measurementsIn } from "./headless";
 
 // Measure the worst frame the game can be asked to draw, layer by layer, through the shipped
@@ -78,10 +79,12 @@ export interface BudgetResult {
   bars: number;
   lines: number;
   floats: number;
+  bursts: number;
   layers: Record<string, number>;
   ySortMs: number;
   healthBarsMs: Record<string, number>;
   shotLinesMs: Record<string, number>;
+  burstsMs: Record<string, number>;
 }
 
 export function entrySource(request: BudgetRequest): string {
@@ -98,7 +101,7 @@ import { SPRITES } from ${JSON.stringify(REGISTRY_MODULE)};
 import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { ENEMY_CAP } from ${JSON.stringify(ENEMIES_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
-import { speedLines } from ${JSON.stringify(FX_MODULE)};
+import { speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
 
 const VIEW = { width: 800, height: 600 };
 const DPR = ${request.dpr};
@@ -109,6 +112,10 @@ const ITERS = 60;
 // The budget's own rule: 50 concurrent lines, which is what a 100 ms lifetime holds a defended
 // base's fire down to. Five come from powered turrets and the rest from relayed squadmate shots.
 const SHOT_LINES = 50;
+// #115's starbursts, and unlike the line above this one is *derived* rather than budgeted: it comes
+// off the cadences that fire and the damage they do (\`scripts/burst-ink.ts\`), because a burst rides
+// the hit rate and the hit rate is arithmetic on constants the game already fixes.
+const BURSTS = ${concurrentBursts()};
 
 // Deterministic, so two runs of this script compare to each other.
 function rng(seed) {
@@ -230,6 +237,16 @@ try {
   }));
   const withFloats = { ...m5, floats };
 
+  // #115's bursts, one on each of the enemies the squad's fire is currently landing on. Struck on
+  // spiders rather than scattered, because that is the only place the game puts one and a burst over
+  // bare paper would be measured against a cheaper background than the real one.
+  const burstMarks = (n) => {
+    const marks = [];
+    for (let i = 0; i < n; i++) marks.push({ pos: full.enemies[i % full.enemies.length].pos, at: opts.now });
+    return marks;
+  };
+  const withBursts = { ...withFloats, bursts: burstMarks(BURSTS) };
+
   // Whichever layer is measured first otherwise absorbs the canvas's one-time setup and reads two
   // to three times its true cost. Spend it here, on a result nobody reads.
   measure(() => { setup(); drawWorld(ctx, full, m5); }, 10);
@@ -240,6 +257,7 @@ try {
   const fullMs = measure(() => { setup(); drawWorld(ctx, full, opts); });
   const m5Ms = measure(() => { setup(); drawWorld(ctx, full, m5); });
   const floatsMs = measure(() => { setup(); drawWorld(ctx, full, withFloats); });
+  const burstsMs = measure(() => { setup(); drawWorld(ctx, full, withBursts); });
 
   let blits = 0;
   let bars = 0;
@@ -251,7 +269,7 @@ try {
   ctx.stroke = (...args) => { lines++; rawStroke(...args); };
   ctx.fillRect = (...args) => { if (args[3] === 4) bars++; rawFill(...args); };
   setup();
-  drawWorld(ctx, full, withFloats);
+  drawWorld(ctx, full, withBursts);
   ctx.drawImage = raw;
   ctx.stroke = rawStroke;
   ctx.fillRect = rawFill;
@@ -287,6 +305,19 @@ try {
       ctx.stroke();
     }
   });
+  // The bursts (#115), struck the way drawBursts strikes them: the whole frame's worth in one path,
+  // from the shipped starburst. Priced at counts the cadences cannot reach today as well as at the
+  // one they do, because the count rides the hit rate and #111 is about to move it.
+  const bursts = (n) => {
+    const marks = burstMarks(n);
+    return measure(() => {
+      setup();
+      ctx.strokeStyle = "#000"; ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (const m of marks) for (const s of starburst(m.pos)) { ctx.moveTo(s.from.x, s.from.y); ctx.lineTo(s.to.x, s.to.y); }
+      ctx.stroke();
+    });
+  };
 
   const result = {
     standing: full.enemies.length + STRUCTURES + full.players.length + full.nests.length,
@@ -294,21 +325,24 @@ try {
     bars,
     lines,
     floats: floats.length,
+    bursts: BURSTS,
     layers: {
       paper: +paperMs.toFixed(3),
       floor: +floorMs.toFixed(3),
       full: +fullMs.toFixed(3),
       m5: +m5Ms.toFixed(3),
       floats: +floatsMs.toFixed(3),
+      bursts: +burstsMs.toFixed(3),
     },
     ySortMs: +ySortMs.toFixed(4),
     healthBarsMs: { 60: +healthBars(60).toFixed(3), 240: +healthBars(240).toFixed(3) },
     shotLinesMs: { 10: +shotLines(10).toFixed(3), 25: +shotLines(25).toFixed(3), 50: +shotLines(50).toFixed(3), 150: +shotLines(150).toFixed(3) },
+    burstsMs: { [BURSTS]: +bursts(BURSTS).toFixed(3), 25: +bursts(25).toFixed(3), 50: +bursts(50).toFixed(3), 150: +bursts(150).toFixed(3) },
   };
 
   // Drawn last so the screenshot is the frame that was measured, not the final probe.
   setup();
-  drawWorld(ctx, full, m5);
+  drawWorld(ctx, full, withBursts);
   document.getElementById("measurements").textContent = JSON.stringify(result);
 } catch (e) {
   document.getElementById("measurements").textContent = JSON.stringify({ error: String(e && e.stack || e) });
@@ -339,7 +373,7 @@ if (import.meta.main) {
   const share = (ms: number) => `${((ms / FRAME_MS) * 100).toFixed(1)}%`;
   console.log(request.out);
   console.log(
-    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} shot lines, ${r.floats} miner floats, dpr ${request.dpr}`,
+    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} stroked paths, ${r.floats} miner floats, ${r.bursts} impact bursts, dpr ${request.dpr}`,
   );
   console.log(`corner map  ${request.map} u across`);
   console.log(
@@ -353,15 +387,17 @@ if (import.meta.main) {
   console.log(`  + grass and ore     ${r.layers.floor.toFixed(3)} ms`);
   console.log(`  + everything up     ${r.layers.full.toFixed(3)} ms`);
   console.log(`  + the shot lines    ${r.layers.m5.toFixed(3)} ms`);
+  console.log(`  + the miner floats  ${r.layers.floats.toFixed(3)} ms`);
   console.log(
-    `  + the miner floats  ${r.layers.floats.toFixed(3)} ms   ${share(r.layers.floats)} of a 16.67 ms frame`,
+    `  + the bursts        ${r.layers.bursts.toFixed(3)} ms   ${share(r.layers.bursts)} of a 16.67 ms frame`,
   );
   console.log("");
   console.log(`  y-sort alone        ${(r.ySortMs * 1000).toFixed(1)} us`);
   console.log(`  shot lines (150)    ${r.shotLinesMs[150].toFixed(3)} ms   standalone, for scale`);
+  console.log(`  bursts (150)        ${r.burstsMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log("");
   console.log(`Worst case, measured through the shipped drawWorld`);
   console.log(
-    `  ${r.layers.floats.toFixed(2)} ms   ${share(r.layers.floats)}   headroom ${(FRAME_MS - r.layers.floats).toFixed(2)} ms`,
+    `  ${r.layers.bursts.toFixed(2)} ms   ${share(r.layers.bursts)}   headroom ${(FRAME_MS - r.layers.bursts).toFixed(2)} ms`,
   );
 }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { MINIMAP_COVERAGE_U, MINIMAP_COVERAGE_WIDE_U } from "../src/game/minimap";
+import { concurrentBursts } from "./burst-ink";
 import { entrySource, parseArgs } from "./frame-budget";
 
 describe("parseArgs", () => {
@@ -82,5 +83,25 @@ describe("entrySource", () => {
   test("lays the arena's real ore field, not only the patches under the camera", () => {
     const source = entrySource(parseArgs([]));
     expect(source).toContain("generateOre");
+  });
+
+  // #115's burst fires on every connect rather than on every death, so it is the effect most exposed
+  // to the per-stroke cost rule 1 states. A budget that does not draw it is pricing a frame the game
+  // stopped drawing.
+  test("puts the impact bursts in the frame it prices, through the shipped mark", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("starburst");
+    expect(source).toContain("bursts: burstMarks(BURSTS)");
+    // The count is derived from the cadences that actually fire, not chosen here (`burst-ink.ts`).
+    expect(source).toContain(`const BURSTS = ${concurrentBursts()};`);
+  });
+
+  // The whole-frame instrument could not resolve #114's 1.3 ms layer and will not resolve this
+  // smaller one either. The standalone probe is what answers it, and it has to price counts the
+  // cadences cannot reach today — otherwise a retune has nothing to read.
+  test("prices the bursts on their own, at counts a retune could reach", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("burstsMs");
+    expect(source).toContain("150: +bursts(150)");
   });
 });

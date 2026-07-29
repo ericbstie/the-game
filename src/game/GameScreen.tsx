@@ -23,7 +23,7 @@ import {
 } from "./build";
 import { type Camera, computeCamera } from "./camera";
 import { type ClientWorld, RESPAWN_DELAY_MS } from "./clientWorld";
-import { type BuildGhost, drawWorld, type OwnShot, SHOT_LINE_MS } from "./draw";
+import { BURST_MS, type BuildGhost, drawWorld, type OwnShot, SHOT_LINE_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { freshMetalFloats, stepMetalFloats } from "./floats";
 import {
@@ -465,6 +465,10 @@ export function GameScreen({
               viewport,
               clock,
             ),
+            // Aged to the burst's own lifetime, on the same frame clock the snapshot above was
+            // taken on — `impactMarks` is what puts the enemy render delay between the two, so a
+            // burst and the spider it was struck on come out of one instant (#115).
+            bursts: world.impactMarks(clock, BURST_MS),
             sprites: spriteCache.source(dpr),
             shots: {
               // Aged to the line's own lifetime, never to the buffer's longer retention window.

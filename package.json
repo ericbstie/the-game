@@ -20,7 +20,8 @@
     "frame:budget": "bun run scripts/frame-budget.ts",
     "delta:size": "bun run scripts/delta-size.ts",
     "ore:seams": "bun run scripts/ore-seams.ts",
-    "shot:ink": "bun run scripts/shot-ink.ts"
+    "shot:ink": "bun run scripts/shot-ink.ts",
+    "burst:ink": "bun run scripts/burst-ink.ts"
   },
   "dependencies": {
     "react": "^19.2.7",

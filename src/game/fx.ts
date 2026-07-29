@@ -7,10 +7,12 @@ import type { Vec2 } from "../lobby/protocol";
 // says where the ink goes and `draw.ts` puts it there. That is what lets every claim below be
 // checked without a canvas, a spy or a frame.
 //
-// Nothing here ages. A shot already carries the `at` it is drawn from and `SHOT_LINE_MS` retires it,
-// so speed lines need no life of their own. #115 and #116 both do — each is spawned by an event and
-// outlives it — and that lifecycle is deliberately not built here: `floats.ts` is the precedent for
-// it, and inventing one now would be a shape guessed at from two tickets nobody has written yet.
+// Nothing here ages, the starburst included. A shot carries the `at` it is drawn from and
+// `SHOT_LINE_MS` retires it; an impact's mark carries the instant its hit arrived and
+// `ClientWorld.impactMarks` retires it. The lifecycle #114 left unwritten went there rather than
+// here, because the two things it needs are both private to that class — the delta the mark is
+// spawned from, and `ENEMY_RENDER_DELAY_MS`, the clock it has to be judged on. What is left for
+// this module is what it was always for: where the ink goes.
 
 // The break, in world units: ink, then paper. A shot is instantaneous — #80 is deferred, so nothing
 // about it travels — and the breaks are the whole of what makes it read as fast rather than as a
@@ -111,5 +113,55 @@ export function speedLines(from: Vec2, to: Vec2): Strand[] {
   run(0, 0, 1);
   if (length < TRAIL_MIN_LENGTH) return struck;
   for (const strand of TRAIL) run(strand.offset, strand.from, strand.to);
+  return struck;
+}
+
+// The starburst struck where a shot connects (#115): spikes radiating from the point of the blow,
+// alternately long and short so the ring reads as a star rather than as a wheel.
+//
+// **Spikes and not a filled star, and this is the whole reason it is affordable.** A shot is charged
+// per stroke rather than per inked pixel (`docs/frame-budget.md` rule 1), and a burst fires on every
+// connect rather than on every death — so the mark that could be drawn at that rate is the one made
+// of a handful of short strokes with nothing inside it. It is also the one that can be drawn *over*
+// a spider without hiding it, which a filled field cannot be. #79's lettered burst is the other
+// shape for the other reason: letters need a field to sit on. The two are not one mark.
+//
+// Struck in ink like every other mark the game lays, and legible over the spider it belongs to for
+// the same window it exists in: #107 has that spider inverted to paper for exactly `HIT_FLASH_MS`
+// off the same event and the same delayed clock, so the burst lands on white whatever the spider is
+// drawn as the rest of the time.
+
+// The spikes, and how far out each kind of them reaches, in world units. Eight because four long
+// points and four short ones between them is the mark; the count is the cost, so it is the lever if
+// this ever has to get cheaper.
+const BURST_SPIKES = 8;
+// How far a long spike reaches. Provisional as a look: at 30 the mark stands a little wider than a
+// grunt (32 across) and inside an elite (48), so it frames the one and marks the other.
+export const BURST_REACH = 30;
+// The short spikes between them, and the open middle every spike starts at. The middle is open so
+// the burst reads as a mark *around* the blow rather than as a blot over the thing that took it —
+// which is also what leaves #107's white spider showing through the frames they share.
+const BURST_SHORT = 15;
+const BURST_INNER = 7;
+
+// **The long spikes are the diagonal ones, and that is not a taste.** A damaged spider carries a
+// health bar directly above its sprite, exactly as wide as the sprite is tall (`paintEnemy`), and
+// the burst paints over the Y-sort — so anything it strikes above the sprite is struck over the one
+// damage readout the game has (#81), at the moment the player is reading it. On the diagonal a
+// spike stands as far out sideways as it does upward, so it is already clear of the bar's width
+// before it is above the bar's underside, and it can be as long as it likes. On the axis it has no
+// width at all to clear with, so it stops short of the sprite instead.
+export function starburst(at: Vec2): Strand[] {
+  const struck: Strand[] = [];
+  for (let i = 0; i < BURST_SPIKES; i++) {
+    const bearing = (i * 2 * Math.PI) / BURST_SPIKES;
+    const out = i % 2 === 1 ? BURST_REACH : BURST_SHORT;
+    const dx = Math.cos(bearing);
+    const dy = Math.sin(bearing);
+    struck.push({
+      from: { x: at.x + dx * BURST_INNER, y: at.y + dy * BURST_INNER },
+      to: { x: at.x + dx * out, y: at.y + dy * out },
+    });
+  }
   return struck;
 }

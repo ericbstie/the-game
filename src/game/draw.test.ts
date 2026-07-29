@@ -12,10 +12,11 @@ import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
 import { tileKey, tileOf } from "./build";
 import type { Camera, Viewport } from "./camera";
-import { drawWorld, grassAt, type ShotSource } from "./draw";
+import { HIT_FLASH_MS, type Mark } from "./clientWorld";
+import { BURST_MS, drawWorld, grassAt, type ShotSource } from "./draw";
 import { ELITE_RADIUS, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, type MetalFloat } from "./floats";
-import { speedLines } from "./fx";
+import { speedLines, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_CLOSE_U,
   MINIMAP_COVERAGE_U,
@@ -1530,6 +1531,84 @@ describe("the hit flash", () => {
     drawWorld(ctx, grunt({ flashing: true }), { camera, viewport, sprites: stubSprites({}) });
     expect(ctx.calls.filter((c) => c.fn === "arc").length).toBe(1);
     expect(ctx.calls.every((c) => c.composite === "source-over")).toBe(true);
+  });
+});
+
+// #115: a starburst where a shot connects. The render layer holds no state here either — it is
+// handed the marks whose sprites have already caught up with them (`ClientWorld.impactMarks`) and
+// strikes one burst at each. What is left to pin is the ink: one path for the whole frame's worth,
+// nothing struck for a mark the camera cannot see, and the burst laid over the bodies rather than
+// sorted among them.
+describe("the starburst on impact", () => {
+  const HIT: Vec2 = { x: 1_300, y: 1_200 };
+  const spiders: WorldSnapshot = {
+    ...world,
+    players: [],
+    nests: [],
+    structures: [],
+    enemies: [{ ...POSE, id: "e1", kind: "grunt", pos: HIT, radius: 16, hp: 12 }],
+  };
+  const burst = (marks: readonly Mark[], patch: Partial<WorldSnapshot> = {}) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, { ...spiders, ...patch }, { camera, viewport, now: 1000, bursts: marks });
+    return ctx;
+  };
+  const spikes = (at: Vec2) =>
+    starburst(at).map((s) => ({
+      from: [s.from.x, s.from.y] as [number, number],
+      to: [s.to.x, s.to.y] as [number, number],
+    }));
+
+  // The burst and the white spider under it are one event told twice, so they are timed off one
+  // number. Two lifetimes would read as two events on a single hit — the stacking #78 asks to be
+  // read together rather than piled up.
+  test("stays up exactly as long as the white spider it is struck on", () => {
+    expect(BURST_MS).toBe(HIT_FLASH_MS);
+  });
+
+  test("strikes the star `fx.ts` lays out, centred on the mark, in ink", () => {
+    const ctx = burst([{ pos: HIT, at: 900 }]);
+    expect(paths(ctx)).toEqual([spikes(HIT)]);
+    // The floor is white paper (#72), so the one colour a mark on it may not be is the paper's.
+    expect(ctx.calls.filter((c) => c.fn === "stroke").map((c) => c.stroke)).toEqual(["#000"]);
+  });
+
+  // Every burst in the frame rides one path. A shot is charged per stroke and this fires on every
+  // connect rather than on every death (`docs/frame-budget.md` rule 1), so the count of paths is the
+  // one thing about it that must not scale with the count of bursts.
+  test("the whole frame's bursts go out in a single stroke", () => {
+    const ctx = burst([
+      { pos: HIT, at: 900 },
+      { pos: { x: 1_120, y: 1_150 }, at: 940 },
+      { pos: { x: 1_400, y: 1_080 }, at: 980 },
+    ]);
+    expect(ctx.calls.filter((c) => c.fn === "stroke").length).toBe(1);
+    expect(paths(ctx)[0].length).toBe(starburst(HIT).length * 3);
+  });
+
+  test("costs the frame nothing at all when nothing has been hit", () => {
+    const bare = spyCtx();
+    drawWorld(bare, spiders, { camera, viewport, now: 1000 });
+    // Not "no stroke" but *no call*: a frame in which nothing was hit has to be the identical frame
+    // to one the render layer never handed a burst list at all, down to the opened path.
+    expect(burst([]).calls.map((c) => c.fn)).toEqual(bare.calls.map((c) => c.fn));
+    expect(bare.calls.filter((c) => c.fn === "stroke")).toEqual([]);
+  });
+
+  // Hits stream for the whole arena, not for the part of it the camera happens to be over, so most
+  // marks in a wave belong to a fight nobody is looking at. Culled before the geometry is built, so
+  // one of those costs the frame no strokes rather than eight it throws away.
+  test("strikes nothing for a mark the camera cannot see", () => {
+    expect(paths(burst([{ pos: { x: 9_000, y: 9_000 }, at: 900 }]))).toEqual([]);
+  });
+
+  // Over the Y-sort, like a shot line and for the same reason: a burst is an event between two
+  // things rather than a thing standing on the floor, and one half-hidden behind the spider it
+  // belongs to says nothing.
+  test("is struck over the bodies, never sorted among them", () => {
+    const ctx = burst([{ pos: HIT, at: 900 }], {});
+    const blitted = ctx.calls.map((c) => c.fn).lastIndexOf("arc");
+    expect(ctx.calls.map((c) => c.fn).indexOf("stroke")).toBeGreaterThan(blitted);
   });
 });
 

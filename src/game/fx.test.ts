@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { Vec2 } from "../lobby/protocol";
-import { SHOT_DASH, SHOT_GAP, type Strand, speedLines, TRAIL_MIN_LENGTH } from "./fx";
+import { ELITE_RADIUS, GRUNT_RADIUS } from "./enemies";
+import {
+  BURST_REACH,
+  SHOT_DASH,
+  SHOT_GAP,
+  type Strand,
+  speedLines,
+  starburst,
+  TRAIL_MIN_LENGTH,
+} from "./fx";
 
 const ORIGIN: Vec2 = { x: 0, y: 0 };
 const along = (angle: number, length: number): Vec2 => ({
@@ -168,5 +177,82 @@ describe("speed lines trailing a shot", () => {
 
   test("a shot with no length at all is struck as nothing, not as a division by zero", () => {
     expect(speedLines(ORIGIN, ORIGIN)).toEqual([]);
+  });
+});
+
+// Where a strand's two ends sit relative to the point the burst was struck at: how far out, and at
+// what bearing. Every claim below is one of those two, because a starburst has no direction of its
+// own — unlike a shot, nothing about it is laid out in a frame the world gave it.
+const radial = (p: Vec2, at: Vec2) => ({
+  out: Math.hypot(p.x - at.x, p.y - at.y),
+  bearing: Math.atan2(p.y - at.y, p.x - at.x),
+});
+
+// Points along a strand, ends included. A spike is straight, but the claims about what it may reach
+// over are about the whole of it and not about where it stops.
+const walk = (s: Strand, steps = 32): Vec2[] =>
+  Array.from({ length: steps + 1 }, (_, i) => ({
+    x: s.from.x + (s.to.x - s.from.x) * (i / steps),
+    y: s.from.y + (s.to.y - s.from.y) * (i / steps),
+  }));
+
+describe("the starburst struck where a shot connects", () => {
+  const AT: Vec2 = { x: 1_240, y: 8_611 };
+
+  test("every spike runs straight out from the point, and none of them through it", () => {
+    const struck = starburst(AT);
+    expect(struck.length).toBeGreaterThan(3);
+    for (const spike of struck) {
+      const from = radial(spike.from, AT);
+      const to = radial(spike.to, AT);
+      expect(to.out).toBeGreaterThan(from.out);
+      expect(from.out).toBeGreaterThan(0); // the middle is left open, so the spider shows through
+      expect(to.bearing).toBeCloseTo(from.bearing, 9);
+    }
+  });
+
+  test("the spikes alternate long and short, so it reads as a star and not as a wheel", () => {
+    const reaches = starburst(AT).map((s) => +radial(s.to, AT).out.toFixed(6));
+    expect(new Set(reaches).size).toBe(2);
+    const long = Math.max(...reaches);
+    for (let i = 1; i < reaches.length; i++) {
+      expect(reaches[i] === long).toBe(reaches[i - 1] !== long);
+    }
+  });
+
+  // `drawBursts` culls a mark on `BURST_REACH` alone, so a spike standing further out than that is
+  // a burst dropped from the frame while part of it was still on screen.
+  test("nothing it strikes stands further out than the reach it is culled on", () => {
+    for (const spike of starburst(AT)) {
+      for (const p of walk(spike)) {
+        expect(radial(p, AT).out).toBeLessThanOrEqual(BURST_REACH + 1e-9);
+      }
+    }
+  });
+
+  // A spider's bar is drawn directly over its sprite and is exactly as wide as that sprite is tall
+  // (`paintEnemy`), and the burst paints over the Y-sort — so a spike standing above the sprite has
+  // to stand wider than it too, or it strikes through the one damage readout the game has (#81) at
+  // the very moment the player is reading it.
+  test("no spike reaches over the health bar of the spider it marks", () => {
+    for (const radius of [GRUNT_RADIUS, ELITE_RADIUS]) {
+      for (const spike of starburst(ORIGIN)) {
+        for (const p of walk(spike)) {
+          if (-p.y > radius) expect(Math.abs(p.x)).toBeGreaterThan(radius);
+        }
+      }
+    }
+  });
+
+  test("it is the same mark wherever in the arena it is struck", () => {
+    // Rounded, and the sign taken off a zero with it: an axial spike comes out at -0 once it has
+    // been shifted back off `AT` and at 0 struck at the origin, and those are the same point.
+    const round = (n: number) => +n.toFixed(9) || 0;
+    const shape = (struck: Strand[], at: Vec2) =>
+      struck.map((s) => ({
+        from: { x: round(s.from.x - at.x), y: round(s.from.y - at.y) },
+        to: { x: round(s.to.x - at.x), y: round(s.to.y - at.y) },
+      }));
+    expect(shape(starburst(AT), AT)).toEqual(shape(starburst(ORIGIN), ORIGIN));
   });
 });

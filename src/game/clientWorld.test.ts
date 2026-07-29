@@ -13,6 +13,7 @@ import {
   ClientWorld,
   ENEMY_RENDER_DELAY_MS,
   HIT_FLASH_MS,
+  IMPACT_RETENTION_MS,
   RENDER_DELAY_MS,
   RESPAWN_DELAY_MS,
   SHOT_RETENTION_MS,
@@ -754,6 +755,120 @@ describe("#107: the hit flash rides the clock the sprite is drawn on", () => {
       nests: [],
     });
     expect(flashing(w, 2000 + ENEMY_RENDER_DELAY_MS)).toBe(false);
+  });
+});
+
+// #115: a starburst is struck where a shot connects. The mark is what this class holds — a point and
+// the instant the hit that made it arrived — and it is held back until the sprite the blow landed on
+// has caught up with it, which is the trap #107 called out and the same answer.
+describe("#115: the mark left where a shot connects", () => {
+  // The stream, at the 20 Hz it really runs at: one move for the enemy every tick, and a hit on the
+  // ticks a shot lands. The enemy walks, because a mark that rides its target and a mark struck
+  // where the blow landed are the same point only while nothing moves.
+  const TICK_MS = 50;
+  const STEP = 8; // world units a grunt covers in one tick, near enough
+  const walking = (hitOn: number[], ticks = 6, from = 1_000) => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 500, y: 300 }, hp: GRUNT_HP, sector: 0 }],
+      },
+      from,
+    );
+    for (let i = 0; i < ticks; i++) {
+      const at = from + i * TICK_MS;
+      w.applyMapDelta(
+        {
+          tick: 2 + i,
+          moves: [["e1", 500 + i * STEP, 300]],
+          ...(hitOn.includes(i) ? { hits: [{ id: "e1", hp: GRUNT_HP - 3 }] } : {}),
+        },
+        at,
+      );
+    }
+    return w;
+  };
+
+  test("a squad that has hit nothing has no marks up", () => {
+    const w = walking([]);
+    // Asked at the instant the sprites reach the first tick of the stream — which is when a mark
+    // laid by anything other than a hit would be showing — and again long after everything.
+    expect(w.impactMarks(1_000 + ENEMY_RENDER_DELAY_MS, HIT_FLASH_MS)).toEqual([]);
+    expect(w.impactMarks(9_999, HIT_FLASH_MS)).toEqual([]);
+  });
+
+  test("the mark is held back until the sprite reaches it, then lasts exactly the life asked for", () => {
+    const w = walking([1]);
+    const landed = 1_000 + TICK_MS; // the client instant the hit arrived
+    const up = (now: number) => w.impactMarks(now, HIT_FLASH_MS).length;
+    expect(up(landed)).toBe(0); // the spider on screen is still a render delay short of the blow
+    expect(up(landed + ENEMY_RENDER_DELAY_MS - 1)).toBe(0);
+    expect(up(landed + ENEMY_RENDER_DELAY_MS)).toBe(1);
+    expect(up(landed + ENEMY_RENDER_DELAY_MS + HIT_FLASH_MS - 1)).toBe(1);
+    expect(up(landed + ENEMY_RENDER_DELAY_MS + HIT_FLASH_MS)).toBe(0);
+  });
+
+  // The whole of what the ticket asks for, in one claim: the burst lands *on* the drawing. Both
+  // sides are read off the same frame — where the mark says the blow was, and where `snapshot` is
+  // interpolating that spider to — so nothing here can pass by agreeing with itself.
+  test("the mark stands exactly where the sprite is when it is revealed", () => {
+    const w = walking([1]);
+    const shown = 1_000 + TICK_MS + ENEMY_RENDER_DELAY_MS;
+    expect(w.impactMarks(shown, HIT_FLASH_MS)[0]?.pos).toEqual(
+      enemyIn(w, shown, "e1")?.pos as Vec2,
+    );
+  });
+
+  // It marks the blow, not the thing that took it. A spider walks a good part of its own width over
+  // the life of the mark, and a burst dragged along behind it stops reading as an impact.
+  test("the spider walks out from under its own mark", () => {
+    const w = walking([1]);
+    const shown = 1_000 + TICK_MS + ENEMY_RENDER_DELAY_MS;
+    const later = shown + HIT_FLASH_MS - 1;
+    const struck = w.impactMarks(shown, HIT_FLASH_MS)[0]?.pos;
+    expect(w.impactMarks(later, HIT_FLASH_MS)[0]?.pos).toEqual(struck as Vec2);
+    expect(enemyIn(w, later, "e1")?.pos.x).toBeGreaterThan((struck as Vec2).x);
+  });
+
+  test("sustained fire lays one mark per hit, each on its own clock", () => {
+    const w = walking([1, 2]);
+    const first = 1_000 + TICK_MS + ENEMY_RENDER_DELAY_MS;
+    expect(w.impactMarks(first, HIT_FLASH_MS).length).toBe(1);
+    expect(w.impactMarks(first + TICK_MS, HIT_FLASH_MS).length).toBe(2);
+    const marks = w.impactMarks(first + TICK_MS, HIT_FLASH_MS);
+    expect(marks[1].pos.x).toBeGreaterThan(marks[0].pos.x);
+  });
+
+  // `reapDamage` reports an enemy hit and then killed as a death alone (`enemies.ts:618`), so the
+  // killing blow never reaches this class as a hit and this is not a case that has to be excluded —
+  // it is one that cannot arrive. #116's puff is what marks a death, and it cannot hang off the
+  // enemy record either: the death is the tick that record is deleted on.
+  test("a death on its own leaves no mark here", () => {
+    const w = walking([]);
+    w.applyMapDelta({ tick: 99, moves: [], deaths: ["e1"] }, 1_400);
+    expect(w.impactMarks(1_400 + ENEMY_RENDER_DELAY_MS, HIT_FLASH_MS)).toEqual([]);
+  });
+
+  // The same unknown-id guard `moves` and `structHits` already apply: an id this client has never
+  // seen says nothing about where anything is, so there is no point to strike a burst at.
+  test("a hit naming an enemy this client has never seen marks nothing", () => {
+    const w = walking([]);
+    w.applyMapDelta({ tick: 99, moves: [], hits: [{ id: "ghost", hp: 4 }] }, 1_400);
+    expect(w.impactMarks(1_400 + ENEMY_RENDER_DELAY_MS, HIT_FLASH_MS)).toEqual([]);
+  });
+
+  // A tab that is not drawing still takes every delta, so the marks have to be pruned by the stream
+  // and not by the frame — the memory bound `shots` already has, for the same reason.
+  test("marks are pruned by the stream, so a match that is never drawn cannot pile them up", () => {
+    const w = walking([0, 1, 2, 3, 4, 5]);
+    const last = 1_000 + 5 * TICK_MS;
+    const swept = last + IMPACT_RETENTION_MS + 1;
+    w.applyMapDelta({ tick: 50, moves: [["e1", 900, 300]] }, swept);
+    // Asked for on a window far longer than anything the render layer would ever pass, so this is
+    // the buffer being empty rather than the query declining to hand its contents over.
+    expect(w.impactMarks(swept, IMPACT_RETENTION_MS * 10)).toEqual([]);
   });
 });
 

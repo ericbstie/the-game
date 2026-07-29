@@ -65,6 +65,11 @@ export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their
 // is measured against is this class's: the flash has to be judged on the delayed instant the sprite
 // is interpolated to, not on the instant the event arrived.
 export const HIT_FLASH_MS = 90;
+// How long a mark left where a shot connected is kept before it is pruned. A memory bound, exactly
+// as `SHOT_RETENTION_MS` is, and not the burst's lifetime — the render layer owns that and passes it
+// to `impactMarks` (#74 §5). It has to clear `ENEMY_RENDER_DELAY_MS` on top of any lifetime a caller
+// might ask for, because a mark spends that delay waiting for its sprite before it is drawn at all.
+export const IMPACT_RETENTION_MS = 250;
 // Dead this long, then the client snaps back to center. With a stopwatch for a score and a base
 // to defend, the long walk back from centre is the penalty — at 3 s (M3) dying was free.
 export const RESPAWN_DELAY_MS = 20_000;
@@ -105,6 +110,23 @@ export interface ShotEvent {
   at: number;
 }
 
+// Where something happened to an enemy, and the client instant the delta carrying it arrived. This
+// is the whole of the lifecycle a cartoon effect needs, and it is here rather than in `fx.ts` or in
+// a module of its own because both halves of it are private to this class: the delta a mark is
+// spawned from, and `ENEMY_RENDER_DELAY_MS`, the clock it has to be judged on.
+//
+// The stamp is arrival and not render time, the same convention `lastHitAt` uses, because the delay
+// is applied once — in `impactMarks` — rather than baked into every stamp by every caller.
+//
+// The position is *frozen*. A mark says where a blow landed, not where the thing that took it has
+// got to since, and the two are not the same point: a grunt covers a good part of its own width over
+// the life of one. It is also what lets a mark outlive its enemy, which is the case #116 is: a death
+// is the tick the record is deleted on, so a puff hung off that record could never be drawn at all.
+export interface Mark {
+  pos: Vec2;
+  at: number;
+}
+
 export class ClientWorld {
   readonly arena: Arena;
   readonly ore: OreGrid; // derived from the world's seed, byte-identical to the server's copy
@@ -113,6 +135,7 @@ export class ClientWorld {
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
   private readonly enemies = new Map<string, EnemyRecord>();
   private readonly shots: ShotEvent[] = []; // squadmates' shots; the render layer ages them itself
+  private readonly impacts: Mark[] = []; // where shots have connected (#115); aged the same way
   readonly build: BuildState; // server-owned; mirrored here so the ghost tests placement locally
   // Whether the squad has found the door (#93). Server-held: the only writes are the two below,
   // each of them inside a handler for a message the server sent, and each of them writing `true`
@@ -282,6 +305,12 @@ export class ClientWorld {
       if (!enemy) continue;
       enemy.hp = hit.hp;
       enemy.lastHitAt = now; // arrival, not render time: `renderEnemies` is what applies the delay
+      // Where the blow landed, sampled at `now` — which the `moves` loop above has just pushed this
+      // enemy's sample for, since every live enemy rides every delta. That is precisely the point
+      // `renderEnemies` will interpolate this spider to when the delayed clock reaches this instant,
+      // so the burst lands on the drawing rather than beside it. An enemy spawned this tick with no
+      // move behind it yet falls back to the spawn position, which is what its sprite is showing.
+      this.impacts.push({ pos: interpolateAt(enemy.buffer, now) ?? { ...enemy.pos }, at: now });
     }
     for (const id of delta.deaths ?? []) this.enemies.delete(id);
     for (const nd of delta.nests ?? []) {
@@ -330,6 +359,11 @@ export class ClientWorld {
     // stale events sitting in the buffer.
     const cutoff = now - SHOT_RETENTION_MS;
     while (this.shots.length > 0 && this.shots[0].at < cutoff) this.shots.shift();
+    // Pruned off the stream rather than off the frame, because a tab that has stopped drawing is
+    // still taking every delta — and at the rate hits arrive, a match nobody is looking at would
+    // otherwise hold every mark it ever laid.
+    const marked = now - IMPACT_RETENTION_MS;
+    while (this.impacts.length > 0 && this.impacts[0].at < marked) this.impacts.shift();
   }
 
   // Adopt streamed turret aims. Only turrets carry a runtime, and an id for a structure this
@@ -379,6 +413,24 @@ export class ClientWorld {
   peerShots(now: number, maxAgeMs: number): ShotEvent[] {
     const from = now - maxAgeMs;
     return this.shots.filter((s) => s.at >= from);
+  }
+
+  // The marks whose sprites have caught up with them and that are still up — the starbursts this
+  // frame strikes (#115), oldest first.
+  //
+  // Judged on `renderTime` and never on `now`, exactly as `flashing` is and for the same reason: a
+  // hit rides the 20 Hz tick while the spider it belongs to is a render delay behind it, so a burst
+  // stamped against arrival fires `ENEMY_RENDER_DELAY_MS` ahead of the drawing it belongs to. A mark
+  // the sprites have not reached yet is not late — it is early, and it is held back until they do.
+  //
+  // The lifetime is the caller's, like a shot line's, so nothing about how long a burst is up lives
+  // in the state that spawns it.
+  impactMarks(now: number, lifeMs: number): Mark[] {
+    const renderTime = now - ENEMY_RENDER_DELAY_MS;
+    return this.impacts.filter((m) => {
+      const since = renderTime - m.at;
+      return since >= 0 && since < lifeMs;
+    });
   }
 
   // Rebuild the economy from the reconnect keyframe: the bank and every building the squad has

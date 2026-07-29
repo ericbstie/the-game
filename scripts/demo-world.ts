@@ -1,4 +1,5 @@
 import { mulberry32, type OreGrid, TILE, tileKey } from "../src/game/build";
+import type { Mark } from "../src/game/clientWorld";
 import type { BuildGhost, ShotSource } from "../src/game/draw";
 import { ELITE_HP } from "../src/game/enemies";
 import { FLOAT_MS, type MetalFloat, minerFloatOrigin } from "../src/game/floats";
@@ -201,6 +202,20 @@ export function demoShots(world: WorldSnapshot, now: number): ShotSource {
       world.nests.find((n) => n.id === id && n.alive)?.pos ??
       null,
   };
+}
+
+// A starburst on every spider the scene has flashing (#115), and on no other.
+//
+// The two are one event told twice — one `EnemyHit`, one delayed clock, one lifetime — so a burst
+// anywhere else would be a frame the game cannot produce, and the only question this picture exists
+// to answer is what a hit actually looks like now that it has both channels at once. Derived from
+// the enemies rather than hand-placed, for the reason `demoFloats` is: a mark over a spider that is
+// not there is the one way this drawing can be wrong.
+//
+// The mark is procedural ink and not a bake, so no sprite sheet carries it and no spy says whether
+// it reads against white paper. This frame is the channel (ADR 0002 §5).
+export function demoBursts(world: WorldSnapshot, now: number): Mark[] {
+  return world.enemies.filter((e) => e.flashing).map((e) => ({ pos: e.pos, at: now }));
 }
 
 // A `+1` over every miner in the scene, spread across the life of a float so the frame carries the
