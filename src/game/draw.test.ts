@@ -13,7 +13,9 @@ import type { SpriteName } from "../sprite/registry";
 import { tileKey, tileOf } from "./build";
 import type { Camera, Viewport } from "./camera";
 import { drawWorld, grassAt, type ShotSource } from "./draw";
+import { ELITE_RADIUS, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, type MetalFloat } from "./floats";
+import { speedLines } from "./fx";
 import {
   MINIMAP_COVERAGE_CLOSE_U,
   MINIMAP_COVERAGE_U,
@@ -79,17 +81,38 @@ function spyCtx() {
   return ctx as unknown as CanvasRenderingContext2D & { calls: Call[] };
 }
 
-// Where a stroked line went, in world coordinates. `moveTo`/`lineTo` are recorded like everything
-// else, so a shot line reads off the log as the pair of points it was drawn from.
-const lines = (ctx: { calls: Call[] }) => {
-  const drawn: { from: [number, number]; to: [number, number] }[] = [];
-  let from: [number, number] | null = null;
+// The stroked paths in a frame, each as the segments it was built from. A shot is one path of
+// several strands (#114), so this is what tells a bundle from the run of separate lines M5 drew.
+const paths = (ctx: { calls: Call[] }) => {
+  const drawn: { from: [number, number]; to: [number, number] }[][] = [];
+  let path: { from: [number, number]; to: [number, number] }[] | null = null;
+  let at: [number, number] | null = null;
   for (const c of ctx.calls) {
-    if (c.fn === "moveTo") from = c.args as [number, number];
-    else if (c.fn === "lineTo" && from) drawn.push({ from, to: c.args as [number, number] });
+    if (c.fn === "beginPath") path = [];
+    else if (c.fn === "moveTo") at = c.args as [number, number];
+    else if (c.fn === "lineTo" && path && at)
+      path.push({ from: at, to: c.args as [number, number] });
+    else if (c.fn === "stroke" && path?.length) {
+      drawn.push(path);
+      path = null;
+    }
   }
   return drawn;
 };
+
+// The line each shot was fired along, read back off the mark it was struck as: from where the first
+// stroke begins to the furthest point the mark reaches. The run along the shot's own line is
+// anchored at both ends and the trail closes onto it before the head, so those two points are the
+// shooter and the target exactly. Every claim about where a shot goes is about this line, which is
+// what keeps the assertions below saying the same thing they said when a shot was one stroke.
+const shotLines = (ctx: { calls: Call[] }) =>
+  paths(ctx).map((strokes) => {
+    const from = strokes[0].from;
+    const reach = (p: [number, number]) => Math.hypot(p[0] - from[0], p[1] - from[1]);
+    let to = strokes[0].to;
+    for (const s of strokes) if (reach(s.to) > reach(to)) to = s.to;
+    return { from, to };
+  });
 
 // The filled polygons in a frame, in world coordinates, with the state each went out under. An
 // off-screen teammate's arrow is the only multi-point path `drawWorld` fills — a circle is an `arc`
@@ -1120,10 +1143,14 @@ describe("the build ghost", () => {
   });
 });
 
-// One continuous ink line from a shooter to what it hit, for your own shots, your squadmates' and
-// your turrets' alike (#81). Two constraints shape every test here: the line may never depict
-// damage the server did not apply (#74 §7), and it is the most expensive thing in the frame per
-// unit, so its 100 ms lifetime is enforced rather than assumed.
+// A shot struck from a shooter to what it hit, for your own shots, your squadmates' and your
+// turrets' alike (#81) — broken ink with speed lines trailing it since #114, one continuous line
+// before that. Two constraints shape every test here: the mark may never depict damage the server
+// did not apply (#74 §7), and a shot is the most expensive thing in the frame per unit, so its
+// 100 ms lifetime is enforced rather than assumed.
+//
+// Everything below reads the shot's own line out of its bundle, so what each test claims is
+// unchanged by the treatment: where a shot goes, and whether it is drawn at all.
 describe("shot lines", () => {
   const shooter = {
     ...POSE,
@@ -1149,11 +1176,13 @@ describe("shot lines", () => {
     structures: [],
   };
   const live = (id: string) => (id === "e1" ? grunt.pos : null);
-  const fire = (patch: Partial<WorldSnapshot>, shots: ShotSource, now = 1000) => {
+  const struck = (patch: Partial<WorldSnapshot>, shots: ShotSource, now = 1000) => {
     const ctx = spyCtx();
     drawWorld(ctx, { ...field, ...patch }, { camera, viewport, now, shots });
-    return lines(ctx);
+    return ctx;
   };
+  const fire = (patch: Partial<WorldSnapshot>, shots: ShotSource, now = 1000) =>
+    shotLines(struck(patch, shots, now));
   const none = { peers: [], own: null, resolve: live, ammo: 9 };
 
   test("draws your own shot where you fired it, without waiting for the relay", () => {
@@ -1300,10 +1329,90 @@ describe("shot lines", () => {
     });
   });
 
+  // #114 replaces M5's plain continuous line with speed lines. What a shot *claims* is unchanged —
+  // every test above still holds — so what is left to pin is that the mark is broken ink rather than
+  // a rule, that all three shooters get the identical treatment, and that neither the dash nor the
+  // extra strands escape the shot they belong to.
+  describe("the speed lines it trails", () => {
+    const bundle = (patch: Partial<WorldSnapshot>, shots: ShotSource, now = 1000) =>
+      paths(struck(patch, shots, now))[0];
+    const trail = (from: Vec2, to: Vec2) =>
+      speedLines(from, to).map((s) => ({
+        from: [s.from.x, s.from.y] as [number, number],
+        to: [s.to.x, s.to.y] as [number, number],
+      }));
+    const own = { at: 960, from: shooter.pos, dir: { x: 1, y: 0 } };
+    const peer = { shot: { id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }, at: 1000 };
+    const turret = {
+      structures: [
+        {
+          id: "b1",
+          kind: "turret" as const,
+          tile: { tx: 74, ty: 74 },
+          hp: 250,
+          turret: { powered: true, targetId: "e1" },
+        },
+      ],
+    };
+
+    test("a shot is struck as broken ink, not as a rule", () => {
+      const marks = bundle({}, { ...none, own });
+      expect(marks.length).toBeGreaterThan(1);
+      // Nothing in the mark runs the shot's whole length, which is what "no longer a rule" means.
+      const reach = Math.hypot(1800 - shooter.pos.x, 1100 - shooter.pos.y);
+      for (const m of marks) {
+        expect(Math.hypot(m.to[0] - m.from[0], m.to[1] - m.from[1])).toBeLessThan(reach);
+      }
+    });
+
+    test("your own shot, a squadmate's and a turret's are struck identically", () => {
+      expect(bundle({}, { ...none, own })).toEqual(trail(shooter.pos, { x: 1800, y: 1100 }));
+      expect(bundle({}, { ...none, peers: [peer] })).toEqual(trail(shooter.pos, grunt.pos));
+      expect(bundle(turret, none)).toEqual(trail({ x: 1125, y: 1125 }, grunt.pos));
+    });
+
+    // The trail is extra ink, not an extra path: it rides in the shot's own so the frame still pays
+    // for one stroked path per shot, which is the unit `docs/frame-budget.md` prices a shot in.
+    test("the whole bundle goes out in the shot's one stroke", () => {
+      const strokes = (shots: ShotSource, patch: Partial<WorldSnapshot> = {}) =>
+        struck(patch, shots).calls.filter((c) => c.fn === "stroke").length;
+      expect(strokes({ ...none, own })).toBe(strokes(none) + 1);
+      expect(strokes({ ...none, own, peers: [peer] })).toBe(strokes(none) + 2);
+    });
+
+    // The one thing that keeps the trail clear of ADR 0003 §3: where the line stops is all a shot is
+    // allowed to say, and a bundle narrowing onto a sprite would say it was hit. It stays clear only
+    // because your own line is fixed-length — `reach` never clips it onto a target — so the strands
+    // close short of the head by more than anything standing there is wide. Clip an own shot and the
+    // tension reopens without a word, which is what this catches.
+    test("your own shot's trail closes clear of anything standing at its head", () => {
+      const head = { x: shooter.pos.x + RANGED_RANGE, y: shooter.pos.y };
+      const gaps = bundle({}, { ...none, own }).map((m) =>
+        Math.hypot(m.to[0] - head.x, m.to[1] - head.y),
+      );
+      // The shot's own line reaches the head, and nothing else does — that is the plain end #114
+      // left it (`src/game/fx.ts`).
+      expect(gaps.filter((d) => d < 1e-9).length).toBe(1);
+      expect(Math.min(...gaps.filter((d) => d >= 1e-9))).toBeGreaterThan(ELITE_RADIUS);
+    });
+
+    // The cull is spent on the shot, before its bundle is built, so a shot with nothing of it on
+    // screen costs the frame no path at all rather than an empty one.
+    test("a shot the camera cannot see strikes no trail either", () => {
+      const far = { ...shooter, id: "p2", slot: 2, name: "Ben", pos: { x: 9000, y: 9000 } };
+      const away = {
+        ...none,
+        peers: [{ shot: { id: "p2", dir: { x: 1, y: 0 }, hit: "e2" }, at: 1000 }],
+        resolve: () => ({ x: 9500, y: 9000 }),
+      };
+      expect(paths(struck({ players: [far] }, away))).toEqual([]);
+    });
+  });
+
   test("costs nothing when the render layer has no shots to draw", () => {
     const ctx = spyCtx();
     drawWorld(ctx, field, { camera, viewport, now: 1000 });
-    expect(lines(ctx)).toEqual([]);
+    expect(paths(ctx)).toEqual([]);
   });
 
   // A line can be long enough to cross the whole viewport, so it is culled on the box it spans and

@@ -15,6 +15,13 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 
 ## The number
 
+> **Stale since [#114](https://github.com/ericbstie/the-game/issues/114).** Every figure in this
+> section was measured with M5's plain shot line, which #114 replaced with speed lines. A shot now
+> costs **about twice** what it did — measured, and measured on a different machine to everything
+> below, so the delta is trustworthy and the sum is not. **Read [What a shot costs since
+> #114](#what-a-shot-costs-since-114) with this section**, and re-run `bun run frame:budget` on an
+> idle machine before quoting a total.
+
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
 6.3 ms — 38% of it, leaving 10.4 ms of headroom.**
 
@@ -112,16 +119,90 @@ where 150 lines come to 3.8 ms. Flat per line is exactly why the 100 ms lifetime
 the count is the only lever. At 150 shot events a second it is what holds that count near 50
 instead of near 150.
 
+## What a shot costs since #114
+
+**A shot's mark costs about twice the plain line it replaced.** #114 struck out M5's continuous ink
+line and put a broken one in its place with two speed lines trailing it (`src/game/fx.ts`), so where
+a shot used to be one stroked segment it is now about **nine** — and a shot is charged **per stroke,
+not per inked pixel**. How much ink it lays hardly moves, and at full reach it lays slightly *less*;
+it costs twice as much regardless.
+
+Measured through the standalone probe, which strokes the shipped `speedLines` against a fixed setup.
+Medians of nine runs each, one machine, dpr 2, both treatments in the same session:
+
+| Concurrent shots | Plain line (M5) | Speed lines (#114) |
+| ---: | ---: | ---: |
+| 10 | 0.28 ms | 0.59 ms |
+| 50 — **the budget** | 1.39 ms | 2.73 ms |
+| 150 | 4.54 ms | 7.99 ms |
+
+**The ink was measured too, and it does not explain the cost.** `bun run shot:ink` strokes the
+shipped `speedLines` and M5's plain line over the same geometry on a real canvas and counts what
+each lays, at dpr 1, 2 and 3. **Ink** is the sum of per-pixel coverage, so a pixel the rasteriser
+half covered counts as half a pixel; **ink length** is the geometry alone, the strokes summed, with
+no rasteriser in it. Both against the plain line over the same two points; the range at each length
+is the six readings — three dprs, axis-aligned and diagonal.
+
+| Shot | Ink | Ink length |
+| --- | ---: | ---: |
+| 700 u — full reach, which every own shot runs (ADR 0003 §3) | −0.3% to −4.4% | +2.8% |
+| 350 u — half reach | +2.1% to +7.3% | +12.1% |
+| 173 u — `TRAIL_MIN_LENGTH`, the shortest shot that trails | +17.6% to +22.7% | +29.1% |
+| 172 u — a hair under it, so the broken line alone | −22.7% to −24.7% | −23.5% |
+| 52 u — one `SHOT_DASH`, point blank | 0.0% | 0.0% |
+
+**The trail lays less ink than its geometry says, and the 172 u row is the control that shows why.**
+Everywhere a trail is struck, the rasterised ink comes in 6–7 points under the ink length — at full
+reach far enough under to change its sign, so a mark whose strokes sum to 2.8% *more* line than the
+rule it replaced puts about 2% *less* ink on the paper. Strip the trail and the two agree exactly
+(−23.5% against −23.5%), which leaves the strands: they close onto the line, and ink laid twice is
+counted once. **A point-blank shot draws what it always did** — under about one dash the fit puts a
+single unbroken stroke across the whole shot, and that is the plain line again.
+
+**At the budgeted 50 concurrent that is +1.3 ms on the frame.** Held against the 6.3 ms above — which
+is arithmetic across two machines, not a measurement — the worst frame lands near **7.6 ms, 46%**,
+with about **9 ms of headroom**. Three more effects are chartered onto this frame
+([#115](https://github.com/ericbstie/the-game/issues/115),
+[#116](https://github.com/ericbstie/the-game/issues/116),
+[#79](https://github.com/ericbstie/the-game/issues/79)); that is what they are spending against.
+
+**The whole-frame instrument could not see this change, and the standalone probe could.** Across the
+same four runs the *identical* standing layer read 5.10 ms and 6.11 ms in two configurations that
+draw it the same way, and at `--enemies 500` the plain-line frame measured **dearer** than the
+speed-line one — 10.02 ms against 9.87 — which cannot be true. The machine's noise is larger than a
+1.3 ms layer, exactly as the floats row above warns. Only the probe that draws shots and nothing else
+resolved it, and it resolved it consistently at every count. **A layer this size needs an idle
+machine or an isolated probe; a busy one will hand you the wrong sign.**
+
+**At `ENEMY_CAP 500` the shot layer costs the same.** [#111](https://github.com/ericbstie/the-game/issues/111)
+has not landed and the governor is still 240, so the fixture was driven there with
+`bun run frame:budget --enemies 500`: 550 standing entities, 1,107 blits, 546 health bars. The probe
+read 2.67 ms at fifty against 2.73 at 240 — the same figure. That is expected and worth stating: the
+concurrent shot count is set by `SHOT_LINE_MS` against the shot *event* rate, not by how many enemies
+stand on the floor, so raising the cap moves the standing layer and leaves this one alone.
+
+**A shot is still one stroked path**, so the `61 stroked paths` above is unchanged; each of those
+paths now carries about nine segments instead of one. The break is struck as geometry rather than
+left to `setLineDash`, which measured dearer for the identical pattern — 5.55 ms against 4.88 at
+fifty — and would leave a dash in force over every name, arrow and map rule drawn after it.
+
 ## The rules
 
 1. **Shot lines are the most expensive thing in the frame, per unit** — and one effect has already
-   beaten them, which is how the rule below got written. ~25 µs each: one costs about five sprite
-   blits, because a stroked line across the viewport covers far more pixels than a 32 px sprite.
-   (The standing row adds 1.9 ms for 285 blits and 280 bars, and the bars are 0.37 ms of it, so a
-   blit is ~5 µs.) The **lifetime** is therefore the control, not the wire shape: at 150 shot events
-   a second, a 1-frame line means ~3 on screen and a 1-second line means ~150, which is the
-   difference between under 0.1 ms and 3.8 ms. **`SHOT_LINE_MS` is 100 and the budget is 50
-   concurrent.** Above ~150 the frame stops being comfortable.
+   beaten them, which is how the rule below got written. ~25 µs each as M5 drew them, ~55 µs since
+   #114 broke them into speed lines: one shot costs about eleven sprite blits, because a mark across
+   the viewport covers far more pixels than a 32 px sprite. (The standing row adds 1.9 ms for 285
+   blits and 280 bars, and the bars are 0.37 ms of it, so a blit is ~5 µs.) The **lifetime** is
+   therefore the control, not the wire shape: at 150 shot events a second, a 1-frame mark means ~3 on
+   screen and a 1-second mark means ~150, which is the difference between under 0.2 ms and 8 ms.
+   **`SHOT_LINE_MS` is 100 and the budget is 50 concurrent.** Above ~150 the frame stops being
+   comfortable.
+
+   **A shot is charged by the stroke, not by the pixel** — #114 measured it. Nine short segments
+   costing twice one long one is not what "covers far more pixels" predicts, and the treatment that
+   *reads* best (an 18/12 break, ~35 segments) cost 3.5× the plain line for a difference the eye has
+   to hunt for. Anything that subdivides a mark pays per piece; anything that only moves ink around
+   is closer to free.
 2. **Nothing new gets a full-viewport pass.** The clear and the paper fill are two of them already,
    1.92 M device pixels each. What one of them costs on its own is **not measured here**: the
    script's first row carries the grass, the squad, the nests and the map alongside them and cannot
@@ -212,7 +293,19 @@ bun run frame:budget                                     # the registry as it st
 bun run frame:budget --sprite grass=src/sprite/grass.ts  # layer in art that has not landed
 bun run frame:budget --dpr 1                             # an ordinary, non-retina monitor
 bun run frame:budget --map 15600                         # the corner map at its widest level
+bun run frame:budget --enemies 500                       # a cap the governor has not reached (#111)
+bun run shot:ink                                         # what a shot's mark lays, at dpr 1, 2 and 3
 ```
 
-It prints the layer breakdown and the projected worst case, and writes the frame it measured to a
-PNG so the numbers can be checked against the picture that produced them.
+`--enemies` overrides `ENEMY_CAP` for the fixture alone and nothing else, so a frame can be priced
+at a density before the simulation is raised to it. Without it the worst case is whatever the
+governor says today, which is what every unlabelled figure on this page was measured at.
+
+`frame:budget` prints the layer breakdown and the projected worst case, and writes the frame it
+measured to a PNG so the numbers can be checked against the picture that produced them.
+
+`shot:ink` answers the other axis and only that one — how much ink a shot's mark lays, never what it
+costs. It takes `--dpr` as often as you like (the default is the three above) and `--json` for the
+raw counts. Nothing in it is timed, so it does not need an idle machine: a pixel count is the same
+on a busy one, which is the whole reason the ink claim above can be trusted where a 1.3 ms layer
+could not.

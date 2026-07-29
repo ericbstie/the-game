@@ -19,6 +19,15 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--map", "wide"])).toThrow(/--map/);
   });
 
+  // #111 raises `ENEMY_CAP` to 500 and has not landed. A frame that has to hold at that density can
+  // be priced now or guessed at later, and guessing is what rule 5 of the budget exists to stop.
+  test("takes an enemy count, so a cap the governor has not been raised to yet can be priced", () => {
+    expect(parseArgs(["--enemies", "500"]).enemies).toBe(500);
+    expect(parseArgs([]).enemies).toBeNull(); // the governor's own cap, whatever it is today
+    expect(() => parseArgs(["--enemies", "0"])).toThrow(/--enemies/);
+    expect(() => parseArgs(["--enemies", "lots"])).toThrow(/--enemies/);
+  });
+
   test("layers in art that has not landed, so the budget can be measured before it does", () => {
     const request = parseArgs(["--sprite", "grass=src/sprite/grass.ts"]);
     expect(request.sprites).toEqual({ grass: join(process.cwd(), "src/sprite/grass.ts") });
@@ -39,6 +48,18 @@ describe("entrySource", () => {
     // The cap is read from the simulation, so the worst case cannot drift from the governor.
     expect(source).toContain("ENEMY_CAP");
     expect(source).toContain("build(ENEMY_CAP, STRUCTURES, true)");
+  });
+
+  test("builds the count it was asked for instead, when it was asked for one", () => {
+    expect(entrySource(parseArgs(["--enemies", "500"]))).toContain("build(500, STRUCTURES, true)");
+  });
+
+  // A probe that strokes its own plain line prices the treatment the game replaced, which is how a
+  // harness comes to disagree with the frame it is meant to explain (#110).
+  test("prices a shot through the treatment the game strikes, not a plain line", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("src/game/fx.ts");
+    expect(source).toContain("speedLines(p.pos, e.pos)");
   });
 
   test("forces a rasterisation per iteration, or it would time queueing rather than painting", () => {
