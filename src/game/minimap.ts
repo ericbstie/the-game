@@ -10,10 +10,10 @@ import type { Camera, Viewport } from "./camera";
 //
 // The seam is here rather than in `draw.ts` because both of the changes already chartered land on
 // this side of it. #110's three zoom levels cost this module three constants and a wrap, and cost
-// the geometry nothing at all: coverage was already a parameter of `minimapWindow` for exactly that
-// reason, so every layer below reads the level without knowing there is one. #111 replaces eight nests
-// on a ring with fifty at random; the map asks a nest only where it is and whether it is alive, so
-// that layer is a loop over `world.nests` with no count and no ring geometry anywhere in it.
+// the geometry nothing at all: coverage was already a parameter of `minimapWindow` for exactly
+// that reason, so every layer below reads the level without knowing there is one. #111 replaces
+// eight nests on a ring with fifty at random; the map asks a nest only where it is and whether it
+// is alive, so that layer is a loop over `world.nests` with no count and no ring geometry in it.
 
 // What the map shows across, in world units, at each of the three zoom levels (#110). One constant
 // per level, so retuning one is a one-line diff — and all three are **provisional**, the numbers the
@@ -43,7 +43,8 @@ export function nextMinimapCoverage(coverage: number): number {
 
 // The plate's side in CSS px, and how far it is held off the viewport corner. At 7,800 u across a
 // 200 px plate the scale is 1:39, so a 15 u tile is 0.38 px — under a pixel, which is what makes
-// every layer here an aggregate or a fixed-size marker rather than a drawing of the world.
+// every layer here an aggregate or a fixed-size marker rather than a drawing of the world. The
+// widest level only sharpens that: 1:78, and a tile at 0.19 px.
 export const MINIMAP_SIZE = 200;
 export const MINIMAP_MARGIN = 16;
 
