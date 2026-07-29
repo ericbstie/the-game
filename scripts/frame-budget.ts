@@ -182,7 +182,11 @@ try {
   for (let i = 0; i < SHOT_LINES - turretLines; i++) {
     peers.push({ shot: { id: "p" + (i % 6), dir: { x: 1, y: 0 }, hit: "e" + i }, at: opts.now });
   }
-  const m5 = { ...opts, shots: { peers, own: null, resolve: (id) => byId.get(id) ?? null } };
+  // A pool that cannot be the thing that caps the turret trains (#102): the budget is the worst
+  // frame, so every powered turret has to draw, and SHOT_LINES is by construction at least as many
+  // as there are.
+  const shots = { peers, own: null, resolve: (id) => byId.get(id) ?? null, ammo: SHOT_LINES };
+  const m5 = { ...opts, shots };
 
   // #99's floats. STRUCTURES cycles the four kinds, so a quarter of them are miners — ten at 40,
   // which is the count the ticket asks this to be measured at. Each is at a different point of its
