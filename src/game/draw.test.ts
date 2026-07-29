@@ -1799,10 +1799,19 @@ describe("the minimap", () => {
       return mapCalls(ctx);
     };
     // No level asked for is the level the map opens at, which is what makes a cycle a round trip.
-    expect(view()).toEqual(view(MINIMAP_COVERAGE_U));
+    const opened = view();
+    expect(opened).toEqual(view(MINIMAP_COVERAGE_U));
+    const pressed: ReturnType<typeof view>[] = [];
     let level = MINIMAP_COVERAGE_U;
-    for (let step = 0; step < 3; step++) level = nextMinimapCoverage(level);
-    expect(view(level)).toEqual(view(MINIMAP_COVERAGE_U));
+    for (let step = 0; step < 3; step++) {
+      level = nextMinimapCoverage(level);
+      pressed.push(view(level));
+    }
+    // Three presses show three different maps and the third is the one it opened on — a cycle that
+    // stepped nowhere would satisfy "lands back on it" while showing the same map throughout.
+    expect(pressed[0]).not.toEqual(opened);
+    expect(pressed[1]).not.toEqual(opened);
+    expect(pressed[2]).toEqual(opened);
   });
 
   describe("the door", () => {
