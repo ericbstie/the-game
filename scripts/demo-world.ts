@@ -227,11 +227,22 @@ function unit(from: Vec2, to: Vec2): Vec2 {
 // real deposit is a blob with a ragged edge. A rectangular fixture makes every ore sprite look
 // like it ends in a hard axis-aligned border and sends its agent chasing a defect the game does
 // not have — it cost one round before anyone noticed the fixture was the problem.
+//
+// And patches well out of sight of it, which are for the corner map alone (#110). The map's ore is
+// the one layer whose marks the zoom level adds to and takes away, and it is bounded to the map's
+// window rather than to the viewport — so a scene whose ore all sits under the camera draws the
+// same picture at all three levels and a run at each of them proves nothing. The offsets below are
+// chosen against the levels: two land between the closest window and the middle one, and two
+// between the middle one and the widest.
 function demoOre(): OreGrid {
   const grid: OreGrid = new Map();
   grow(grid, "metal", { tx: 1029, ty: 1030 }, 90, 1);
   grow(grid, "metal", { tx: 1061, ty: 1048 }, 70, 2);
   grow(grid, "power", { tx: 1046, ty: 1039 }, 60, 3);
+  grow(grid, "metal", { tx: 1242, ty: 1044 }, 40, 4); // ~3,000 u east
+  grow(grid, "power", { tx: 1042, ty: 819 }, 40, 5); // ~3,400 u north
+  grow(grid, "metal", { tx: 1475, ty: 1044 }, 40, 6); // ~6,500 u east
+  grow(grid, "power", { tx: 1042, ty: 597 }, 40, 7); // ~6,700 u north
   return grid;
 }
 

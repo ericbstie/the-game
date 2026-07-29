@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { MINIMAP_COVERAGE_U, MINIMAP_COVERAGE_WIDE_U } from "../src/game/minimap";
 import { entrySource, parseArgs } from "./world-frame";
 
 describe("parseArgs", () => {
@@ -9,6 +10,13 @@ describe("parseArgs", () => {
     expect(request.out).toBe(join(process.cwd(), "sprite-frame.png"));
     expect(request.dpr).toBe(2);
     expect(request.at).toBeNull();
+    expect(request.map).toBe(MINIMAP_COVERAGE_U);
+  });
+
+  test("takes the corner map's zoom, so a level can be looked at (#110)", () => {
+    expect(parseArgs(["--map", String(MINIMAP_COVERAGE_WIDE_U)]).map).toBe(MINIMAP_COVERAGE_WIDE_U);
+    expect(() => parseArgs(["--map", "0"])).toThrow(/--map/);
+    expect(() => parseArgs(["--map", "wide"])).toThrow(/--map/);
   });
 
   test("takes a sprite per name, so a frame can carry more than one at a time", () => {
@@ -59,5 +67,10 @@ describe("entrySource", () => {
     const source = entrySource(parseArgs(["--sprite", "grunt=/abs/grunt.ts"]), modules);
     expect(source).toContain('import s0 from "/abs/grunt.ts";');
     expect(source).toContain('createSpriteCache({ ...SPRITES, "grunt": s0 })');
+  });
+
+  test("draws the corner map at the level it was asked for", () => {
+    const source = entrySource(parseArgs(["--map", String(MINIMAP_COVERAGE_WIDE_U)]), modules);
+    expect(source).toContain(`minimapCoverage: ${MINIMAP_COVERAGE_WIDE_U}`);
   });
 });
