@@ -7,6 +7,7 @@ import elite from "./elite";
 import generator from "./generator";
 import grass from "./grass";
 import grunt from "./grunt";
+import gun from "./gun";
 import halo from "./halo";
 import miner from "./miner";
 import nest from "./nest";
@@ -47,6 +48,7 @@ export type SpriteName =
   | "room" // the perimeter wall unfolded outward, and the escape door
   | "halo" // the barely-yellow self marker
   | "ammo" // HUD: the squad's forged bullets
+  | "gun" // HUD: the weapon — facing 0 stowed and hollow, facing 1 equipped and filled
   | "warning" // HUD: a structure is under attack
   | "reconnecting" // HUD: the socket dropped and the client is trying to get back in
   | "unpowered"; // in-world: a turret with no energy
@@ -88,6 +90,7 @@ export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
   elite,
   generator,
   grunt,
+  gun,
   halo,
   miner,
   nest,
