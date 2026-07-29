@@ -206,8 +206,9 @@ export function mulberry32(seed: number): () => number {
 }
 
 // --- Hand-mining ------------------------------------------------------------------------
-// Holding right-click on a metal-ore tile mines it straight into the shared bank. Power ore has
-// no hand-mine path at all: Energy is a live rate with nowhere to store what you'd dig up.
+// Holding left-click on a metal-ore tile, with the gun stowed (#120), mines it straight into the
+// shared bank. Power ore has no hand-mine path at all: Energy is a live rate with nowhere to store
+// what you'd dig up.
 
 export const HAND_MINE_RATE = 1; // metal per second held
 export const MINE_CADENCE_MS = 100; // server-side floor on how often a client may report mining
@@ -253,9 +254,13 @@ export function withinReach(target: Vec2, from: Vec2, reach: number): boolean {
   return Math.hypot(target.x - from.x, target.y - from.y) <= reach;
 }
 
-// Right-click is one verb: holding it harvests whatever is under the cursor. This resolves which.
+// What is under the cursor, for the two buttons that reach for it: left-click mines (#120) and
+// right-click demolishes, and each takes only its own half of this answer.
+//
 // A structure always wins over the ore beneath it — a miner sits on metal ore by definition, so
-// resolving ore first would make it undemolishable. Bare ground and power ore yield nothing.
+// resolving ore first would make it undemolishable, and it is what keeps left-click from digging
+// out from under a standing miner now that the button pulling one down is the other one. Bare
+// ground and power ore yield nothing.
 export type HarvestTarget = { kind: "mine"; tile: Tile } | { kind: "demolish"; id: string } | null;
 
 export function resolveHarvest(tile: Tile, ore: OreGrid, build: BuildState | null): HarvestTarget {

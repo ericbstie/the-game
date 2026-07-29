@@ -46,7 +46,8 @@ Score is your escape time.
   Enemies target miners, so wall/turret them. This is the core factory tension.
 - Buildables: **miner, generator, wall, turret** — tile-snapped, instant, spent from the bank.
   All four are solid, all four have HP, and demolishing refunds 20%. There is no repair.
-- **Hand-mining bootstraps the loop:** hold right-click on metal ore to fund your first miner.
+- **Hand-mining bootstraps the loop:** hold left-click on metal ore, with the gun stowed, to fund
+  your first miner. A buildable taken off the bar outranks it and makes left-click a placement.
 
 ## Enemies & bases
 
@@ -57,8 +58,11 @@ Score is your escape time.
 
 ## Weapons & combat
 
-- **One attack: shoot** (left click), a ranged hitscan. Melee was tried and cut — right-click
-  belongs to hand-mining, and a single weapon keeps the fight readable.
+- **One attack: shoot** (left click, gun equipped), a ranged hitscan. Melee was tried and cut — a
+  single weapon keeps the fight readable.
+- **`e` equips and stows the gun**, and that is what left-click means: the trigger with it up, the
+  pick with it down, and never both. You spawn with it stowed. Right-click cancels a selected
+  buildable, or demolishes what is under the cursor.
 - Turrets shoot the nearest enemy through walls, so a forward line can siege a nest unattended.
 - *(A wider weapon roster stays open — see the TODO below.)*
 
