@@ -222,8 +222,9 @@ const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for n
 // How thick every stroke of a shot is. Two logical px, so a strand survives being drawn diagonally
 // at dpr 1. #81 asked for continuous ink shooter to target; #114 broke it into speed lines, which is
 // what makes an instantaneous shot read as fast now that #80 has left it with nothing that travels.
-// The weight is shared by the trail so the whole mark reads as one hand.
-const SHOT_WIDTH = 2;
+// The weight is shared by the trail so the whole mark reads as one hand. Exported for
+// `scripts/shot-ink.ts`, which cannot measure the mark's coverage against a width of its own.
+export const SHOT_WIDTH = 2;
 
 // The damage readout, and the only thing that carries it: structures deliberately do not change
 // appearance as they are damaged (#81). Four px tall, which is a one-px ink frame around two px of
