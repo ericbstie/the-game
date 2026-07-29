@@ -8,6 +8,7 @@ import { capture, measurementsIn } from "./headless";
 //   bun run frame:budget
 //   bun run frame:budget --sprite grass=src/sprite/grass.ts   # layer in art that has not landed
 //   bun run frame:budget --map 15600                          # the corner map at its widest level
+//   bun run frame:budget --enemies 500                        # a cap the governor has not reached
 //
 // The budget this produces is written down in `docs/frame-budget.md`. It exists as a command and
 // not only as a number because the rest of Milestone 5 adds to this frame — health bars, the shot
@@ -25,6 +26,7 @@ const REGISTRY_MODULE = join(import.meta.dir, "../src/sprite/registry.ts");
 const BUILD_MODULE = join(import.meta.dir, "../src/game/build.ts");
 const ENEMIES_MODULE = join(import.meta.dir, "../src/game/enemies.ts");
 const FLOATS_MODULE = join(import.meta.dir, "../src/game/floats.ts");
+const FX_MODULE = join(import.meta.dir, "../src/game/fx.ts");
 
 export interface BudgetRequest {
   sprites: Record<string, string>;
@@ -34,6 +36,10 @@ export interface BudgetRequest {
   // cycled to (#110). It defaults to the level the map opens at, so a plain run measures the frame
   // the published budget measures.
   map: number;
+  // How many enemies the worst frame holds, or null for whatever `ENEMY_CAP` is today. A cap the
+  // governor has not been raised to yet — #111's 500 — can only be priced by asking for it, and the
+  // alternative is a number nobody measured (rule 5).
+  enemies: number | null;
 }
 
 export function parseArgs(argv: string[]): BudgetRequest {
@@ -41,6 +47,7 @@ export function parseArgs(argv: string[]): BudgetRequest {
   let out: string | null = null;
   let dpr = 2;
   let map = MINIMAP_COVERAGE_U;
+  let enemies: number | null = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--out") out = argv[++i] ?? "";
@@ -50,6 +57,11 @@ export function parseArgs(argv: string[]): BudgetRequest {
     } else if (arg === "--map") {
       map = Number(argv[++i]);
       if (!Number.isFinite(map) || map <= 0) throw new Error("--map must be a positive number");
+    } else if (arg === "--enemies") {
+      enemies = Number(argv[++i]);
+      if (!Number.isInteger(enemies) || enemies <= 0) {
+        throw new Error("--enemies must be a positive whole number");
+      }
     } else if (arg === "--sprite") {
       const pair = argv[++i] ?? "";
       const split = pair.indexOf("=");
@@ -57,7 +69,7 @@ export function parseArgs(argv: string[]): BudgetRequest {
       sprites[pair.slice(0, split)] = resolve(pair.slice(split + 1));
     } else throw new Error(`unknown argument ${arg}`);
   }
-  return { sprites, out: resolve(out ?? "frame-budget.png"), dpr, map };
+  return { sprites, out: resolve(out ?? "frame-budget.png"), dpr, map, enemies };
 }
 
 export interface BudgetResult {
@@ -86,6 +98,7 @@ import { SPRITES } from ${JSON.stringify(REGISTRY_MODULE)};
 import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { ENEMY_CAP } from ${JSON.stringify(ENEMIES_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
+import { speedLines } from ${JSON.stringify(FX_MODULE)};
 
 const VIEW = { width: 800, height: 600 };
 const DPR = ${request.dpr};
@@ -190,7 +203,7 @@ try {
 
   const empty = build(0, 0, false);
   const floor = build(0, 0, true);
-  const full = build(ENEMY_CAP, STRUCTURES, true);
+  const full = build(${request.enemies ?? "ENEMY_CAP"}, STRUCTURES, true);
 
   // The shot lines, through the shipped path rather than a hand-rolled stroke: the powered turrets
   // generate their own pulse, and squadmates' relayed shots make the count up to the budgeted 50.
@@ -260,15 +273,18 @@ try {
       ctx.fillStyle = "#000"; ctx.fillRect(e.pos.x - 12, e.pos.y - e.radius - 6, 14, 4);
     }
   });
-  // Shot lines (#74). A stroked line costs by the pixels it covers, so a line across the viewport
-  // is dear; measured at several counts so a lifetime can be priced rather than guessed.
+  // Shot lines (#74), struck the way the game strikes them — the strands and the dash out of fx.ts,
+  // not a plain stroke of this script's own. A shot costs by the pixels it covers, so one across the
+  // viewport is dear; measured at several counts so a lifetime can be priced rather than guessed.
   const shotLines = (n) => measure(() => {
     setup();
     ctx.strokeStyle = "#000"; ctx.lineWidth = 2;
     for (let i = 0; i < n; i++) {
       const e = full.enemies[i % full.enemies.length];
       const p = full.players[i % full.players.length];
-      ctx.beginPath(); ctx.moveTo(p.pos.x, p.pos.y); ctx.lineTo(e.pos.x, e.pos.y); ctx.stroke();
+      ctx.beginPath();
+      for (const s of speedLines(p.pos, e.pos)) { ctx.moveTo(s.from.x, s.from.y); ctx.lineTo(s.to.x, s.to.y); }
+      ctx.stroke();
     }
   });
 
@@ -326,6 +342,9 @@ if (import.meta.main) {
     `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} shot lines, ${r.floats} miner floats, dpr ${request.dpr}`,
   );
   console.log(`corner map  ${request.map} u across`);
+  console.log(
+    `enemy cap   ${request.enemies === null ? "ENEMY_CAP, as the governor stands" : `${request.enemies}, asked for`}`,
+  );
   console.log(
     `sprites     ${Object.keys(request.sprites).join(", ") || "the registry as it stands"}`,
   );
