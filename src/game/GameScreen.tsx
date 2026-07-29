@@ -418,6 +418,7 @@ export function GameScreen({
               peers: world.peerShots(clock, SHOT_LINE_MS),
               own: ownShotRef.current,
               resolve: (id) => world.shotTargetPos(id, clock),
+              ammo: world.ammo(),
             },
           });
         }
