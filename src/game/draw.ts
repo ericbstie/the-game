@@ -34,6 +34,7 @@ import type { ShotEvent } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
 import { ELITE_HP, GRUNT_HP, NEST_HP, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
+import { speedLines } from "./fx";
 import {
   MINIMAP_COVERAGE_U,
   minimapWindow,
@@ -69,8 +70,9 @@ import { PLAYER_MAX_HP } from "./world";
 //
 // - **A health bar on anything damaged**, and on nothing at full health. It is the *only* damage
 //   readout, because a structure deliberately does not change appearance as it is worn down.
-// - **A shot line**, for your own shots, your squadmates' and your turrets' alike. It is the most
-//   expensive thing in the frame per unit, so its 100 ms lifetime is a budget and not a look.
+// - **A shot line**, for your own shots, your squadmates' and your turrets' alike — broken into
+//   speed lines since #114. It is the most expensive thing in the frame per unit, so its 100 ms
+//   lifetime is a budget and not a look.
 // - **Death by vanishing** — no corpse — plus a screen darkening drawn only on the dying player's
 //   own client, for as long as they are down.
 
@@ -217,9 +219,10 @@ const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it 
 const WORLD_FONT = '12px "Playfair Display", "Times New Roman", Times, serif';
 const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for no other figure
 
-// A shot is one stroked line, and #81 asks for exactly that: continuous ink, shooter to target,
-// with no travelling projectile (#80 is out of scope). Two logical px so it survives being drawn
-// diagonally at dpr 1 without reading as a rule.
+// How thick every stroke of a shot is. Two logical px, so a strand survives being drawn diagonally
+// at dpr 1. #81 asked for continuous ink shooter to target; #114 broke it into speed lines, which is
+// what makes an instantaneous shot read as fast now that #80 has left it with nothing that travels.
+// The weight is shared by the trail so the whole mark reads as one hand.
 const SHOT_WIDTH = 2;
 
 // The damage readout, and the only thing that carries it: structures deliberately do not change
@@ -487,7 +490,8 @@ export function drawWorld(
   }
 }
 
-// The frame's shot lines: your own, your squadmates' and your turrets' (#81), all the same ink.
+// The frame's shots: your own, your squadmates' and your turrets' (#81), all struck the same way —
+// the shot's own line with speed lines trailing it (#114), which `fx.ts` lays out.
 //
 // Aged here rather than upstream. `ClientWorld` keeps shots for `SHOT_RETENTION_MS` (250) as a
 // memory bound, which is deliberately longer than any lifetime a caller might ask for; drawing
@@ -511,24 +515,32 @@ function drawShots(
   ctx.strokeStyle = INK;
   ctx.lineWidth = SHOT_WIDTH;
 
-  const line = (from: Vec2, to: Vec2): void => {
-    // A line can be long enough to cross the whole viewport, so it is culled on the box it spans
+  const strike = (from: Vec2, to: Vec2): void => {
+    // A shot can be long enough to cross the whole viewport, so it is culled on the box it spans
     // rather than on either end: a turret off the left edge firing at a nest off the right one is
-    // still drawn across the middle of the screen.
+    // still drawn across the middle of the screen. Spent before the mark is built, so a shot with
+    // nothing of it on screen costs no geometry at all.
     if (Math.max(from.x, to.x) < camera.x || Math.min(from.x, to.x) > camera.x + viewport.width) {
       return;
     }
     if (Math.max(from.y, to.y) < camera.y || Math.min(from.y, to.y) > camera.y + viewport.height) {
       return;
     }
+    // One path for the whole mark, so a shot still costs the frame the single stroke
+    // `docs/frame-budget.md` prices it at — the trail and the breaks are more geometry, not more
+    // paths. The break is struck as segments rather than left to `setLineDash`, which measured
+    // dearer for the identical pattern (5.55 ms against 4.88 at 50 shots, dpr 2) and would leave a
+    // dash in force over every name, arrow and map rule drawn after it.
     ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
+    for (const strand of speedLines(from, to)) {
+      ctx.moveTo(strand.from.x, strand.from.y);
+      ctx.lineTo(strand.to.x, strand.to.y);
+    }
     ctx.stroke();
   };
 
   if (shots.own && now - shots.own.at < SHOT_LINE_MS) {
-    line(shots.own.from, reach(shots.own.from, shots.own.dir));
+    strike(shots.own.from, reach(shots.own.from, shots.own.dir));
   }
 
   for (const { shot, at } of shots.peers) {
@@ -539,23 +551,34 @@ function drawShots(
     if (!from) continue;
     // A ray that hit nothing still draws, out to full range — a squadmate firing into empty air
     // with no line looks broken (#74 §6). A ray that hit something the client cannot resolve draws
-    // nothing at all: that is the death window, and it is the one case a line would be a lie.
+    // nothing at all: that is the death window, and it is the one case a mark would be a lie.
     const to = shot.hit === undefined ? reach(from, shot.dir) : shots.resolve(shot.hit);
-    if (to) line(from, to);
+    if (to) strike(from, to);
   }
 
-  // Turrets spend the squad's bullets, so the pool bounds how many of them can have fired: an empty
-  // one is the server holding every turret's fire, and one bullet across five ready turrets is four
-  // trains nobody took. The mirror lags the pool by at most one tick, which under-draws (a bullet
-  // forged and fired on the same tick never shows as spendable) rather than over-draws — the
-  // direction ADR 0003 cares about.
-  //
-  // *Which* turret got a scarce bullet is not knowable here and is not claimed: the pool is spent
-  // down `world.structures`, which is a map's insertion order and so names the same winners frame
-  // after frame. A rule that reshuffled — nearest, or newest — would flicker the train between
-  // turrets while the count stayed right, which is worse to look at than being wrong about one.
-  // Spent before the cull for the same reason: a bullet goes to a turret that fired, not to one the
-  // camera happens to be pointing at, so panning cannot hand it to somebody else.
+  drawTurretTrains(world, shots, now, strike);
+}
+
+// The turret pulses this frame, handed the same strike the other two shooters get.
+//
+// Turrets spend the squad's bullets, so the pool bounds how many of them can have fired: an empty
+// one is the server holding every turret's fire, and one bullet across five ready turrets is four
+// trains nobody took. The mirror lags the pool by at most one tick, which under-draws (a bullet
+// forged and fired on the same tick never shows as spendable) rather than over-draws — the
+// direction ADR 0003 cares about.
+//
+// *Which* turret got a scarce bullet is not knowable here and is not claimed: the pool is spent
+// down `world.structures`, which is a map's insertion order and so names the same winners frame
+// after frame. A rule that reshuffled — nearest, or newest — would flicker the train between
+// turrets while the count stayed right, which is worse to look at than being wrong about one.
+// Spent before the cull for the same reason: a bullet goes to a turret that fired, not to one the
+// camera happens to be pointing at, so panning cannot hand it to somebody else.
+function drawTurretTrains(
+  world: WorldSnapshot,
+  shots: ShotSource,
+  now: number,
+  strike: (from: Vec2, to: Vec2) => void,
+): void {
   if (now % TURRET_CADENCE_MS >= SHOT_LINE_MS) return;
   let spent = 0;
   for (const s of world.structures) {
@@ -565,7 +588,7 @@ function drawShots(
     const to = spec && shots.resolve(s.turret.targetId);
     if (!to) continue;
     spent++;
-    line(footprintCenter(s.tile, spec.footprint), to);
+    strike(footprintCenter(s.tile, spec.footprint), to);
   }
 }
 
