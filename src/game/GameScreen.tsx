@@ -303,9 +303,11 @@ export function GameScreen({
     // discrete click.
     //
     // This is the only thing that drops the left hold on a death, so it drops it only while the gun
-    // is up. A stowed hold is left armed and refused instead — `liveMine` answers null for a corpse
-    // — which is what mining did on its old button, and respawn puts you half a map from the ore
-    // anyway.
+    // is up. A stowed hold stays armed and is merely refused — `liveMine` answers null for a corpse
+    // — and that is observable, not theoretical: `reviveSelf` respawns at arena centre
+    // (clientWorld.ts:244) and `BOOTSTRAP_PATCHES` seeds metal patches there (build.ts:110), well
+    // inside `INTERACT_REACH`, so a button held through a death can be mining again the moment you
+    // stand up. Kept because it is what mining did on its old button, not because it is invisible.
     if (world.isDead()) {
       leftHeldRef.current = false;
       return;
@@ -544,10 +546,16 @@ export function GameScreen({
   // decides what either is worth — the client only ever asks.
   //
   // They read their buttons live rather than latching a mode at the press, and that is the whole of
-  // #120's mid-hold switch: `e` pressed under a held left button ends one of these and starts the
-  // other on this interval's next tick, with nothing to re-arm. A cursor over nothing minable simply
-  // asks for nothing, and starts asking the moment it is over ore — the same way a released button
-  // stops without being told.
+  // #120's mid-hold switch: `e` pressed under a held left button changes what the very next tick
+  // asks for, with nothing to re-arm. A cursor over nothing minable simply asks for nothing, and
+  // starts asking the moment it is over ore — the same way a released button stops without being
+  // told.
+  //
+  // The switch does not land at the same speed in both directions, and nothing here claims it does.
+  // Toggling *to* the gun fires on the next frame, because the trigger is spent in the render loop;
+  // toggling *off* waits out up to a whole `MINE_CADENCE_MS` for this fixed poll, which no toggle
+  // restarts. That is exactly what a fresh press has always cost a mine, so it is the poll's lag
+  // rather than the toggle's.
   useEffect(() => {
     const timer = setInterval(() => {
       const world = worldRef.current;
@@ -632,8 +640,8 @@ export function GameScreen({
       } else {
         leftHeldRef.current = true;
         // A shot leaves in the same breath as the press — waiting for the next frame would put a
-        // click's worth of lag on a single tap. A mine has nothing to gain from the same: the first
-        // report only starts `admitMine`'s accrual clock and earns nothing (build.ts:248).
+        // click's worth of lag on a single tap. The mine is left to its poll instead, which picks
+        // the hold up within `MINE_CADENCE_MS`, as it did when mining was on the other button.
         if (equippedRef.current) fireIfDue(Date.now());
       }
     } else if (e.button === 2) {
