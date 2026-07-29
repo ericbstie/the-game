@@ -443,6 +443,41 @@ describe("#120: the gun decides what left-click does", () => {
     expect(onAttack).not.toHaveBeenCalled();
   });
 
+  // A press over a full build bar latches a run and nothing else, so there is no second hold left
+  // armed behind it. Taking the bar away mid-drag is what makes that visible: the run ends, and
+  // left-click means nothing again until it is pressed again.
+  test("a press that starts a run arms no hold behind it, so clearing the bar mines nothing", async () => {
+    const world = overOre();
+    world.build.bank.metal = 1_000;
+    const onMine = mock(() => {});
+    const canvas = renderMatch({ onMine }, world);
+    fireEvent.keyDown(window, { key: "1" });
+    fireEvent.mouseDown(canvas, { button: 0 });
+    fireEvent.mouseDown(canvas, { button: 2 }); // right-click takes the ghost away, and the run
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).not.toHaveBeenCalled();
+  });
+
+  // The mirror of #103's "selecting a buildable mid-hold stops the fire": the bar outranks the gun
+  // in both states, so it must outrank it whether it was taken before the press or under it.
+  test("selecting a buildable mid-hold stops the mining and places nothing on its own", async () => {
+    const world = overOre();
+    world.build.bank.metal = 1_000;
+    const onBuild = mock(() => {});
+    const onMine = mock(() => {});
+    const canvas = renderMatch({ onBuild, onMine }, world);
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    const mined = onMine.mock.calls.length;
+    expect(mined).toBeGreaterThan(0); // mining was really running when the bar was taken
+    fireEvent.keyDown(window, { key: "1" });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalledTimes(mined);
+    expect(onBuild).not.toHaveBeenCalled(); // and the hold does not place what it just selected
+  });
+
   // The half of the ticket a latched press cannot do: the button never comes up, and what it is
   // doing changes under it.
   test("`e` under a held button stops the fire and starts mining on the spot", async () => {

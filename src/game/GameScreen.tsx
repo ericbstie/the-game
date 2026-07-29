@@ -406,6 +406,7 @@ export function GameScreen({
           liveMine(
             world,
             leftHeldRef.current && !equippedRef.current,
+            selectedRef.current,
             pointerRef.current,
             aimRef.current.camera,
           ) !== null;
@@ -562,6 +563,7 @@ export function GameScreen({
       const mine = liveMine(
         world,
         leftHeldRef.current && !equippedRef.current,
+        selectedRef.current,
         pointerRef.current,
         aimRef.current.camera,
       );
@@ -832,20 +834,25 @@ function applyBackingStore(canvas: HTMLCanvasElement, w: number, h: number, dpr:
 }
 
 // The tile left-click is mining this instant, or null if it is mining nothing — the gun up, a
-// released button, a world not up yet, a corpse, or a cursor over anything that yields Metal to a
-// hand. The request loop and the mining pin both read this one answer, so the pin can never outlast
-// the mine it follows.
+// released button, a buildable on the bar, a world not up yet, a corpse, or a cursor over anything
+// that yields Metal to a hand. The request loop and the mining pin both read this one answer, so
+// the pin can never outlast the mine it follows.
 //
-// `resolveHarvest` is what decides, so a tile with a structure on it is still a demolish and still
-// not minable — a miner sits on metal ore by definition, and left-click must not dig out from under
-// one just because the button that pulls it down is now the other one.
+// The build bar is judged here rather than only at the press, mirroring `fireIfDue`: the bar
+// outranks the gun in both its states, so the bar taken *under* a held button must end a mine the
+// way it already ends a shot, and no future re-arming of the hold can reach past it.
+//
+// `resolveHarvest` is what decides the rest, so a tile with a structure on it is still a demolish
+// and still not minable — a miner sits on metal ore by definition, and left-click must not dig out
+// from under one just because the button that pulls it down is now the other one.
 function liveMine(
   world: ClientWorld | undefined,
   mining: boolean,
+  selected: BuildableKind | null,
   pointer: Vec2,
   camera: Camera,
 ): Tile | null {
-  if (!world || !mining || world.isDead()) return null;
+  if (!world || !mining || selected || world.isDead()) return null;
   const target = resolveHarvest(cursorTile(pointer, camera), world.ore, world.build);
   if (target?.kind !== "mine") return null;
   // `admitMine` refuses a report from further off than INTERACT_REACH (build.ts:209). Nothing here
