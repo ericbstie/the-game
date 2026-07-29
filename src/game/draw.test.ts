@@ -934,7 +934,7 @@ describe("the grass scatter", () => {
 
   test("covers the viewport and paints under everything that stands on it", () => {
     const ctx = spyCtx();
-    drawWorld(ctx, world, { camera, viewport, sprites: stubSprites({ grass: 10, player: 28 }) });
+    drawWorld(ctx, world, { camera, viewport, sprites: stubSprites({ grass: 8, player: 28 }) });
     const painted = blits(ctx);
     const grass = painted.filter((b) => b.tag.startsWith("grass/"));
 
@@ -949,6 +949,31 @@ describe("the grass scatter", () => {
     );
     // Several distinct variants, or the field is one drawing repeated.
     expect(new Set(grass.map((b) => b.tag)).size).toBeGreaterThan(1);
+  });
+
+  // A tuft hangs off the point that chose it and reaches a whole box above it, so the walk has to
+  // run outside the viewport by as much as the tuft is tall or one pops in at the edge as the
+  // camera moves. #106 took the box to 0.8×, and the walk has to follow the sprite the source hands
+  // back rather than any extent written down beside it.
+  test("walks outside the viewport by as much as the tuft the source hands back is tall", () => {
+    // The tile that chose each tuft, recovered from where its box was blitted — the box hangs off
+    // the point's bottom centre, so this reads back the walk itself rather than the size of what it
+    // put down. Reading the blit's own left edge would move with the box and pass without a walk.
+    const reached = (box: number) => {
+      const ctx = spyCtx();
+      drawWorld(ctx, world, { camera, viewport, sprites: stubSprites({ grass: box }) });
+      const tiles = blits(ctx)
+        .filter((b) => b.tag.startsWith("grass/"))
+        .map((b) => ({ tx: Math.floor((b.x + box / 2) / 15), ty: Math.floor((b.y + box) / 15) }));
+      return {
+        tx: Math.min(...tiles.map((t) => t.tx)),
+        ty: Math.min(...tiles.map((t) => t.ty)),
+      };
+    };
+    const small = reached(8); // the shipped box
+    const tall = reached(45); // three tiles, so the walk has to reach three tiles further out
+    expect(tall.tx).toBeLessThan(small.tx);
+    expect(tall.ty).toBeLessThan(small.ty);
   });
 });
 

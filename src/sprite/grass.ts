@@ -19,7 +19,16 @@ import type { SpriteSubject } from "./sheet";
 // Judged on a field, never on a tile: `sprite:frame --at 20000,20000` for the bare scatter and the
 // default camera for grass and ore on the same floor. See `grass.review.md`.
 
-const SIZE = 10; // #72 settled it with the density; 5/6/8/10/12/14 were rendered
+// The box the blades below are composed in. #72 settled it with the density; 5/6/8/10/12/14 were
+// rendered. Every number in `TUFTS` is in these units and none of them moved for #106.
+const DESIGN = 10;
+
+// What the tuft is drawn at. #106 takes it to 0.8× so the tufts recede behind the ore they were
+// being confused with — the scatter, the hand-placed blades and the three-blade ceiling are all
+// #72's and unchanged; only the box they land in is smaller. Provisional.
+const TUFT_SCALE = 0.8;
+const SIZE = DESIGN * TUFT_SCALE; // 8
+
 const MIRRORS = 2;
 
 // Enough samples that the outline's facets are sub-pixel at the 20 px dpr-2 bake, and no more.
@@ -164,10 +173,12 @@ const grass: SpriteSubject = {
   facings: TUFTS.length * MIRRORS,
   frames: 1,
   draw(ctx, size, facing) {
-    ctx.scale(size / SIZE, size / SIZE);
+    // Into the design box, not the declared one: the blades are laid out in `DESIGN` units and the
+    // scale is what takes them to the smaller box the game blits.
+    ctx.scale(size / DESIGN, size / DESIGN);
 
     if (facing >= TUFTS.length) {
-      ctx.translate(SIZE, 0);
+      ctx.translate(DESIGN, 0);
       ctx.scale(-1, 1);
     }
 

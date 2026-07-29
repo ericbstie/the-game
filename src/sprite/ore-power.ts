@@ -35,8 +35,12 @@ const TAU = Math.PI * 2;
 
 // The line always falls to the lower right and the ember always sits up and left of it, so twelve
 // variants read as one hand drawing one motif twelve times rather than as twelve motifs.
-const WEIGHT_MIN = 1; // a crescent thinner than a logical pixel is a grey smear, not a line
-const WEIGHT_OF_R = 0.42;
+// #106 asks the ore for bolder ink. Here the ink is the crescent, so this is where the weight goes:
+// a floor a quarter over a logical pixel, and half again as much of the body's radius as before
+// (0.42). At dpr 1 the old floor put exactly one device pixel of black on the smallest lit body,
+// which is the width at which a line is indistinguishable from a grey edge. Both provisional.
+const WEIGHT_MIN = 1.25;
+const WEIGHT_OF_R = 0.55;
 const BARE_BELOW = 2.1; // a body this small is all line and no colour, so it takes none
 
 const GLOW_REACH = 2.8; // of the body's radius

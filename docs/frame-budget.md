@@ -387,6 +387,28 @@ whole wave goes at once.** Nothing was narrowed to get there: no cooldown, no ca
 no distance filter — the puff fires on every death the client is streamed. The screenshot the probe
 writes is the frame those numbers were counted on.
 
+## What #106's bolder ore costs — nothing (#106)
+
+[#106](https://github.com/ericbstie/the-game/issues/106) put a stroked rim round every ore patch,
+weight on every metal shard and a heavier crescent on every power body, and took the grass tuft to
+0.8×. **It does not move the frame**, and could not have: the floor's cost is `drawImage` calls of
+tiles baked once per variant per DPR, so what is inside a bake is free at draw time and the count
+did not change.
+
+Medians of seven runs each side, on one machine in one sitting — **not** the machine the headline
+above was taken on, which is why the totals here are ~8 ms rather than ~6.3 ms and why only the
+before-and-after pair means anything:
+
+| | before | after |
+| --- | ---: | ---: |
+| paper only | 1.678 ms | 1.662 ms |
+| + grass and ore | 2.907 ms | 2.852 ms |
+| the grass-and-ore layer alone | 1.184 ms | 1.179 ms |
+| the whole worst-case frame | 8.192 ms · 49.2% | 8.033 ms · 48.1% |
+
+Every one of those differences is inside the ±15% run-to-run variance this page warns about. The
+right reading is *unchanged*, not *cheaper*.
+
 ## The rules
 
 1. **Shot lines are the most expensive thing in the frame, per unit** — and one effect has already
