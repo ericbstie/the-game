@@ -317,12 +317,23 @@ they are comparable rather than quoted across pages.
 burst's.** At fifty concurrent that is 69.5 µs a puff against 34.4 µs a burst and 51.1 µs a shot. It
 is **six arcs** against a burst's eight straight segments and a shot's ~fourteen, so counting the
 pieces predicts the cheapest of the three and measures the dearest — see the amendment to rule 1
-below. **The lever, if this ever has to get cheaper, is the lobe count and nothing else**: the ink
-and the geometry are both under the marks it is dearer than.
+below. **The levers, if this ever has to get cheaper, are the lobe count and the lobe radii** — not
+the count alone. A swept arc is charged by how much it sweeps, so `PUFF_LARGE` and `PUFF_SMALL` move
+the price as directly as `PUFF_LOBES` does: at a fixed count of 300 arcs, dpr 2, cost ran 2.7 ms at
+radius 3, 4.5 ms at 9, 12.0 ms at 30 and 30.7 ms at 120. Shrinking the count while holding the radii
+would under-deliver. The ink and the geometry are both under the marks it is dearer than.
 
 **None of that matters at one.** A wave clear is the case to watch, and it is what the 150 row
-prices: 150 deaths landing inside one 180 ms window is 11.65 ms, which does not fit. #111 raises
-`ENEMY_CAP` and is what would put it there.
+prices: 150 deaths landing inside one 180 ms window is 11.65 ms, which does not fit.
+
+**But 150 is not reachable by raising `ENEMY_CAP`, and an earlier draft of this section said it was.**
+A shot is single-target hitscan (`reapDamage`), so at most `SQUAD` 6 + 5 powered turrets = **11
+enemies can die per 20 Hz tick** — a ceiling of about 40 deaths inside a 180 ms window however many
+spiders are standing. That is the same argument this section already makes two paragraphs down: the
+count rides the death rate, not the population. `ENEMY_CAP` is a population governor, so #111 raising
+it cannot on its own put the frame at the 150 row. What would is anything that multiplies **kill
+throughput** — more shooters, more damage, or splash. If #111 carries one of those, this is the row
+to re-price against; if it only raises the cap, this row stays unreachable.
 
 **The count does not move with the enemy cap.** The identical ladder at the governor's 240 read
 0.053 / 1.697 / 3.567 / 12.207 against 0.047 / 1.673 / 3.477 / 11.652 at 500 — the same figures
