@@ -59,3 +59,59 @@ against the 0.8 ms the budget reserves — measured as the in-run delta between
 drift by more than the layer costs. Nothing about the drawing can move that number: the geometry is
 baked once per variant per DPR, and the frame pays ~200 `drawImage` calls of a 20 × 20 bake
 whatever is inside them.
+
+## #106 — 0.8×, so the tufts recede
+
+#106's complaint is that ore and grass read as the same mark. The number behind it, measured on the
+shipped sprites: **a tuft carried more ink per unit of its own box than an ore tile did** — 7.12%
+against ore-metal's 7.28% at dpr 1, and 12.69% against 10.98% at dpr 2, where grass was the heavier
+of the two. The three separators this file argues for above — open, oriented, sparse — are all real
+and none of them is weight.
+
+**The tufts go to 0.8×: an 8 px box, from a 10 px box.** Nothing else moved. Every blade in `TUFTS`
+is still in the units it was hand-placed in — the module now names that box `DESIGN` and scales into
+the smaller declared one — so the three-blade ceiling, the 2.6 px root spacing and the sixteen
+compositions are all #72's, unchanged and unre-judged. `GRASS_PERIOD` stays 12; it was settled by
+looking at a ladder of densities and this ticket did not ask about it.
+
+**The cull follows the sprite, not a number written beside it.** `drawGrass` already derived its
+walk margin from the box the sprite source hands back (`draw.ts`), so shrinking the box carried
+through with no change there — and `draw.test.ts` now pins it by reading the *tile* each tuft came
+from rather than where its box landed, which is the version of that test that fails when the margin
+is hard-coded. The first version did not: it read the blit's own left edge, which moves with the box
+and passed without a walk existing.
+
+### Measured — and this is the cost of receding
+
+`bun run sprite:sheet`, all 32 bakes:
+
+| dpr | ink / covered | ink / box |
+|---|---|---|
+| 1 | 19.4% → **13.0%** | 7.12% → **5.18%** |
+| 2 | 46.3% → **38.0%** | 12.69% → **11.29%** |
+| 3 | 59.2% → **52.0%** | 14.64% → **13.45%** |
+
+Against ore-metal, ink per box goes from **1.02× / 0.87× / 0.85×** — grass as heavy as ore, or
+heavier — to **0.28× / 0.38× / 0.42×**. #106's target was ore at 2× grass; it lands at 3.55× / 2.64×
+/ 2.37×, and roughly half of that is this sprite giving ground.
+
+**The dpr-1 ink share falling 19.4% → 13.0% is the honest cost and it is not a bug.** This file's own
+round 2 fixed a floor of 1.8 px at the root, below which a blade has no near-black pixel at dpr 1 and
+ghosts to grey; at 0.8× the thinnest blades sit at 1.52 px and are under it. That is what receding
+looks like when the only tools are weight and size and the paper has no greys. **It was not
+compensated for** — thickening the roots to hold the ink would fight the thing that was asked for.
+If a played match says the tufts have gone too faint, the retune is the scale, not the blades.
+
+**All 32 bakes still touch the bottom edge of their box**, which is the foot anchor and the check
+that the tuft is scaled into the box rather than clipped by it.
+
+**No slab, and never a risk here**: the blackest single bake at dpr 1 is 9.4% ink.
+
+**Cost is unchanged.** `frame:budget` on one machine, medians of seven runs each side: the whole
+frame 8.19 ms → 8.03 ms, the grass-and-ore layer 1.18 ms → 1.18 ms. Nothing could have moved it —
+the same ~200 `drawImage` calls, of a slightly smaller bake.
+
+**Nothing here was reviewed by anybody but its author.** ADR 0002 §2 wants separate eyes and this
+note is not them. What was looked at, per this file's own instruction: `sprite:frame --dpr 1` before
+and after, and a magnified real patch with tufts scattered beside it — never the review sheet's
+specimen tray.

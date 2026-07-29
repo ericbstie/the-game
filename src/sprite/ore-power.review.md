@@ -130,3 +130,59 @@ passes — every rim, then every stone.
 - **All 48 bakes touch the edge of their box.** For an upright sprite that warning means clipping.
   For a floor tile it is the requirement — a piece stopping short of the edge is a white gutter
   down every seam in the patch.
+
+## #106 — the rim, and a heavier crescent
+
+#106 asks the ore for a thick border round the patch and bolder ink generally. Power ore was not the
+sprite being confused with grass — red is its own separator — so it changes twice and modestly.
+
+**The border comes from `tiled.ts` and is shared with `ore-metal`.** Stroked from the tile's
+**boundary sides only**, so a tile with power ore on all four draws none and a filled patch carries
+one outline rather than one box per tile; stroked under the tile's own keep-region at twice its read
+weight, so the outer half is clipped and the rim's outside edge lands exactly where the ink already
+stops. The geometry, and the one thing it does not handle, are written up in
+[`ore-metal.review.md`](ore-metal.review.md).
+
+It is **black**, like every other line in the game. The tile is now an ink boundary round a red
+interior, which is the same grammar as a single body — an ink crescent round a red bead — one scale
+up. That was not planned and is the best thing about it.
+
+**`WEIGHT_MIN` 1 → 1.25 and `WEIGHT_OF_R` 0.42 → 0.55.** The crescent is where this sprite's ink
+lives, so it is where the bolder ink goes. At dpr 1 the old floor put exactly one device pixel of
+black on the smallest lit body, which is the width at which a line stops being distinguishable from
+a grey edge. Both provisional.
+
+**Not done: anything to the radiance, the ember or the fan.** The ask was ink. The aura is what went
+wrong twice in the rounds above and it was left alone.
+
+### Measured
+
+`bun run sprite:sheet`, over all 2,304 bakes:
+
+| dpr | ink / covered | ink / box |
+|---|---|---|
+| 1 | 2.2% → **18.9%** | 1.37% → **11.95%** |
+| 2 | 4.7% → **29.2%** | 2.73% → **17.46%** |
+| 3 | 6.0% → **33.0%** | 3.35% → **19.24%** |
+
+Almost all of that is the rim, and the sheet weights all sixteen neighbour masks equally where a real
+patch is mostly interior tiles — so it overstates it. The crescent's own contribution is what
+`ore:seams` sees, folding over interior tiles only: mean ink per device pixel **0.307 → 0.318** at
+dpr 1. Small, and meant to be.
+
+**Still plainly a different tile from `ore-metal`**, by number as well as by colour: 11.95% ink per
+box against metal's 18.41% at dpr 1, and 63.3% of the box covered against metal's 50.1% — this one
+is the more *covered* tile and the less *inked* one, which is what a glow on paper should measure
+like.
+
+**No slab.** The blackest single bake of the 2,304 at dpr 1 is **21.3% ink**. Its 99.1% covered
+figure is the radiance, which is translucent red over paper and falls in the harness's grey bucket —
+read the ink column, not that one.
+
+`ore:seams --kind power`, dpr 1, over 4 interior tiles: seam deficit 1.03 → **1.01**, boundary edge
+0.017 → **0.014**, interior edge 0.257 → **0.325**, 0 of 27 adjacent pairs identical, unchanged.
+Four interior tiles is a thin sample and always has been — power patches are ten to twenty tiles.
+
+**Nothing here was reviewed by anybody but its author.** ADR 0002 §2 wants separate eyes and this
+note is not them. What was looked at: a hand-built two-block shape at 10× with a concave corner in
+it, and `sprite:frame` at dpr 1, 2 and 6 over the demo world's power patches.

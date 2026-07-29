@@ -138,3 +138,98 @@ the round-1 gutter straight back.
   differ by drawing.
 - **Check edge crossings by clipped area, not by bounding box**, or hairline slivers land on seams.
 - **Judge any change on a butted field at dpr 1 and in `sprite:frame`, never on the tile sheet.**
+
+## #106 — bolder ink, and a thick border round the patch
+
+The complaint was that ore and grass had become the same mark: small black scatter on white paper
+at the same weight. The round-1 note above predicted exactly this and claimed three separators —
+larger, solid, clustered. Measured, they were not enough. **A grass tuft carried more ink per unit
+of its own box than an ore tile did** — 7.12% against 7.28% at dpr 1, and 12.69% against 10.98% at
+dpr 2, where grass was the *heavier* of the two. Two marks of the same weight is the complaint,
+stated as a number.
+
+**The separation target picked here: an ore-metal tile carries at least 2× the ink per unit of its
+box that a grass tuft does, at dpr 1, 2 and 3.** It is provisional (CLAUDE.md), and it is the ratio
+rather than either figure because what the eye compares is one mark against the other. 2× is where
+one is plainly the heavier without either changing kind. Measured after: **3.55× / 2.64× / 2.37×**.
+
+### What changed here
+
+**A stroke on every shard silhouette, `SHARD_WEIGHT = 1.1`.** Bolder was asked for as ink rather
+than as size, so it goes on the outline of what was already hand-cut: each piece grows by half the
+weight all round, thickening the blades and splinters that ghosted to grey at dpr 1, and not one
+vertex of the twelve fields moved. `lineJoin` is round, because a mitre on a shard's apex draws a
+whisker off the point.
+
+**The fines take none of it.** A grain is a whole pixel on whole-pixel edges — the one mark at this
+size with no anti-aliasing at all — and a stroke round a 1 px rect is a 2 px grey smudge. Stroking
+them was tried in the head and rejected on that arithmetic; `paintCell` fills them and nothing else.
+
+**The border is `tiled.ts`'s, not this file's**, because both ores need it and the neighbour
+occupancy it turns on is already there. It is stroked from the **boundary sides only** — a tile with
+ore on all four draws nothing — so a filled 3×3 patch carries one outline and not nine. That is the
+easiest thing in this ticket to break and it is pinned by a test in `tiled.test.ts` that chains the
+twelve stroked sides of a 3×3 into a single closed loop.
+
+Two details of it worth carrying forward:
+
+- **It is stroked with the tile's keep-region still clipped, at twice the weight it reads at.** The
+  outer half is cut away, which lands the rim's outside edge exactly on the line the ink already
+  stops at. So the rim cannot reach past where the patch ends, and the boundary stays as ragged as
+  #87 left it — `ore:seams` boundary-edge ink went **down**, 0.009 → 0.004.
+- **A boundary side's far corner is no longer jittered.** It was, and that stepped the rim at every
+  seam along a patch edge: tile A ended its north side up to 1.65 px off the corner tile B started
+  its own from. Only the interior samples jag now. This changes the *clip* too, and it is a small
+  loss of raggedness — three jittered samples a side instead of four — bought for a rim that does
+  not step.
+
+### Measured
+
+`bun run sprite:sheet`, over all 2,304 bakes. Two figures: the tool's headline (ink as a share of
+covered pixels — a crispness reading) and ink as a share of the bake's whole box, which is the
+density the eye compares between two marks.
+
+| dpr | ink / covered | ink / box |
+|---|---|---|
+| 1 | 27.6% → **36.7%** | 7.28% → **18.41%** |
+| 2 | 51.9% → **68.0%** | 10.98% → **29.76%** |
+| 3 | 64.3% → **77.4%** | 12.44% → **31.93%** |
+
+**The sheet weights all sixteen neighbour masks equally, which the floor does not** — most tiles in
+a real patch are interior and carry no rim at all, so those figures overstate the border by a long
+way. The floor number is `ore:seams`, which folds ink over **interior tiles only** and therefore
+sees the shard stroke and nothing else: mean ink per device pixel **0.253 → 0.414** at dpr 1, a 1.64×
+bolder interior.
+
+**No slab.** The blackest single bake of the 2,304 at dpr 1 is **27.6% ink, 71.1% covered** — that
+is the lone tile, rimmed on all four sides, which is the most border a tile can carry. Three
+quarters of it is still paper.
+
+`ore:seams`, dpr 1, over 63 interior tiles of real accretion patches:
+
+| | before | after |
+|---|---|---|
+| seam fold deficit | 0.94× | 1.11× |
+| boundary edge | 0.009 | 0.004 |
+| interior edge | 0.263 | 0.381 |
+| adjacent identical | 0 of 168 | 0 of 168 |
+
+The fold moved from slightly seam-heavy to slightly centre-heavy and both are noise beside the 8.08×
+this measurement was built to catch. The cause is the stroke: it adds ink round every shard, and
+more shards sit in a cell's middle than across its seam.
+
+### Known, and shipped anyway
+
+- **The rim breaks at a concave corner of a patch, by about 2 px of tile.** Where two boundary sides
+  approach a corner from perpendicular directions, the tile that owns the corner square has ore on
+  all four sides and therefore draws no rim — and it cannot know otherwise, because the variant
+  carries four bits of neighbour occupancy and no diagonal. The round caps close most of it; what is
+  left is a slight rounding of the corner rather than a break, and the interior rubble is under it.
+  **The fix is diagonal occupancy — a 256-mask instead of 16, 36,864 variants instead of 2,304** —
+  which is its own change and was not made here.
+- **`BORDER_WEIGHT = 1.9` and `SHARD_WEIGHT = 1.1` are provisional.** Neither has been played.
+  Changing them is a retune.
+- **Nothing here was reviewed by anybody but its author.** ADR 0002 §2 wants separate eyes and this
+  note is not them. What was looked at: `bun run sprite:frame` at dpr 1 and 2, `ore:seams` at dpr 3
+  as a magnified patch, and a hand-built shape harness — a solid 5×5, a ring with a one-tile hole,
+  and a staircase — which is what the "one outline, not nine" test looks like as a picture.
