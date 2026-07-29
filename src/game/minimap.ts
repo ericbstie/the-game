@@ -9,15 +9,37 @@ import type { Camera, Viewport } from "./camera";
 // and every device ratio the game runs at.
 //
 // The seam is here rather than in `draw.ts` because both of the changes already chartered land on
-// this side of it. #110 adds 0.5× and 3× coverage levels — one more argument to `minimapWindow`,
-// which already takes coverage as a parameter for exactly that reason. #111 replaces eight nests
+// this side of it. #110's three zoom levels cost this module three constants and a wrap, and cost
+// the geometry nothing at all: coverage was already a parameter of `minimapWindow` for exactly that
+// reason, so every layer below reads the level without knowing there is one. #111 replaces eight nests
 // on a ring with fifty at random; the map asks a nest only where it is and whether it is alive, so
 // that layer is a loop over `world.nests` with no count and no ring geometry anywhere in it.
 
-// What the map shows across, in world units. **The opening level, not the only one** — #110 adds
-// 0.5× (15,600 u) and 3× (2,600 u) beside this and cycles between them, which is why coverage is a
-// parameter of the window below and not read from here.
-export const MINIMAP_COVERAGE_U = 7_800;
+// What the map shows across, in world units, at each of the three zoom levels (#110). One constant
+// per level, so retuning one is a one-line diff — and all three are **provisional**, the numbers the
+// map opens on rather than numbers a played match has kept.
+//
+// **No level shows the whole arena**, which is 31,200 u square: the widest is a quarter of it by
+// area and the map is a window at every level, never a plan of the world. The middle one is what
+// the map opens at.
+export const MINIMAP_COVERAGE_WIDE_U = 15_600; // 0.5×
+export const MINIMAP_COVERAGE_U = 7_800; // 1×
+export const MINIMAP_COVERAGE_CLOSE_U = 2_600; // 3×, close to the ~1,920 u a 1080p viewport spans
+
+// The order the key steps through, which the ticket fixes as 0.5 → 1 → 3 → 0.5.
+export const MINIMAP_COVERAGES: readonly number[] = [
+  MINIMAP_COVERAGE_WIDE_U,
+  MINIMAP_COVERAGE_U,
+  MINIMAP_COVERAGE_CLOSE_U,
+];
+
+// The level after this one, wrapping — so three presses land back on the view they started from.
+// Total in its argument: a coverage that is not one of the levels starts the cycle from the top
+// rather than dropping the map off the end of the list.
+export function nextMinimapCoverage(coverage: number): number {
+  const at = MINIMAP_COVERAGES.indexOf(coverage);
+  return MINIMAP_COVERAGES[(at + 1) % MINIMAP_COVERAGES.length];
+}
 
 // The plate's side in CSS px, and how far it is held off the viewport corner. At 7,800 u across a
 // 200 px plate the scale is 1:39, so a 15 u tile is 0.38 px — under a pixel, which is what makes

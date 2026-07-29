@@ -15,10 +15,13 @@ import type { Camera, Viewport } from "./camera";
 import { drawWorld, grassAt, type ShotSource } from "./draw";
 import { FLOAT_MS, type MetalFloat } from "./floats";
 import {
+  MINIMAP_COVERAGE_CLOSE_U,
   MINIMAP_COVERAGE_U,
+  MINIMAP_COVERAGES,
   MINIMAP_ORE_CELL_U,
   MINIMAP_SIZE,
   minimapWindow,
+  nextMinimapCoverage,
   projectRect,
 } from "./minimap";
 
@@ -1751,14 +1754,55 @@ describe("the minimap", () => {
     expect(mapCalls(swarmed)).toHaveLength(mapCalls(bare).length);
   });
 
-  test("writes nothing anywhere on it", () => {
-    const ctx = spyCtx();
-    drawWorld(
-      ctx,
-      { ...world, exitRevealed: true, structures: [struct("s1", "turret", { tx: 74, ty: 74 })] },
-      { camera, viewport, selfId: "p1" },
-    );
-    expect(mapCalls(ctx).some((c) => c.fn === "fillText" || c.fn === "strokeText")).toBe(false);
+  test("writes nothing anywhere on it, at any level", () => {
+    for (const minimapCoverage of MINIMAP_COVERAGES) {
+      const ctx = spyCtx();
+      drawWorld(
+        ctx,
+        { ...world, exitRevealed: true, structures: [struct("s1", "turret", { tx: 74, ty: 74 })] },
+        { camera, viewport, selfId: "p1", minimapCoverage },
+      );
+      expect(mapCalls(ctx).some((c) => c.fn === "fillText" || c.fn === "strokeText")).toBe(false);
+    }
+  });
+
+  // The zoom (#110). The plate never changes — only how much world it is a window onto — so the
+  // level is read off where a mark of a known world offset lands rather than off the plate.
+  test("shows the level it is handed, and the same plate at every one of them", () => {
+    const peer = { ...world.players[1], pos: near(SELF.pos, 2_000) };
+    for (const minimapCoverage of MINIMAP_COVERAGES) {
+      const ctx = spyCtx();
+      drawWorld(
+        ctx,
+        { ...world, players: [SELF, peer] },
+        {
+          camera,
+          viewport,
+          selfId: "p1",
+          minimapCoverage,
+        },
+      );
+      const win = minimapWindow(SELF.pos, camera, viewport, minimapCoverage);
+      expect(mapCalls(ctx)[0].args.slice(0, 4)).toEqual([win.x, win.y, MINIMAP_SIZE, MINIMAP_SIZE]);
+      const mark = mapDiscs(ctx).find((d) => d.fill === "#ff5d5d");
+      // 2,000 u out is inside the two wider windows and outside the closest, and the two it is on
+      // put it at the distance their own scale says — which is the coverage, drawn.
+      if (minimapCoverage === MINIMAP_COVERAGE_CLOSE_U) expect(mark).toBeUndefined();
+      else expect((mark?.x ?? 0) - (win.x + MINIMAP_SIZE / 2)).toBeCloseTo(2_000 * win.scale, 6);
+    }
+  });
+
+  test("opens at 1×, and lands back on it after a full cycle of the key", () => {
+    const view = (minimapCoverage?: number) => {
+      const ctx = spyCtx();
+      drawWorld(ctx, world, { camera, viewport, selfId: "p1", minimapCoverage });
+      return mapCalls(ctx);
+    };
+    // No level asked for is the level the map opens at, which is what makes a cycle a round trip.
+    expect(view()).toEqual(view(MINIMAP_COVERAGE_U));
+    let level = MINIMAP_COVERAGE_U;
+    for (let step = 0; step < 3; step++) level = nextMinimapCoverage(level);
+    expect(view(level)).toEqual(view(MINIMAP_COVERAGE_U));
   });
 
   describe("the door", () => {
@@ -1861,36 +1905,45 @@ describe("the minimap", () => {
   const onDevicePixel = (world: number, cameraAxis: number, dpr: number) =>
     cameraAxis + Math.round((world - cameraAxis) * dpr) / dpr;
 
-  test("projects onto the same plate at dpr 1, 2 and 3, and at any viewport size", () => {
-    for (const dpr of [1, 2, 3]) {
-      for (const view of [
-        { width: 800, height: 600 },
-        { width: 1920, height: 1080 },
-        // A real HiDPI `getBoundingClientRect()` returns fractions, and one is needed here or the
-        // device ratio does not reach this test at all: on a whole-pixel viewport the plate already
-        // sits on a device pixel at every ratio, so the loop would assert one thing three times.
-        { width: 1512.5, height: 945.5 },
-      ]) {
-        const ctx = spyCtx();
-        drawWorld(ctx, world, { camera, viewport: view, selfId: "p1", dpr });
-        const win = minimapWindow(SELF.pos, camera, view, MINIMAP_COVERAGE_U);
-        const x = onDevicePixel(win.x, camera.x, dpr);
-        const y = onDevicePixel(win.y, camera.y, dpr);
-        expect(mapCalls(ctx)[0].args.slice(0, 4)).toEqual([x, y, MINIMAP_SIZE, MINIMAP_SIZE]);
-        const self = mapDiscs(ctx).find((d) => d.fill === "#4f8cff");
-        expect(self?.x).toBeCloseTo(x + MINIMAP_SIZE / 2, 6);
-        expect(self?.y).toBeCloseTo(y + MINIMAP_SIZE / 2, 6);
+  test("projects onto the same plate at dpr 1, 2 and 3, at any viewport size and any level", () => {
+    for (const minimapCoverage of MINIMAP_COVERAGES) {
+      for (const dpr of [1, 2, 3]) {
+        for (const view of [
+          { width: 800, height: 600 },
+          { width: 1920, height: 1080 },
+          // A real HiDPI `getBoundingClientRect()` returns fractions, and one is needed here or the
+          // device ratio does not reach this test at all: on a whole-pixel viewport the plate already
+          // sits on a device pixel at every ratio, so the loop would assert one thing three times.
+          { width: 1512.5, height: 945.5 },
+        ]) {
+          const ctx = spyCtx();
+          drawWorld(ctx, world, { camera, viewport: view, selfId: "p1", dpr, minimapCoverage });
+          const win = minimapWindow(SELF.pos, camera, view, minimapCoverage);
+          const x = onDevicePixel(win.x, camera.x, dpr);
+          const y = onDevicePixel(win.y, camera.y, dpr);
+          expect(mapCalls(ctx)[0].args.slice(0, 4)).toEqual([x, y, MINIMAP_SIZE, MINIMAP_SIZE]);
+          const self = mapDiscs(ctx).find((d) => d.fill === "#4f8cff");
+          expect(self?.x).toBeCloseTo(x + MINIMAP_SIZE / 2, 6);
+          expect(self?.y).toBeCloseTo(y + MINIMAP_SIZE / 2, 6);
+        }
       }
     }
   });
 
   // A frame with something of every layer pressed against the rim of the window, which is the only
   // place a projection that was off by anything at all would put ink on the floor beside the map.
-  const crowded = () => {
+  //
+  // Built to the level it is asked for rather than to 1×, because the rim is a different piece of
+  // world at each of them and a scene pinned to one level would sit harmlessly mid-plate at the
+  // others. `without` drops one layer, so what a layer contributes is the difference it makes.
+  const crowded = (
+    minimapCoverage = MINIMAP_COVERAGE_U,
+    without?: "ore" | "structures" | "door" | "nests",
+  ) => {
     const centre = { x: 15_600, y: 15_600 };
     const cam = { x: centre.x - viewport.width / 2, y: centre.y - viewport.height / 2 };
-    const win = minimapWindow(centre, cam, viewport, MINIMAP_COVERAGE_U);
-    const edge = MINIMAP_COVERAGE_U / 2 - 1; // a world unit inside the window, on every side
+    const win = minimapWindow(centre, cam, viewport, minimapCoverage);
+    const edge = minimapCoverage / 2 - 1; // a world unit inside the window, on every side
     const peer = (slot: number, dx: number, dy: number) => ({
       ...POSE,
       id: `p${slot}`,
@@ -1926,54 +1979,78 @@ describe("the minimap", () => {
         peer(4, 0, edge),
         peer(5, 0, -edge),
       ],
-      nests: [nest("n1", -edge, -edge, true), nest("n2", edge, edge, false)],
-      ore,
-      structures: [rimTx, rimTx + 1, rimTx + 2].map((tx, i) =>
-        struct(`s${i}`, "wall", { tx, ty: rimTy + cellTiles * 2 }),
-      ),
+      nests:
+        without === "nests" ? [] : [nest("n1", -edge, -edge, true), nest("n2", edge, edge, false)],
+      ore: without === "ore" ? new Map() : ore,
+      structures:
+        without === "structures"
+          ? []
+          : [rimTx, rimTx + 1, rimTx + 2].map((tx, i) =>
+              struct(`s${i}`, "wall", { tx, ty: rimTy + cellTiles * 2 }),
+            ),
       // A door straddling the rim, so the clipped bar is drawn as well as the whole one.
       exit: { x: win.worldX - 50, y: centre.y - 400, width: 98, height: 936 },
-      exitRevealed: true,
+      exitRevealed: without !== "door",
     };
     const ctx = spyCtx();
-    drawWorld(ctx, snapshot, { camera: cam, viewport, selfId: "p1" });
+    drawWorld(ctx, snapshot, { camera: cam, viewport, selfId: "p1", minimapCoverage });
     return { ctx, win };
   };
 
-  test("keeps every layer inside the plate", () => {
-    const { ctx, win } = crowded();
-    expect(
-      mapCalls(ctx).some(
-        (c) =>
-          c.fn === "rect" &&
-          c.args[0] === win.x &&
-          c.args[1] === win.y &&
-          c.args[2] === MINIMAP_SIZE &&
-          c.args[3] === MINIMAP_SIZE,
-      ),
-    ).toBe(true);
-    expect(mapCalls(ctx).some((c) => c.fn === "clip")).toBe(true);
+  test("keeps every layer inside the plate, at every level", () => {
+    for (const coverage of MINIMAP_COVERAGES) {
+      const { ctx, win } = crowded(coverage);
+      expect(
+        mapCalls(ctx).some(
+          (c) =>
+            c.fn === "rect" &&
+            c.args[0] === win.x &&
+            c.args[1] === win.y &&
+            c.args[2] === MINIMAP_SIZE &&
+            c.args[3] === MINIMAP_SIZE,
+        ),
+      ).toBe(true);
+      expect(mapCalls(ctx).some((c) => c.fn === "clip")).toBe(true);
 
-    // Every mark is anchored on the plate. A mark also has a size the projection knows nothing
-    // about, so one on the rim hangs over it by up to its own width — that overhang is what the
-    // clip is there to trim, and one ore cell, the widest thing drawn, bounds it.
-    const slop = MINIMAP_ORE_CELL_U * win.scale;
-    const marks = mapCalls(ctx).filter((c) => c.fn === "arc" || c.fn === "fillRect");
-    for (const c of marks) {
-      const over = c.fn === "arc" ? 0 : slop;
-      expect(c.args[0] as number).toBeGreaterThanOrEqual(win.x - over);
-      expect(c.args[1] as number).toBeGreaterThanOrEqual(win.y - over);
-      expect(c.args[0] as number).toBeLessThanOrEqual(win.x + MINIMAP_SIZE + over);
-      expect(c.args[1] as number).toBeLessThanOrEqual(win.y + MINIMAP_SIZE + over);
+      // Every mark is anchored on the plate. A mark also has a size the projection knows nothing
+      // about, so one on the rim hangs over it by up to its own width — that overhang is what the
+      // clip is there to trim, and one ore cell, the widest thing drawn, bounds it.
+      const slop = MINIMAP_ORE_CELL_U * win.scale;
+      const marks = mapCalls(ctx).filter((c) => c.fn === "arc" || c.fn === "fillRect");
+      for (const c of marks) {
+        const over = c.fn === "arc" ? 0 : slop;
+        expect(c.args[0] as number).toBeGreaterThanOrEqual(win.x - over);
+        expect(c.args[1] as number).toBeGreaterThanOrEqual(win.y - over);
+        expect(c.args[0] as number).toBeLessThanOrEqual(win.x + MINIMAP_SIZE + over);
+        expect(c.args[1] as number).toBeLessThanOrEqual(win.y + MINIMAP_SIZE + over);
+      }
+      // …and the scene really does press the rim, or the bounds above are asserting nothing.
+      const discs = mapDiscs(ctx);
+      const xs = discs.map((d) => d.x);
+      const ys = discs.map((d) => d.y);
+      expect(Math.min(...xs)).toBeLessThan(win.x + 1);
+      expect(Math.max(...xs)).toBeGreaterThan(win.x + MINIMAP_SIZE - 1);
+      expect(Math.min(...ys)).toBeLessThan(win.y + 1);
+      expect(Math.max(...ys)).toBeGreaterThan(win.y + MINIMAP_SIZE - 1);
     }
-    // …and the scene really does press the rim, or the bounds above are asserting nothing.
-    const discs = mapDiscs(ctx);
-    const xs = discs.map((d) => d.x);
-    const ys = discs.map((d) => d.y);
-    expect(Math.min(...xs)).toBeLessThan(win.x + 1);
-    expect(Math.max(...xs)).toBeGreaterThan(win.x + MINIMAP_SIZE - 1);
-    expect(Math.min(...ys)).toBeLessThan(win.y + 1);
-    expect(Math.max(...ys)).toBeGreaterThan(win.y + MINIMAP_SIZE - 1);
+  });
+
+  test("draws every #93 layer at every level, in marks the level never shrinks", () => {
+    const radii = new Set<number>();
+    for (const coverage of MINIMAP_COVERAGES) {
+      const discs = mapDiscs(crowded(coverage).ctx);
+      // Self, four peers and two nests — no layer of discs drops out at any level.
+      expect(discs).toHaveLength(7);
+      for (const d of discs) radii.add(d.r);
+      const rects = mapRects(crowded(coverage).ctx).length;
+      expect(rects - mapRects(crowded(coverage, "structures").ctx).length).toBe(3);
+      expect(rects - mapRects(crowded(coverage, "door").ctx).length).toBe(1);
+      expect(rects - mapRects(crowded(coverage, "ore").ctx).length).toBeGreaterThan(0);
+      expect(mapDiscs(crowded(coverage, "nests").ctx)).toHaveLength(5);
+    }
+    // One radius across all three levels: a squad mark is a fixed size on the plate, so zooming out
+    // shows more world at the same legibility rather than the same map printed smaller.
+    expect(radii.size).toBe(1);
   });
 
   test("closes the clip it opened, so the rest of the match is not drawn inside the plate", () => {

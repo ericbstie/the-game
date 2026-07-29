@@ -27,7 +27,15 @@ import { type ClientWorld, RESPAWN_DELAY_MS } from "./clientWorld";
 import { type BuildGhost, drawWorld, type OwnShot, SHOT_LINE_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { freshMetalFloats, stepMetalFloats } from "./floats";
-import { aimDir, keyToBuildSlot, keyToDirection, movesEqual, NO_MOVE } from "./input";
+import {
+  aimDir,
+  isMinimapZoomKey,
+  keyToBuildSlot,
+  keyToDirection,
+  movesEqual,
+  NO_MOVE,
+} from "./input";
+import { MINIMAP_COVERAGE_U, nextMinimapCoverage } from "./minimap";
 import { PLAYER_MAX_HP } from "./world";
 
 const POS_SEND_MS = 50; // ~20 Hz position stream, independent of the render frame rate
@@ -144,6 +152,9 @@ export function GameScreen({
   // set, so it lives with the loop that draws it rather than on the wire or in `ClientWorld` — the
   // beat is the same one the bank is paid on, but which miners *emit* is a question about the camera.
   const floatsRef = useRef(freshMetalFloats());
+  // How much world the corner map is showing (#110). A ref and not state: it is read by the frame
+  // that draws it and by nothing else, so a re-render per press would buy the HUD nothing.
+  const minimapCoverageRef = useRef(MINIMAP_COVERAGE_U);
   const [selected, setSelected] = useState<BuildableKind | null>(null);
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   const [menuOpen, setMenuOpen] = useState(false);
@@ -180,8 +191,8 @@ export function GameScreen({
   selectedRef.current = selected;
   menuOpenRef.current = menuOpen;
 
-  // Keyboard → held MoveInput, plus the build bar's 1–4 and the menu's Escape. Nothing is sent
-  // per key.
+  // Keyboard → held MoveInput, plus the build bar's 1–4, the menu's Escape and the map's zoom.
+  // Nothing is sent per key.
   useEffect(() => {
     const setHeld = (direction: keyof MoveInput, down: boolean) => {
       const next = { ...heldRef.current, [direction]: down };
@@ -208,6 +219,13 @@ export function GameScreen({
       const slot = keyToBuildSlot(e.key, BUILD_SLOTS.length);
       if (slot !== null) {
         setSelected(BUILD_SLOTS[slot]);
+        return;
+      }
+      if (isMinimapZoomKey(e.key)) {
+        // One press, one level. The OS repeats a held key at ~30 Hz, and a cycle stepped by each of
+        // those would spin the map through ten levels a second — the build bar takes no harm from
+        // repeats because picking the same slot twice picks the same slot.
+        if (!e.repeat) minimapCoverageRef.current = nextMinimapCoverage(minimapCoverageRef.current);
         return;
       }
       const direction = keyToDirection(e.key);
@@ -403,6 +421,7 @@ export function GameScreen({
             viewport,
             ghost,
             dpr,
+            minimapCoverage: minimapCoverageRef.current,
             connected: connectedRef.current,
             now: clock,
             floats: stepMetalFloats(
