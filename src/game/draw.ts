@@ -540,18 +540,28 @@ function drawShots(
     if (to) line(from, to);
   }
 
-  // Turrets spend the squad's bullets, so an empty pool is the server holding every turret's fire.
-  // The mirror lags the pool by at most one tick, which under-draws (a bullet forged and fired on
-  // the same tick never shows as spendable) rather than over-draws — the direction ADR 0003 cares
-  // about. What it cannot see is *which* turret got a scarce bullet: with fewer bullets than ready
-  // turrets, the train still draws for all of them.
-  if (shots.ammo <= 0) return;
+  // Turrets spend the squad's bullets, so the pool bounds how many of them can have fired: an empty
+  // one is the server holding every turret's fire, and one bullet across five ready turrets is four
+  // trains nobody took. The mirror lags the pool by at most one tick, which under-draws (a bullet
+  // forged and fired on the same tick never shows as spendable) rather than over-draws — the
+  // direction ADR 0003 cares about.
+  //
+  // *Which* turret got a scarce bullet is not knowable here and is not claimed: the pool is spent
+  // down `world.structures`, which is a map's insertion order and so names the same winners frame
+  // after frame. A rule that reshuffled — nearest, or newest — would flicker the train between
+  // turrets while the count stayed right, which is worse to look at than being wrong about one.
+  // Spent before the cull for the same reason: a bullet goes to a turret that fired, not to one the
+  // camera happens to be pointing at, so panning cannot hand it to somebody else.
   if (now % TURRET_CADENCE_MS >= SHOT_LINE_MS) return;
+  let spent = 0;
   for (const s of world.structures) {
+    if (spent >= shots.ammo) return;
     if (!s.turret?.powered || s.turret.targetId === null) continue;
     const spec = BUILDABLES[s.kind];
     const to = spec && shots.resolve(s.turret.targetId);
-    if (to) line(footprintCenter(s.tile, spec.footprint), to);
+    if (!to) continue;
+    spent++;
+    line(footprintCenter(s.tile, spec.footprint), to);
   }
 }
 

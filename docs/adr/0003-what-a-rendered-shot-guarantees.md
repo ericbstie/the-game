@@ -80,18 +80,19 @@ empty. That is a firing precondition the streamed `(target, powered)` transition
 the invariant in decision 1 no longer holds for turrets exactly. It now reads:
 
 > A shot line drawn for a **turret** is a shot the server admitted and applied damage for, except
-> that the pool it spends from is mirrored a tick behind. The client withholds the whole train while
-> its mirror reads empty.
+> that the pool it spends from is mirrored a tick behind. No more turret trains are drawn in a
+> frame than that mirror has bullets, and at zero none is.
 
 Two cases, both named rather than closed:
 
 - **A bullet forged and fired on the same tick never shows as spendable**, so the train is withheld
   over fire that did happen. This under-draws, which is the safe direction: no line is a missing
   depiction, a line is a claim.
-- **With fewer bullets than ready turrets, the train draws for all of them** while only some fired.
-  This over-draws, and it is the case the amendment does not close.
+- **Which turret got a scarce bullet is a guess.** The count is right and the trains are real shots,
+  but with three bullets across five ready turrets the three drawn may not be the three that fired.
 
 Closing the second needs per-shot turret events on the wire, which #74 §5 traded away deliberately
-and this ADR does not reopen. Ammo is not in the transition because it would put an aim delta on
-every engaged turret each time the pool crossed zero — routine in the scarce regime #102 designs
-for — on a field whose value is that it is sparse.
+and this ADR does not reopen. It is left open because it misattributes a shot rather than inventing
+one: the count is what decision 1 is about. Ammo is not in the transition because it would put an
+aim delta on every engaged turret each time the pool crossed zero — routine in the scarce regime
+#102 designs for — on a field whose value is that it is sparse.

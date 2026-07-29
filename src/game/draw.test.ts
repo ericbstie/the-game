@@ -1265,6 +1265,26 @@ describe("shot lines", () => {
       expect(fire(engaged, { ...none, ammo: 1 }, 1000)).toHaveLength(1);
     });
 
+    // A pool too small to arm every ready turret is the server firing only some of them, so only
+    // that many trains draw. *Which* ones cannot be known here — the trade #74 §5 made was to send
+    // no per-shot event — so the pool is spent down the structure list, whose order holds between
+    // frames because it is a map's insertion order (`clientWorld.ts:523`).
+    test("draws no more trains than the squad has bullets", () => {
+      const ready = (i: number) => ({
+        id: `b${i}`,
+        kind: "turret" as const,
+        tile: { tx: 74 + i * 2, ty: 74 },
+        hp: 250,
+        turret: { powered: true, targetId: "e1" },
+      });
+      const five = { structures: [0, 1, 2, 3, 4].map(ready) };
+      expect(fire(five, { ...none, ammo: 1 }, 1000)).toEqual([
+        { from: [1125, 1125], to: [1300, 1200] },
+      ]);
+      expect(fire(five, { ...none, ammo: 3 }, 1000)).toHaveLength(3);
+      expect(fire(five, { ...none, ammo: 9 }, 1000)).toHaveLength(5);
+    });
+
     // The gate is the turret's alone. Your own line is optimistic by decision and drawn at the
     // click; a squadmate's is a shot the server has already admitted and already paid for.
     test("an empty pool withholds no line the server has already resolved", () => {
