@@ -775,7 +775,11 @@ function drawMinimap(
 }
 
 // Where a shot that hit nothing ends: full range along the aim vector, which the server admitted as
-// a unit vector.
+// a unit vector. Never clipped shorter, and #114's trail now depends on that as well as ADR 0003 §3
+// does: the strands close onto the line 28–70 u short of the head at full reach, so an own line that
+// stopped on a target would close them onto it and make the bundle read as the hit marker the ADR
+// forbids. Pinned in `draw.test.ts`, "your own shot's trail closes clear of anything standing at its
+// head".
 function reach(from: Vec2, dir: Vec2): Vec2 {
   return { x: from.x + dir.x * RANGED_RANGE, y: from.y + dir.y * RANGED_RANGE };
 }

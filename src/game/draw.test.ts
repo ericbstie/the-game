@@ -13,6 +13,7 @@ import type { SpriteName } from "../sprite/registry";
 import { tileKey, tileOf } from "./build";
 import type { Camera, Viewport } from "./camera";
 import { drawWorld, grassAt, type ShotSource } from "./draw";
+import { ELITE_RADIUS, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, type MetalFloat } from "./floats";
 import { speedLines } from "./fx";
 import {
@@ -79,18 +80,6 @@ function spyCtx() {
   };
   return ctx as unknown as CanvasRenderingContext2D & { calls: Call[] };
 }
-
-// Where a stroked line went, in world coordinates. `moveTo`/`lineTo` are recorded like everything
-// else, so a shot line reads off the log as the pair of points it was drawn from.
-const lines = (ctx: { calls: Call[] }) => {
-  const drawn: { from: [number, number]; to: [number, number] }[] = [];
-  let from: [number, number] | null = null;
-  for (const c of ctx.calls) {
-    if (c.fn === "moveTo") from = c.args as [number, number];
-    else if (c.fn === "lineTo" && from) drawn.push({ from, to: c.args as [number, number] });
-  }
-  return drawn;
-};
 
 // The stroked paths in a frame, each as the segments it was built from. A shot is one path of
 // several strands (#114), so this is what tells a bundle from the run of separate lines M5 drew.
@@ -1391,6 +1380,22 @@ describe("shot lines", () => {
       expect(strokes({ ...none, own, peers: [peer] })).toBe(strokes(none) + 2);
     });
 
+    // The one thing that keeps the trail clear of ADR 0003 §3: where the line stops is all a shot is
+    // allowed to say, and a bundle narrowing onto a sprite would say it was hit. It stays clear only
+    // because your own line is fixed-length — `reach` never clips it onto a target — so the strands
+    // close short of the head by more than anything standing there is wide. Clip an own shot and the
+    // tension reopens without a word, which is what this catches.
+    test("your own shot's trail closes clear of anything standing at its head", () => {
+      const head = { x: shooter.pos.x + RANGED_RANGE, y: shooter.pos.y };
+      const gaps = bundle({}, { ...none, own }).map((m) =>
+        Math.hypot(m.to[0] - head.x, m.to[1] - head.y),
+      );
+      // The shot's own line reaches the head, and nothing else does — that is the plain end #114
+      // left it (`src/game/fx.ts`).
+      expect(gaps.filter((d) => d < 1e-9).length).toBe(1);
+      expect(Math.min(...gaps.filter((d) => d >= 1e-9))).toBeGreaterThan(ELITE_RADIUS);
+    });
+
     // The cull is spent on the shot, before its bundle is built, so a shot with nothing of it on
     // screen costs the frame no path at all rather than an empty one.
     test("a shot the camera cannot see strikes no trail either", () => {
@@ -1407,7 +1412,7 @@ describe("shot lines", () => {
   test("costs nothing when the render layer has no shots to draw", () => {
     const ctx = spyCtx();
     drawWorld(ctx, field, { camera, viewport, now: 1000 });
-    expect(lines(ctx)).toEqual([]);
+    expect(paths(ctx)).toEqual([]);
   });
 
   // A line can be long enough to cross the whole viewport, so it is culled on the box it spans and
