@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { MINIMAP_COVERAGE_U } from "../src/game/minimap";
 import { DEMO_VIEWPORT } from "./demo-world";
 import { capture, measurementsIn } from "./headless";
 
@@ -7,6 +8,7 @@ import { capture, measurementsIn } from "./headless";
 //
 //   bun run sprite:frame                                     # the calibration pattern as the player
 //   bun run sprite:frame --sprite grunt=src/sprite/grunt.ts   # a real sprite, in a real frame
+//   bun run sprite:frame --map 15600                          # the corner map at its widest level
 //
 // #77 §6 proved this needs no server, no lobby, no socket and no play-through. It is the only
 // channel that shows a sprite at the size and against the background a player actually sees it,
@@ -30,6 +32,10 @@ export interface FrameRequest {
   // wall gets looked at: it only draws along an edge the camera can actually see, so from the
   // middle of a 31,200² arena there is correctly nothing to show.
   at: { x: number; y: number } | null;
+  // What the corner map is a window onto, in world units — the zoom level the player would have
+  // cycled to (#110). In the same units `drawWorld` takes it, so `MINIMAP_COVERAGES` names the
+  // three the key steps through and nothing here has to re-list them.
+  map: number;
 }
 
 export interface Blit {
@@ -51,12 +57,16 @@ export function parseArgs(argv: string[]): FrameRequest {
   let out: string | null = null;
   let dpr = DEFAULT_DPR;
   let at: { x: number; y: number } | null = null;
+  let map = MINIMAP_COVERAGE_U;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--out") out = argv[++i] ?? "";
     else if (arg === "--dpr") {
       dpr = Number(argv[++i]);
       if (!Number.isFinite(dpr) || dpr <= 0) throw new Error("--dpr must be a positive number");
+    } else if (arg === "--map") {
+      map = Number(argv[++i]);
+      if (!Number.isFinite(map) || map <= 0) throw new Error("--map must be a positive number");
     } else if (arg === "--at") {
       const pair = (argv[++i] ?? "").split(",").map(Number);
       if (pair.length !== 2 || pair.some((n) => !Number.isFinite(n))) {
@@ -73,7 +83,7 @@ export function parseArgs(argv: string[]): FrameRequest {
   // With nothing asked for, the frame is simply the game as the registry has it. `--sprite` layers
   // a module over that: art under review, or a name nothing has drawn yet. `calibration` is the
   // harness's own test pattern and is never art — pass it explicitly to check the machinery.
-  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr, at };
+  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr, at, map };
 }
 
 export function entrySource(request: FrameRequest, modules = MODULES): string {
@@ -124,6 +134,7 @@ drawWorld(ctx, world, {
   // Frozen, so the two things that alternate on the clock are in their visible phase.
   now: DEMO_NOW,
   ghost: DEMO_GHOST,
+  minimapCoverage: ${request.map},
   shots: demoShots(world, DEMO_NOW),
   floats: demoFloats(world, DEMO_NOW),
   // The real registry, so the frame is the game as it actually stands. Anything named on the
@@ -164,6 +175,7 @@ if (import.meta.main) {
   console.log(
     `frame   ${result.viewport.width}×${result.viewport.height} css at dpr ${result.dpr}`,
   );
+  console.log(`map     ${request.map} u across`);
   console.log(`sprites ${Object.keys(request.sprites).join(", ") || "none"}`);
   console.log(`blits   ${result.blits.length}`);
   for (const blit of result.blits) {

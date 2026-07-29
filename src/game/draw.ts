@@ -136,6 +136,10 @@ export interface DrawOptions {
   // Device pixels per CSS pixel, matching the `setTransform(dpr, …)` the caller paints through.
   // Blits are aligned to whole device pixels with it; nothing else here needs it.
   dpr?: number;
+  // How much world the corner map is a window onto, in world units — the zoom level the player has
+  // cycled to (#110). Client-local and never on the wire. Absent, the map is at the level it opens
+  // at, which is what keeps every older test in this file an assertion about 1×.
+  minimapCoverage?: number;
   // Wall-clock ms, injected rather than read, so this stays a pure function of its arguments (the
   // `stepBuild` idiom). Only the flashing overlays use it; without it they sit on their first frame.
   now?: number;
@@ -645,13 +649,18 @@ function drawEdgeMarkers(
 // Cheap for the reason the health bars are (`docs/frame-budget.md`): almost all of it is
 // axis-aligned fills on a 200 px square, and the ore — the only layer whose size the world sets —
 // is read out of a field derived once instead of aggregated per frame.
+//
+// The zoom level (#110) reaches this as one number and changes nothing else. Every mark below is a
+// fixed size on the plate, so a wider level shows more world at the same legibility rather than the
+// same map printed smaller, and only the ore square and the door bar — the two things drawn at
+// their true projected size — grow and shrink with it.
 function drawMinimap(
   ctx: CanvasRenderingContext2D,
   world: WorldSnapshot,
   self: Avatar,
-  { camera, viewport, dpr = 1 }: DrawOptions,
+  { camera, viewport, dpr = 1, minimapCoverage = MINIMAP_COVERAGE_U }: DrawOptions,
 ): void {
-  const placed = minimapWindow(self.pos, camera, viewport, MINIMAP_COVERAGE_U);
+  const placed = minimapWindow(self.pos, camera, viewport, minimapCoverage);
   // The plate's own corner has to land on a device pixel or its rule — the hard edge that stops it
   // dissolving into the white floor — comes out soft. Snapped here and not in `minimap.ts`, which
   // is deliberately free of the device ratio; every mark is projected off this origin, so moving it

@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { MINIMAP_COVERAGE_U } from "../src/game/minimap";
 import { capture, measurementsIn } from "./headless";
 
 // Measure the worst frame the game can be asked to draw, layer by layer, through the shipped
@@ -6,6 +7,7 @@ import { capture, measurementsIn } from "./headless";
 //
 //   bun run frame:budget
 //   bun run frame:budget --sprite grass=src/sprite/grass.ts   # layer in art that has not landed
+//   bun run frame:budget --map 15600                          # the corner map at its widest level
 //
 // The budget this produces is written down in `docs/frame-budget.md`. It exists as a command and
 // not only as a number because the rest of Milestone 5 adds to this frame — health bars, the shot
@@ -28,18 +30,26 @@ export interface BudgetRequest {
   sprites: Record<string, string>;
   out: string;
   dpr: number;
+  // What the corner map is a window onto, in world units — the zoom level the player would have
+  // cycled to (#110). It defaults to the level the map opens at, so a plain run measures the frame
+  // the published budget measures.
+  map: number;
 }
 
 export function parseArgs(argv: string[]): BudgetRequest {
   const sprites: Record<string, string> = {};
   let out: string | null = null;
   let dpr = 2;
+  let map = MINIMAP_COVERAGE_U;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--out") out = argv[++i] ?? "";
     else if (arg === "--dpr") {
       dpr = Number(argv[++i]);
       if (!Number.isFinite(dpr) || dpr <= 0) throw new Error("--dpr must be a positive number");
+    } else if (arg === "--map") {
+      map = Number(argv[++i]);
+      if (!Number.isFinite(map) || map <= 0) throw new Error("--map must be a positive number");
     } else if (arg === "--sprite") {
       const pair = argv[++i] ?? "";
       const split = pair.indexOf("=");
@@ -47,7 +57,7 @@ export function parseArgs(argv: string[]): BudgetRequest {
       sprites[pair.slice(0, split)] = resolve(pair.slice(split + 1));
     } else throw new Error(`unknown argument ${arg}`);
   }
-  return { sprites, out: resolve(out ?? "frame-budget.png"), dpr };
+  return { sprites, out: resolve(out ?? "frame-budget.png"), dpr, map };
 }
 
 export interface BudgetResult {
@@ -73,12 +83,13 @@ export function entrySource(request: BudgetRequest): string {
 import { drawWorld } from ${JSON.stringify(DRAW_MODULE)};
 import { createSpriteCache } from ${JSON.stringify(CACHE_MODULE)};
 import { SPRITES } from ${JSON.stringify(REGISTRY_MODULE)};
-import { tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
+import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { ENEMY_CAP } from ${JSON.stringify(ENEMIES_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
 
 const VIEW = { width: 800, height: 600 };
 const DPR = ${request.dpr};
+const ARENA = { width: 31_200, height: 31_200 };
 const CAM = { x: 15_400, y: 15_400 };
 const STRUCTURES = 40;
 const ITERS = 60;
@@ -137,13 +148,20 @@ function build(enemyCount, structureCount, withOre) {
       radius: 48, hp: 600, alive: i % 2 === 0, sector: i,
     });
   }
-  const ore = new Map();
+  // The arena's own generated field, and then dense patches laid over it under the camera.
+  //
+  // Both, because the two layers that read the ore are bounded to different things. The floor pass
+  // is bounded to visible tiles, so it needs a full patch under the camera to be measured at its
+  // worst; the corner map's ore layer is bounded to the map's *window*, which at the widest zoom
+  // reaches 15,600 u — an ore field that stopped at the viewport would draw the same few marks at
+  // every level and no level could measure dearer than another (#110).
+  const ore = withOre ? generateOre(ARENA, 12_345) : new Map();
   if (withOre) {
     const ftx = Math.floor(CAM.x / TILE), fty = Math.floor(CAM.y / TILE);
     for (let ty = fty + 4; ty < fty + 16; ty++) for (let tx = ftx + 4; tx < ftx + 20; tx++) ore.set(tileKey({ tx, ty }), "metal");
     for (let ty = fty + 24; ty < fty + 34; ty++) for (let tx = ftx + 30; tx < ftx + 44; tx++) ore.set(tileKey({ tx, ty }), "power");
   }
-  return { arena: { width: 31_200, height: 31_200 }, players, enemies, nests, ore, structures,
+  return { arena: ARENA, players, enemies, nests, ore, structures,
            exit: { x: 0, y: 15_000, width: 98, height: 936 } };
 }
 
@@ -168,7 +186,7 @@ function measure(fn, iters = ITERS) {
 try {
   const sprites = createSpriteCache({ ...SPRITES, ${table} }).source(DPR);
   const setup = () => ctx.setTransform(DPR, 0, 0, DPR, -CAM.x * DPR, -CAM.y * DPR);
-  const opts = { selfId: "p0", camera: CAM, viewport: VIEW, dpr: DPR, now: 1000, sprites };
+  const opts = { selfId: "p0", camera: CAM, viewport: VIEW, dpr: DPR, now: 1000, sprites, minimapCoverage: ${request.map} };
 
   const empty = build(0, 0, false);
   const floor = build(0, 0, true);
@@ -307,6 +325,7 @@ if (import.meta.main) {
   console.log(
     `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} shot lines, ${r.floats} miner floats, dpr ${request.dpr}`,
   );
+  console.log(`corner map  ${request.map} u across`);
   console.log(
     `sprites     ${Object.keys(request.sprites).join(", ") || "the registry as it stands"}`,
   );

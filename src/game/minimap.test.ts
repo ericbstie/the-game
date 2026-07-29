@@ -3,11 +3,15 @@ import type { Arena, Vec2 } from "../lobby/protocol";
 import { generateOre, type OreGrid, TILE, tileKey } from "./build";
 import type { Camera, Viewport } from "./camera";
 import {
+  MINIMAP_COVERAGE_CLOSE_U,
   MINIMAP_COVERAGE_U,
+  MINIMAP_COVERAGE_WIDE_U,
+  MINIMAP_COVERAGES,
   MINIMAP_MARGIN,
   MINIMAP_ORE_CELL_U,
   MINIMAP_SIZE,
   minimapWindow,
+  nextMinimapCoverage,
   oreCells,
   oreDensity,
   project,
@@ -44,6 +48,71 @@ describe("the minimap window", () => {
       x: corner.x + MINIMAP_SIZE / 2,
       y: corner.y + MINIMAP_SIZE / 2,
     });
+  });
+});
+
+describe("the minimap's zoom levels (#110)", () => {
+  test("cover 15,600 · 7,800 · 2,600 u, and none of them the whole arena", () => {
+    expect(MINIMAP_COVERAGE_WIDE_U).toBe(15_600); // 0.5×
+    expect(MINIMAP_COVERAGE_U).toBe(7_800); // 1×
+    expect(MINIMAP_COVERAGE_CLOSE_U).toBe(2_600); // 3×
+    expect([...MINIMAP_COVERAGES]).toEqual([15_600, 7_800, 2_600]);
+    for (const coverage of MINIMAP_COVERAGES) {
+      expect(coverage).toBeLessThan(arena.width);
+      expect(coverage).toBeLessThan(arena.height);
+    }
+  });
+
+  test("show exactly the world they name, measured off the projection", () => {
+    for (const coverage of MINIMAP_COVERAGES) {
+      const w = minimapWindow(centre, camera, viewport, coverage);
+      expect(w.coverage).toBe(coverage);
+      const half = coverage / 2;
+      // The far corner of the named square lands on the far corner of the plate and a unit beyond
+      // it is off the map, which states the coverage as a measurement rather than as a field.
+      expect(project(w, { x: centre.x + half, y: centre.y + half })).toEqual({
+        x: w.x + w.size,
+        y: w.y + w.size,
+      });
+      expect(project(w, { x: centre.x - half, y: centre.y - half })).toEqual({ x: w.x, y: w.y });
+      expect(project(w, { x: centre.x + half + 1, y: centre.y })).toBeNull();
+      expect(project(w, { x: centre.x - half - 1, y: centre.y })).toBeNull();
+    }
+  });
+
+  test("step 0.5× → 1× → 3× → 0.5×, a full cycle landing back on the view it started from", () => {
+    expect(nextMinimapCoverage(MINIMAP_COVERAGE_WIDE_U)).toBe(MINIMAP_COVERAGE_U);
+    expect(nextMinimapCoverage(MINIMAP_COVERAGE_U)).toBe(MINIMAP_COVERAGE_CLOSE_U);
+    expect(nextMinimapCoverage(MINIMAP_COVERAGE_CLOSE_U)).toBe(MINIMAP_COVERAGE_WIDE_U);
+    for (const start of MINIMAP_COVERAGES) {
+      const round = nextMinimapCoverage(nextMinimapCoverage(nextMinimapCoverage(start)));
+      // The whole window and not just the number: "returns to the starting view exactly" is a claim
+      // about what is on the plate, and every mark on it is projected off these fields.
+      expect(minimapWindow(centre, camera, viewport, round)).toEqual(
+        minimapWindow(centre, camera, viewport, start),
+      );
+    }
+  });
+
+  test("stay centred on the player at every level, hard against a wall", () => {
+    // The widest level overhangs the arena by up to 7,800 u in a corner. It overhangs rather than
+    // sliding back inside: a window clamped to the arena would stop being centred exactly where
+    // knowing which way you are facing matters most, and there is no black beyond the wall to hide.
+    for (const coverage of MINIMAP_COVERAGES) {
+      for (const pos of [
+        { x: 100, y: 100 },
+        { x: arena.width - 100, y: arena.height - 100 },
+        { x: 100, y: arena.height - 100 },
+      ]) {
+        const w = minimapWindow(pos, camera, viewport, coverage);
+        expect(w.worldX).toBe(pos.x - coverage / 2);
+        expect(w.worldY).toBe(pos.y - coverage / 2);
+        expect(project(w, pos)).toEqual({
+          x: w.x + MINIMAP_SIZE / 2,
+          y: w.y + MINIMAP_SIZE / 2,
+        });
+      }
+    }
   });
 });
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { MINIMAP_COVERAGE_U, MINIMAP_COVERAGE_WIDE_U } from "../src/game/minimap";
 import { entrySource, parseArgs } from "./frame-budget";
 
 describe("parseArgs", () => {
@@ -8,6 +9,14 @@ describe("parseArgs", () => {
     expect(request.sprites).toEqual({});
     expect(request.out).toBe(join(process.cwd(), "frame-budget.png"));
     expect(request.dpr).toBe(2);
+    // The level the map opens at, so a plain run measures what the published budget measured.
+    expect(request.map).toBe(MINIMAP_COVERAGE_U);
+  });
+
+  test("takes the corner map's zoom, so the costliest level can be priced (#110)", () => {
+    expect(parseArgs(["--map", String(MINIMAP_COVERAGE_WIDE_U)]).map).toBe(MINIMAP_COVERAGE_WIDE_U);
+    expect(() => parseArgs(["--map", "0"])).toThrow(/--map/);
+    expect(() => parseArgs(["--map", "wide"])).toThrow(/--map/);
   });
 
   test("layers in art that has not landed, so the budget can be measured before it does", () => {
@@ -39,5 +48,18 @@ describe("entrySource", () => {
   test("puts every entity inside the viewport, so the worst case is not quietly culled", () => {
     const source = entrySource(parseArgs([]));
     expect(source).toContain("CAM.x + r() * VIEW.width");
+  });
+
+  test("draws the corner map at the level it was asked for", () => {
+    const source = entrySource(parseArgs(["--map", String(MINIMAP_COVERAGE_WIDE_U)]));
+    expect(source).toContain(`minimapCoverage: ${MINIMAP_COVERAGE_WIDE_U}`);
+  });
+
+  // The map's ore layer is bounded to the window, so a scene with ore only under the camera draws
+  // the same handful of marks at every level and no level can be dearer than another (#110). The
+  // arena's own field is what makes the widest window a wider window onto something.
+  test("lays the arena's real ore field, not only the patches under the camera", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("generateOre");
   });
 });

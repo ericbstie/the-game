@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { aimDir, keyToBuildSlot, keyToDirection, movesEqual, NO_MOVE } from "./input";
+import {
+  aimDir,
+  isMinimapZoomKey,
+  keyToBuildSlot,
+  keyToDirection,
+  MINIMAP_ZOOM_KEY,
+  movesEqual,
+  NO_MOVE,
+} from "./input";
 
 describe("keyToDirection", () => {
   test("maps WASD and arrow keys to directions (case-insensitive)", () => {
@@ -69,6 +77,26 @@ describe("keyToBuildSlot", () => {
   test("movement and other keys pass through untouched", () => {
     for (const key of ["w", "a", "s", "d", "ArrowUp", " ", "", "e"]) {
       expect(keyToBuildSlot(key, 4)).toBeNull();
+    }
+  });
+});
+
+describe("isMinimapZoomKey", () => {
+  test("cycles the map's zoom whatever the shift state", () => {
+    expect(isMinimapZoomKey(MINIMAP_ZOOM_KEY)).toBe(true);
+    expect(isMinimapZoomKey(MINIMAP_ZOOM_KEY.toUpperCase())).toBe(true);
+  });
+
+  test("takes a key nothing else in the match is bound to", () => {
+    expect(keyToDirection(MINIMAP_ZOOM_KEY)).toBeNull();
+    expect(keyToBuildSlot(MINIMAP_ZOOM_KEY, 4)).toBeNull();
+    expect(MINIMAP_ZOOM_KEY).not.toBe("Escape");
+  });
+
+  test("no other key cycles the map", () => {
+    // `e` among them: #120 takes it for the gun toggle, and the zoom must not answer to it.
+    for (const key of ["w", "a", "s", "d", "ArrowUp", "1", "4", "e", "Escape", " ", ""]) {
+      expect(isMinimapZoomKey(key)).toBe(false);
     }
   });
 });

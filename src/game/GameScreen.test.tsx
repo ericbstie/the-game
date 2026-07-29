@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { LobbyState } from "../lobby/client";
 import type { BuildableKind, MoveInput, Tile, Vec2, WorldInit } from "../lobby/protocol";
@@ -8,6 +8,7 @@ import {
   BUILDABLES,
   type BuildableSpec,
   FORGE_MS,
+  footprintCenter,
   INTERACT_REACH,
   insertStructure,
   MINE_CADENCE_MS,
@@ -19,13 +20,15 @@ import {
 import { ClientWorld } from "./clientWorld";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { GameScreen } from "./GameScreen";
-import { NO_MOVE } from "./input";
+import { MINIMAP_ZOOM_KEY, NO_MOVE } from "./input";
+import { MINIMAP_COVERAGE_CLOSE_U, MINIMAP_COVERAGE_U, MINIMAP_SIZE } from "./minimap";
 import { ARENA } from "./world";
 
+const SPAWN = { x: 400, y: 300 };
 const init: WorldInit = {
   arena: ARENA,
   exit: { x: 0, y: 100, width: 18, height: 96 },
-  spawns: [{ id: "me", slot: 1, name: "Me", pos: { x: 400, y: 300 } }],
+  spawns: [{ id: "me", slot: 1, name: "Me", pos: SPAWN }],
   oreSeed: 1,
 };
 
@@ -1121,5 +1124,123 @@ describe("#102: the ammo box counts the squad's bullets and orders more", () => 
     world.applyMapDelta({ tick: 2, moves: [], queued: 1, ammo: 1 }, Date.now());
     await mirrored();
     expect(overlay()).not.toBe(first);
+  });
+});
+
+// #110: the corner map's zoom, driven from the keyboard. Every other test in this file reads the
+// DOM, and the zoom level never reaches it — it is a ref the render loop hands `drawWorld`, so what
+// was drawn is the only place it is visible. happy-dom draws nothing at all: `getContext("2d")`
+// answers null and every element measures 0×0, so the loop's `w > 0 && h > 0` guard never opens.
+//
+// This stands a recording context and a real viewport up for the length of one test, which is what
+// makes the map readable from here. The stub is on the prototype and so covers the sprite bakes
+// too, which is required rather than incidental: `bakeOne` throws on a null context. Those bakes
+// land in the module-level cache and stay there, harmlessly — no other test in this file draws.
+interface DrawnCall {
+  fn: string;
+  args: unknown[];
+}
+
+function recordFrames(): { calls: DrawnCall[]; restore: () => void } {
+  const calls: DrawnCall[] = [];
+  const canvas = HTMLCanvasElement.prototype as unknown as Record<string, unknown>;
+  const getContext = canvas.getContext;
+  const element = HTMLElement.prototype;
+  const width = Object.getOwnPropertyDescriptor(element, "clientWidth");
+  const height = Object.getOwnPropertyDescriptor(element, "clientHeight");
+  Object.defineProperty(element, "clientWidth", { get: () => 800, configurable: true });
+  Object.defineProperty(element, "clientHeight", { get: () => 600, configurable: true });
+  // A proxy rather than a table of methods: the sprite modules between them reach for most of the
+  // 2D API, and a missing name would fail as a broken bake rather than as a missing stub.
+  canvas.getContext = () => {
+    const state: Record<string, unknown> = {};
+    return new Proxy({} as Record<string, unknown>, {
+      get: (_target, name: string) =>
+        name in state
+          ? state[name]
+          : (...args: unknown[]) => {
+              calls.push({ fn: name, args });
+            },
+      set: (_target, name: string, value) => {
+        state[name] = value;
+        return true;
+      },
+    });
+  };
+  return {
+    calls,
+    restore() {
+      canvas.getContext = getContext;
+      if (width) Object.defineProperty(element, "clientWidth", width);
+      if (height) Object.defineProperty(element, "clientHeight", height);
+    },
+  };
+}
+
+// A wall far enough from the spawn to be measurably off the plate's centre and near enough to sit
+// inside even the closest window, so it is on the map at all three levels.
+const MARK_TILE = { tx: 60, ty: 20 };
+const MARK_OFFSET_U =
+  footprintCenter(MARK_TILE, (BUILDABLES.wall as BuildableSpec).footprint).x - SPAWN.x;
+
+// The coverage the last complete map in the log was a window onto, in world units — read back out
+// of the ink. The plate is 200 px at every level, so the level is not in its size; it is in where a
+// mark of a known world offset landed, which is that offset times the scale the coverage sets.
+//
+// Bounded to one map, from its rule — the last thing `drawMinimap` draws — back to its plate, so a
+// recording that stopped mid-frame is short a map rather than reading half of two.
+function drawnCoverage(calls: DrawnCall[]): number | null {
+  const plated = (c: DrawnCall) => c.args[2] === MINIMAP_SIZE && c.args[3] === MINIMAP_SIZE;
+  const rule = calls.findLastIndex((c) => c.fn === "strokeRect" && plated(c));
+  const plate = calls.findLastIndex((c, i) => i < rule && c.fn === "fillRect" && plated(c));
+  if (plate < 0) return null;
+  // The only other fill on the plate: this world's ore is cleared and its door unfound, which
+  // leaves the structure marks, and there is one structure.
+  const mark = calls.slice(plate + 1, rule).find((c) => c.fn === "fillRect");
+  if (!mark) return null;
+  const centre = (calls[plate].args[0] as number) + MINIMAP_SIZE / 2;
+  const at = (mark.args[0] as number) + (mark.args[2] as number) / 2;
+  return (MINIMAP_SIZE * MARK_OFFSET_U) / (at - centre);
+}
+
+describe("#110: the map's zoom steps once per press of the key", () => {
+  let drawn: { calls: DrawnCall[]; restore: () => void };
+
+  beforeEach(() => {
+    drawn = recordFrames();
+  });
+  afterEach(() => drawn.restore());
+
+  // One wall on an empty floor, so the only mark on the plate besides the squad is the one the
+  // level is read off.
+  function marked(): ClientWorld {
+    const world = armed();
+    world.ore.clear();
+    insertStructure(world.build, { id: "mark", kind: "wall", tile: MARK_TILE, hp: 400 });
+    return world;
+  }
+
+  test("one press takes the map from the level it opened on to the next", async () => {
+    renderMatch({}, marked());
+    await nextFrames();
+    expect(drawnCoverage(drawn.calls)).toBeCloseTo(MINIMAP_COVERAGE_U, 6);
+    fireEvent.keyDown(window, { key: MINIMAP_ZOOM_KEY });
+    await nextFrames();
+    expect(drawnCoverage(drawn.calls)).toBeCloseTo(MINIMAP_COVERAGE_CLOSE_U, 6);
+  });
+
+  // The hole the press above cannot see. The OS repeats a held key at ~30 Hz and every repeat is
+  // another keydown, so a cycle stepped by each of them would spin the map through ten levels a
+  // second. happy-dom does not synthesise native repeat, so this drives the flag the browser sets —
+  // the same technique the ammo box's Enter guard is pinned by above.
+  test("a repeat of a held key steps it nowhere", async () => {
+    renderMatch({}, marked());
+    await nextFrames();
+    fireEvent.keyDown(window, { key: MINIMAP_ZOOM_KEY });
+    await nextFrames();
+    fireEvent.keyDown(window, { key: MINIMAP_ZOOM_KEY, repeat: true });
+    fireEvent.keyDown(window, { key: MINIMAP_ZOOM_KEY, repeat: true });
+    await nextFrames();
+    expect(drawnCoverage(drawn.calls)).toBeCloseTo(MINIMAP_COVERAGE_CLOSE_U, 6);
   });
 });

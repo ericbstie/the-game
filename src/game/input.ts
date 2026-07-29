@@ -45,6 +45,15 @@ export function movesEqual(a: MoveInput, b: MoveInput): boolean {
   return a.up === b.up && a.down === b.down && a.left === b.left && a.right === b.right;
 }
 
+// The key that steps the corner map's zoom (#110). `m` for the map, chosen because it is free: the
+// match binds `WASD` and the arrows to movement, `1`–`4` to the build bar, `Escape` to the menu, and
+// `e` is spoken for by #120. **Provisional**, like the levels it steps through.
+export const MINIMAP_ZOOM_KEY = "m";
+
+export function isMinimapZoomKey(key: string): boolean {
+  return key === MINIMAP_ZOOM_KEY || key === MINIMAP_ZOOM_KEY.toUpperCase();
+}
+
 // The build bar's keys: `1`–`4` pick a slot, returned zero-indexed. Anything else is not a build
 // key, so movement and the rest of the game keep it — Escape included, which cancels the selected
 // buildable and opens the menu only when there is none (#117).
