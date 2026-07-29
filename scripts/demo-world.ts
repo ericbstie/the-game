@@ -126,8 +126,8 @@ export function demoWorld(): WorldSnapshot {
       },
     ],
     nests: [
-      { id: "n1", pos: { x: 15_500, y: 15_470 }, radius: 48, hp: 600, alive: true, sector: 0 },
-      { id: "n2", pos: { x: 16_020, y: 15_900 }, radius: 48, hp: 0, alive: false, sector: 1 },
+      { id: "n1", pos: { x: 15_500, y: 15_470 }, radius: 48, maxHp: 600, hp: 600, alive: true },
+      { id: "n2", pos: { x: 16_020, y: 15_900 }, radius: 48, maxHp: 600, hp: 0, alive: false },
     ],
     exit: { x: 0, y: 15_000, width: 98, height: 936 },
     // The scene is staged at the arena's centre, and the nearest avatar in it is ~15,400 u from

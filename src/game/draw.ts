@@ -32,7 +32,7 @@ import {
 import { type Camera, isVisible, type Viewport } from "./camera";
 import { HIT_FLASH_MS, type Mark, type ShotEvent } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
-import { ELITE_HP, GRUNT_HP, NEST_HP, RANGED_RANGE } from "./enemies";
+import { ELITE_HP, GRUNT_HP, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
 import { BURST_REACH, inkPuff, PUFF_REACH, speedLines, starburst } from "./fx";
 import {
@@ -857,8 +857,8 @@ function drawMinimap(
 
   ctx.lineWidth = 1;
   ctx.strokeStyle = INK;
-  // Nothing here knows how many nests there are or where they were laid out, which is what #111
-  // needs: fifty at random read exactly as eight on a ring do.
+  // Nothing here knows how many nests there are or where they were laid out, which is what let #123
+  // land without touching this: fifty at random read exactly as eight on a ring did.
   for (const nest of world.nests) {
     const at = project(win, nest.pos);
     if (!at) continue;
@@ -1162,14 +1162,17 @@ function paintNest(
 }
 
 // #81 granted bars to "enemies, peers and structures". A nest is none of those three and so got
-// none — despite NEST_HP 600 being the longest single fight in the game, and the one readout with
-// real tactical weight, since killing a nest is how a sector is silenced (#88 §2).
+// none — despite a nest being the longest single fight in the game, and the one readout with real
+// tactical weight, since killing one is how the pressure around it drops (#88 §2).
+//
+// Scaled against the nest's own `maxHp`, not a constant: since #123 an outer nest is worth four
+// times an inner one, so a shared ceiling would draw an inner nest as permanently near-dead.
 //
 // A silenced nest is skipped rather than shown empty: it is wreckage, not a fight in progress, and
 // the destroyed sprite already says so.
 function paintNestHealth(ctx: CanvasRenderingContext2D, nest: RenderedNest): void {
   if (!nest.alive) return;
-  healthBar(ctx, nest.pos.x, nest.pos.y - nest.radius, nest.radius * 2, nest.hp, NEST_HP);
+  healthBar(ctx, nest.pos.x, nest.pos.y - nest.radius, nest.radius * 2, nest.hp, nest.maxHp);
 }
 
 // Every tile a wall stands on, so a wall can be asked what it abuts. Only walls go in: a miner

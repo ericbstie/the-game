@@ -9,10 +9,17 @@ import {
   MINE_CADENCE_MS,
   TURRET_CADENCE_MS,
   TURRET_DAMAGE,
+  TURRET_RANGE,
   tileCenter,
   tileOf,
 } from "../game/build";
-import { ATTACK_POS_TOLERANCE, NEST_COUNT, nestLayout, RANGED_CADENCE_MS } from "../game/enemies";
+import {
+  ATTACK_POS_TOLERANCE,
+  NEST_COUNT,
+  type Nest,
+  nestLayout,
+  RANGED_CADENCE_MS,
+} from "../game/enemies";
 import { ARENA } from "../game/world";
 import { type LobbyConfig, LobbyHub, livePlayers, type Transport } from "./lobby";
 import type { EnemySpawn, Exit, ServerMessage, Tile, Vec2 } from "./protocol";
@@ -904,6 +911,7 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
   }
 
   const CENTRE = { x: ARENA.width / 2, y: ARENA.height / 2 };
+  const HOLD_EDGE = Math.min(ARENA.width, ARENA.height) * (0.5 - 0.08); // 13,104 u from centre
   const dist = (a: Vec2, b: Vec2) => Math.hypot(a.x - b.x, a.y - b.y);
 
   // The first captured message of a type, narrowed — with a real error if it never arrived.
@@ -929,12 +937,15 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
     return { t, hub, clock, code };
   }
 
-  // The first grunt of the opening wave, straight off the stream.
-  function firstSpawn(t: Capture): EnemySpawn {
+  // A grunt of the opening wave that will actually march, straight off the stream: one spawned
+  // outside the hold edge, where an un-aggroed enemy still advances. Since #123 the nests are
+  // scattered from 3,600 u out, so most of them sit inside that edge and their grunts simply hold —
+  // which makes "it turned away" unobservable. #125 removes the edge and this goes with it.
+  function firstMarchingSpawn(t: Capture): EnemySpawn {
     const spawned = t.sent
       .flatMap(({ msg }) => (msg.type === "game/map-delta" ? (msg.spawns ?? []) : []))
-      .at(0);
-    if (!spawned) throw new Error("the first wave spawned nothing");
+      .find((sp) => dist(sp.pos, CENTRE) > HOLD_EDGE + 500);
+    if (!spawned) throw new Error("the first wave spawned nothing outside the hold edge");
     return spawned;
   }
 
@@ -950,7 +961,7 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
 
   test("an enemy chasing a player that drops turns away from the frozen point", () => {
     const { t, hub, clock } = matchWithWave();
-    const spawned = firstSpawn(t);
+    const spawned = firstMarchingSpawn(t);
 
     // Ben stands just *outward* of the grunt — away from centre — so chasing him and marching
     // to centre move the grunt in opposite directions and the two are never confusable.
@@ -981,7 +992,7 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
 
   test("and it resumes the chase when they reconnect inside the window", () => {
     const { t, hub, clock, code } = matchWithWave();
-    const spawned = firstSpawn(t);
+    const spawned = firstMarchingSpawn(t);
     const joined = firstOf(t, "lobby/joined");
     const benAt = { x: spawned.pos.x, y: spawned.pos.y };
     hub.handleMessage("s2", JSON.stringify({ type: "game/pos", pos: benAt, seq: 1 }));
@@ -2147,8 +2158,9 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
   // The turret is stood in front of a nest with no wave ever due, which is what makes the pool the
   // only variable: a nest is a legitimate target that is always there, never moves and is damaged
   // by nothing else in the match, so every `nests` delta below is a turret shot and each one is
-  // a bullet. The player shoots from the arena centre, ~14k units from the nearest nest and well
-  // beyond her own reach, so her ray can never touch the same observable.
+  // a bullet. The player shoots from the arena centre, at least 3,600 u from the nearest nest
+  // (#123's inner bound) and far beyond her own 700 u reach, so her ray can never touch the same
+  // observable.
   describe("stage 4: turrets draw from the squad's pool", () => {
     const CENTRE = { x: ARENA.width / 2, y: ARENA.height / 2 };
     const NO_WAVE = 10_000_000; // no grunt ever spawns; the nest is the turret's only target
@@ -2190,7 +2202,18 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
       );
       hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: CENTRE, seq: 2 }));
 
-      const nest = nestLayout(ARENA)[0];
+      // Off the session's own seed, which is also how the client finds it (ADR 0004). An isolated
+      // nest, because since #123 nests may cluster and a turret shoots whichever is nearest — with
+      // a neighbour in range there would be no telling which one the `nests` deltas are about.
+      const layout = nestLayout(ARENA, worldInit(t).init.nestSeed);
+      const nest = layout.find((n) =>
+        layout.every(
+          (other) =>
+            other.id === n.id ||
+            Math.hypot(other.pos.x - n.pos.x, other.pos.y - n.pos.y) > 2 * TURRET_RANGE,
+        ),
+      );
+      if (!nest) throw new Error("every nest in this layout has a neighbour in turret range");
       const spot = tileOf({ x: nest.pos.x - 300, y: nest.pos.y });
       hub.handleMessage(
         "s2",
@@ -2211,9 +2234,9 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
     // The turret, aimed at the nest and holding a power slot. Asserted wherever a test's evidence
     // is an *absent* nest delta, so "it held its fire" cannot be satisfied by a turret that was
     // never standing, never targeting, or never powered.
-    const expectEngaged = (t: Capture) => {
+    const expectEngaged = (t: Capture, nest: Nest) => {
       const aim = deltas(t).flatMap((d) => d.aims ?? [])[0];
-      expect(aim?.[1]).toBe("n0");
+      expect(aim?.[1]).toBe(nest.id);
       expect(aim?.[2]).toBe(1);
     };
     const aimAt = (from: Vec2, to: Vec2): Vec2 => {
@@ -2230,9 +2253,9 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
     });
 
     test("an empty pool holds the turret's fire — it does not shoot free", () => {
-      const { t, hub, clock } = besieging({ startingAmmo: 0 });
+      const { t, hub, clock, nest } = besieging({ startingAmmo: 0 });
       clock.advance(TURRET_CADENCE_MS * 10);
-      expectEngaged(t);
+      expectEngaged(t, nest);
       expect(nestHps(t)).toEqual([]);
       hub.dispose();
     });
@@ -2250,7 +2273,7 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
     // the instant their report is admitted, so which of the two happens first is the whole test —
     // and it is the ordering of these two statements, not any rule about who outranks whom.
     test("a player who asks before the tick takes the last bullet, and the turret holds fire", () => {
-      const { t, hub, clock } = besieging({ startingAmmo: 1 });
+      const { t, hub, clock, nest } = besieging({ startingAmmo: 1 });
       hub.handleMessage(
         "s1",
         JSON.stringify({
@@ -2262,7 +2285,7 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
       );
       clock.advance(TURRET_CADENCE_MS * 10);
       expect(shotsFired(t)).toHaveLength(1); // hers, and only hers
-      expectEngaged(t);
+      expectEngaged(t, nest);
       expect(nestHps(t)).toEqual([]); // the turret found the pool empty
       hub.dispose();
     });

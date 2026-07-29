@@ -18,6 +18,7 @@ import type {
 import {
   ActivationQueue,
   type BuildState,
+  mulberry32,
   pushOutOfSolids,
   removeStructure,
   type Structure,
@@ -103,29 +104,32 @@ export const ATTACK_POS_TOLERANCE = 500;
 export const AGGRO_RADIUS = 1_800; // a player this close pulls the nearest enemies off the line
 const HOLD_EDGE_FRAC = 0.5 - 0.08; // band inner edge = 13,104 u from center at 31,200
 
-// Nests — the static spawners ringing the danger band. One per 45° sector.
-export const NEST_COUNT = 8;
-export const SECTORS = 8; // the arena is tiled into eight 45° wedges, one per nest
-export const NEST_HP = 600; // a focused squad silences a nest in ~15–25 s
+// Nests — the static spawners scattered through the outer arena. The count, the band, the bias, the
+// HP pair and the wanderer chance are all **provisional** (#123): only a played match can judge
+// them, and a later change to one of them is a retune rather than a correction.
+export const NEST_COUNT = 50;
 export const NEST_RADIUS = 48;
+// The band they are placed in, as a radius from arena centre. Inner is two aggro radii, so the
+// squad never spawns already inside a nest's notice; outer is the mid-band inset the ore gradient
+// also reaches to, so a nest is never buried in the wall.
+export const NEST_BAND_INNER = 2 * AGGRO_RADIUS; // 3,600 u
+export function nestBandOuter(arena: Arena): number {
+  return (Math.min(arena.width, arena.height) / 2) * (1 - DANGER_BAND_FRAC); // 14,352 u at 31,200
+}
+// The radial fraction is sampled as u ** (1 / NEST_EDGE_BIAS) — the same curve and the same
+// exponent the ore gradient uses (`build.ts` EDGE_BIAS) — which puts ~91% of the nests in the outer
+// half of the band. The squad has to push outward to find most of them.
+export const NEST_EDGE_BIAS = 3.5;
+// HP and type both read off that same fraction, so distance is the only dial: an inner nest is
+// cheap to clear and sends hunters; an outer one is a long fight that mostly leaks wanderers.
+export const NEST_HP_INNER = 150;
+export const NEST_HP_OUTER = 600;
+export const WANDERER_CHANCE_OUTER = 0.9; // at the inner bound it is 0, and linear between
 const SPAWN_JITTER = 300; // grunts spawn within this radius of their nest, so they don't stack
 
 // Waves — the ~30 s escalating drumbeat. Wave w spawns 2+w grunts per still-active nest.
 export const WAVE_PERIOD_MS = 30_000; // first wave at 0:30, then every 30 s
 export const ENEMY_CAP = 240; // hard concurrency governor; a nest holds its remainder at the cap
-
-// A point's bearing from arena center, in degrees normalized to [0, 360).
-export function angleOf(pos: Vec2, arena: Arena): number {
-  const deg = (Math.atan2(pos.y - arena.height / 2, pos.x - arena.width / 2) * 180) / Math.PI;
-  return (deg + 360) % 360;
-}
-
-// Which 45° sector (0..7) a point falls in. Half-open and centered on the nest bearings, so a
-// point on a boundary lands deterministically in the higher sector and `sectorOf(nest_k) === k`.
-export function sectorOf(pos: Vec2, arena: Arena): number {
-  const span = 360 / SECTORS;
-  return Math.floor(((angleOf(pos, arena) + span / 2) % 360) / span);
-}
 
 export function enemyRadius(kind: EnemyKind): number {
   return STATS[kind].radius;
@@ -139,27 +143,34 @@ function enemySpeed(kind: EnemyKind): number {
 // player always outranks a structure — the squad is the threat, the base is the consolation.
 export type EnemyTarget = { kind: "player"; id: PlayerId } | { kind: "structure"; id: string };
 
-// One live enemy. `sector` is the 45° wedge it was spawned into (inherited from its nest);
-// `target` is what it is currently chasing (ENGAGED), held until that target dies or leaves
-// range. `biteMs` counts down to its next bite on a structure — driven by the injected `dtMs`,
-// never a clock, so the sim stays deterministic.
+// One live enemy. `target` is what it is currently chasing (ENGAGED), held until that target dies
+// or leaves range. `biteMs` counts down to its next bite on a structure — driven by the injected
+// `dtMs`, never a clock, so the sim stays deterministic.
 export interface Enemy {
   id: string;
   kind: EnemyKind;
   pos: Vec2;
   hp: number;
-  sector: number;
   biteMs: number;
   target?: EnemyTarget;
 }
 
-// A spawner nest: static position/sector, dynamic hp/alive. Killing it silences its sector (#44).
+// What a nest sends. A hunter nest fires waves that march at a player; a wanderer nest leaks grunts
+// that roam (#124 and #125 give the two their behaviour — this module only assigns the type).
+// Chosen once at world gen and fixed for the match, and deliberately invisible: the two look
+// identical, so the only way to learn which a nest is, is to watch what comes out of it. That is
+// why `RenderedNest` carries no kind — the render layer is never told.
+export type NestKind = "hunter" | "wanderer";
+
+// A spawner nest: static position/kind/maxHp, dynamic hp/alive. Killing one reduces the pressure
+// around it; clearing all fifty is not expected (#111).
 export interface Nest {
   id: string;
   pos: Vec2;
   hp: number;
+  maxHp: number; // scaled by distance, so it is per-nest rather than one constant
   alive: boolean;
-  sector: number;
+  kind: NestKind;
 }
 
 // A read-only player position the sim chases. The sim never mutates these.
@@ -253,25 +264,35 @@ export interface EnemyState {
   nextId: number;
 }
 
-// The eight nests, one per 45° sector, seated in the danger band. Position is a pure function
-// of the arena — the ray at k·45° projected onto the mid-band square — so the client derives
-// the same layout without it ever riding the wire. Invariant: `sectorOf(nest_k) === k`.
-export function nestLayout(arena: Arena): Nest[] {
+// The fifty nests, scattered at random through the band and biased toward the wall.
+//
+// Derived from a seed rather than streamed (ADR 0004): `WorldInit.nestSeed` is the only thing that
+// crosses the wire, and both sides expand it into a byte-identical layout exactly as they already do
+// for the ore grid. `mulberry32` is what makes the two agree.
+//
+// Pure, and pointedly not fed by the sim's own `rng`: the layout a session gets is fixed by its
+// world-init, so no amount of stepping can move a nest, and a reconnecting client rebuilding from
+// the same world-init lands on the same fifty.
+export function nestLayout(arena: Arena, seed: number): Nest[] {
+  const rng = mulberry32(seed);
   const cx = arena.width / 2;
   const cy = arena.height / 2;
-  const half = (Math.min(arena.width, arena.height) / 2) * (1 - DANGER_BAND_FRAC); // mid-band inset
-  const span = (2 * Math.PI) / NEST_COUNT;
+  const span = nestBandOuter(arena) - NEST_BAND_INNER;
   return Array.from({ length: NEST_COUNT }, (_, k) => {
-    const angle = k * span;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    const t = half / Math.max(Math.abs(cos), Math.abs(sin)); // project the ray onto the square
+    const angle = rng() * 2 * Math.PI;
+    // How far out this nest sits: 0 at the inner bound, 1 at the outer. One biased draw, and then
+    // the only thing HP and type are read from — distance is the whole gradient.
+    const outward = rng() ** (1 / NEST_EDGE_BIAS);
+    const reach = NEST_BAND_INNER + outward * span;
+    // Whole HP, so it rides the wire as one number rather than seventeen digits of float (#84).
+    const hp = Math.round(NEST_HP_INNER + outward * (NEST_HP_OUTER - NEST_HP_INNER));
     return {
       id: `n${k}`,
-      pos: { x: cx + t * cos, y: cy + t * sin },
-      hp: NEST_HP,
+      pos: { x: cx + Math.cos(angle) * reach, y: cy + Math.sin(angle) * reach },
+      hp,
+      maxHp: hp,
       alive: true,
-      sector: k,
+      kind: rng() < outward * WANDERER_CHANCE_OUTER ? "wanderer" : "hunter",
     };
   });
 }
@@ -289,14 +310,12 @@ export function snapshotEnemies(state: EnemyState): {
       kind: e.kind,
       pos: { ...e.pos },
       hp: e.hp,
-      sector: e.sector,
     })),
     nests: state.nests.map((n) => ({
       id: n.id,
       pos: { ...n.pos },
       hp: n.hp,
       alive: n.alive,
-      sector: n.sector,
     })),
     wave: { index: state.waveIndex, clockMs: state.msUntilWave },
   };
@@ -308,7 +327,7 @@ export function spawnEnemyState(world: WorldInit, rng: () => number = Math.rando
   return {
     arena: world.arena,
     enemies: new Map(),
-    nests: nestLayout(world.arena),
+    nests: nestLayout(world.arena, world.nestSeed),
     waveIndex: 0,
     msUntilWave: WAVE_PERIOD_MS,
     rng,
@@ -405,7 +424,7 @@ function tickWaves(
   return { spawns, wave: { index: state.waveIndex, clockMs: state.msUntilWave } };
 }
 
-// Every still-active nest emits `2 + w` grunts into its own sector, plus `max(0, w−2)` elites
+// Every still-active nest emits `2 + w` grunts at its own position, plus `max(0, w−2)` elites
 // spread across distinct nests (none before wave 3), all up to the concurrency cap. A nest that
 // would breach ENEMY_CAP holds its remainder rather than spawning it.
 function spawnWave(state: EnemyState, build: BuildState | null): EnemySpawn[] {
@@ -418,7 +437,7 @@ function spawnWave(state: EnemyState, build: BuildState | null): EnemySpawn[] {
     // A nest walled in is a legitimate strategy, so a wave that lands inside a footprint still
     // spawns — the overlapping enemy is simply pushed clear.
     const at = pushOutOfSolids(build, jitter(nest.pos, state.rng), enemyRadius(kind));
-    spawns.push(addEnemy(state, kind, at, nest.sector));
+    spawns.push(addEnemy(state, kind, at));
     return true;
   };
   for (const nest of active) {
@@ -821,11 +840,11 @@ function nearestWithin(players: PlayerRef[], from: Vec2, radius: number): Player
   return best && bestDist <= radius ? best : null;
 }
 
-// Add one enemy to the sim and return its spawn announcement (the client needs kind/hp/sector
-// before position deltas flow for it).
-function addEnemy(state: EnemyState, kind: EnemyKind, pos: Vec2, sector: number): EnemySpawn {
+// Add one enemy to the sim and return its spawn announcement (the client needs kind/hp before
+// position deltas flow for it).
+function addEnemy(state: EnemyState, kind: EnemyKind, pos: Vec2): EnemySpawn {
   const id = `e${state.nextId++}`;
   const hp = STATS[kind].hp;
-  state.enemies.set(id, { id, kind, pos: { ...pos }, hp, sector, biteMs: 0 });
-  return { id, kind, pos: { ...pos }, hp, sector };
+  state.enemies.set(id, { id, kind, pos: { ...pos }, hp, biteMs: 0 });
+  return { id, kind, pos: { ...pos }, hp };
 }

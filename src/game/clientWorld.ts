@@ -136,7 +136,7 @@ export class ClientWorld {
   readonly arena: Arena;
   readonly ore: OreGrid; // derived from the world's seed, byte-identical to the server's copy
   private readonly exit: Exit;
-  private readonly nests: Nest[]; // static layout derived from the arena; hp/alive track the stream
+  private readonly nests: Nest[]; // layout derived from the world's seed; hp/alive track the stream
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
   private readonly enemies = new Map<string, EnemyRecord>();
   private readonly shots: ShotEvent[] = []; // squadmates' shots; the render layer ages them itself
@@ -167,7 +167,7 @@ export class ClientWorld {
     this.selfHp = initialHp;
     this.arena = init.arena;
     this.exit = init.exit;
-    this.nests = nestLayout(init.arena);
+    this.nests = nestLayout(init.arena, init.nestSeed);
     this.ore = generateOre(init.arena, init.oreSeed);
     this.build = freshBuildState(init.arena);
     for (const s of init.spawns) {
@@ -664,7 +664,7 @@ function renderNest(n: Nest): RenderedNest {
     pos: { ...n.pos },
     radius: NEST_RADIUS,
     hp: n.hp,
+    maxHp: n.maxHp,
     alive: n.alive,
-    sector: n.sector,
   };
 }

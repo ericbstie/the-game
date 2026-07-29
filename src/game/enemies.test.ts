@@ -25,7 +25,6 @@ import {
   ATTACK_POS_TOLERANCE,
   type Attack,
   admitAttack,
-  angleOf,
   ELITE_HP,
   ENEMY_CAP,
   type Enemy,
@@ -37,38 +36,42 @@ import {
   GRUNT_HP,
   GRUNT_RADIUS,
   GRUNT_SPEED,
+  NEST_BAND_INNER,
   NEST_COUNT,
-  NEST_HP,
+  NEST_EDGE_BIAS,
+  NEST_HP_INNER,
+  NEST_HP_OUTER,
+  NEST_RADIUS,
   type Nest,
+  nestBandOuter,
   nestLayout,
   RANGED_CADENCE_MS,
   RANGED_DAMAGE,
   RANGED_HALFWIDTH,
   RANGED_RANGE,
-  SECTORS,
-  sectorOf,
   spawnEnemyState,
   stepEnemies,
+  WANDERER_CHANCE_OUTER,
   WAVE_PERIOD_MS,
 } from "./enemies";
 import { ARENA } from "./world";
 
 const C = { x: ARENA.width / 2, y: ARENA.height / 2 };
-const HALF = (ARENA.width / 2) * (1 - 0.08); // mid-band inset used for the east cardinal nest
+const HALF = (ARENA.width / 2) * (1 - 0.08); // the mid-band inset: the nest band's outer bound
 
-const worldInit = (): WorldInit => ({
+const worldInit = (nestSeed = 1): WorldInit => ({
   arena: ARENA,
   exit: { x: 0, y: 100, width: 18, height: 96 },
   spawns: [],
   oreSeed: 1,
+  nestSeed,
 });
 
-const grunt = (id: string, pos: Vec2, hp = GRUNT_HP, sector = 0): Enemy => ({
+const grunt = (id: string, pos: Vec2, hp = GRUNT_HP): Enemy => ({
   id,
   kind: "grunt",
   pos,
   hp,
-  sector,
   biteMs: 0,
 });
 const stateWith = (enemies: Enemy[]): EnemyState => ({
@@ -81,6 +84,23 @@ const stateWith = (enemies: Enemy[]): EnemyState => ({
   nextId: enemies.length + 1,
 });
 const only = (state: EnemyState) => [...state.enemies.values()][0];
+// A spawn point keyed exactly, so a wave can be attributed to the nest that emitted it now that
+// nests carry no sector. With the sim's rng at 0.5 the jitter is zero, so a grunt spawns on its
+// nest to the last bit.
+const where = (pos: Vec2) => `${pos.x},${pos.y}`;
+// Cut the layout down to one nest, for the tests that are about what a single nest emits rather
+// than about fifty of them.
+const onlyNest = (state: EnemyState): Nest => {
+  state.nests = state.nests.slice(0, 1);
+  return state.nests[0];
+};
+// And down to a handful, for the wave-shape tests. At fifty nests the grunts of wave 3 alone breach
+// ENEMY_CAP, so the elites behind them never spawn — which is a fact about the cap and the spawn
+// model (#124 replaces it, #125 raises the cap), not about the shape of a wave.
+const fewNests = (state: EnemyState): EnemyState => {
+  state.nests = state.nests.slice(0, 4);
+  return state;
+};
 const at = (state: EnemyState, id: string) => state.enemies.get(id);
 const player = (pos: Vec2) => [{ id: "p1", pos }];
 const shot = (pos: Vec2, dir: Vec2, by = "p1"): Attack => ({ pos, dir, by });
@@ -95,57 +115,158 @@ describe("spawnEnemyState", () => {
     expect(s.msUntilWave).toBe(WAVE_PERIOD_MS);
   });
 
-  test("every nest is alive at full HP, one per sector, seated in the danger band", () => {
+  test("every nest starts alive at its own full HP", () => {
     const s = spawnEnemyState(worldInit(), () => 0);
-    expect(s.nests.every((n) => n.alive && n.hp === NEST_HP)).toBe(true);
-    expect(s.nests.map((n) => n.sector).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
-    const band = 0.08 * Math.min(ARENA.width, ARENA.height);
-    for (const n of s.nests) {
-      const nearestWall = Math.min(n.pos.x, ARENA.width - n.pos.x, n.pos.y, ARENA.height - n.pos.y);
-      expect(nearestWall).toBeLessThanOrEqual(band + 1e-6); // inside the danger band
-    }
+    expect(s.nests.every((n) => n.alive && n.hp === n.maxHp)).toBe(true);
+  });
+
+  test("the layout comes off the world's nestSeed, not the sim's rng", () => {
+    const world = worldInit(4_242);
+    expect(spawnEnemyState(world, () => 0).nests).toEqual(spawnEnemyState(world, () => 0.9).nests);
+    expect(spawnEnemyState(world, () => 0).nests).toEqual(nestLayout(ARENA, 4_242));
   });
 });
 
-describe("sector math", () => {
-  test("sectorOf(nest_k) === k for every nest (the placement invariant)", () => {
-    for (const nest of nestLayout(ARENA)) {
-      expect(sectorOf(nest.pos, ARENA)).toBe(nest.sector);
-    }
+// #123. Fifty nests placed at random in a band, biased hard toward the wall, each one a hunter or a
+// wanderer nest and each one worth more HP the further out it sits. Every number asserted here is
+// provisional: a retune moves these expectations, and that is not a regression.
+describe("nest layout (#123)", () => {
+  // A fixed seed set, so every statistical assertion below is a fixed number rather than a sample.
+  // These tests pass always or fail always; none of them can flake.
+  const SEEDS = 1_000; // 50,000 nests: enough that every tolerance below is a wide margin
+  const many = (): Nest[] =>
+    Array.from({ length: SEEDS }, (_, i) => nestLayout(ARENA, i + 1)).flat();
+  const radiusOf = (n: Nest) => Math.hypot(n.pos.x - C.x, n.pos.y - C.y);
+  // Where a nest sits in the band: 0 at the inner bound, 1 at the outer. Distance is the layout's
+  // only dial — placement, HP and type all read off this one number.
+  const outward = (n: Nest) =>
+    (radiusOf(n) - NEST_BAND_INNER) / (nestBandOuter(ARENA) - NEST_BAND_INNER);
+
+  test("the band runs from two aggro radii out to the mid-band inset — 3,600 u to 14,352 u", () => {
+    expect(NEST_BAND_INNER).toBe(3_600);
+    expect(NEST_BAND_INNER).toBe(2 * AGGRO_RADIUS);
+    expect(nestBandOuter(ARENA)).toBeCloseTo(14_352, 6);
+    expect(nestBandOuter(ARENA)).toBeCloseTo(HALF, 6);
   });
 
-  test("the east cardinal nest sits on the +x axis at the mid-band inset", () => {
-    const east = nestLayout(ARENA).find((n) => n.sector === 0);
-    expect(east?.pos.x).toBeCloseTo(C.x + HALF, 6);
-    expect(east?.pos.y).toBeCloseTo(C.y, 6);
+  test("there are fifty of them", () => {
+    expect(NEST_COUNT).toBe(50);
+    expect(nestLayout(ARENA, 1)).toHaveLength(NEST_COUNT);
   });
 
-  test("tiles 360° into SECTORS wedges with no gap or overlap", () => {
-    const seen = new Set<number>();
-    for (let deg = 0; deg < 360; deg++) {
-      const rad = (deg * Math.PI) / 180;
-      const p = { x: C.x + Math.cos(rad) * 1000, y: C.y + Math.sin(rad) * 1000 };
-      const sec = sectorOf(p, ARENA);
-      expect(sec).toBeGreaterThanOrEqual(0);
-      expect(sec).toBeLessThan(SECTORS);
-      seen.add(sec);
-    }
-    expect(seen.size).toBe(SECTORS);
+  test("none lands inside 3,600 u of centre or beyond 14,352 u, on any seed", () => {
+    const radii = many().map(radiusOf);
+    expect(Math.min(...radii)).toBeGreaterThanOrEqual(3_600);
+    expect(Math.max(...radii)).toBeLessThanOrEqual(14_352);
   });
 
-  test("just past a boundary lands in the higher sector (half-open)", () => {
-    const angle = (deg: number) => {
-      const rad = (deg * Math.PI) / 180;
-      return { x: C.x + Math.cos(rad) * 1000, y: C.y + Math.sin(rad) * 1000 };
+  test("nests may cluster or overlap — no minimum separation is enforced", () => {
+    const closest = (nests: Nest[]) => {
+      let best = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < nests.length; i++) {
+        for (let j = i + 1; j < nests.length; j++) {
+          const gap = Math.hypot(nests[i].pos.x - nests[j].pos.x, nests[i].pos.y - nests[j].pos.y);
+          best = Math.min(best, gap);
+        }
+      }
+      return best;
     };
-    expect(sectorOf(angle(22), ARENA)).toBe(0); // just before the 22.5° boundary
-    expect(sectorOf(angle(23), ARENA)).toBe(1); // just after → the higher sector
+    const tightest = Math.min(
+      ...Array.from({ length: SEEDS }, (_, i) => closest(nestLayout(ARENA, i + 1))),
+    );
+    expect(tightest).toBeLessThan(2 * NEST_RADIUS); // two of them touching, somewhere in the set
   });
 
-  test("angleOf normalizes to [0, 360) (screen space: +y is 90°)", () => {
-    expect(angleOf({ x: C.x + 100, y: C.y }, ARENA)).toBeCloseTo(0, 6);
-    expect(angleOf({ x: C.x, y: C.y + 100 }, ARENA)).toBeCloseTo(90, 6);
-    expect(angleOf({ x: C.x - 100, y: C.y }, ARENA)).toBeCloseTo(180, 6);
+  test("density rises toward the wall on u ** (1 / 3.5)", () => {
+    expect(NEST_EDGE_BIAS).toBe(3.5);
+    const all = many();
+    const bins = new Array(10).fill(0);
+    for (const n of all) bins[Math.min(9, Math.floor(outward(n) * 10))]++;
+    // Sampling the radial fraction as u ** (1 / 3.5) makes its CDF u ** 3.5, so a decile of the band
+    // holds ((i+1)/10) ** 3.5 − (i/10) ** 3.5 of the nests. Spelled as the literal the ticket asked
+    // for, not as `NEST_EDGE_BIAS`, so retuning the exponent cannot move the expectation with it.
+    for (let i = 0; i < 10; i++) {
+      const share = bins[i] / all.length;
+      const expected = ((i + 1) / 10) ** 3.5 - (i / 10) ** 3.5;
+      expect(Math.abs(share - expected)).toBeLessThan(0.002);
+    }
+    const outerHalf = bins.slice(5).reduce((a, b) => a + b, 0) / all.length;
+    expect(outerHalf).toBeGreaterThan(0.9); // which is what puts ~91% of them in the outer half
+  });
+
+  // Radius bins of equal *count*, not equal width: the edge bias leaves an equal-width inner bin
+  // holding a handful of nests out of 50,000, too few to read a share off.
+  const byRadiusBins = (all: Nest[]): { meanOut: number; wandererShare: number }[] => {
+    const sorted = all.sort((a, b) => outward(a) - outward(b));
+    const perBin = Math.floor(sorted.length / 10);
+    return Array.from({ length: 10 }, (_, b) => {
+      const bin = sorted.slice(b * perBin, (b + 1) * perBin);
+      return {
+        meanOut: bin.reduce((sum, n) => sum + outward(n), 0) / bin.length,
+        wandererShare: bin.filter((n) => n.kind === "wanderer").length / bin.length,
+      };
+    });
+  };
+
+  test("wanderer share in a radius bin is 0.9 × how far out that bin sits", () => {
+    expect(WANDERER_CHANCE_OUTER).toBe(0.9);
+    for (const bin of byRadiusBins(many())) {
+      expect(Math.abs(bin.wandererShare - WANDERER_CHANCE_OUTER * bin.meanOut)).toBeLessThan(0.02);
+    }
+  });
+
+  test("that line reads 0% at 3,600 u and 90% at 14,352 u", () => {
+    // Fitted rather than sampled at the ends. The inner bound is the one place the layout puts
+    // nothing — the edge bias is what makes it empty — so the 0% end is only ever an intercept.
+    const bins = byRadiusBins(many());
+    const meanX = bins.reduce((sum, b) => sum + b.meanOut, 0) / bins.length;
+    const meanY = bins.reduce((sum, b) => sum + b.wandererShare, 0) / bins.length;
+    const slope =
+      bins.reduce((sum, b) => sum + (b.meanOut - meanX) * (b.wandererShare - meanY), 0) /
+      bins.reduce((sum, b) => sum + (b.meanOut - meanX) ** 2, 0);
+    const intercept = meanY - slope * meanX;
+    // The ticket's two numbers as literals, so retuning `WANDERER_CHANCE_OUTER` cannot move them.
+    expect(Math.abs(intercept)).toBeLessThan(0.02); // 0% at the inner bound
+    expect(Math.abs(intercept + slope - 0.9)).toBeLessThan(0.03); // 90% at the outer
+  });
+
+  test("out at the wall the share really is 0.9 — read off the outermost 1% of the band", () => {
+    const outermost = many().filter((n) => outward(n) > 0.99);
+    expect(outermost.length).toBeGreaterThan(1_000); // enough of them to read a share off
+    const share = outermost.filter((n) => n.kind === "wanderer").length / outermost.length;
+    expect(Math.abs(share - WANDERER_CHANCE_OUTER)).toBeLessThan(0.03);
+  });
+
+  test("HP scales linearly with distance: 150 at the inner bound, 600 at the outer", () => {
+    expect([NEST_HP_INNER, NEST_HP_OUTER]).toEqual([150, 600]);
+    const all = many();
+    for (const n of all) {
+      const line = NEST_HP_INNER + outward(n) * (NEST_HP_OUTER - NEST_HP_INNER);
+      expect(n.maxHp).toBe(Math.round(line)); // whole HP, so it rides the wire as one (#84)
+    }
+    expect(Math.min(...all.map((n) => n.maxHp))).toBeGreaterThanOrEqual(NEST_HP_INNER);
+    expect(Math.max(...all.map((n) => n.maxHp))).toBe(NEST_HP_OUTER);
+  });
+
+  test("the same seed derives the same layout; a different seed a different one", () => {
+    expect(nestLayout(ARENA, 99)).toEqual(nestLayout(ARENA, 99));
+    expect(nestLayout(ARENA, 99)).not.toEqual(nestLayout(ARENA, 100));
+  });
+
+  test("a nest's type is fixed at world gen and survives a whole match", () => {
+    const s = spawnEnemyState(worldInit(7), () => 0.5);
+    const typed = s.nests.map((n) => `${n.id}:${n.kind}`);
+    const doomed = s.nests[0];
+    const origin = { x: doomed.pos.x - 100, y: doomed.pos.y };
+    for (let i = 0; i < 400; i++) {
+      if (i === 5) doomed.hp = RANGED_DAMAGE; // one shot from silence…
+      const attacks = i === 6 ? [shot(origin, { x: 1, y: 0 })] : []; // …and that shot lands
+      stepEnemies(s, player({ ...C }), attacks, 200); // 80 s of match, two waves
+      s.enemies.clear(); // so the cap never swallows a later wave
+    }
+    expect(s.nests.filter((n) => !n.alive)).toHaveLength(1); // one really was silenced
+    expect(s.waveIndex).toBeGreaterThan(1); // and waves really did fire
+    expect(s.nests.map((n) => `${n.id}:${n.kind}`)).toEqual(typed);
   });
 });
 
@@ -162,21 +283,22 @@ describe("waves (the ~30 s escalating drumbeat)", () => {
     expect(fire.spawns.every((sp) => sp.kind === "grunt")).toBe(true);
   });
 
-  test("each nest emits 2+w grunts into its own sector, evenly across all sectors", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5);
-    const fire = stepEnemies(s, [], [], WAVE_PERIOD_MS).events;
-    const perSector = new Map<number, number>();
-    for (const sp of fire.spawns) perSector.set(sp.sector, (perSector.get(sp.sector) ?? 0) + 1);
-    expect(perSector.size).toBe(NEST_COUNT);
-    expect([...perSector.values()].every((c) => c === 2 + 1)).toBe(true);
+  test("every live nest emits 2+w grunts, at its own position", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5); // rng 0.5 → zero jitter, so a grunt spawns
+    const fire = stepEnemies(s, [], [], WAVE_PERIOD_MS).events; //  exactly on its nest
+    const perNest = new Map<string, number>();
+    for (const sp of fire.spawns) perNest.set(where(sp.pos), (perNest.get(where(sp.pos)) ?? 0) + 1);
+    expect([...perNest.keys()].sort()).toEqual(s.nests.map((n) => where(n.pos)).sort());
+    expect([...perNest.values()].every((c) => c === 2 + 1)).toBe(true);
   });
 
   test("wave 2 escalates to 2+2 per nest and advances the wave index", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
     stepEnemies(s, [], [], WAVE_PERIOD_MS); // wave 1
+    s.enemies.clear(); // the squad cleared it; what wave 2 emits is not a question about the cap
     const w2 = stepEnemies(s, [], [], WAVE_PERIOD_MS).events; // wave 2
     expect(w2.wave?.index).toBe(2);
-    expect(w2.spawns).toHaveLength(NEST_COUNT * (2 + 2)); // 32
+    expect(w2.spawns).toHaveLength(NEST_COUNT * (2 + 2)); // 200
   });
 
   test("ENEMY_CAP governs concurrency: waves hold their remainder at the cap", () => {
@@ -186,7 +308,7 @@ describe("waves (the ~30 s escalating drumbeat)", () => {
   });
 
   test("elites appear from wave 3: counts are 0/0/1/2/3 for waves 1–5", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5);
+    const s = fewNests(spawnEnemyState(worldInit(), () => 0.5));
     const eliteCounts: number[] = [];
     for (let w = 1; w <= 5; w++) {
       const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS).events.spawns;
@@ -196,7 +318,7 @@ describe("waves (the ~30 s escalating drumbeat)", () => {
   });
 
   test("an elite spawns at ELITE_HP", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5);
+    const s = fewNests(spawnEnemyState(worldInit(), () => 0.5));
     let wave3: ReturnType<typeof stepEnemies>["events"] | undefined;
     for (let w = 1; w <= 3; w++) wave3 = stepEnemies(s, [], [], WAVE_PERIOD_MS).events;
     expect(wave3?.spawns.find((sp) => sp.kind === "elite")?.hp).toBe(ELITE_HP);
@@ -362,45 +484,40 @@ describe("#84: the delta ships display precision, not float64", () => {
   });
 });
 
-describe("nests are attackable, and silencing one carves a safe lane", () => {
-  const nestAt = (s: EnemyState, sector: number): Nest => {
-    const n = s.nests.find((x) => x.sector === sector);
-    if (!n) throw new Error(`no nest in sector ${sector}`);
-    return n;
-  };
-
+describe("nests are attackable, and silencing one quietens the ground around it", () => {
   test("a shot on a nest lowers its HP (still alive)", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
-    const nest = nestAt(s, 0);
+    const nest = s.nests[0];
     const origin = { x: nest.pos.x - 100, y: nest.pos.y };
     const events = stepEnemies(s, [], [shot(origin, { x: 1, y: 0 })], 0).events;
-    expect(events.nests).toEqual([{ id: nest.id, hp: NEST_HP - RANGED_DAMAGE, alive: true }]);
+    expect(events.nests).toEqual([{ id: nest.id, hp: nest.maxHp - RANGED_DAMAGE, alive: true }]);
   });
 
   test("fire to 0 HP silences the nest (alive:false, hp clamped to 0)", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
-    const nest = nestAt(s, 0);
+    const nest = s.nests[0];
     nest.hp = RANGED_DAMAGE; // one shot away from death
     const origin = { x: nest.pos.x - 100, y: nest.pos.y };
     const events = stepEnemies(s, [], [shot(origin, { x: 1, y: 0 })], 0).events;
     expect(events.nests).toEqual([{ id: nest.id, hp: 0, alive: false }]);
-    expect(nestAt(s, 0).alive).toBe(false);
+    expect(s.nests[0].alive).toBe(false);
   });
 
-  test("a silenced nest emits nothing into its sector next wave; the others still do", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5);
-    nestAt(s, 0).alive = false; // silence sector 0
+  test("a silenced nest emits nothing next wave; the others still do", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5); // rng 0.5 → zero jitter
+    const silenced = s.nests[0];
+    silenced.alive = false;
     const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS).events.spawns; // fire wave 1
-    expect(spawns.some((sp) => sp.sector === 0)).toBe(false); // the wedge is quiet
-    expect(spawns.some((sp) => sp.sector === 1)).toBe(true); // neighbours still spawn
-    expect(spawns).toHaveLength((NEST_COUNT - 1) * (2 + 1)); // exactly the 7 live nests
+    expect(spawns.some((sp) => where(sp.pos) === where(silenced.pos))).toBe(false);
+    expect(spawns).toHaveLength((NEST_COUNT - 1) * (2 + 1)); // exactly the 49 live nests
   });
 
   test("a partially-damaged nest still emits its full wave", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
-    nestAt(s, 0).hp = 1; // damaged but alive
+    const nest = s.nests[0];
+    nest.hp = 1; // damaged but alive
     const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS).events.spawns;
-    expect(spawns.filter((sp) => sp.sector === 0)).toHaveLength(2 + 1);
+    expect(spawns.filter((sp) => where(sp.pos) === where(nest.pos))).toHaveLength(2 + 1);
   });
 });
 
@@ -652,20 +769,19 @@ describe("M4-T4: structures are solid to the sim too", () => {
 
   test("a wave spawning on top of a wall is pushed clear of it", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5); // rng 0.5 → zero jitter, so every grunt
-    const nest = s.nests[0]; //                            spawns exactly on the nest
+    const nest = onlyNest(s); //                           spawns exactly on the nest
     const { build } = walls([tileOf({ x: nest.pos.x - TILE, y: nest.pos.y - TILE })]);
 
     const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS, build).events.spawns;
-    const onNest = spawns.filter((sp) => sp.sector === nest.sector);
-    expect(onNest.length).toBeGreaterThan(0);
-    for (const sp of onNest) {
+    expect(spawns.length).toBe(2 + 1);
+    for (const sp of spawns) {
       expect(structureBlocking(build, sp.pos, enemyRadius(sp.kind))).toBeNull();
     }
   });
 
   test("a nest sealed on all sides still emits — the sim never fails a spawn", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
-    const nest = s.nests[0];
+    const nest = onlyNest(s);
     // Blanket the nest's whole spawn scatter, so every spawn point starts inside a footprint.
     const tiles: Tile[] = [];
     const origin = tileOf({ x: nest.pos.x - 360, y: nest.pos.y - 360 });
@@ -678,7 +794,7 @@ describe("M4-T4: structures are solid to the sim too", () => {
     // Deep inside a solid field one push lands in the neighbouring wall, and that is the
     // deliberate trade: the sim pushes once and never searches for a free tile. What it must
     // never do is drop the spawn — the enemies are there, and they will chew their way out.
-    expect(spawns.filter((sp) => sp.sector === nest.sector).length).toBe(2 + 1);
+    expect(spawns.length).toBe(2 + 1);
   });
 
   test("with nothing built, enemy motion is byte-for-byte what M3 produced", () => {

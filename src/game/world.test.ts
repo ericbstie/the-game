@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { mulberry32 } from "./build";
 import {
   ARENA,
   EXIT_REVEAL_RADIUS,
@@ -37,6 +38,19 @@ describe("generateWorld", () => {
     const a = generateWorld(players(1), { rng: () => 0 }).exit;
     const b = generateWorld(players(1), { rng: () => 0.99 }).exit;
     expect(a).not.toEqual(b);
+  });
+
+  // #123 / ADR 0004: the nest layout is expanded from this seed on both sides, so a world that
+  // handed out a constant would hand every match the same fifty nests — and one that handed out
+  // `oreSeed` again would weld nest placement to ore retuning.
+  test("draws a nest seed of its own, off the same rng and separate from the ore seed", () => {
+    const a = generateWorld(players(1), { rng: mulberry32(1) });
+    const b = generateWorld(players(1), { rng: mulberry32(2) });
+    expect(a.nestSeed).not.toBe(b.nestSeed);
+    expect(a.nestSeed).not.toBe(a.oreSeed);
+    expect(generateWorld(players(1), { rng: mulberry32(1) }).nestSeed).toBe(a.nestSeed);
+    expect(Number.isInteger(a.nestSeed)).toBe(true);
+    expect(a.nestSeed).toBeLessThan(0x1_0000_0000);
   });
 });
 

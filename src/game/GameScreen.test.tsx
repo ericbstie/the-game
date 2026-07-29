@@ -31,6 +31,7 @@ const init: WorldInit = {
   exit: { x: 0, y: 100, width: 18, height: 96 },
   spawns: [{ id: "me", slot: 1, name: "Me", pos: SPAWN }],
   oreSeed: 1,
+  nestSeed: 1,
 };
 
 // Real elapsed time rather than a mocked clock: happy-dom installs its own `Date`, which shadows

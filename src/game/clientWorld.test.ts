@@ -19,7 +19,14 @@ import {
   RESPAWN_DELAY_MS,
   SHOT_RETENTION_MS,
 } from "./clientWorld";
-import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, NEST_COUNT } from "./enemies";
+import {
+  enemyContactDamage,
+  GRUNT_HP,
+  GRUNT_RADIUS,
+  NEST_COUNT,
+  nestLayout,
+  spawnEnemyState,
+} from "./enemies";
 import { SEED_FACING } from "./facing";
 import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
 
@@ -33,6 +40,7 @@ const init = (): WorldInit => ({
     { id: "self", slot: 1, name: "Me", pos: { x: 400, y: 300 } },
     { id: "peer", slot: 2, name: "You", pos: { x: 500, y: 300 } },
   ],
+  nestSeed: 7,
   oreSeed: 1,
 });
 
@@ -50,11 +58,40 @@ describe("ClientWorld construction", () => {
     expect(snap.arena).toEqual(ARENA);
   });
 
-  test("derives the nest layout from the arena (positions never ride the wire)", () => {
+  test("derives the nest layout from the world's seed (positions never ride the wire)", () => {
     const snap = new ClientWorld(init(), "self").snapshot(0);
     expect(snap.nests).toHaveLength(NEST_COUNT);
-    expect(snap.nests.every((n) => n.alive)).toBe(true);
-    expect(snap.nests.map((n) => n.sector).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(snap.nests.every((n) => n.alive && n.hp === n.maxHp)).toBe(true);
+  });
+
+  // ADR 0004: the layout is derived on both sides off one seed rather than streamed, so "the client
+  // agrees with the server" has to be a test rather than a hope. Positions, ids and per-nest HP are
+  // compared exactly — not to a tolerance — because both sides run the same `mulberry32`.
+  test("the derived layout is the server's, nest for nest", () => {
+    const world = init();
+    const client = new ClientWorld(world, "self").snapshot(0).nests;
+    const server = spawnEnemyState(world, () => 0.5).nests;
+    expect(client.map((n) => [n.id, n.pos.x, n.pos.y, n.hp, n.maxHp, n.alive])).toEqual(
+      server.map((n) => [n.id, n.pos.x, n.pos.y, n.hp, n.maxHp, n.alive]),
+    );
+  });
+
+  // #123: a hunter nest and a wanderer nest look identical, and you learn which one you are standing
+  // in front of from what comes out of it. That is kept structural rather than remembered: the
+  // render model has no field a renderer could read the type off, even though the client derived it.
+  test("the render model says nothing about a nest's type", () => {
+    const derived = nestLayout(ARENA, 7);
+    expect(derived.some((n) => n.kind === "hunter")).toBe(true);
+    expect(derived.some((n) => n.kind === "wanderer")).toBe(true); // both are in this layout
+    for (const nest of new ClientWorld(init(), "self").snapshot(0).nests) {
+      expect(Object.keys(nest).sort()).toEqual(["alive", "hp", "id", "maxHp", "pos", "radius"]);
+    }
+  });
+
+  test("a different nestSeed lays the nests out somewhere else", () => {
+    const here = new ClientWorld({ ...init(), nestSeed: 1 }, "self").snapshot(0).nests;
+    const there = new ClientWorld({ ...init(), nestSeed: 2 }, "self").snapshot(0).nests;
+    expect(here.map((n) => n.pos)).not.toEqual(there.map((n) => n.pos));
   });
 
   test("a peer with no samples yet renders at its spawn", () => {
@@ -154,7 +191,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
       {
         tick: 1,
         moves: [],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP, sector: 0 }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP }],
       },
       1000,
     );
@@ -169,7 +206,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
       {
         tick: 1,
         moves: [["e1", 100, 100]],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 100, y: 100 }, hp: GRUNT_HP, sector: 0 }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 100, y: 100 }, hp: GRUNT_HP }],
       },
       1000,
     );
@@ -185,7 +222,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
     const spawn: MapDelta = {
       tick: 5,
       moves: [["e1", 10, 10]],
-      spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP, sector: 0 }],
+      spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP }],
     };
     w.applyMapDelta(spawn, 1000);
     w.applyMapDelta({ tick: 5, moves: [["e1", 999, 999]] }, 1050); // equal tick — dropped
@@ -199,7 +236,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
       {
         tick: 1,
         moves: [["e1", 10, 10]],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP, sector: 0 }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP }],
       },
       1000,
     );
@@ -213,7 +250,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
       {
         tick: 1,
         moves: [["e1", 10, 10]],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP, sector: 0 }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP }],
       },
       1000,
     );
@@ -232,8 +269,8 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
     const nestId = w.snapshot(0).nests[0].id;
     w.initEnemies({
       tick: 100,
-      enemies: [{ id: "e1", kind: "grunt", pos: { x: 5, y: 5 }, hp: 12, sector: 0 }],
-      nests: [{ id: nestId, pos: { x: 0, y: 0 }, hp: 0, alive: false, sector: 0 }],
+      enemies: [{ id: "e1", kind: "grunt", pos: { x: 5, y: 5 }, hp: 12 }],
+      nests: [{ id: nestId, pos: { x: 0, y: 0 }, hp: 0, alive: false }],
     });
     expect(enemyIn(w, 9999, "e1")).toMatchObject({ kind: "grunt", hp: 12 });
     expect(w.snapshot(0).nests.find((n) => n.id === nestId)).toMatchObject({ hp: 0, alive: false });
@@ -255,7 +292,7 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
 // self spawns at (400,300); a grunt placed on top of it is in contact.
 const spawnOnSelf = (w: ClientWorld, at: { x: number; y: number }) =>
   w.applyMapDelta(
-    { tick: 1, moves: [], spawns: [{ id: "e1", kind: "grunt", pos: at, hp: GRUNT_HP, sector: 0 }] },
+    { tick: 1, moves: [], spawns: [{ id: "e1", kind: "grunt", pos: at, hp: GRUNT_HP }] },
     0,
   );
 const GRUNT_CONTACT = enemyContactDamage("grunt");
@@ -378,7 +415,7 @@ describe("M4-T6: you cannot walk through an enemy", () => {
       {
         tick: 1,
         moves: [["e1", pos.x, pos.y]],
-        spawns: [{ id: "e1", kind: "grunt", pos, hp: GRUNT_HP, sector: 0 }],
+        spawns: [{ id: "e1", kind: "grunt", pos, hp: GRUNT_HP }],
       },
       0,
     );
@@ -488,7 +525,7 @@ describe("M5-I4: facing and the walk cycle ride the snapshot, never the wire", (
       {
         tick: 1,
         moves: [],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP, sector: 0 }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP }],
       },
       0,
     );
@@ -514,7 +551,7 @@ describe("M5-I4: facing and the walk cycle ride the snapshot, never the wire", (
       {
         tick: 1,
         moves: [],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP, sector: 0 }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP }],
       },
       0,
     );
@@ -529,7 +566,7 @@ describe("M5-I5: the client adopts streamed aims and shots, and refuses to draw 
   const spawned = (id: string, pos: Vec2): MapDelta => ({
     tick: 1,
     moves: [],
-    spawns: [{ id, kind: "grunt", pos, hp: GRUNT_HP, sector: 0 }],
+    spawns: [{ id, kind: "grunt", pos, hp: GRUNT_HP }],
   });
   // The aim as the render layer reads it, off the snapshot rather than out of the world's guts.
   const aimOf = (w: ClientWorld, id: string) => {
@@ -712,7 +749,7 @@ describe("#107: the hit flash rides the clock the sprite is drawn on", () => {
       {
         tick: 1,
         moves: [["e1", 10, 10]],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP, sector: 0 }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: GRUNT_HP }],
       },
       1000,
     );
@@ -752,7 +789,7 @@ describe("#107: the hit flash rides the clock the sprite is drawn on", () => {
     shot(w, 2, 2000, 12);
     w.initEnemies({
       tick: 100,
-      enemies: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: 12, sector: 0 }],
+      enemies: [{ id: "e1", kind: "grunt", pos: { x: 10, y: 10 }, hp: 12 }],
       nests: [],
     });
     expect(flashing(w, 2000 + ENEMY_RENDER_DELAY_MS)).toBe(false);
@@ -774,7 +811,7 @@ describe("#115: the mark left where a shot connects", () => {
       {
         tick: 1,
         moves: [],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 500, y: 300 }, hp: GRUNT_HP, sector: 0 }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 500, y: 300 }, hp: GRUNT_HP }],
       },
       from,
     );
@@ -889,7 +926,7 @@ describe("#116: the mark left where an enemy dies", () => {
       {
         tick: 1,
         moves: [],
-        spawns: [{ id: "e1", kind: "grunt", pos: { x: 500, y: 300 }, hp: GRUNT_HP, sector: 0 }],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 500, y: 300 }, hp: GRUNT_HP }],
       },
       from,
     );
@@ -993,7 +1030,6 @@ describe("#116: the mark left where an enemy dies", () => {
           kind: "grunt" as const,
           pos: { x: 500 + i * 40, y: 300 },
           hp: GRUNT_HP,
-          sector: 0,
         })),
       },
       1_000,
