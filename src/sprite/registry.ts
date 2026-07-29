@@ -75,10 +75,15 @@ export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
   // divides the arena exactly (31,200 / 30 = 1,040 segments a side) and matches a wall building.
   room: TILE * 2, // 30
   // Settled by #72 alongside the density, because neither number means anything without the other:
-  // the same scatter reads as decoration at one size and as undergrowth at the next one up. Ten is
+  // the same scatter reads as decoration at one size and as undergrowth at the next one up. Ten was
   // the smallest box whose blades still resolve on a non-retina display, and at 10 against the
-  // player's 28 the tuft stays plainly something the player walks over rather than through.
-  grass: 10,
+  // player's 28 the tuft stayed plainly something the player walks over rather than through.
+  //
+  // Taken to 0.8× by #106, so the tufts recede behind the ore they were being confused with. The
+  // blades are still composed in that 10 px box — the sprite scales them into this one — and the
+  // density stays #72's one per twelve tiles. Provisional: it is a number only a played match can
+  // judge, and changing it is a retune.
+  grass: 8,
 };
 
 // The sprites that have actually landed. Wiring one in is two lines — an import above, and a name
