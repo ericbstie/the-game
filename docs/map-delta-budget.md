@@ -10,7 +10,7 @@ the game's bandwidth.
 
 ## The number
 
-**At the caps the game supports, one client receives 1,704 B/tick — 33.3 KiB/s. Before
+**At the caps the game supports, one client receives 2,008 B/tick — 39.2 KiB/s. Before
 [#84](https://github.com/ericbstie/the-game/issues/84) it was 11,369 B/tick, 222.1 KiB/s.**
 
 The worst case is not hypothetical: 240 enemies (`ENEMY_CAP`, the hard governor), a full squad of 6,
@@ -20,13 +20,30 @@ is produced by driving a real `stepEnemies` sim to the cap and assembling the de
 
 | | per tick | per client |
 |---|---:|---:|
-| float64 coordinates, uncompressed | 11,369 B | 222.1 KiB/s |
-| trimmed coordinates, uncompressed | 5,045 B | 98.5 KiB/s |
-| float64 coordinates, deflate | 4,919 B | 96.1 KiB/s |
-| **trimmed coordinates, deflate — what ships** | **1,704 B** | **33.3 KiB/s** |
+| float64 coordinates, uncompressed | 11,357 B | 221.8 KiB/s |
+| trimmed coordinates, uncompressed | 5,066 B | 98.9 KiB/s |
+| float64 coordinates, deflate | 5,198 B | 101.5 KiB/s |
+| **trimmed coordinates, deflate — what ships** | **2,008 B** | **39.2 KiB/s** |
 
-Trimming alone takes **55.6%** off. Deflate takes **66.2%** off what remains. Together they are
-**85.0%** against the old wire.
+Trimming alone takes **55.4%** off. Deflate takes **60.4%** off what remains. Together they are
+**82.3%** against the old wire.
+
+### What #123 moved, and why it is not a leak
+
+Scattering the nests ([#123](https://github.com/ericbstie/the-game/issues/123)) left the raw delta
+where it was — 5,045 B before, 5,066 B after, which is digit counts and nothing else — and cost
+**304 B/tick after deflate** (1,704 → 2,008). Nothing was added to the shape. Nest positions do not
+ride the delta and never did; they are derived from `WorldInit.nestSeed`
+([ADR 0004](adr/0004-nest-layout-is-derived-from-a-seed.md)).
+
+What changed is **how compressible the same bytes are**. Eight nests on a ring put 240 enemies in
+eight tight clusters, and clustered coordinates share leading digits, which is exactly what deflate
+eats. Fifty nests spread from 3,600 u to 14,352 u put those enemies all over the arena, so the
+`moves` array repeats far less of itself. The compressor's take fell from 66.2% to 60.4% on an
+almost identical payload.
+
+It is a real 304 B/tick and it is worth naming, but it is the price of a map that is not eight
+clusters — not a field somebody put on the wire.
 
 ## Where it went
 
@@ -56,13 +73,13 @@ compressed.
 
 It is worth it by a wide margin, and the cost side is the half that bytes alone cannot show:
 
-- **66.2% smaller**, even after the trim — the payload is repetitive JSON, with ids and key names
+- **60.4% smaller**, even after the trim — the payload is repetitive JSON, with ids and key names
   recurring 240 times a tick.
-- **0.07 ms per tick per client**, which is **0.8% of one core** for a full squad of 6.
+- **0.10 ms per tick per client**, which is **1.2% of one core** for a full squad of 6.
 
 Trimming and compressing are not alternatives. Trimming also makes the stream *more* compressible:
-the trimmed delta deflates to 1,704 B where the float64 one deflates to 4,919 B, so the trim is
-still worth 65% after the compressor has had its turn.
+the trimmed delta deflates to 2,008 B where the float64 one deflates to 5,198 B, so the trim is
+still worth 61% after the compressor has had its turn.
 
 ## Re-measuring
 

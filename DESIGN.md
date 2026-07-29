@@ -21,13 +21,14 @@ Score is your escape time.
 - One big box, ~2 minutes to walk end-to-end. No other rooms.
 - **Spawn:** dead center, relatively safe.
 - **Escape door:** a single random spot on the perimeter wall. Found by clearing the edge.
-- **Enemy nests ring the edges**, denser and tougher the closer you get to the wall.
+- **Enemy nests are scattered through the outer arena**, denser and tougher the closer you get
+  to the wall.
 
 ## Core loop
 
 1. Harvest clusters → fill the global banks.
 2. Build miners, walls, turrets, mines.
-3. Push toward the edge; silence nests along an arc.
+3. Push toward the edge; silence the nests you find on the way.
 4. Sweep the perimeter to find the door.
 5. Regroup — **everyone** must reach the door to escape.
 
@@ -51,7 +52,10 @@ Score is your escape time.
 
 ## Enemies & bases
 
-- **Nests = spawners.** Destroy a nest to silence that arc — clearing carves safe lanes to the edge.
+- **Nests = spawners.** Fifty of them, placed at random and biased toward the wall. Destroying one
+  drops the pressure around it; clearing them all is not expected. A nest is a hunter nest or a
+  wanderer nest, the far ones mostly wanderers, and the two look identical — you learn which it is
+  from what comes out of it.
 - **Timed escalating waves.** Every ~30s all active nests send a bigger, mixed group — a
   predictable drumbeat the squad preps for. Watchable tension.
 - **Roster:** mostly a single grunt type in numbers, with the occasional **elite**. Readable, easy to expand later.
