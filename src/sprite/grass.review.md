@@ -74,12 +74,13 @@ the smaller declared one — so the three-blade ceiling, the 2.6 px root spacing
 compositions are all #72's, unchanged and unre-judged. `GRASS_PERIOD` stays 12; it was settled by
 looking at a ladder of densities and this ticket did not ask about it.
 
-**The cull follows the sprite, not a number written beside it.** `drawGrass` already derived its
-walk margin from the box the sprite source hands back (`draw.ts`), so shrinking the box carried
-through with no change there — and `draw.test.ts` now pins it by reading the *tile* each tuft came
-from rather than where its box landed, which is the version of that test that fails when the margin
-is hard-coded. The first version did not: it read the blit's own left edge, which moves with the box
-and passed without a walk existing.
+**The cull already followed the sprite; the test is what #106 added.** `drawGrass` derived its walk
+margin from the box the sprite source hands back *before* this ticket — `draw.ts:987`,
+`Math.ceil(probe.size / TILE)` — so shrinking the box carried through with **no diff in `draw.ts`
+at all**. What is new is the pin: `draw.test.ts` now reads the *tile* each tuft came from rather than
+where its box landed, which is the version of that test that fails when the margin is hard-coded. The
+first version did not: it read the blit's own left edge, which moves with the box and passed without
+a walk existing.
 
 ### Measured — and this is the cost of receding
 
@@ -105,7 +106,9 @@ If a played match says the tufts have gone too faint, the retune is the scale, n
 **All 32 bakes still touch the bottom edge of their box**, which is the foot anchor and the check
 that the tuft is scaled into the box rather than clipped by it.
 
-**No slab, and never a risk here**: the blackest single bake at dpr 1 is 9.4% ink.
+**No slab, and never a risk here**: the blackest single bake at dpr 1 is facing 11, at 9.4% ink and
+62.5% covered — and unlike the two ores, it is also the most-*covered* bake, so there is one tile
+behind both figures rather than two.
 
 **Cost is unchanged.** `frame:budget` on one machine, medians of seven runs each side: the whole
 frame 8.19 ms → 8.03 ms, the grass-and-ore layer 1.18 ms → 1.18 ms. Nothing could have moved it —

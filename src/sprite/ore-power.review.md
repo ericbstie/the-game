@@ -175,9 +175,21 @@ box against metal's 18.41% at dpr 1, and 63.3% of the box covered against metal'
 is the more *covered* tile and the less *inked* one, which is what a glow on paper should measure
 like.
 
-**No slab.** The blackest single bake of the 2,304 at dpr 1 is **21.3% ink**. Its 99.1% covered
-figure is the radiance, which is translucent red over paper and falls in the harness's grey bucket —
-read the ink column, not that one.
+**No slab.** The two maxima are **different bakes**, and they pull opposite ways — so they are
+reported apart rather than as one tile. Both from `sprite:sheet --dpr 1 --json` over all 2,304:
+
+| | facing | mask | ink / box | covered / box |
+|---|---|---|---|---|
+| most ink | 1561 | 10 — north and south are its boundary sides | **21.3%** | 67.1% |
+| most covered | 2187 | 15 — interior, so no rim at all | 0.0% | **99.1%** |
+
+Three bakes tie at 99.1% covered, all of them interior, and their ink runs 0.0% to 3.1% — the
+most-covered bakes are the ones with almost no ink in them at all. That coverage is the radiance:
+translucent red over paper, which the harness counts as grey, not as ink. **Read the ink column, and
+read it off its own bake.**
+
+Across the 2,304, ink per box runs 0.0% to 21.3% with a median of 12.4%, and exactly one bake reaches
+20%. 87 bakes are over 90% covered and none of them carries more than 3.1% ink.
 
 `ore:seams --kind power`, dpr 1, over 4 interior tiles: seam deficit 1.03 → **1.01**, boundary edge
 0.017 → **0.014**, interior edge 0.257 → **0.325**, 0 of 27 adjacent pairs identical, unchanged.

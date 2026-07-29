@@ -201,9 +201,27 @@ way. The floor number is `ore:seams`, which folds ink over **interior tiles only
 sees the shard stroke and nothing else: mean ink per device pixel **0.253 → 0.414** at dpr 1, a 1.64×
 bolder interior.
 
-**No slab.** The blackest single bake of the 2,304 at dpr 1 is **27.6% ink, 71.1% covered** — that
-is the lone tile, rimmed on all four sides, which is the most border a tile can carry. Three
-quarters of it is still paper.
+**No slab.** The two maxima are **different bakes** and are reported apart, because pairing the
+heaviest ink figure with the heaviest coverage figure describes a tile that does not exist. Both
+from `sprite:sheet --dpr 1 --json` over all 2,304:
+
+| | facing | mask | ink / box | covered / box |
+|---|---|---|---|---|
+| most ink | 1089 | 7 — west is its only boundary side | **27.6%** | 66.7% |
+| most covered | 2229 | 15 — interior, so no rim at all | 18.7% | **71.1%** |
+
+That 27.6% is a **coincidence** with the *before* ink/covered figure in the table above, and it is
+what got this paragraph wrong the first time — one is a single bake's ink per box after the change,
+the other is the whole set's ink per covered pixel before it.
+
+**Neither is the tile that carries the most border.** A lone tile — mask 0, rimmed on all four
+sides — tops out at 21.8% ink (facing 10, 41.3% covered), and the most-covered lone tile is 45.8%
+covered at 14.7% ink. The rim does not accumulate into a mass, because the clip takes its outer half
+on whichever side it is stroked: what makes a bake heavy is shards, not border.
+
+Across the 2,304, ink per box runs 10.7% to 27.6% with a median of 18.2%, and 36 bakes reach 25%.
+Coverage runs 30.2% to 71.1% and **not one bake exceeds 90% covered** — a third of the most-inked
+bake and 29% of the most-covered one is bare paper. Nothing here approaches a solid mass.
 
 `ore:seams`, dpr 1, over 63 interior tiles of real accretion patches:
 
