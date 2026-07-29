@@ -155,6 +155,17 @@ describe("speed lines trailing a shot", () => {
     expect(beside(speedLines(ORIGIN, over), ORIGIN, over).length).toBeGreaterThan(0);
   });
 
+  // The threshold is derived from the dash rather than picked, so a retune of `SHOT_DASH` or of a
+  // strand's stretch carries it instead of silently breaking it. The tie is what this holds: at the
+  // shortest shot that carries a trail, the longest strand runs exactly one dash beside the line.
+  test("the shortest shot that carries a trail runs one whole dash beside it", () => {
+    const to = { x: TRAIL_MIN_LENGTH, y: 0 };
+    const runs = beside(speedLines(ORIGIN, to), ORIGIN, to).map(
+      (s) => frame(s.to, ORIGIN, to).at - frame(s.from, ORIGIN, to).at,
+    );
+    expect(Math.max(...runs)).toBeCloseTo(SHOT_DASH, 6);
+  });
+
   test("a shot with no length at all is struck as nothing, not as a division by zero", () => {
     expect(speedLines(ORIGIN, ORIGIN)).toEqual([]);
   });

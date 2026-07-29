@@ -29,13 +29,6 @@ import type { Vec2 } from "../lobby/protocol";
 export const SHOT_DASH = 52;
 export const SHOT_GAP = 32;
 
-// Below this, in world units, a shot carries no trail at all — the broken line alone. Tied to the
-// dash rather than picked: at 175 the longer strand is 52 units, exactly one dash. Any shorter and
-// both strands come out as single unbroken strokes converging on the line, which lands as a blot
-// beside the muzzle rather than reading as motion — and a point-blank shot at a spider already on
-// top of you is exactly that short.
-export const TRAIL_MIN_LENGTH = 175;
-
 // Each trailing strand: how far it stands off the shot's own line in world units, and the stretch of
 // that line it runs beside, as a fraction of the shot's length. Every strand closes back onto the
 // line at its far end, so the bundle narrows into the head rather than running parallel into it.
@@ -53,6 +46,13 @@ const TRAIL: readonly { offset: number; from: number; to: number }[] = [
   { offset: 8, from: 0.6, to: 0.9 },
   { offset: -6, from: 0.74, to: 0.96 },
 ];
+
+// Below this, in world units, a shot carries no trail at all — the broken line alone. Derived from
+// the dash rather than picked, so a retune of either number carries it: it is the shortest shot
+// whose longest strand is a whole dash. Any shorter and every strand is a stub of one, which lands
+// as a blot beside the muzzle rather than reading as motion — and a point-blank shot at a spider
+// already on top of you is exactly that short.
+export const TRAIL_MIN_LENGTH = SHOT_DASH / Math.max(...TRAIL.map((s) => s.to - s.from));
 
 // One stroke of a shot's mark, in world coordinates.
 export interface Strand {
