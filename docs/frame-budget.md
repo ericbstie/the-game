@@ -25,7 +25,7 @@ a run taken while the machine was under load read 6.83 ms and is not in the set 
 The worst case is not hypothetical: 240 enemies (`ENEMY_CAP`, the hard governor), 40 structures,
 6 players and 4 nests, *all inside the viewport so nothing is culled*, over the full grass-and-ore
 floor, everything standing passing through the Y-sort — and every one of them damaged, so every one
-of them carries a bar. The script reports it as **290 standing entities, 845 blits, 286 health bars,
+of them carries a bar. The script reports it as **290 standing entities, 847 blits, 286 health bars,
 61 shot lines, 10 miner floats**.
 
 **61 is a count of stroked paths, not of shot lines.** Fifty are shot lines — 45 relayed squadmate
@@ -35,9 +35,23 @@ eleven are the minimap's marks: four nest rings, six squad dots and the self rin
 **The minimap is inside every figure on this page, the paper baseline included.** `drawWorld` draws
 it whenever the frame's `selfId` names one of the players (`src/game/draw.ts:471`), and the fixture
 puts six players in every world it measures, `p0` among them (`scripts/frame-budget.ts:171`). On the
-full frame that is 54 fills, 21 arcs, 11 strokes and a rule, in the first row and in every row after
+full frame that is 68 fills, 21 arcs, 11 strokes and a rule, in the first row and in every row after
 it. The total is honest; nothing attributes it. Isolating it would take a sixth measured layer with
 `selfId` unset, and that delta would carry the self halo with it.
+
+**The map's zoom level (#110) is below this instrument's resolution.** Eleven runs at each of the
+three levels, one after another on one idle machine: **6.55 ms at 0.5×, 6.39 ms at 1×, 6.52 ms at 3×**
+(medians; the thirty-three runs spread 6.08–7.51). The spread inside one level is several times the
+gap between levels, so the three are one measurement and not three. The widest is the one to watch —
+it walks 131 × 131 cells of the ore field where 1× walks 66 × 66 and 3× walks 23 × 23 — and it does
+not show. Run any level with `--map`; the default is the level the map opens at, which is what every
+figure above was measured at.
+
+The fixture lays **the arena's own generated ore field** as well as the patches under the camera,
+because the map's ore layer is bounded to the map's window rather than to the viewport: ore only
+under the camera draws the same handful of marks at every level, and no level can then measure
+dearer than another. It costs the floor two more visible tiles (845 → 847 blits) and puts **70
+density cells** on the widest map against 27 at the other two.
 
 ## Measured under
 
@@ -61,7 +75,7 @@ difference from the row above.
 | Layer | ms | adds | What it is |
 | --- | ---: | ---: | --- |
 | Paper, grass, the squad and the map (`paper only`) | 1.7 | 1.7 | `clearRect` + the white `fillRect`, over 1.92 M device pixels, twice; 217 grass tufts; the 6 avatars with their names and bars; the 4 nests; the whole minimap |
-| + ore (`+ grass and ore`) | 3.0 | 1.3 | 332 ore tiles, one blit each, and the 13 density cells they put on the map |
+| + ore (`+ grass and ore`) | 3.0 | 1.3 | 334 ore tiles, one blit each, and the 27 density cells the field puts on the map at 1× |
 | + everything standing | 4.8 | 1.9 | 240 enemies and 40 structures join the sort: 285 more blits, 280 more health bars, 40 more marks on the map |
 | + the shot lines | 6.3 | 1.4 | 50 concurrent — 5 generated turret pulses, 45 relayed squadmate shots |
 | + the miner floats | 6.3 | ≈0 | 10 `+1`s, each stroked and filled — see below |
@@ -197,6 +211,7 @@ loudly instead of quietly redressing the whole game.
 bun run frame:budget                                     # the registry as it stands
 bun run frame:budget --sprite grass=src/sprite/grass.ts  # layer in art that has not landed
 bun run frame:budget --dpr 1                             # an ordinary, non-retina monitor
+bun run frame:budget --map 15600                         # the corner map at its widest level
 ```
 
 It prints the layer breakdown and the projected worst case, and writes the frame it measured to a
