@@ -91,6 +91,9 @@ export const SHOT_LINE_MS = 100;
 // on the same delayed clock, so the two are one event told in two channels. A burst that outlived
 // the flash would split it into two, which is the stacking #78 asks to be read together rather than
 // piled up — and the burst is legible over an ink spider only for as long as that spider is paper.
+// Retuning `HIT_FLASH_MS` therefore moves the burst too, and stales every measured burst figure in
+// `docs/frame-budget.md` — the concurrent count, its ink share and its cost all scale off this life.
+// Re-run `bun run burst:ink` and the burst ladder in `bun run frame:budget` if it moves.
 export const BURST_MS = HIT_FLASH_MS;
 
 // The owner's own shot, recorded where it is fired rather than round-tripped: the server relays it
