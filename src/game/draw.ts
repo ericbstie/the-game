@@ -30,11 +30,11 @@ import {
   tileOf,
 } from "./build";
 import { type Camera, isVisible, type Viewport } from "./camera";
-import type { ShotEvent } from "./clientWorld";
+import { HIT_FLASH_MS, type Mark, type ShotEvent } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
 import { ELITE_HP, GRUNT_HP, NEST_HP, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
-import { speedLines } from "./fx";
+import { BURST_REACH, speedLines, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_U,
   minimapWindow,
@@ -86,6 +86,13 @@ import { PLAYER_MAX_HP } from "./world";
 // 5.7 ms; 100 ms holds it near the budgeted 50 (`docs/frame-budget.md`).
 export const SHOT_LINE_MS = 100;
 
+// How long the starburst at an impact stays up (#115). Exactly `HIT_FLASH_MS`, and derived rather
+// than picked: #107 already turns the spider white for that long, off the same `EnemyHit` and judged
+// on the same delayed clock, so the two are one event told in two channels. A burst that outlived
+// the flash would split it into two, which is the stacking #78 asks to be read together rather than
+// piled up — and the burst is legible over an ink spider only for as long as that spider is paper.
+export const BURST_MS = HIT_FLASH_MS;
+
 // The owner's own shot, recorded where it is fired rather than round-tripped: the server relays it
 // to the squad, but drawing the relay would put a second line up a tick late and from the position
 // the shooter had then. `from` is the origin the attack was actually sent with.
@@ -132,6 +139,10 @@ export interface DrawOptions {
   // The `+1`s currently in the air (#99), accrued per miner by `stepMetalFloats`. Aged here, like
   // a shot line: the render layer owns how long one is up, and nothing about it rides the wire.
   floats?: readonly MetalFloat[];
+  // Where shots have connected and the sprites have caught up (#115) — `ClientWorld.impactMarks`,
+  // already aged to `BURST_MS`. Handed in rather than aged here, because the clock a burst is judged
+  // on is the delayed one the spiders are drawn against and this layer has never seen that delay.
+  bursts?: readonly Mark[];
   // Baked art, or nothing. Absent — in a test, or before the first sprite lands — every entity
   // falls back to its shape, which is what keeps this one draw path the only one.
   sprites?: SpriteSource;
@@ -441,6 +452,11 @@ export function drawWorld(
   // the floor, and a line half-hidden behind the spider it ends at says nothing.
   drawShots(ctx, world, options);
 
+  // Straight after the lines, and over the sort for the same reason they are: a burst marks the
+  // point a shot connected, and one sorted in behind the spider it belongs to would be hidden by the
+  // very thing it is about.
+  drawBursts(ctx, options);
+
   // Over the sort for the same reason a shot line is: a `+1` marks the miner that earned it rather
   // than standing on the floor beside it, and one half-hidden behind a spider says nothing.
   drawFloats(ctx, options.floats, now);
@@ -591,6 +607,42 @@ function drawTurretTrains(
     spent++;
     strike(footprintCenter(s.tile, spec.footprint), to);
   }
+}
+
+// The starbursts this frame strikes, one where each shot connected (#115).
+//
+// **One path for every burst in the frame, not one per burst.** A shot is charged per stroke rather
+// than per inked pixel (`docs/frame-budget.md` rule 1), and this is the effect most exposed to that:
+// it fires on every connect rather than on every death, so a per-burst path would put the count of
+// paths on the hit rate. Bundled, the frame pays for the spikes and one stroke however many bursts
+// are up.
+//
+// Struck in the same ink at the same width as the shot that caused it — one pen for the whole event.
+//
+// Nothing is aged here. `ClientWorld.impactMarks` has already withheld every mark whose sprite has
+// not reached it and dropped every mark whose life has run out, because the clock that decides both
+// is the delayed one the spiders render on and this layer does not have it.
+function drawBursts(
+  ctx: CanvasRenderingContext2D,
+  { bursts, camera, viewport }: DrawOptions,
+): void {
+  if (!bursts || bursts.length === 0) return;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = SHOT_WIDTH;
+  ctx.beginPath();
+  let struck = 0;
+  for (const mark of bursts) {
+    // Hits stream for the whole arena rather than for the part of it the camera is over, so most
+    // marks in a wave belong to a fight nobody is watching. Culled before the geometry is built, so
+    // one of those costs no strokes rather than a bundle that is thrown away (rule 3).
+    if (!isVisible(mark.pos, BURST_REACH, camera, viewport)) continue;
+    for (const spike of starburst(mark.pos)) {
+      ctx.moveTo(spike.from.x, spike.from.y);
+      ctx.lineTo(spike.to.x, spike.to.y);
+    }
+    struck++;
+  }
+  if (struck > 0) ctx.stroke();
 }
 
 // The `+1`s a miner throws up as it mines (#99). Each one is literally one whole Metal — never a
