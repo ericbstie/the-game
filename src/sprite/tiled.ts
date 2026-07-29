@@ -36,9 +36,15 @@ export const TILED_FACINGS = MASKS * CELLS * CELLS;
 
 // How far ink is held back from an edge with nothing beyond it, as a share of the tile. Enough to
 // read as a margin at 15 px; the jag below is what stops that margin being a straight line.
-const BOUNDARY_INSET = 0.22;
+export const BOUNDARY_INSET = 0.22;
 const JAG_STEPS = 4;
 const JAG_DEPTH = 0.5; // of the inset
+
+// The weight of the rim, in tile units, after the clip has taken the outer half of it (#106). The
+// tile is 15 units, so this is a line a seventh of a tile thick — provisional, and the thing to
+// change first if a patch reads too heavy or too faint against the grass beside it.
+const BORDER_WEIGHT = 1.9;
+const BORDER_INK = "#000";
 
 export interface TileVariant {
   cx: number;
@@ -93,9 +99,10 @@ export function drawTiled(
 ): void {
   const { cx, cy, open } = unpackTile(variant);
   const inset = size * BOUNDARY_INSET;
+  const sides = sidesOf(size, inset, open);
 
   ctx.save();
-  clipToPatch(ctx, size, inset, open, cx, cy);
+  clipToPatch(ctx, sides, inset, cx, cy);
   for (let dy = -1; dy <= 1; dy++) {
     for (let dx = -1; dx <= 1; dx++) {
       ctx.save();
@@ -104,52 +111,100 @@ export function drawTiled(
       ctx.restore();
     }
   }
+  strokeBoundary(ctx, sides, inset, cx, cy);
   ctx.restore();
 }
 
-// The tile's keep-region, as a path. Each side is either flush (interior) or a jagged pull-back
-// (boundary). Corners are taken from whichever of the two meeting sides is more inset, so the path
-// closes without a notch.
-function clipToPatch(
-  ctx: CanvasRenderingContext2D,
-  size: number,
-  inset: number,
-  open: TileVariant["open"],
-  cx: number,
-  cy: number,
-): void {
+interface Side {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  boundary: boolean; // nothing beyond it: the patch ends here
+  salt: number;
+}
+
+// The four sides of the tile's keep-region, walked clockwise from the north-west corner. Corners are
+// taken from whichever of the two meeting sides is more inset, so the walk closes without a notch —
+// and so a boundary side that meets an interior one runs all the way to the tile box edge, where the
+// tile across that seam picks the same line up from its own edge.
+function sidesOf(size: number, inset: number, open: TileVariant["open"]): Side[] {
   const n = open.north ? inset : 0;
   const e = open.east ? inset : 0;
   const s = open.south ? inset : 0;
   const w = open.west ? inset : 0;
+  return [
+    { fromX: w, fromY: n, toX: size - e, toY: n, boundary: open.north, salt: 0 },
+    { fromX: size - e, fromY: n, toX: size - e, toY: size - s, boundary: open.east, salt: 1 },
+    { fromX: size - e, fromY: size - s, toX: w, toY: size - s, boundary: open.south, salt: 2 },
+    { fromX: w, fromY: size - s, toX: w, toY: n, boundary: open.west, salt: 3 },
+  ];
+}
 
+// The tile's keep-region, as a path. Each side is either flush (interior) or a jagged pull-back
+// (boundary).
+function clipToPatch(
+  ctx: CanvasRenderingContext2D,
+  sides: readonly Side[],
+  inset: number,
+  cx: number,
+  cy: number,
+): void {
   ctx.beginPath();
-  ctx.moveTo(w, n);
-  side(ctx, w, n, size - e, n, open.north, inset, cx, cy, 0);
-  side(ctx, size - e, n, size - e, size - s, open.east, inset, cx, cy, 1);
-  side(ctx, size - e, size - s, w, size - s, open.south, inset, cx, cy, 2);
-  side(ctx, w, size - s, w, n, open.west, inset, cx, cy, 3);
+  ctx.moveTo(sides[0].fromX, sides[0].fromY);
+  for (const side of sides) walk(ctx, side, inset, cx, cy);
   ctx.closePath();
   ctx.clip();
+}
+
+// The rim of the deposit: the same jagged line the ink stops on, laid down again as weight (#106).
+//
+// **Only the boundary sides.** A tile with ore on every side draws nothing here — a border on an
+// interior side would box the tile and put back the grid #87's neighbour occupancy exists to
+// remove, so a filled 3×3 patch carries one outline rather than nine.
+//
+// Stroked with the keep-region still clipped, at twice the weight it is meant to read at: the outer
+// half is cut away, which lands the rim's outside edge exactly on the line the ink already ends on
+// and leaves the boundary as ragged as it was. Round caps close the corner where two boundary sides
+// meet, and the overshoot past a corner falls outside the clip.
+function strokeBoundary(
+  ctx: CanvasRenderingContext2D,
+  sides: readonly Side[],
+  inset: number,
+  cx: number,
+  cy: number,
+): void {
+  const rim = sides.filter((side) => side.boundary);
+  if (rim.length === 0) return;
+  ctx.beginPath();
+  for (const side of rim) {
+    ctx.moveTo(side.fromX, side.fromY);
+    walk(ctx, side, inset, cx, cy);
+  }
+  ctx.strokeStyle = BORDER_INK;
+  ctx.lineWidth = BORDER_WEIGHT * 2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.stroke();
 }
 
 // One side of the keep-region. Flush sides are a straight line — they are interior, and a straight
 // line there is exactly right, because the neighbour's own side meets it. A boundary side steps
 // inward and outward along its length so the patch edge is irregular at a finer scale than the
 // tile.
-function side(
+//
+// **The far corner is never displaced.** It is where the next side starts, and — when the side runs
+// to the tile box edge — where the tile across that seam starts its own. A jittered corner steps the
+// rim at every seam, which is the grid again, one scale up.
+function walk(
   ctx: CanvasRenderingContext2D,
-  fromX: number,
-  fromY: number,
-  toX: number,
-  toY: number,
-  boundary: boolean,
+  side: Side,
   inset: number,
   cx: number,
   cy: number,
-  salt: number,
 ): void {
-  if (!boundary) {
+  const { fromX, fromY, toX, toY } = side;
+  if (!side.boundary) {
     ctx.lineTo(toX, toY);
     return;
   }
@@ -162,7 +217,10 @@ function side(
   const length = Math.hypot(dx, dy) || 1;
   for (let i = 1; i <= JAG_STEPS; i++) {
     const t = i / JAG_STEPS;
-    const depth = (cellNoise(cx, cy, salt * JAG_STEPS + i) - 0.5) * 2 * inset * JAG_DEPTH;
+    const depth =
+      i === JAG_STEPS
+        ? 0
+        : (cellNoise(cx, cy, side.salt * JAG_STEPS + i) - 0.5) * 2 * inset * JAG_DEPTH;
     ctx.lineTo(fromX + dx * t + (inX / length) * depth, fromY + dy * t + (inY / length) * depth);
   }
 }
