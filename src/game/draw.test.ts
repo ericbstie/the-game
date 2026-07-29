@@ -12,11 +12,11 @@ import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import type { SpriteName } from "../sprite/registry";
 import { tileKey, tileOf } from "./build";
 import type { Camera, Viewport } from "./camera";
-import { HIT_FLASH_MS, type Mark } from "./clientWorld";
-import { BURST_MS, drawWorld, grassAt, type ShotSource } from "./draw";
+import { DEATH_RETENTION_MS, HIT_FLASH_MS, type Mark } from "./clientWorld";
+import { BURST_MS, drawWorld, grassAt, PUFF_MS, type ShotSource } from "./draw";
 import { ELITE_RADIUS, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, type MetalFloat } from "./floats";
-import { speedLines, starburst } from "./fx";
+import { inkPuff, speedLines, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_CLOSE_U,
   MINIMAP_COVERAGE_U,
@@ -1609,6 +1609,108 @@ describe("the starburst on impact", () => {
     const ctx = burst([{ pos: HIT, at: 900 }], {});
     const blitted = ctx.calls.map((c) => c.fn).lastIndexOf("arc");
     expect(ctx.calls.map((c) => c.fn).indexOf("stroke")).toBeGreaterThan(blitted);
+  });
+});
+
+// #116: an ink puff where an enemy dies. The render layer holds no state here either — it is handed
+// the marks whose enemies are already off the screen (`ClientWorld.deathMarks`) and strikes one
+// cloud at each. What is left to pin is the ink: one path for the whole frame's worth, nothing
+// struck for a mark the camera cannot see, and the puff laid over the bodies rather than among them.
+describe("the ink puff on death", () => {
+  const FELL: Vec2 = { x: 1_300, y: 1_200 };
+  // The spider that died is deliberately *not* in the world — a puff and the sprite it replaces are
+  // never in one frame, which is the whole shape of the ticket. One live grunt stands beside it so
+  // the draw order below has a body to be judged against.
+  const spiders: WorldSnapshot = {
+    ...world,
+    players: [],
+    nests: [],
+    structures: [],
+    enemies: [
+      { ...POSE, id: "e1", kind: "grunt", pos: { x: 1_100, y: 1_150 }, radius: 16, hp: 12 },
+    ],
+  };
+  const sprites = stubSprites({ grunt: 32 });
+  const puff = (marks: readonly Mark[], patch: Partial<WorldSnapshot> = {}) => {
+    const ctx = spyCtx();
+    drawWorld(
+      ctx,
+      { ...spiders, ...patch },
+      { camera, viewport, now: 1000, sprites, puffs: marks },
+    );
+    return ctx;
+  };
+  // Every arc the frame struck, as the numbers `ctx.arc` was handed.
+  const arcs = (ctx: { calls: Call[] }) =>
+    ctx.calls.filter((c) => c.fn === "arc").map((c) => c.args as number[]);
+  const cloud = (at: Vec2) => inkPuff(at).map((l) => [l.at.x, l.at.y, l.radius, l.from, l.to]);
+
+  // The retention window is a memory bound and never a lifetime (#74 §5), so it has to clear any
+  // life this layer asks for — a mark pruned while it is still being drawn pops off mid-frame.
+  test("is up for less time than the buffer that holds it", () => {
+    expect(PUFF_MS).toBeLessThan(DEATH_RETENTION_MS);
+  });
+
+  test("strikes the cloud `fx.ts` lays out, centred on the mark, in ink", () => {
+    const ctx = puff([{ pos: FELL, at: 900 }]);
+    expect(arcs(ctx)).toEqual(cloud(FELL));
+    // The floor is white paper (#72), so the one colour a mark on it may not be is the paper's.
+    expect(ctx.calls.filter((c) => c.fn === "stroke").map((c) => c.stroke)).toEqual(["#000"]);
+  });
+
+  // The lobes chain into one outline in `fx.ts`, and that only reaches the paper if the path is
+  // opened once per puff. A `moveTo` before every lobe would break the outline into six arcs that
+  // meet at butt ends instead of joining, and the seam would show as a notch at every scallop.
+  test("each puff is one closed outline, opened once and closed at the end", () => {
+    const ctx = puff([{ pos: FELL, at: 900 }]);
+    const marks = ctx.calls.filter((c) => ["moveTo", "arc", "closePath"].includes(c.fn));
+    expect(marks.map((c) => c.fn)).toEqual([
+      "moveTo",
+      ...inkPuff(FELL).map(() => "arc"),
+      "closePath",
+    ]);
+  });
+
+  // Every puff in the frame rides one path, the way every burst does. A wave clear is many deaths on
+  // one tick, so this is the one thing about the mark that must not scale with the count.
+  test("the whole frame's puffs go out in a single stroke", () => {
+    const one = puff([{ pos: FELL, at: 900 }]);
+    const three = puff([
+      { pos: FELL, at: 900 },
+      { pos: { x: 1_120, y: 1_150 }, at: 940 },
+      { pos: { x: 1_400, y: 1_080 }, at: 980 },
+    ]);
+    expect(three.calls.filter((c) => c.fn === "stroke").length).toBe(1);
+    expect(arcs(three).length).toBe(inkPuff(FELL).length * 3);
+    // Counted against the single-puff frame rather than asserted flat, because the frame opens paths
+    // for other things too. A path opened per puff would still stroke once and still lay every arc —
+    // and on a real canvas only the last cloud would survive to reach the paper.
+    const opened = (c: { calls: Call[] }) => c.calls.filter((k) => k.fn === "beginPath").length;
+    expect(opened(three)).toBe(opened(one));
+  });
+
+  test("costs the frame nothing at all when nothing has died", () => {
+    const bare = spyCtx();
+    drawWorld(bare, spiders, { camera, viewport, now: 1000, sprites });
+    // Not "no stroke" but *no call*: a frame in which nothing died has to be the identical frame to
+    // one the render layer never handed a puff list at all, down to the opened path.
+    expect(puff([]).calls.map((c) => c.fn)).toEqual(bare.calls.map((c) => c.fn));
+    expect(bare.calls.filter((c) => c.fn === "stroke")).toEqual([]);
+  });
+
+  // Deaths stream for the whole arena, not for the part of it the camera happens to be over, so most
+  // of a wave's puffs belong to a fight nobody is looking at. Culled before the geometry is built.
+  test("strikes nothing for a mark the camera cannot see", () => {
+    expect(arcs(puff([{ pos: { x: 9_000, y: 9_000 }, at: 900 }]))).toEqual([]);
+  });
+
+  // Over the Y-sort, like a shot line and a burst. A puff stands in for a body rather than being
+  // one, and one sorted in among them would be buried by whatever is standing in front of the gap.
+  test("is struck over the bodies, never sorted among them", () => {
+    const ctx = puff([{ pos: FELL, at: 900 }]);
+    const bodies = ctx.calls.map((c) => c.fn).lastIndexOf("drawImage");
+    expect(bodies).toBeGreaterThan(-1);
+    expect(ctx.calls.map((c) => c.fn).indexOf("stroke")).toBeGreaterThan(bodies);
   });
 });
 

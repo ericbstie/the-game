@@ -7,12 +7,13 @@ import type { Vec2 } from "../lobby/protocol";
 // says where the ink goes and `draw.ts` puts it there. That is what lets every claim below be
 // checked without a canvas, a spy or a frame.
 //
-// Nothing here ages, the starburst included. A shot carries the `at` it is drawn from and
-// `SHOT_LINE_MS` retires it; an impact's mark carries the instant its hit arrived and
-// `ClientWorld.impactMarks` retires it. The lifecycle #114 left unwritten went there rather than
-// here, because the two things it needs are both private to that class — the delta the mark is
-// spawned from, and `ENEMY_RENDER_DELAY_MS`, the clock it has to be judged on. What is left for
-// this module is what it was always for: where the ink goes.
+// Nothing here ages, the starburst and the puff included. A shot carries the `at` it is drawn from
+// and `SHOT_LINE_MS` retires it; an impact's mark carries the instant its hit arrived and
+// `ClientWorld.impactMarks` retires it; a death's mark carries the instant its enemy was taken off
+// the stream and `ClientWorld.deathMarks` retires it. The lifecycle #114 left unwritten went there
+// rather than here, because the two things it needs are both private to that class — the delta the
+// mark is spawned from, and `ENEMY_RENDER_DELAY_MS`, the clock it has to be judged on. What is left
+// for this module is what it was always for: where the ink goes.
 
 // The break, in world units: ink, then paper. A shot is instantaneous — #80 is deferred, so nothing
 // about it travels — and the breaks are the whole of what makes it read as fast rather than as a
@@ -161,6 +162,75 @@ export function starburst(at: Vec2): Strand[] {
     struck.push({
       from: { x: at.x + dx * BURST_INNER, y: at.y + dy * BURST_INNER },
       to: { x: at.x + dx * out, y: at.y + dy * out },
+    });
+  }
+  return struck;
+}
+
+// The ink puff struck where an enemy dies (#116): a ring of overlapping lobes, each drawn only over
+// the stretch of itself that the ring does not already cover, so the whole is one scalloped cloud.
+//
+// **An outline and not a blot, for the reason the burst is spikes.** A shot is charged per stroke
+// rather than per inked pixel (`docs/frame-budget.md` rule 1), so what a mark costs is how many
+// pieces it is struck in — six arcs here, against a burst's eight segments. Filled, it would be the
+// same price and a different drawing: a solid mass the size of the spider it replaces reads as a
+// blot dropped on the paper, where the outline reads as something dispersing off it.
+//
+// **The lobes alternate large and small, and that is not texture.** Equal lobes on a ring scallop
+// into an even, regular cloud — a thought balloon, which is a shape a cartoon spends on speech.
+// Alternating them makes the silhouette wobble between two reaches, which is what a puff of smoke
+// does and a balloon does not.
+
+// The lobes and the ring they stand on, in world units. Even on purpose: the sizes alternate, so an
+// odd count would seat two of one size beside each other and put a flat spot on the outline.
+const PUFF_LOBES = 6;
+const PUFF_RING = 10;
+// How far a lobe of each kind reaches from its own centre. Both are wide enough to cross their
+// neighbours — a lobe that cleared them would leave the outline open — and the pair is what sets
+// the wobble: the silhouette runs out to 19 at a large lobe and 16 at a small one, and falls back
+// to 14.2 where two of them meet. Provisional as a look; that they overlap is not.
+const PUFF_LARGE = 9;
+const PUFF_SMALL = 6;
+
+// How far the mark reaches from the point it is struck at, and what `drawPuffs` culls on. Derived
+// from the ring and the larger lobe rather than picked, so a retune of either carries it.
+export const PUFF_REACH = PUFF_RING + PUFF_LARGE;
+
+// One lobe of a puff: a circle, and the stretch of it that is actually struck. The trim is stated
+// here rather than left to the render layer because it is geometry — where two lobes cross is what
+// decides it, and this module is where that arithmetic belongs.
+export interface Lobe {
+  at: Vec2;
+  radius: number;
+  from: number; // bearing in radians, and always the lesser of the two
+  to: number;
+}
+
+export function inkPuff(at: Vec2): Lobe[] {
+  const step = (2 * Math.PI) / PUFF_LOBES;
+  // Between the centres of two lobes standing beside each other on the ring.
+  const gap = 2 * PUFF_RING * Math.sin(step / 2);
+  const struck: Lobe[] = [];
+  for (let i = 0; i < PUFF_LOBES; i++) {
+    const bearing = i * step;
+    const large = i % 2 === 0;
+    const radius = large ? PUFF_LARGE : PUFF_SMALL;
+    const neighbour = large ? PUFF_SMALL : PUFF_LARGE;
+    // Where this lobe crosses the one beside it, as an angle off the line joining their centres.
+    // Both neighbours are the same size as each other — the sizes alternate — so one figure covers
+    // the crossings on both sides and the arc is symmetric about the lobe's own bearing.
+    const crossing = Math.acos(
+      (gap * gap + radius * radius - neighbour * neighbour) / (2 * gap * radius),
+    );
+    // The outer crossing of the two, measured back to this lobe's own bearing. The line to the
+    // neighbour leaves at `(π + step) / 2` off that bearing, and the crossing nearer the bearing is
+    // the one standing away from the middle of the puff — which is the half the outline runs along.
+    const half = (Math.PI + step) / 2 - crossing;
+    struck.push({
+      at: { x: at.x + Math.cos(bearing) * PUFF_RING, y: at.y + Math.sin(bearing) * PUFF_RING },
+      radius,
+      from: bearing - half,
+      to: bearing + half,
     });
   }
   return struck;

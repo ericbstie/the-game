@@ -34,7 +34,7 @@ import { HIT_FLASH_MS, type Mark, type ShotEvent } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
 import { ELITE_HP, GRUNT_HP, NEST_HP, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
-import { BURST_REACH, speedLines, starburst } from "./fx";
+import { BURST_REACH, inkPuff, PUFF_REACH, speedLines, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_U,
   minimapWindow,
@@ -96,6 +96,15 @@ export const SHOT_LINE_MS = 100;
 // Re-run `bun run burst:ink` and the burst ladder in `bun run frame:budget` if it moves.
 export const BURST_MS = HIT_FLASH_MS;
 
+// How long the puff struck where an enemy died stays up (#116). **Provisional**, and unlike the
+// burst above it is picked rather than derived: nothing else in the game is timed off a death, so
+// there is no second channel for it to agree with. Longer than a hit flash on purpose — a death is
+// the larger event and the puff is the only thing that says it happened — and short of
+// `DEATH_RETENTION_MS`, which is what stops a mark being swept out from under a frame still
+// drawing it. Retuning it stales the concurrent puff count and its cost in `docs/frame-budget.md`;
+// re-run `bun run puff:ink` and the puff ladder in `bun run frame:budget` if it moves.
+export const PUFF_MS = 180;
+
 // The owner's own shot, recorded where it is fired rather than round-tripped: the server relays it
 // to the squad, but drawing the relay would put a second line up a tick late and from the position
 // the shooter had then. `from` is the origin the attack was actually sent with.
@@ -146,6 +155,10 @@ export interface DrawOptions {
   // already aged to `BURST_MS`. Handed in rather than aged here, because the clock a burst is judged
   // on is the delayed one the spiders are drawn against and this layer has never seen that delay.
   bursts?: readonly Mark[];
+  // Where enemies have died and their sprites have already gone (#116) — `ClientWorld.deathMarks`,
+  // already aged to `PUFF_MS`. Handed in for the same reason the bursts are: the clock a puff is
+  // judged on is that class's, and this layer has never seen it.
+  puffs?: readonly Mark[];
   // Baked art, or nothing. Absent — in a test, or before the first sprite lands — every entity
   // falls back to its shape, which is what keeps this one draw path the only one.
   sprites?: SpriteSource;
@@ -460,6 +473,11 @@ export function drawWorld(
   // very thing it is about.
   drawBursts(ctx, options);
 
+  // And the puffs beside them (#116). Over the sort for a reason of its own: a puff stands in for a
+  // body the frame no longer has, so sorting it among the ones that are left would bury it behind
+  // whatever happens to be standing over the gap the dead spider left.
+  drawPuffs(ctx, options);
+
   // Over the sort for the same reason a shot line is: a `+1` marks the miner that earned it rather
   // than standing on the floor beside it, and one half-hidden behind a spider says nothing.
   drawFloats(ctx, options.floats, now);
@@ -643,6 +661,49 @@ function drawBursts(
       ctx.moveTo(spike.from.x, spike.from.y);
       ctx.lineTo(spike.to.x, spike.to.y);
     }
+    struck++;
+  }
+  if (struck > 0) ctx.stroke();
+}
+
+// The ink puffs this frame strikes, one where each enemy died (#116).
+//
+// Bundled into one path like the bursts: a wave clear is dozens of deaths on a single tick, and the
+// count of paths is the one thing about the mark that must not ride that. Bundling buys nothing on
+// the clock — #115 measured that — and it is done for the same reason it was there.
+//
+// **The dearest mark in the frame per unit, and its six arcs are why.** A puff costs twice a burst
+// and 1.4 times a shot line at the same count while laying a sixth of a shot's ink, because
+// `ctx.arc` is not one piece: the rasteriser flattens a swept arc into as many segments as it needs.
+// `docs/frame-budget.md` rule 1 counts pieces and gets this mark wrong; the lobe count is the lever.
+//
+// Each puff is its own subpath — opened with a `moveTo` at the first lobe's start and closed at the
+// end — because `fx.ts` hands back lobes that already chain end to end. Struck that way the scallops
+// join; opened per lobe instead they would be six arcs meeting at butt ends, with a notch at each
+// seam. `ctx.arc` draws the line into its own start itself, so nothing between them is needed.
+//
+// Struck in the same ink at the same width as the shot that killed it — one pen for the whole event.
+//
+// Nothing is aged here. `ClientWorld.deathMarks` has already dropped every mark whose life has run
+// out, and it is the one that knows the enemy render delay this mark's position was taken on.
+function drawPuffs(ctx: CanvasRenderingContext2D, { puffs, camera, viewport }: DrawOptions): void {
+  if (!puffs || puffs.length === 0) return;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = SHOT_WIDTH;
+  ctx.beginPath();
+  let struck = 0;
+  for (const mark of puffs) {
+    // Deaths stream for the whole arena rather than for the part of it the camera is over, so most
+    // of a wave's puffs belong to a fight nobody is watching. Culled before the geometry is built,
+    // so one of those costs no arcs rather than a cloud that is thrown away (rule 3).
+    if (!isVisible(mark.pos, PUFF_REACH, camera, viewport)) continue;
+    const lobes = inkPuff(mark.pos);
+    ctx.moveTo(
+      lobes[0].at.x + Math.cos(lobes[0].from) * lobes[0].radius,
+      lobes[0].at.y + Math.sin(lobes[0].from) * lobes[0].radius,
+    );
+    for (const lobe of lobes) ctx.arc(lobe.at.x, lobe.at.y, lobe.radius, lobe.from, lobe.to);
+    ctx.closePath();
     struck++;
   }
   if (struck > 0) ctx.stroke();

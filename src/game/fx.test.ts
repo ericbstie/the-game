@@ -3,6 +3,9 @@ import type { Vec2 } from "../lobby/protocol";
 import { ELITE_RADIUS, GRUNT_RADIUS } from "./enemies";
 import {
   BURST_REACH,
+  inkPuff,
+  type Lobe,
+  PUFF_REACH,
   SHOT_DASH,
   SHOT_GAP,
   type Strand,
@@ -254,5 +257,106 @@ describe("the starburst struck where a shot connects", () => {
         to: { x: round(s.to.x - at.x), y: round(s.to.y - at.y) },
       }));
     expect(shape(starburst(AT), AT)).toEqual(shape(starburst(ORIGIN), ORIGIN));
+  });
+});
+
+// Where a lobe's arc actually runs, as points on the paper. A lobe is stated as a centre, a radius
+// and the two bearings its arc is swept between, so every claim below has to be read off the swept
+// arc rather than off the whole circle — the trim is the difference between a cloud and a chain of
+// rings, and it lives entirely in those two bearings.
+const sweep = (l: Lobe, steps = 48): Vec2[] =>
+  Array.from({ length: steps + 1 }, (_, i) => {
+    const bearing = l.from + (l.to - l.from) * (i / steps);
+    return { x: l.at.x + Math.cos(bearing) * l.radius, y: l.at.y + Math.sin(bearing) * l.radius };
+  });
+
+const ends = (l: Lobe): { start: Vec2; end: Vec2 } => {
+  const walked = sweep(l, 1);
+  return { start: walked[0], end: walked[1] };
+};
+
+const apart = (a: Vec2, b: Vec2) => Math.hypot(a.x - b.x, a.y - b.y);
+
+describe("the ink puff struck where an enemy dies", () => {
+  const AT: Vec2 = { x: 6_012, y: 917 };
+
+  test("every lobe stands off the point it is struck at, evenly around it", () => {
+    const struck = inkPuff(AT);
+    expect(struck.length).toBeGreaterThan(3);
+    const ring = struck.map((l) => +apart(l.at, AT).toFixed(9));
+    expect(new Set(ring).size).toBe(1); // one ring, so nothing sits closer in than the rest
+    // Wrapped, because `atan2` cuts the circle at π and a raw difference across that cut reads as a
+    // step the whole way back round.
+    const bearings = struck.map((l) => Math.atan2(l.at.y - AT.y, l.at.x - AT.x));
+    const step = (2 * Math.PI) / struck.length;
+    for (let i = 0; i < bearings.length; i++) {
+      const turn = bearings[(i + 1) % bearings.length] - bearings[i];
+      expect(((turn % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)).toBeCloseTo(step, 9);
+    }
+  });
+
+  // Equal lobes on a ring scallop into a thought balloon, which is a shape this game already spends
+  // on speech and cannot spend again. Alternating them is what makes the silhouette wobble.
+  test("the lobes alternate large and small, so it reads as a puff and not as a balloon", () => {
+    const radii = inkPuff(AT).map((l) => l.radius);
+    expect(new Set(radii).size).toBe(2);
+    const big = Math.max(...radii);
+    for (let i = 1; i < radii.length; i++) {
+      expect(radii[i] === big).toBe(radii[i - 1] !== big);
+    }
+  });
+
+  // The whole of what makes this a cloud. Each lobe is drawn only over the stretch of its circle
+  // that nothing else covers, so what is struck is one silhouette — struck whole, the same six
+  // circles read as a chain of rings with their insides showing.
+  test("no lobe is drawn where another lobe already covers it", () => {
+    const struck = inkPuff(AT);
+    for (const lobe of struck) {
+      for (const p of sweep(lobe)) {
+        for (const other of struck) {
+          if (other === lobe) continue;
+          expect(apart(p, other.at)).toBeGreaterThan(other.radius - 1e-9);
+        }
+      }
+    }
+  });
+
+  // A silhouette and not a scatter: each lobe's arc has to end exactly where the next one begins,
+  // all the way round, or the outline is struck with gaps in it.
+  test("the lobes chain into one closed outline", () => {
+    const struck = inkPuff(AT);
+    for (let i = 0; i < struck.length; i++) {
+      const here = ends(struck[i]);
+      const next = ends(struck[(i + 1) % struck.length]);
+      expect(apart(here.end, next.start)).toBeLessThan(1e-9);
+    }
+  });
+
+  // `drawPuffs` culls a mark on `PUFF_REACH` alone, so anything struck further out than that is a
+  // puff dropped from the frame while part of it was still on screen.
+  test("nothing it strikes stands further out than the reach it is culled on", () => {
+    for (const lobe of inkPuff(AT)) {
+      for (const p of sweep(lobe)) {
+        expect(apart(p, AT)).toBeLessThanOrEqual(PUFF_REACH + 1e-9);
+      }
+    }
+  });
+
+  // It replaces a spider rather than annotating one, so it has to cover the sprite it stands in for.
+  // A grunt is 32 across (`GRUNT_RADIUS`), which is the size the mark is judged against.
+  test("it stands at least as wide as the grunt it replaces", () => {
+    expect(PUFF_REACH).toBeGreaterThanOrEqual(GRUNT_RADIUS);
+  });
+
+  test("it is the same mark wherever in the arena it is struck", () => {
+    const round = (n: number) => +n.toFixed(9) || 0;
+    const shape = (struck: Lobe[], at: Vec2) =>
+      struck.map((l) => ({
+        at: { x: round(l.at.x - at.x), y: round(l.at.y - at.y) },
+        radius: round(l.radius),
+        from: round(l.from),
+        to: round(l.to),
+      }));
+    expect(shape(inkPuff(AT), AT)).toEqual(shape(inkPuff(ORIGIN), ORIGIN));
   });
 });
