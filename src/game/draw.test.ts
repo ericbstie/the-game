@@ -192,8 +192,8 @@ const world: WorldSnapshot = {
   ],
   enemies: [],
   nests: [
-    { id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, hp: 600, alive: true, sector: 0 },
-    { id: "n2", pos: { x: 20_000, y: 20_000 }, radius: 48, hp: 600, alive: true, sector: 1 }, // off-screen
+    { id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, maxHp: 600, hp: 600, alive: true },
+    { id: "n2", pos: { x: 20_000, y: 20_000 }, radius: 48, maxHp: 600, hp: 600, alive: true }, // off-screen
   ],
   exit: { x: 0, y: 1100, width: 98, height: 936 },
   exitRevealed: false,
@@ -316,7 +316,7 @@ describe("drawWorld", () => {
     const ctx = spyCtx();
     const withDeadNest: WorldSnapshot = {
       ...world,
-      nests: [{ id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, hp: 0, alive: false, sector: 0 }],
+      nests: [{ id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, maxHp: 600, hp: 0, alive: false }],
     };
     drawWorld(ctx, withDeadNest, { camera, viewport });
     // The dead nest still draws (one arc) — the colour change is what reads as "silenced".
@@ -336,7 +336,7 @@ describe("drawWorld with sprites", () => {
       { ...POSE, id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14, hp: 100 },
     ],
     enemies: [{ ...POSE, id: "e1", kind: "grunt", pos: { x: 1150, y: 1200 }, radius: 16, hp: 30 }],
-    nests: [{ id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, hp: 600, alive: true, sector: 0 }],
+    nests: [{ id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, maxHp: 600, hp: 600, alive: true }],
   };
   const everything = { nest: 96, player: 28, grunt: 32, elite: 48, miner: 30, generator: 75 };
 
@@ -448,7 +448,9 @@ describe("drawWorld with sprites", () => {
       enemies: [],
       // The nest's floor line (1010) is far above the generator's (1125), so a single sorted pass
       // would paint the generator over it. Drawn flat, it belongs to the floor instead.
-      nests: [{ id: "n1", pos: { x: 1100, y: 1010 }, radius: 48, hp: 600, alive: true, sector: 0 }],
+      nests: [
+        { id: "n1", pos: { x: 1100, y: 1010 }, radius: 48, maxHp: 600, hp: 600, alive: true },
+      ],
       structures: [{ id: "b1", kind: "generator", tile: { tx: 70, ty: 70 }, hp: 300 }],
     };
     drawWorld(ctx, powered, { camera, viewport, sprites: stubSprites(everything) });
@@ -461,7 +463,7 @@ describe("drawWorld with sprites", () => {
       ...standing,
       players: [],
       enemies: [],
-      nests: [{ id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, hp: 0, alive: false, sector: 0 }],
+      nests: [{ id: "n1", pos: { x: 1090, y: 1090 }, radius: 48, maxHp: 600, hp: 0, alive: false }],
     };
     drawWorld(ctx, silenced, { camera, viewport, sprites: stubSprites(everything) });
     expect(blits(ctx)[0].tag).toBe("nest/1/0");
@@ -1035,10 +1037,11 @@ describe("health bars", () => {
   });
 
   // #88 §2: #81 granted bars to "enemies, peers and structures". A nest is none of those three, so
-  // it got none — and at NEST_HP 600 it is the longest single fight in the game, and the one
-  // readout with real tactical weight, since killing a nest is how a sector is silenced.
+  // it got none — and a nest is the longest single fight in the game, and the one readout with real
+  // tactical weight, since killing one is how the pressure around it drops. The bar is scaled
+  // against the nest's own `maxHp`, which since #123 varies with how far out it sits.
   test("shows one on a damaged nest — the longest fight in the game had no progress at all", () => {
-    const nest = { id: "n1", pos: { x: 1150, y: 1150 }, radius: 48, alive: true, sector: 0 };
+    const nest = { id: "n1", pos: { x: 1150, y: 1150 }, radius: 48, maxHp: 600, alive: true };
     expect(drawn({ nests: [{ ...nest, hp: 600 }] }).frames).toEqual([]); // untouched, as ever
     const { frames, interiors } = drawn({ nests: [{ ...nest, hp: 300 }] });
     expect(frames.length).toBe(1);
@@ -1046,11 +1049,21 @@ describe("health bars", () => {
     expect(interiors[0].args[2]).toBe(47); // half the 94 interior px
   });
 
+  // The nest twin of the elite/grunt test above, and the one #123 made necessary: an inner nest is
+  // worth 150 and an outer one 600, so a bar read off a shared 600 would draw an untouched inner
+  // nest as three-quarters dead.
+  test("judges a nest against its own maxHp, not a shared ceiling", () => {
+    const inner = { id: "n1", pos: { x: 1150, y: 1150 }, radius: 48, maxHp: 150, alive: true };
+    expect(drawn({ nests: [{ ...inner, hp: 150 }] }).frames).toEqual([]); // full, so no bar at all
+    const { interiors } = drawn({ nests: [{ ...inner, hp: 75 }] });
+    expect(interiors[0].args[2]).toBe(47); // half of the 94 interior px, on its own 150
+  });
+
   test("a silenced nest shows none — it is wreckage, not a fight in progress", () => {
     expect(
       drawn({
         nests: [
-          { id: "n1", pos: { x: 1150, y: 1150 }, radius: 48, hp: 0, alive: false, sector: 0 },
+          { id: "n1", pos: { x: 1150, y: 1150 }, radius: 48, maxHp: 600, hp: 0, alive: false },
         ],
       }).frames,
     ).toEqual([]);
@@ -2060,7 +2073,6 @@ describe("the minimap", () => {
       pos: near(SELF.pos, (i % 60) * 30, Math.floor(i / 60) * 30),
       radius: 16,
       hp: 30,
-      sector: 0,
     }));
     const bare = spyCtx();
     const swarmed = spyCtx();
@@ -2170,8 +2182,8 @@ describe("the minimap", () => {
 
   test("reads a nest as alive or silenced", () => {
     const nests = [
-      { id: "n1", pos: near(SELF.pos, 500), radius: 48, hp: 600, alive: true, sector: 0 },
-      { id: "n2", pos: near(SELF.pos, -500), radius: 48, hp: 0, alive: false, sector: 1 },
+      { id: "n1", pos: near(SELF.pos, 500), radius: 48, maxHp: 600, hp: 600, alive: true },
+      { id: "n2", pos: near(SELF.pos, -500), radius: 48, maxHp: 600, hp: 0, alive: false },
     ];
     const ctx = spyCtx();
     drawWorld(ctx, { ...world, nests }, { camera, viewport, selfId: "p1" });
@@ -2281,9 +2293,9 @@ describe("the minimap", () => {
       id,
       pos: near(centre, dx, dy),
       radius: 48,
+      maxHp: 600,
       hp: alive ? 600 : 0,
       alive,
-      sector: 0,
     });
     // Ore laid over the window's left and top rim, where a cell is half on the plate and half off.
     const ore = new Map<number, OreKind>();

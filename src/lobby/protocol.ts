@@ -131,6 +131,9 @@ export interface WorldInit {
   exit: Exit;
   spawns: Spawn[];
   oreSeed: number;
+  // And the seed both sides expand into the nest layout (ADR 0004). Its own number rather than a
+  // reuse of `oreSeed`, so retuning ore generation cannot silently move all fifty nests.
+  nestSeed: number;
 }
 
 // --- Dynamic enemies & combat (Milestone 3) ---
@@ -140,18 +143,16 @@ export interface WorldInit {
 export type EnemyKind = "grunt" | "elite";
 
 // A newly-spawned enemy, announced once so the client can create its render record (kind +
-// hp) before per-tick position deltas start flowing for it. `sector` is the 45° wedge it was
-// spawned into (0..7), inherited from its nest.
+// hp) before per-tick position deltas start flowing for it.
 export interface EnemySpawn {
   id: string;
   kind: EnemyKind;
   pos: Vec2;
   hp: number;
-  sector: number;
 }
 
 // A nest's changed state this tick: its HP and whether it is still alive (spawning). Positions
-// are static and derived from the arena, so they never ride the delta.
+// are static and derived from `WorldInit.nestSeed`, so they never ride the delta.
 export interface NestDelta {
   id: string;
   hp: number;
@@ -171,14 +172,12 @@ export interface EnemySnapshot {
   kind: EnemyKind;
   pos: Vec2;
   hp: number;
-  sector: number;
 }
 export interface NestSnapshot {
   id: string;
   pos: Vec2;
   hp: number;
   alive: boolean;
-  sector: number;
 }
 
 // One enemy's position this tick: [id, x, y]. Every live enemy appears in every delta's
@@ -286,15 +285,18 @@ export interface RenderedEnemy {
   flashing: boolean;
 }
 
-// A render-model nest (not a wire type). Position/sector are static (derived from the arena);
-// hp/alive track the streamed nest state.
+// A render-model nest (not a wire type). Position and `maxHp` are static, derived locally from
+// `WorldInit.nestSeed`; hp/alive track the streamed nest state. `maxHp` is here because it is
+// per-nest now (#123) — the health bar has no single constant to scale against. What is pointedly
+// absent is the nest's hunter/wanderer type: the two look identical, and not handing it to the
+// render layer is what makes that structural rather than a rule to remember.
 export interface RenderedNest {
   id: string;
   pos: Vec2;
   radius: number;
   hp: number;
+  maxHp: number;
   alive: boolean;
-  sector: number;
 }
 
 // The render model the client assembles each frame from world-init + local self-sim +

@@ -171,7 +171,7 @@ function build(enemyCount, structureCount, withOre) {
   for (let i = 0; i < 4; i++) {
     nests.push({
       id: "n" + i, pos: { x: CAM.x + r() * VIEW.width, y: CAM.y + r() * VIEW.height },
-      radius: 48, hp: 600, alive: i % 2 === 0, sector: i,
+      radius: 48, maxHp: 600, hp: 600, alive: i % 2 === 0,
     });
   }
   // The arena's own generated field, and then dense patches laid over it under the camera.

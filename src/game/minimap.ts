@@ -11,9 +11,10 @@ import type { Camera, Viewport } from "./camera";
 // The seam is here rather than in `draw.ts` because both of the changes already chartered land on
 // this side of it. #110's three zoom levels cost this module three constants and a wrap, and cost
 // the geometry nothing at all: coverage was already a parameter of `minimapWindow` for exactly
-// that reason, so every layer below reads the level without knowing there is one. #111 replaces
-// eight nests on a ring with fifty at random; the map asks a nest only where it is and whether it
-// is alive, so that layer is a loop over `world.nests` with no count and no ring geometry in it.
+// that reason, so every layer below reads the level without knowing there is one. #123 replaced eight
+// nests on a ring with fifty at random and cost this module nothing: the map asks a nest only where
+// it is and whether it is alive, so that layer is a loop over `world.nests` with no count and no
+// ring geometry in it.
 
 // What the map shows across, in world units, at each of the three zoom levels (#110). One constant
 // per level, so retuning one is a one-line diff — and all three are **provisional**, the numbers the

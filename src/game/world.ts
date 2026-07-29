@@ -45,6 +45,9 @@ export function generateWorld(players: SpawnPlayer[], options: WorldOptions = {}
     // Only the seed travels: every client expands it into the same ore grid locally, so the
     // ~7k ore tiles never touch the wire and never grow the reconnect keyframe.
     oreSeed: Math.floor(rng() * 0x1_0000_0000),
+    // The nest layout rides the same idiom for the same reason (ADR 0004). Drawn after the ore seed
+    // so adding it left the exit and the ore grid of a given rng byte-for-byte where they were.
+    nestSeed: Math.floor(rng() * 0x1_0000_0000),
   };
 }
 
