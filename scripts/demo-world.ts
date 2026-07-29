@@ -218,6 +218,28 @@ export function demoBursts(world: WorldSnapshot, now: number): Mark[] {
   return world.enemies.filter((e) => e.flashing).map((e) => ({ pos: e.pos, at: now }));
 }
 
+// An ink puff at each point the scene has had a spider die (#116).
+//
+// Placed rather than derived, and that is the mirror of `demoBursts`: a burst goes *on* a spider, so
+// it can be read off one, while a puff goes where a spider no longer is and there is nothing left in
+// the snapshot to read. What keeps it honest is a check instead of a derivation — `demo-world.test`
+// holds both points clear of everything still standing and inside the frame, which is the one way
+// this drawing can be wrong. A cloud over a live spider is a frame the game cannot produce, and it
+// is also the frame in which nobody could tell whether the mark reads on bare paper.
+//
+// Two of them, on the two backgrounds the mark has to survive: open floor north of the squad, and
+// the crowded south-east corner where the elites and the silenced nest are. It is procedural ink and
+// not a bake, so no sprite sheet carries it and no spy says whether it reads at 38 u across against
+// white paper. This frame is the channel (ADR 0002 §5).
+const DEMO_DEATHS: Vec2[] = [
+  { x: 15_600, y: 15_540 },
+  { x: 15_900, y: 15_900 },
+];
+
+export function demoPuffs(now: number): Mark[] {
+  return DEMO_DEATHS.map((pos) => ({ pos: { ...pos }, at: now }));
+}
+
 // A `+1` over every miner in the scene, spread across the life of a float so the frame carries the
 // whole fade at once. Derived from the structures rather than hand-placed, so a number can never end
 // up over a miner that is not there — which is the one way this drawing can be wrong.

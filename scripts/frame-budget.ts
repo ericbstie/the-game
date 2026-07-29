@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import { MINIMAP_COVERAGE_U } from "../src/game/minimap";
 import { concurrentBursts } from "./burst-ink";
 import { capture, measurementsIn } from "./headless";
+import { concurrentPuffs } from "./puff-ink";
 
 // Measure the worst frame the game can be asked to draw, layer by layer, through the shipped
 // `drawWorld` on a real canvas.
@@ -80,11 +81,13 @@ export interface BudgetResult {
   lines: number;
   floats: number;
   bursts: number;
+  puffs: number;
   layers: Record<string, number>;
   ySortMs: number;
   healthBarsMs: Record<string, number>;
   shotLinesMs: Record<string, number>;
   burstsMs: Record<string, number>;
+  puffsMs: Record<string, number>;
 }
 
 export function entrySource(request: BudgetRequest): string {
@@ -101,7 +104,7 @@ import { SPRITES } from ${JSON.stringify(REGISTRY_MODULE)};
 import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { ENEMY_CAP } from ${JSON.stringify(ENEMIES_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
-import { speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
+import { inkPuff, speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
 
 const VIEW = { width: 800, height: 600 };
 const DPR = ${request.dpr};
@@ -116,6 +119,9 @@ const SHOT_LINES = 50;
 // off the cadences that fire and the damage they do (\`scripts/burst-ink.ts\`), because a burst rides
 // the hit rate and the hit rate is arithmetic on constants the game already fixes.
 const BURSTS = ${concurrentBursts()};
+// #116's puffs, derived the same way and off the other side of the same split: \`reapDamage\` reports
+// a killing connect as a death, so the shots into one grunt burst many times and puff once.
+const PUFFS = ${concurrentPuffs()};
 
 // Deterministic, so two runs of this script compare to each other.
 function rng(seed) {
@@ -247,6 +253,16 @@ try {
   };
   const withBursts = { ...withFloats, bursts: burstMarks(BURSTS) };
 
+  // #116's puffs, on the enemies the squad's fire is currently finishing off. Struck on spiders
+  // rather than scattered for the same reason the bursts are — the ink under a mark is part of what
+  // it costs — even though the spider a puff belongs to is, in the game, already gone by then.
+  const puffMarks = (n) => {
+    const marks = [];
+    for (let i = 0; i < n; i++) marks.push({ pos: full.enemies[(i * 7) % full.enemies.length].pos, at: opts.now });
+    return marks;
+  };
+  const withPuffs = { ...withBursts, puffs: puffMarks(PUFFS) };
+
   // Whichever layer is measured first otherwise absorbs the canvas's one-time setup and reads two
   // to three times its true cost. Spend it here, on a result nobody reads.
   measure(() => { setup(); drawWorld(ctx, full, m5); }, 10);
@@ -258,6 +274,7 @@ try {
   const m5Ms = measure(() => { setup(); drawWorld(ctx, full, m5); });
   const floatsMs = measure(() => { setup(); drawWorld(ctx, full, withFloats); });
   const burstsMs = measure(() => { setup(); drawWorld(ctx, full, withBursts); });
+  const puffsMs = measure(() => { setup(); drawWorld(ctx, full, withPuffs); });
 
   let blits = 0;
   let bars = 0;
@@ -269,7 +286,7 @@ try {
   ctx.stroke = (...args) => { lines++; rawStroke(...args); };
   ctx.fillRect = (...args) => { if (args[3] === 4) bars++; rawFill(...args); };
   setup();
-  drawWorld(ctx, full, withBursts);
+  drawWorld(ctx, full, withPuffs);
   ctx.drawImage = raw;
   ctx.stroke = rawStroke;
   ctx.fillRect = rawFill;
@@ -319,6 +336,25 @@ try {
     });
   };
 
+  // The puffs (#116), struck the way drawPuffs strikes them: one path for the frame, one subpath a
+  // cloud, and the lobes chained so the scallops join. Priced at a wave clear's counts as well as at
+  // the one the cadences average to, because a clear is exactly when many of them land at once.
+  const puffs = (n) => {
+    const marks = puffMarks(n);
+    return measure(() => {
+      setup();
+      ctx.strokeStyle = "#000"; ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (const m of marks) {
+        const lobes = inkPuff(m.pos);
+        ctx.moveTo(lobes[0].at.x + Math.cos(lobes[0].from) * lobes[0].radius, lobes[0].at.y + Math.sin(lobes[0].from) * lobes[0].radius);
+        for (const l of lobes) ctx.arc(l.at.x, l.at.y, l.radius, l.from, l.to);
+        ctx.closePath();
+      }
+      ctx.stroke();
+    });
+  };
+
   const result = {
     standing: full.enemies.length + STRUCTURES + full.players.length + full.nests.length,
     blits,
@@ -326,6 +362,7 @@ try {
     lines,
     floats: floats.length,
     bursts: BURSTS,
+    puffs: PUFFS,
     layers: {
       paper: +paperMs.toFixed(3),
       floor: +floorMs.toFixed(3),
@@ -333,16 +370,18 @@ try {
       m5: +m5Ms.toFixed(3),
       floats: +floatsMs.toFixed(3),
       bursts: +burstsMs.toFixed(3),
+      puffs: +puffsMs.toFixed(3),
     },
     ySortMs: +ySortMs.toFixed(4),
     healthBarsMs: { 60: +healthBars(60).toFixed(3), 240: +healthBars(240).toFixed(3) },
     shotLinesMs: { 10: +shotLines(10).toFixed(3), 25: +shotLines(25).toFixed(3), 50: +shotLines(50).toFixed(3), 150: +shotLines(150).toFixed(3) },
     burstsMs: { [BURSTS]: +bursts(BURSTS).toFixed(3), 25: +bursts(25).toFixed(3), 50: +bursts(50).toFixed(3), 150: +bursts(150).toFixed(3) },
+    puffsMs: { [PUFFS]: +puffs(PUFFS).toFixed(3), 25: +puffs(25).toFixed(3), 50: +puffs(50).toFixed(3), 150: +puffs(150).toFixed(3) },
   };
 
   // Drawn last so the screenshot is the frame that was measured, not the final probe.
   setup();
-  drawWorld(ctx, full, withBursts);
+  drawWorld(ctx, full, withPuffs);
   document.getElementById("measurements").textContent = JSON.stringify(result);
 } catch (e) {
   document.getElementById("measurements").textContent = JSON.stringify({ error: String(e && e.stack || e) });
@@ -373,7 +412,7 @@ if (import.meta.main) {
   const share = (ms: number) => `${((ms / FRAME_MS) * 100).toFixed(1)}%`;
   console.log(request.out);
   console.log(
-    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} stroked paths, ${r.floats} miner floats, ${r.bursts} impact bursts, dpr ${request.dpr}`,
+    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} stroked paths, ${r.floats} miner floats, ${r.bursts} impact bursts, ${r.puffs} death puffs, dpr ${request.dpr}`,
   );
   console.log(`corner map  ${request.map} u across`);
   console.log(
@@ -388,16 +427,18 @@ if (import.meta.main) {
   console.log(`  + everything up     ${r.layers.full.toFixed(3)} ms`);
   console.log(`  + the shot lines    ${r.layers.m5.toFixed(3)} ms`);
   console.log(`  + the miner floats  ${r.layers.floats.toFixed(3)} ms`);
+  console.log(`  + the bursts        ${r.layers.bursts.toFixed(3)} ms`);
   console.log(
-    `  + the bursts        ${r.layers.bursts.toFixed(3)} ms   ${share(r.layers.bursts)} of a 16.67 ms frame`,
+    `  + the puffs         ${r.layers.puffs.toFixed(3)} ms   ${share(r.layers.puffs)} of a 16.67 ms frame`,
   );
   console.log("");
   console.log(`  y-sort alone        ${(r.ySortMs * 1000).toFixed(1)} us`);
   console.log(`  shot lines (150)    ${r.shotLinesMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log(`  bursts (150)        ${r.burstsMs[150].toFixed(3)} ms   standalone, for scale`);
+  console.log(`  puffs (150)         ${r.puffsMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log("");
   console.log(`Worst case, measured through the shipped drawWorld`);
   console.log(
-    `  ${r.layers.bursts.toFixed(2)} ms   ${share(r.layers.bursts)}   headroom ${(FRAME_MS - r.layers.bursts).toFixed(2)} ms`,
+    `  ${r.layers.puffs.toFixed(2)} ms   ${share(r.layers.puffs)}   headroom ${(FRAME_MS - r.layers.puffs).toFixed(2)} ms`,
   );
 }

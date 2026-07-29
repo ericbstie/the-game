@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { MINIMAP_COVERAGE_U, MINIMAP_COVERAGE_WIDE_U } from "../src/game/minimap";
 import { concurrentBursts } from "./burst-ink";
 import { entrySource, parseArgs } from "./frame-budget";
+import { concurrentPuffs } from "./puff-ink";
 
 describe("parseArgs", () => {
   test("measures the registry as it stands when nothing is asked for", () => {
@@ -103,5 +104,23 @@ describe("entrySource", () => {
     const source = entrySource(parseArgs([]));
     expect(source).toContain("burstsMs");
     expect(source).toContain("150: +bursts(150)");
+  });
+
+  // #116's puff fires on the connects #115's burst skips, so the two are the same fire priced from
+  // either side of `reapDamage`. Rarer, and still in the frame the budget claims to price.
+  test("puts the death puffs in the frame it prices, through the shipped mark", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("inkPuff");
+    expect(source).toContain("puffs: puffMarks(PUFFS)");
+    // The count is derived from the cadences that actually fire, not chosen here (`puff-ink.ts`).
+    expect(source).toContain(`const PUFFS = ${concurrentPuffs()};`);
+  });
+
+  // A wave clear puts far more puffs up at once than the cadences average to, and #111 is about to
+  // move the enemy count they are killing. The standalone ladder is what a retune reads.
+  test("prices the puffs on their own, at counts a wave clear reaches", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("puffsMs");
+    expect(source).toContain("150: +puffs(150)");
   });
 });

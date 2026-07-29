@@ -82,4 +82,12 @@ describe("entrySource", () => {
     expect(source).toContain("demoBursts");
     expect(source).toContain("bursts: demoBursts(world, DEMO_NOW)");
   });
+
+  // The puff is procedural ink too, and it is the harder of the two to judge: it stands on bare
+  // paper with nothing under it, at a size that has to read as a cloud rather than as a blot.
+  test("carries the puffs, so the mark on death can be looked at (#116)", () => {
+    const source = entrySource(parseArgs([]), modules);
+    expect(source).toContain("demoPuffs");
+    expect(source).toContain("puffs: demoPuffs(DEMO_NOW)");
+  });
 });
