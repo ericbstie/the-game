@@ -124,8 +124,8 @@ instead of near 150.
 **A shot's mark costs about twice the plain line it replaced.** #114 struck out M5's continuous ink
 line and put a broken one in its place with two speed lines trailing it (`src/game/fx.ts`), so where
 a shot used to be one stroked segment it is now about **nine** — and a shot is charged **per stroke,
-not per inked pixel**. It lays *less* ink than the line it replaced at close range and about a tenth
-more at full reach; it costs twice as much either way.
+not per inked pixel**. How much ink it lays hardly moves, and at full reach it lays slightly *less*;
+it costs twice as much regardless.
 
 Measured through the standalone probe, which strokes the shipped `speedLines` against a fixed setup.
 Medians of nine runs each, one machine, dpr 2, both treatments in the same session:
@@ -135,6 +135,29 @@ Medians of nine runs each, one machine, dpr 2, both treatments in the same sessi
 | 10 | 0.28 ms | 0.59 ms |
 | 50 — **the budget** | 1.39 ms | 2.73 ms |
 | 150 | 4.54 ms | 7.99 ms |
+
+**The ink was measured too, and it does not explain the cost.** `bun run shot:ink` strokes the
+shipped `speedLines` and M5's plain line over the same geometry on a real canvas and counts what
+each lays, at dpr 1, 2 and 3. **Ink** is the sum of per-pixel coverage, so a pixel the rasteriser
+half covered counts as half a pixel; **ink length** is the geometry alone, the strokes summed, with
+no rasteriser in it. Both against the plain line over the same two points; the range at each length
+is the six readings — three dprs, axis-aligned and diagonal.
+
+| Shot | Ink | Ink length |
+| --- | ---: | ---: |
+| 700 u — full reach, which every own shot runs (ADR 0003 §3) | −0.3% to −4.4% | +2.8% |
+| 350 u — half reach | +2.1% to +7.3% | +12.1% |
+| 173 u — `TRAIL_MIN_LENGTH`, the shortest shot that trails | +17.6% to +22.7% | +29.1% |
+| 172 u — a hair under it, so the broken line alone | −22.7% to −24.7% | −23.5% |
+| 52 u — one `SHOT_DASH`, point blank | 0.0% | 0.0% |
+
+**The trail lays less ink than its geometry says, and the 172 u row is the control that shows why.**
+Everywhere a trail is struck, the rasterised ink comes in 6–7 points under the ink length — at full
+reach far enough under to change its sign, so a mark whose strokes sum to 2.8% *more* line than the
+rule it replaced puts about 2% *less* ink on the paper. Strip the trail and the two agree exactly
+(−23.5% against −23.5%), which leaves the strands: they close onto the line, and ink laid twice is
+counted once. **A point-blank shot draws what it always did** — under about one dash the fit puts a
+single unbroken stroke across the whole shot, and that is the plain line again.
 
 **At the budgeted 50 concurrent that is +1.3 ms on the frame.** Held against the 6.3 ms above — which
 is arithmetic across two machines, not a measurement — the worst frame lands near **7.6 ms, 46%**,
@@ -271,11 +294,18 @@ bun run frame:budget --sprite grass=src/sprite/grass.ts  # layer in art that has
 bun run frame:budget --dpr 1                             # an ordinary, non-retina monitor
 bun run frame:budget --map 15600                         # the corner map at its widest level
 bun run frame:budget --enemies 500                       # a cap the governor has not reached (#111)
+bun run shot:ink                                         # what a shot's mark lays, at dpr 1, 2 and 3
 ```
 
 `--enemies` overrides `ENEMY_CAP` for the fixture alone and nothing else, so a frame can be priced
 at a density before the simulation is raised to it. Without it the worst case is whatever the
 governor says today, which is what every unlabelled figure on this page was measured at.
 
-It prints the layer breakdown and the projected worst case, and writes the frame it measured to a
-PNG so the numbers can be checked against the picture that produced them.
+`frame:budget` prints the layer breakdown and the projected worst case, and writes the frame it
+measured to a PNG so the numbers can be checked against the picture that produced them.
+
+`shot:ink` answers the other axis and only that one — how much ink a shot's mark lays, never what it
+costs. It takes `--dpr` as often as you like (the default is the three above) and `--json` for the
+raw counts. Nothing in it is timed, so it does not need an idle machine: a pixel count is the same
+on a busy one, which is the whole reason the ink claim above can be trusted where a 1.3 ms layer
+could not.
