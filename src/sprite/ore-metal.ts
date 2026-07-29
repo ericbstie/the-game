@@ -11,6 +11,16 @@ import { drawTiled, TILED_FACINGS } from "./tiled";
 
 const SIZE = 15; // one ore tile: the smallest box in the game
 
+// The weight laid on every shard's silhouette (#106). Bolder was asked for as *ink*, not as size, so
+// it goes on the outline of what is already there: a stroke grows each piece by half its width all
+// round, which is what thickens the blades and splinters that were ghosting to grey at dpr 1 without
+// moving a vertex of the hand-cut set. Provisional.
+//
+// The fines take none of it. A grain is a whole pixel on whole-pixel edges — the one mark at this
+// size that carries no anti-aliasing at all — and a stroke around a 1 px rect is a 2 px grey smudge,
+// which is the opposite of bolder.
+const SHARD_WEIGHT = 1.1;
+
 type Point = readonly [number, number];
 
 // Hand-cut silhouettes, each in its own unit box. Two things they are not: round, and even.
@@ -307,6 +317,7 @@ function chip(ctx: CanvasRenderingContext2D, spec: Chip): void {
   }
   ctx.closePath();
   ctx.fill();
+  ctx.stroke();
 }
 
 const noise = (cx: number, cy: number, salt: number): number => {
@@ -345,6 +356,9 @@ function seamChips(cx: number, cy: number): Chip[] {
 function paintCell(ctx: CanvasRenderingContext2D, cx: number, cy: number): void {
   const field = fieldOf(cx, cy);
   ctx.fillStyle = "#000";
+  ctx.strokeStyle = "#000";
+  ctx.lineWidth = SHARD_WEIGHT;
+  ctx.lineJoin = "round"; // a mitre on a shard's apex draws a whisker off the point
   for (const spec of field.chips) chip(ctx, spec);
   for (const spec of seamChips(cx, cy)) chip(ctx, spec);
   for (const [x, y, width, height] of field.grit) ctx.fillRect(x, y, width, height);
