@@ -7,6 +7,7 @@ import {
   BUILD_SLOTS,
   BUILDABLES,
   type BuildableSpec,
+  DEMOLISH_HOLD_MS,
   FORGE_MS,
   footprintCenter,
   INTERACT_REACH,
@@ -20,7 +21,7 @@ import {
 import { ClientWorld } from "./clientWorld";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { GameScreen } from "./GameScreen";
-import { MINIMAP_ZOOM_KEY, NO_MOVE } from "./input";
+import { GUN_TOGGLE_KEY, MINIMAP_ZOOM_KEY, NO_MOVE } from "./input";
 import { MINIMAP_COVERAGE_CLOSE_U, MINIMAP_COVERAGE_U, MINIMAP_SIZE } from "./minimap";
 import { ARENA } from "./world";
 
@@ -76,9 +77,15 @@ function renderMatch(
   return screen.getByLabelText("Game arena");
 }
 
-// A live match with nothing selected on the build bar, so left-click means shoot.
+// Equip the gun (#120). Left-click shoots only with it up, so every test about the trigger presses
+// this first — you spawn with it stowed and left-click mining instead.
+const equipGun = () => fireEvent.keyDown(window, { key: GUN_TOGGLE_KEY });
+
+// A live match with the gun up and nothing selected on the build bar, so left-click means shoot.
 function inMatch(onAttack: () => void, world = armed()): HTMLElement {
-  return renderMatch({ onAttack }, world);
+  const canvas = renderMatch({ onAttack }, world);
+  equipGun();
+  return canvas;
 }
 
 // The cursor sits at the canvas origin under happy-dom (every rect is zero and the camera never
@@ -181,6 +188,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
     const shots: Shot[] = [];
     const onAttack = (pos: Vec2, dir: Vec2) => shots.push({ at: Date.now(), pos, dir });
     const canvas = renderMatch({ onAttack }, world);
+    equipGun(); // the trigger is left-click's job only with the gun up (#120)
     const pressedAt = Date.now();
     fireEvent.mouseDown(canvas, { button: 0 });
     return { canvas, shots, pressedAt };
@@ -291,6 +299,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
     const shots: Shot[] = [];
     const onAttack = (pos: Vec2, dir: Vec2) => shots.push({ at: Date.now(), pos, dir });
     const canvas = renderMatch({ onBuild, onAttack });
+    equipGun();
     fireEvent.mouseDown(canvas, { button: 0 });
     expect(shots).toHaveLength(1);
     fireEvent.keyDown(window, { key: "1" }); // the build bar takes the button mid-hold
@@ -313,25 +322,6 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
     expect(shots).toHaveLength(2); // the stall costs one shot, not the three it covered
   });
 
-  test("mining and firing are held independently — releasing one keeps the other", async () => {
-    const world = armed();
-    world.ore.set(tileKey(CURSOR_TILE), "metal");
-    const onMine = mock(() => {});
-    const shots: Shot[] = [];
-    const onAttack = (pos: Vec2, dir: Vec2) => shots.push({ at: Date.now(), pos, dir });
-    const canvas = renderMatch({ onMine, onAttack }, world);
-    fireEvent.mouseDown(canvas, { button: 2 });
-    fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 3);
-    const mined = onMine.mock.calls.length;
-    expect(mined).toBeGreaterThan(0); // both holds were live
-    fireEvent.mouseUp(window, { button: 2 }); // let go of the mine, keep the trigger
-    await settle(2 * RANGED_CADENCE_MS);
-    fireEvent.mouseUp(window, { button: 0 });
-    expect(onMine).toHaveBeenCalledTimes(mined); // mining stopped
-    expect(shots.length).toBeGreaterThan(1); // firing did not
-  });
-
   test("with a buildable selected, holding left-click places and never fires", async () => {
     const onBuild = mock(() => {});
     const shots: Shot[] = [];
@@ -343,6 +333,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
     world.ore.set(tileKey(CURSOR_TILE), "metal");
     world.build.bank.metal = 1_000;
     const canvas = renderMatch({ onBuild, onAttack }, world);
+    equipGun(); // and the bar still outranks the gun (#120)
     fireEvent.keyDown(window, { key: "1" });
     fireEvent.mouseDown(canvas, { button: 0 });
     await settle(2 * RANGED_CADENCE_MS);
@@ -350,6 +341,282 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
     expect(shots).toEqual([]);
     // Once: the cursor never left its tile. The run a moving cursor lays is #104's own describe.
     expect(onBuild).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #120: the gun. `e` equips and stows it, and that is what left-click means — the trigger with the
+// gun up, the pick with it down. A buildable on the bar outranks both. Right-click keeps demolish
+// and the build bar's cancel, and mines nothing.
+describe("#120: the gun decides what left-click does", () => {
+  // Metal ore under the cursor is what left-click needs to have anything to mine.
+  const overOre = (world = armed()) => {
+    world.ore.set(tileKey(CURSOR_TILE), "metal");
+    return world;
+  };
+  const toggleGun = (init: KeyboardEventInit = {}) =>
+    fireEvent.keyDown(window, { key: GUN_TOGGLE_KEY, ...init });
+
+  // Both jobs left-click has when the build bar is empty, watched together — every test here is
+  // about which of the two a press does, so neither is ever asserted without the other.
+  function bothJobs(world = overOre()) {
+    const onMine = mock(() => {});
+    const onAttack = mock(() => {});
+    const canvas = renderMatch({ onMine, onAttack }, world);
+    return { canvas, onMine, onAttack, world };
+  }
+
+  test("the gun starts stowed, so left-click mines and fires nothing", async () => {
+    const { canvas, onMine, onAttack } = bothJobs();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalled();
+    expect(onAttack).not.toHaveBeenCalled();
+  });
+
+  test("with the gun equipped left-click fires and mines nothing", async () => {
+    const { canvas, onMine, onAttack } = bothJobs();
+    toggleGun();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onAttack).toHaveBeenCalled();
+    expect(onMine).not.toHaveBeenCalled();
+  });
+
+  test("`e` again stows it, and left-click is back to mining", async () => {
+    const { canvas, onMine, onAttack } = bothJobs();
+    toggleGun();
+    toggleGun();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalled();
+    expect(onAttack).not.toHaveBeenCalled();
+  });
+
+  // The OS repeats a held key at ~30 Hz. A toggle stepped by each repeat would flap the gun thirty
+  // times a second and land on whichever side the key happened to come up on — the same hole #110's
+  // zoom closed. happy-dom does not synthesise native repeat, so this drives the flag the browser
+  // sets on one.
+  test("a repeat of a held `e` toggles nothing", async () => {
+    const { canvas, onMine, onAttack } = bothJobs();
+    toggleGun();
+    // An odd number of repeats, so a toggle that answered to them would land on the *other* side
+    // rather than back where the one real press left it — the count is what makes this discriminate.
+    toggleGun({ repeat: true });
+    toggleGun({ repeat: true });
+    toggleGun({ repeat: true });
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onAttack).toHaveBeenCalled(); // still equipped, as one press left it
+    expect(onMine).not.toHaveBeenCalled();
+  });
+
+  test("a buildable on the bar outranks the stowed gun: left-click builds and mines nothing", async () => {
+    const world = overOre();
+    world.build.bank.metal = 1_000;
+    const onBuild = mock(() => {});
+    const onMine = mock(() => {});
+    const canvas = renderMatch({ onBuild, onMine }, world);
+    fireEvent.keyDown(window, { key: "1" });
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onBuild).toHaveBeenCalledTimes(1);
+    expect(onMine).not.toHaveBeenCalled();
+  });
+
+  test("a buildable outranks the equipped gun too: left-click builds and fires nothing", async () => {
+    const world = overOre();
+    world.build.bank.metal = 1_000;
+    const onBuild = mock(() => {});
+    const onAttack = mock(() => {});
+    const canvas = renderMatch({ onBuild, onAttack }, world);
+    toggleGun();
+    fireEvent.keyDown(window, { key: "1" });
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onBuild).toHaveBeenCalledTimes(1);
+    expect(onAttack).not.toHaveBeenCalled();
+  });
+
+  // A press over a full build bar latches a run and nothing else, so there is no second hold left
+  // armed behind it. Taking the bar away mid-drag is what makes that visible: the run ends, and
+  // left-click means nothing again until it is pressed again.
+  test("a press that starts a run arms no hold behind it, so clearing the bar mines nothing", async () => {
+    const world = overOre();
+    world.build.bank.metal = 1_000;
+    const onMine = mock(() => {});
+    const canvas = renderMatch({ onMine }, world);
+    fireEvent.keyDown(window, { key: "1" });
+    fireEvent.mouseDown(canvas, { button: 0 });
+    fireEvent.mouseDown(canvas, { button: 2 }); // right-click takes the ghost away, and the run
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).not.toHaveBeenCalled();
+  });
+
+  // The mirror of #103's "selecting a buildable mid-hold stops the fire": the bar outranks the gun
+  // in both states, so it must outrank it whether it was taken before the press or under it.
+  test("selecting a buildable mid-hold stops the mining and places nothing on its own", async () => {
+    const world = overOre();
+    world.build.bank.metal = 1_000;
+    const onBuild = mock(() => {});
+    const onMine = mock(() => {});
+    const canvas = renderMatch({ onBuild, onMine }, world);
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    const mined = onMine.mock.calls.length;
+    expect(mined).toBeGreaterThan(0); // mining was really running when the bar was taken
+    fireEvent.keyDown(window, { key: "1" });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalledTimes(mined);
+    expect(onBuild).not.toHaveBeenCalled(); // and the hold does not place what it just selected
+  });
+
+  // The half of the ticket a latched press cannot do: the button never comes up, and what it is
+  // doing changes under it.
+  test("`e` under a held button stops the fire and starts mining on the spot", async () => {
+    const { canvas, onMine, onAttack } = bothJobs();
+    toggleGun();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 2);
+    const fired = onAttack.mock.calls.length;
+    expect(fired).toBeGreaterThan(0); // the fire was really running when the gun went down
+    toggleGun();
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalled();
+    expect(onAttack).toHaveBeenCalledTimes(fired); // and not one shot more
+  });
+
+  test("`e` under a held button stops the mining and starts the fire on the spot", async () => {
+    const { canvas, onMine, onAttack } = bothJobs();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    const mined = onMine.mock.calls.length;
+    expect(mined).toBeGreaterThan(0); // mining was really running when the gun came up
+    toggleGun();
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onAttack).toHaveBeenCalled();
+    expect(onMine).toHaveBeenCalledTimes(mined); // and not one tick more
+  });
+
+  // "Provided the cursor is over something valid for the new action" — and the hold is not spent by
+  // failing that test. Nothing is latched at the press, so the switch is simply asked again on the
+  // next tick, and the tick that finds ore under the cursor is the one that starts mining.
+  test("switching onto nothing minable asks for nothing, and takes the ore up when it arrives", async () => {
+    const world = armed(); // bare ground under the cursor: no ore anywhere near it
+    const { canvas, onMine } = bothJobs(world);
+    toggleGun();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 2);
+    toggleGun(); // the gun goes down over ground that yields nothing
+    await settle(MINE_CADENCE_MS * 3);
+    expect(onMine).not.toHaveBeenCalled();
+    world.ore.set(tileKey(CURSOR_TILE), "metal"); // and now there is something there
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalled(); // with no second press
+  });
+
+  // #104's run is the one of the three that *is* latched at the press, so the gun must not disturb
+  // it: the ticket puts the build bar above the gun in both states, which means a drag crossing an
+  // `e` is still the same drag.
+  test("`e` mid-drag neither ends the run nor fires into it", async () => {
+    const world = armed();
+    world.build.bank.metal = 100_000;
+    const asked: Tile[] = [];
+    const onAttack = mock(() => {});
+    const canvas = renderMatch({ onBuild: (_k, tile) => asked.push(tile), onAttack }, world);
+    fireEvent.keyDown(window, { key: "2" }); // wall
+    fireEvent.mouseDown(canvas, { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.mouseMove(canvas, { clientX: 19 * TILE, clientY: 0 });
+    await settle(3 * BUILD_CADENCE_MS + 60);
+    const laid = asked.length;
+    expect(laid).toBeGreaterThan(1);
+    toggleGun();
+    await settle(6 * BUILD_CADENCE_MS);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(asked.length).toBeGreaterThan(laid); // the run carried on across the toggle
+    expect(onAttack).not.toHaveBeenCalled();
+  });
+
+  test("right-click no longer mines, whatever the gun is doing", async () => {
+    const { canvas, onMine } = bothJobs();
+    fireEvent.mouseDown(canvas, { button: 2 });
+    await settle(DEMOLISH_HOLD_MS + MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 2 });
+    expect(onMine).not.toHaveBeenCalled();
+  });
+
+  // #103 drops the left hold when the menu opens, and #120 put the pick on that same ref, so the
+  // pick now goes with it. Nobody asked for that; it is pinned here so it cannot change unnoticed.
+  test("opening the Escape menu stops the mining, and none goes into it (#100)", async () => {
+    const { canvas, onMine } = bothJobs();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    const mined = onMine.mock.calls.length;
+    expect(mined).toBeGreaterThan(0); // mining was really running when Escape came down
+    fireEvent.keyDown(window, { key: "Escape" });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalledTimes(mined);
+  });
+
+  // Death drops the left hold from inside `fireIfDue`, which only runs with the gun up, so a stowed
+  // hold outlives it — refused while dead, and mining again the moment the player is back and in
+  // reach. Recorded rather than chosen: it is what mining did on its old button. The respawn below
+  // is the observable case, not a contrived one — `reviveSelf` snaps to arena centre and
+  // `BOOTSTRAP_PATCHES` seeds metal within reach of it (build.ts:110).
+  test("a stowed hold outlives a death, and mines again on respawn with no fresh press", async () => {
+    const middle = { x: ARENA.width / 2, y: ARENA.height / 2 };
+    const centreTile = { tx: Math.floor(middle.x / TILE), ty: Math.floor(middle.y / TILE) };
+    const world = armed(0); // down before the button ever goes near it
+    world.ore.set(tileKey(centreTile), "metal"); // the bootstrap patch respawn puts you on
+    const { canvas, onMine } = bothJobs(world);
+    fireEvent.mouseDown(canvas, { button: 0, clientX: middle.x, clientY: middle.y });
+    await settle(MINE_CADENCE_MS * 3);
+    expect(onMine).not.toHaveBeenCalled(); // a corpse mines nothing
+    world.reviveSelf();
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalledWith(centreTile);
+  });
+
+  // Two buttons, two holds: letting one go must not let the other go with it. The cursor's tile
+  // carries a structure, so right-click has something to pull down and left-click has nothing to
+  // mine out from under it.
+  test("releasing left-click leaves the demolish hold alone", async () => {
+    const world = armed();
+    insertStructure(world.build, { id: "m1", kind: "miner", tile: CURSOR_TILE, hp: 200 });
+    const onDemolish = mock(() => {});
+    const canvas = renderMatch({ onDemolish }, world);
+    fireEvent.mouseDown(canvas, { button: 2 });
+    fireEvent.mouseDown(canvas, { button: 0 });
+    fireEvent.mouseUp(window, { button: 0 });
+    await settle(DEMOLISH_HOLD_MS + MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 2 });
+    expect(onDemolish).toHaveBeenCalledWith("m1");
+  });
+
+  // And the same in the other direction, which is the one the shared ref put at risk: the pick and
+  // the trigger are now one flag, so a release that reached across buttons would drop whichever of
+  // them was running. No tick has fired between the press and the right button coming up — the
+  // events are synchronous — so every mine counted is one the surviving hold earned.
+  test("releasing the demolish hold leaves left-click's alone", async () => {
+    const { canvas, onMine } = bothJobs();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    fireEvent.mouseDown(canvas, { button: 2 });
+    fireEvent.mouseUp(window, { button: 2 });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalled();
   });
 });
 
@@ -544,29 +811,34 @@ describe("#100: Escape opens the menu", () => {
 });
 
 describe("#100: right-click cancels a selected buildable", () => {
-  test("it clears the selection and arms no harvest", async () => {
-    const onMine = mock(() => {});
+  // A miner stands on the cursor's tile, so a right-click that armed its hold instead of spending
+  // itself on the cancel would pull it down once the hold elapsed.
+  const withStructure = () => {
     const world = armed();
-    world.ore.set(tileKey(CURSOR_TILE), "metal");
-    const canvas = renderMatch({ onMine }, world);
+    insertStructure(world.build, { id: "m1", kind: "miner", tile: CURSOR_TILE, hp: 200 });
+    return world;
+  };
+
+  test("it clears the selection and arms no demolish", async () => {
+    const onDemolish = mock(() => {});
+    const canvas = renderMatch({ onDemolish }, withStructure());
     const wall = screen.getByLabelText("wall");
     fireEvent.click(wall);
     fireEvent.mouseDown(canvas, { button: 2 });
     expect(wall.getAttribute("aria-pressed")).toBe("false");
-    // The button is still down. If the cancel had armed the hold, the harvest loop would report
-    // mining on its very next tick.
-    await settle(MINE_CADENCE_MS * 3);
-    expect(onMine).toHaveBeenCalledTimes(0);
+    await settle(DEMOLISH_HOLD_MS + MINE_CADENCE_MS * 3);
+    expect(onDemolish).toHaveBeenCalledTimes(0);
   });
 
-  test("with nothing selected it still harvests, as it always did", async () => {
-    const onMine = mock(() => {});
-    const world = armed();
-    world.ore.set(tileKey(CURSOR_TILE), "metal");
-    const canvas = renderMatch({ onMine }, world);
+  test("with nothing selected it demolishes what is under the cursor, once the hold is out", async () => {
+    const onDemolish = mock(() => {});
+    const canvas = renderMatch({ onDemolish }, withStructure());
     fireEvent.mouseDown(canvas, { button: 2 });
-    await settle(MINE_CADENCE_MS * 3);
-    expect(onMine).toHaveBeenCalled();
+    await settle(MINE_CADENCE_MS * 2); // inside the hold: nothing yet
+    expect(onDemolish).toHaveBeenCalledTimes(0);
+    await settle(DEMOLISH_HOLD_MS);
+    fireEvent.mouseUp(window, { button: 2 });
+    expect(onDemolish).toHaveBeenCalledWith("m1");
   });
 });
 
@@ -612,10 +884,11 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
 
   // Start the mine, then try to walk out of it. The events are synchronous and no frame has run
   // between them, so the position captured here is the one the whole hold is measured against.
+  // Left-click, with the gun left stowed as you spawn — #120 moved mining onto it.
   function mineAndWalk(world: ClientWorld, handlers = {}) {
     const moves = recordMoves(world);
     const canvas = renderMatch(handlers, world);
-    fireEvent.mouseDown(canvas, { button: 2 });
+    fireEvent.mouseDown(canvas, { button: 0 });
     fireEvent.keyDown(window, { key: "w" });
     return { canvas, moves, from: world.selfPos() as Vec2 };
   }
@@ -634,7 +907,7 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
     await settle(MINE_CADENCE_MS * 3);
     expect(moves.at(-1)).toEqual(NO_MOVE);
     const released = moves.length;
-    fireEvent.mouseUp(window, { button: 2 });
+    fireEvent.mouseUp(window, { button: 0 });
     await nextFrames();
     expect(moves[released]?.up).toBe(true);
   });
@@ -722,7 +995,7 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
     await settle(MINE_CADENCE_MS * 3);
     expect(moves.at(-1)).toEqual(NO_MOVE);
     fireEvent.keyDown(window, { key: "Escape" });
-    fireEvent.mouseUp(window, { button: 2 });
+    fireEvent.mouseUp(window, { button: 0 });
     fireEvent.keyDown(window, { key: "w" });
     const released = moves.length;
     await nextFrames();
@@ -966,14 +1239,14 @@ describe("#102: an empty pool refuses the trigger", () => {
 
   test("a click with nothing in the pool sends nothing", () => {
     const onAttack = mock(() => {});
-    const canvas = renderMatch({ onAttack }, withAmmo(0));
+    const canvas = inMatch(onAttack, withAmmo(0));
     fireEvent.mouseDown(canvas, { button: 0 });
     expect(onAttack).toHaveBeenCalledTimes(0);
   });
 
   test("one bullet buys exactly the one click", () => {
     const onAttack = mock(() => {});
-    const canvas = renderMatch({ onAttack }, withAmmo(1));
+    const canvas = inMatch(onAttack, withAmmo(1));
     fireEvent.mouseDown(canvas, { button: 0 });
     expect(onAttack).toHaveBeenCalledTimes(1);
   });
@@ -981,7 +1254,7 @@ describe("#102: an empty pool refuses the trigger", () => {
   test("an empty pool does not consume the cadence, so the first bullet fires the moment it lands", () => {
     const onAttack = mock(() => {});
     const world = withAmmo(0);
-    const canvas = renderMatch({ onAttack }, world);
+    const canvas = inMatch(onAttack, world);
     fireEvent.mouseDown(canvas, { button: 0 }); // refused: nothing to fire
     world.applyMapDelta({ tick: 1, moves: [], ammo: 1 }, Date.now());
     fireEvent.mouseDown(canvas, { button: 0 });
@@ -991,7 +1264,7 @@ describe("#102: an empty pool refuses the trigger", () => {
   test("a held trigger goes quiet the moment the pool runs dry", async () => {
     const onAttack = mock(() => {});
     const world = withAmmo(1);
-    const canvas = renderMatch({ onAttack }, world);
+    const canvas = inMatch(onAttack, world);
     fireEvent.mouseDown(canvas, { button: 0 });
     expect(onAttack).toHaveBeenCalledTimes(1);
     world.applyMapDelta({ tick: 1, moves: [], ammo: 0 }, Date.now()); // the server took it
@@ -1136,9 +1409,13 @@ describe("#102: the ammo box counts the squad's bullets and orders more", () => 
 // makes the map readable from here. The stub is on the prototype and so covers the sprite bakes
 // too, which is required rather than incidental: `bakeOne` throws on a null context. Those bakes
 // land in the module-level cache and stay there, harmlessly — no other test in this file draws.
+// `into` is which canvas the call was drawn on. The arena is not the only one on screen — every
+// `SpriteIcon` in the HUD is a canvas of its own — so a test about one icon's ink has to be able to
+// tell that icon's bake from the whole frame painted behind it (#120).
 interface DrawnCall {
   fn: string;
   args: unknown[];
+  into: HTMLCanvasElement;
 }
 
 function recordFrames(): { calls: DrawnCall[]; restore: () => void } {
@@ -1152,14 +1429,15 @@ function recordFrames(): { calls: DrawnCall[]; restore: () => void } {
   Object.defineProperty(element, "clientHeight", { get: () => 600, configurable: true });
   // A proxy rather than a table of methods: the sprite modules between them reach for most of the
   // 2D API, and a missing name would fail as a broken bake rather than as a missing stub.
-  canvas.getContext = () => {
+  canvas.getContext = function (this: HTMLCanvasElement) {
+    const into = this;
     const state: Record<string, unknown> = {};
     return new Proxy({} as Record<string, unknown>, {
       get: (_target, name: string) =>
         name in state
           ? state[name]
           : (...args: unknown[]) => {
-              calls.push({ fn: name, args });
+              calls.push({ fn: name, args, into });
             },
       set: (_target, name: string, value) => {
         state[name] = value;
@@ -1242,5 +1520,53 @@ describe("#110: the map's zoom steps once per press of the key", () => {
     fireEvent.keyDown(window, { key: MINIMAP_ZOOM_KEY, repeat: true });
     await nextFrames();
     expect(drawnCoverage(drawn.calls)).toBeCloseTo(MINIMAP_COVERAGE_CLOSE_U, 6);
+  });
+});
+
+// #120: the one thing the HUD says about the gun — one icon over the health bar, filled when the
+// weapon is up and hollow when it is not. Filled and hollow are ink, not markup, so they are read
+// out of the icon's own bake rather than off an attribute a wrong `facing` would still set.
+describe("#120: the gun icon over the health bar is filled or hollow", () => {
+  let drawn: { calls: DrawnCall[]; restore: () => void };
+
+  beforeEach(() => {
+    drawn = recordFrames();
+  });
+  afterEach(() => drawn.restore());
+
+  const plate = (state: string) => screen.getByLabelText(state);
+  const bakedInto = (icon: HTMLCanvasElement, from: number) =>
+    drawn.calls
+      .slice(from)
+      .filter((c) => c.into === icon)
+      .map((c) => c.fn);
+
+  test("it sits directly above the bar", () => {
+    renderMatch();
+    expect(plate("Gun stowed").nextElementSibling).toBe(screen.getByLabelText("Health"));
+  });
+
+  test("stowed it is stroked and never filled; `e` fills the same contour", () => {
+    renderMatch();
+    const icon = plate("Gun stowed").querySelector("canvas") as HTMLCanvasElement;
+    const stowed = bakedInto(icon, 0);
+    expect(stowed).toContain("stroke");
+    expect(stowed).not.toContain("fill"); // hollow: the contour and nothing inside it
+    const mark = drawn.calls.length;
+    fireEvent.keyDown(window, { key: GUN_TOGGLE_KEY });
+    const equipped = bakedInto(icon, mark);
+    expect(equipped).toContain("fill");
+    expect(equipped).toContain("stroke"); // the same contour, so the icon does not change size
+    expect(plate("Gun equipped").querySelector("canvas")).toBe(icon);
+  });
+
+  test("and `e` again empties it", () => {
+    renderMatch();
+    const icon = plate("Gun stowed").querySelector("canvas") as HTMLCanvasElement;
+    fireEvent.keyDown(window, { key: GUN_TOGGLE_KEY });
+    const mark = drawn.calls.length;
+    fireEvent.keyDown(window, { key: GUN_TOGGLE_KEY });
+    expect(bakedInto(icon, mark)).not.toContain("fill");
+    expect(plate("Gun stowed")).toBeTruthy();
   });
 });

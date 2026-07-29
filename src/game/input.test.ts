@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   aimDir,
+  GUN_TOGGLE_KEY,
+  isGunToggleKey,
   isMinimapZoomKey,
   keyToBuildSlot,
   keyToDirection,
@@ -97,6 +99,38 @@ describe("isMinimapZoomKey", () => {
     // `e` among them: #120 takes it for the gun toggle, and the zoom must not answer to it.
     for (const key of ["w", "a", "s", "d", "ArrowUp", "1", "4", "e", "Escape", " ", ""]) {
       expect(isMinimapZoomKey(key)).toBe(false);
+    }
+  });
+});
+
+describe("isGunToggleKey", () => {
+  test("toggles the gun whatever the shift state", () => {
+    expect(isGunToggleKey(GUN_TOGGLE_KEY)).toBe(true);
+    expect(isGunToggleKey(GUN_TOGGLE_KEY.toUpperCase())).toBe(true);
+  });
+
+  test("takes a key nothing else in the match is bound to", () => {
+    expect(keyToDirection(GUN_TOGGLE_KEY)).toBeNull();
+    expect(keyToBuildSlot(GUN_TOGGLE_KEY, 4)).toBeNull();
+    expect(isMinimapZoomKey(GUN_TOGGLE_KEY)).toBe(false);
+    expect(GUN_TOGGLE_KEY).not.toBe("Escape");
+  });
+
+  test("no other key toggles the gun", () => {
+    for (const key of [
+      "w",
+      "a",
+      "s",
+      "d",
+      "ArrowUp",
+      "1",
+      "4",
+      MINIMAP_ZOOM_KEY,
+      "Escape",
+      " ",
+      "",
+    ]) {
+      expect(isGunToggleKey(key)).toBe(false);
     }
   });
 });
