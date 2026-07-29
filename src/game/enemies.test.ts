@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Tile, Vec2, WorldInit } from "../lobby/protocol";
+import type { EnemySpawn, Tile, Vec2, WorldInit } from "../lobby/protocol";
 import {
   BUILDABLES,
   type BuildableSpec,
@@ -7,6 +7,7 @@ import {
   buildCost,
   demolishStructure,
   freshBuildState,
+  mulberry32,
   placeStructure,
   removeStructure,
   type Structure,
@@ -26,9 +27,11 @@ import {
   type Attack,
   admitAttack,
   ELITE_HP,
+  ELITE_SHARE_MAX,
   ENEMY_CAP,
   type Enemy,
   type EnemyState,
+  eliteShare,
   enemyContactCadenceMs,
   enemyContactDamage,
   enemyRadius,
@@ -41,18 +44,26 @@ import {
   NEST_EDGE_BIAS,
   NEST_HP_INNER,
   NEST_HP_OUTER,
+  NEST_PERIOD_FLOOR_MS,
+  NEST_PERIOD_START_MS,
   NEST_RADIUS,
   type Nest,
+  type NestKind,
   nestBandOuter,
   nestLayout,
+  nestPeriodMs,
+  type PlayerRef,
   RANGED_CADENCE_MS,
   RANGED_DAMAGE,
   RANGED_HALFWIDTH,
   RANGED_RANGE,
+  SPAWN_GRACE_MS,
   spawnEnemyState,
   stepEnemies,
   WANDERER_CHANCE_OUTER,
-  WAVE_PERIOD_MS,
+  WAVE_SIZE_MAX,
+  WAVE_SIZE_START,
+  waveSize,
 } from "./enemies";
 import { ARENA } from "./world";
 
@@ -77,12 +88,23 @@ const grunt = (id: string, pos: Vec2, hp = GRUNT_HP): Enemy => ({
 const stateWith = (enemies: Enemy[]): EnemyState => ({
   arena: ARENA,
   enemies: new Map(enemies.map((e) => [e.id, e])),
-  nests: [],
-  waveIndex: 0,
-  msUntilWave: WAVE_PERIOD_MS, // no wave fires during these targeted tests
+  nests: [], // and so nothing spawns during these targeted tests
+  elapsedMs: 0,
+  nestTimers: new Map(),
   rng: () => 0.5,
   nextId: enemies.length + 1,
 });
+// Take every nest off its timer, for the tests that want the nests standing there without spawning.
+const silence = (state: EnemyState): EnemyState => {
+  for (const nest of state.nests) state.nestTimers.set(nest.id, Number.POSITIVE_INFINITY);
+  return state;
+};
+// And arm every nest to fire on the next tick, for the tests that do not want to spend the grace.
+const armed = (state: EnemyState, minutes = 0): EnemyState => {
+  state.elapsedMs = SPAWN_GRACE_MS + minutes * 60_000;
+  for (const nest of state.nests) state.nestTimers.set(nest.id, 0);
+  return state;
+};
 const only = (state: EnemyState) => [...state.enemies.values()][0];
 // A spawn point keyed exactly, so a wave can be attributed to the nest that emitted it now that
 // nests carry no sector. With the sim's rng at 0.5 the jitter is zero, so a grunt spawns on its
@@ -90,29 +112,32 @@ const only = (state: EnemyState) => [...state.enemies.values()][0];
 const where = (pos: Vec2) => `${pos.x},${pos.y}`;
 // Cut the layout down to one nest, for the tests that are about what a single nest emits rather
 // than about fifty of them.
-const onlyNest = (state: EnemyState): Nest => {
+const onlyNestState = (state: EnemyState): EnemyState => {
   state.nests = state.nests.slice(0, 1);
-  return state.nests[0];
-};
-// And down to a handful, for the wave-shape tests. At fifty nests the grunts of wave 3 alone breach
-// ENEMY_CAP, so the elites behind them never spawn — which is a fact about the cap and the spawn
-// model (#124 replaces it, #125 raises the cap), not about the shape of a wave.
-const fewNests = (state: EnemyState): EnemyState => {
-  state.nests = state.nests.slice(0, 4);
   return state;
 };
+const onlyNest = (state: EnemyState): Nest => onlyNestState(state).nests[0];
+// Which nest a spawn came out of. Jitter is 300 u against a band 10,752 u wide, so the nearest nest
+// to a spawn point is the one that emitted it.
+const nearestNest = (state: EnemyState, pos: Vec2): string =>
+  state.nests.reduce((best, n) =>
+    Math.hypot(n.pos.x - pos.x, n.pos.y - pos.y) <
+    Math.hypot(best.pos.x - pos.x, best.pos.y - pos.y)
+      ? n
+      : best,
+  ).id;
 const at = (state: EnemyState, id: string) => state.enemies.get(id);
 const player = (pos: Vec2) => [{ id: "p1", pos }];
 const shot = (pos: Vec2, dir: Vec2, by = "p1"): Attack => ({ pos, dir, by });
 const step = (state: EnemyState, attacks: Attack[]) => stepEnemies(state, [], attacks, 0).events;
 
 describe("spawnEnemyState", () => {
-  test("places NEST_COUNT nests, no enemies, and arms the wave clock at 0:30", () => {
+  test("places NEST_COUNT nests, no enemies, and starts the match clock at zero", () => {
     const s = spawnEnemyState(worldInit(), () => 0);
     expect(s.nests).toHaveLength(NEST_COUNT);
     expect(s.enemies.size).toBe(0);
-    expect(s.waveIndex).toBe(0);
-    expect(s.msUntilWave).toBe(WAVE_PERIOD_MS);
+    expect(s.elapsedMs).toBe(0);
+    expect([...s.nestTimers.values()]).toEqual(Array(NEST_COUNT).fill(SPAWN_GRACE_MS));
   });
 
   test("every nest starts alive at its own full HP", () => {
@@ -258,70 +283,345 @@ describe("nest layout (#123)", () => {
     const typed = s.nests.map((n) => `${n.id}:${n.kind}`);
     const doomed = s.nests[0];
     const origin = { x: doomed.pos.x - 100, y: doomed.pos.y };
-    for (let i = 0; i < 400; i++) {
+    let spawned = 0;
+    for (let i = 0; i < 1_500; i++) {
       if (i === 5) doomed.hp = RANGED_DAMAGE; // one shot from silence…
       const attacks = i === 6 ? [shot(origin, { x: 1, y: 0 })] : []; // …and that shot lands
-      stepEnemies(s, player({ ...C }), attacks, 200); // 80 s of match, two waves
+      spawned += stepEnemies(s, player({ ...C }), attacks, 200).events.spawns.length; // 5 min
       s.enemies.clear(); // so the cap never swallows a later wave
     }
     expect(s.nests.filter((n) => !n.alive)).toHaveLength(1); // one really was silenced
-    expect(s.waveIndex).toBeGreaterThan(1); // and waves really did fire
+    expect(spawned).toBeGreaterThan(NEST_COUNT); // and waves really did fire
     expect(s.nests.map((n) => `${n.id}:${n.kind}`)).toEqual(typed);
   });
 });
 
-describe("waves (the ~30 s escalating drumbeat)", () => {
-  test("no wave before 0:30; the first wave spawns 2+1 grunts per nest", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5);
-    const calm = stepEnemies(s, [], [], WAVE_PERIOD_MS - 1).events;
-    expect(calm.spawns).toEqual([]);
-    expect(calm.wave).toBeNull();
+// #124. Three curves, each one a pure function of the match clock and each one anchored at the end
+// of the one-minute grace: the first wave a squad ever meets is the curves' starting value. Every
+// number here is provisional — a retune moves these expectations, and that is not a regression.
+describe("the escalation curves (#124)", () => {
+  const MIN = 60_000;
+  const at = (minutes: number) => SPAWN_GRACE_MS + minutes * MIN;
 
-    const fire = stepEnemies(s, [], [], 1).events; // crosses 0:30
-    expect(fire.wave?.index).toBe(1);
-    expect(fire.spawns).toHaveLength(NEST_COUNT * (2 + 1)); // 8 × 3 = 24
-    expect(fire.spawns.every((sp) => sp.kind === "grunt")).toBe(true);
+  describe("period", () => {
+    test("is its starting 60 s for the whole first minute of spawning", () => {
+      expect(nestPeriodMs(at(0))).toBe(NEST_PERIOD_START_MS);
+      expect(nestPeriodMs(at(1) - 1)).toBe(NEST_PERIOD_START_MS);
+    });
+
+    test("falls one step per minute after that", () => {
+      expect(nestPeriodMs(at(1))).toBe(55_000);
+      expect(nestPeriodMs(at(2))).toBe(50_000);
+      expect(nestPeriodMs(at(3))).toBe(45_000);
+    });
+
+    test("floors at 10 s and never falls through it", () => {
+      expect(nestPeriodMs(at(9))).toBe(15_000);
+      expect(nestPeriodMs(at(10))).toBe(NEST_PERIOD_FLOOR_MS);
+      expect(nestPeriodMs(at(11))).toBe(NEST_PERIOD_FLOOR_MS);
+      expect(nestPeriodMs(at(600))).toBe(NEST_PERIOD_FLOOR_MS);
+    });
+
+    test("reads as its starting value through the grace, when no nest is armed anyway", () => {
+      expect(nestPeriodMs(0)).toBe(NEST_PERIOD_START_MS);
+      expect(nestPeriodMs(SPAWN_GRACE_MS - 1)).toBe(NEST_PERIOD_START_MS);
+    });
   });
 
-  test("every live nest emits 2+w grunts, at its own position", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5); // rng 0.5 → zero jitter, so a grunt spawns
-    const fire = stepEnemies(s, [], [], WAVE_PERIOD_MS).events; //  exactly on its nest
-    const perNest = new Map<string, number>();
-    for (const sp of fire.spawns) perNest.set(where(sp.pos), (perNest.get(where(sp.pos)) ?? 0) + 1);
-    expect([...perNest.keys()].sort()).toEqual(s.nests.map((n) => where(n.pos)).sort());
-    expect([...perNest.values()].every((c) => c === 2 + 1)).toBe(true);
+  describe("wave size", () => {
+    test("is one for the whole first minute of spawning", () => {
+      expect(waveSize(at(0))).toBe(WAVE_SIZE_START);
+      expect(waveSize(at(1) - 1)).toBe(WAVE_SIZE_START);
+    });
+
+    test("grows by one per minute after that", () => {
+      expect(waveSize(at(1))).toBe(2);
+      expect(waveSize(at(2))).toBe(3);
+      expect(waveSize(at(3))).toBe(4);
+    });
+
+    test("caps at five and never grows past it", () => {
+      expect(waveSize(at(4))).toBe(WAVE_SIZE_MAX);
+      expect(waveSize(at(5))).toBe(WAVE_SIZE_MAX);
+      expect(waveSize(at(600))).toBe(WAVE_SIZE_MAX);
+    });
+
+    test("is one through the grace", () => {
+      expect(waveSize(0)).toBe(WAVE_SIZE_START);
+    });
   });
 
-  test("wave 2 escalates to 2+2 per nest and advances the wave index", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5);
-    stepEnemies(s, [], [], WAVE_PERIOD_MS); // wave 1
-    s.enemies.clear(); // the squad cleared it; what wave 2 emits is not a question about the cap
-    const w2 = stepEnemies(s, [], [], WAVE_PERIOD_MS).events; // wave 2
-    expect(w2.wave?.index).toBe(2);
-    expect(w2.spawns).toHaveLength(NEST_COUNT * (2 + 2)); // 200
-  });
+  describe("elite share", () => {
+    test("is nothing for the whole first minute of spawning — the first waves are all grunts", () => {
+      expect(eliteShare(at(0))).toBe(0);
+      expect(eliteShare(at(1) - 1)).toBe(0);
+    });
 
-  test("ENEMY_CAP governs concurrency: waves hold their remainder at the cap", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5);
-    for (let i = 0; i < 12; i++) stepEnemies(s, [], [], WAVE_PERIOD_MS);
-    expect(s.enemies.size).toBe(ENEMY_CAP); // reached and held, never breached
-  });
+    test("grows five points per minute after that", () => {
+      expect(eliteShare(at(1))).toBe(0.05);
+      expect(eliteShare(at(2))).toBe(0.1);
+      expect(eliteShare(at(3))).toBe(0.15);
+    });
 
-  test("elites appear from wave 3: counts are 0/0/1/2/3 for waves 1–5", () => {
-    const s = fewNests(spawnEnemyState(worldInit(), () => 0.5));
-    const eliteCounts: number[] = [];
-    for (let w = 1; w <= 5; w++) {
-      const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS).events.spawns;
-      eliteCounts.push(spawns.filter((sp) => sp.kind === "elite").length);
+    test("caps at thirty points and never grows past it", () => {
+      expect(eliteShare(at(6))).toBe(ELITE_SHARE_MAX);
+      expect(eliteShare(at(7))).toBe(ELITE_SHARE_MAX);
+      expect(eliteShare(at(600))).toBe(ELITE_SHARE_MAX);
+    });
+
+    test("is nothing through the grace", () => {
+      expect(eliteShare(0)).toBe(0);
+    });
+  });
+});
+
+// #124. Every nest keeps its own timer: one minute of grace, then a wave on that nest's own
+// period, escalating on the curves above. There is no global wave clock and no wave index.
+describe("per-nest spawning (#124)", () => {
+  const DT = 50; // the real tick, so a timer is read at the resolution the sim runs at
+  const ticks = (state: EnemyState, count: number, players: PlayerRef[] = []) => {
+    const spawns: EnemySpawn[][] = [];
+    for (let i = 0; i < count; i++) spawns.push(stepEnemies(state, players, [], DT).events.spawns);
+    return spawns;
+  };
+
+  test("nothing spawns for the first minute, whatever phases the rng deals", () => {
+    for (const seed of [1, 2, 3, 7, 99]) {
+      const s = spawnEnemyState(worldInit(seed), mulberry32(seed));
+      const before = ticks(s, SPAWN_GRACE_MS / DT - 1).flat();
+      expect(before).toEqual([]);
+      expect(s.elapsedMs).toBe(SPAWN_GRACE_MS - DT);
     }
-    expect(eliteCounts).toEqual([0, 0, 1, 2, 3]);
+  });
+
+  test("and the grace really does end: every nest has fired by the end of the first period", () => {
+    const s = spawnEnemyState(worldInit(5), mulberry32(5));
+    const fired = new Set<string>();
+    for (let i = 0; i < (SPAWN_GRACE_MS + NEST_PERIOD_START_MS) / DT; i++) {
+      s.enemies.clear(); // the cap is not what this test is about
+      for (const sp of stepEnemies(s, [], [], DT).events.spawns) fired.add(nearestNest(s, sp.pos));
+    }
+    expect(fired.size).toBe(NEST_COUNT);
+  });
+
+  test("every nest is armed inside the first period after the grace, never before it", () => {
+    const s = spawnEnemyState(worldInit(3), mulberry32(3));
+    expect(s.nestTimers.size).toBe(NEST_COUNT);
+    for (const nest of s.nests) {
+      const armedAt = s.nestTimers.get(nest.id) as number;
+      expect(armedAt).toBeGreaterThanOrEqual(SPAWN_GRACE_MS);
+      expect(armedAt).toBeLessThan(SPAWN_GRACE_MS + NEST_PERIOD_START_MS);
+    }
+  });
+
+  test("the timers are independent — fifty nests do not fire on one tick", () => {
+    const s = spawnEnemyState(worldInit(11), mulberry32(11));
+    const window = ticks(s, (SPAWN_GRACE_MS + NEST_PERIOD_START_MS) / DT);
+    const firing = window.filter((spawns) => spawns.length > 0);
+    expect(firing.length).toBeGreaterThan(NEST_COUNT / 2); // spread across many ticks, not one
+    expect(Math.max(...firing.map((spawns) => spawns.length))).toBeLessThan(NEST_COUNT / 5);
+  });
+
+  test("a nest re-arms on the period the curve gives, not on a global clock", () => {
+    const one = (minutes: number) => {
+      const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => 0.5)), minutes);
+      s.nestTimers.set(s.nests[0].id, DT); // due exactly on the next tick, so the gap is the period
+      let gap = 0;
+      stepEnemies(s, [], [], DT); // the armed wave
+      do {
+        gap += DT;
+      } while (stepEnemies(s, [], [], DT).events.spawns.length === 0);
+      return gap;
+    };
+    expect(one(0)).toBe(NEST_PERIOD_START_MS);
+    expect(one(2)).toBe(50_000);
+  });
+
+  test("a wave carries what the size curve says, from one nest", () => {
+    const sizes = [0, 1, 2, 3, 4, 5, 9].map((minutes) => {
+      const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => 0.5)), minutes);
+      return stepEnemies(s, [], [], DT).events.spawns.length;
+    });
+    expect(sizes).toEqual([1, 2, 3, 4, 5, 5, 5]);
+  });
+
+  test("a wave spawns at its own nest", () => {
+    const s = armed(spawnEnemyState(worldInit(), () => 0.5)); // rng 0.5 → zero jitter
+    const spawns = stepEnemies(s, [], [], DT).events.spawns;
+    expect(spawns).toHaveLength(NEST_COUNT * WAVE_SIZE_START);
+    expect(spawns.map((sp) => where(sp.pos)).sort()).toEqual(
+      s.nests.map((n) => where(n.pos)).sort(),
+    );
+  });
+
+  test("the elite share decides each enemy in the wave, and 0% means all grunts", () => {
+    const mix = (minutes: number, roll: number) => {
+      const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => roll)), minutes);
+      return stepEnemies(s, [], [], DT).events.spawns.map((sp) => sp.kind);
+    };
+    expect(mix(0, 0)).toEqual(["grunt"]); // a 0% share admits nothing, however low the roll
+    expect(mix(6, 0.29)).toEqual(Array(WAVE_SIZE_MAX).fill("elite")); // under 30% — every one
+    expect(mix(6, 0.31)).toEqual(Array(WAVE_SIZE_MAX).fill("grunt")); // over it — none
   });
 
   test("an elite spawns at ELITE_HP", () => {
-    const s = fewNests(spawnEnemyState(worldInit(), () => 0.5));
-    let wave3: ReturnType<typeof stepEnemies>["events"] | undefined;
-    for (let w = 1; w <= 3; w++) wave3 = stepEnemies(s, [], [], WAVE_PERIOD_MS).events;
-    expect(wave3?.spawns.find((sp) => sp.kind === "elite")?.hp).toBe(ELITE_HP);
+    const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => 0)), 6);
+    const spawns = stepEnemies(s, [], [], DT).events.spawns;
+    expect(spawns.find((sp) => sp.kind === "elite")?.hp).toBe(ELITE_HP);
+  });
+
+  test("ENEMY_CAP governs concurrency: a nest holds its remainder at the cap", () => {
+    const s = spawnEnemyState(worldInit(), () => 0.5);
+    for (let i = 0; i < 8_000 && s.enemies.size < ENEMY_CAP; i++) stepEnemies(s, [], [], DT);
+    expect(s.enemies.size).toBe(ENEMY_CAP);
+    ticks(s, 200);
+    expect(s.enemies.size).toBe(ENEMY_CAP); // reached and held, never breached
+  });
+
+  test("a silenced nest never fires again; its neighbours keep their timers", () => {
+    const s = armed(spawnEnemyState(worldInit(), () => 0.5));
+    const doomed = s.nests[0];
+    doomed.alive = false;
+    const spawns = stepEnemies(s, [], [], DT).events.spawns;
+    expect(spawns).toHaveLength((NEST_COUNT - 1) * WAVE_SIZE_START);
+    expect(spawns.map((sp) => where(sp.pos))).not.toContain(where(doomed.pos));
+  });
+
+  test("a partially-damaged nest still fires its full wave", () => {
+    const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => 0.5)), 4);
+    s.nests[0].hp = 1;
+    expect(stepEnemies(s, [], [], DT).events.spawns).toHaveLength(WAVE_SIZE_MAX);
+  });
+
+  // The purity claim in the module's own header, asserted the only way that can catch shared
+  // module state: two sims of the same world stepped alternately. A module-level `let` anywhere in
+  // the spawn path — a timer, a clock, a wave counter — would make one of them read the other's.
+  test("two sims of one world step identically even interleaved", () => {
+    const a = spawnEnemyState(worldInit(8), mulberry32(8));
+    const b = spawnEnemyState(worldInit(8), mulberry32(8));
+    const squad = player({ ...C });
+    for (let i = 0; i < 4_000; i++) {
+      const sa = stepEnemies(a, squad, [], DT).events.spawns;
+      const sb = stepEnemies(b, squad, [], DT).events.spawns;
+      expect(sa).toEqual(sb);
+    }
+    expect(a.enemies.size).toBeGreaterThan(0);
+    expect([...a.enemies.values()]).toEqual([...b.enemies.values()]);
+  });
+});
+
+// #124. A hunter nest sends its wave at the nearest player at any distance, and the wave commits to
+// that player for life — while still breaking off for anything that comes inside AGGRO_RADIUS.
+describe("hunter waves (#124)", () => {
+  const DT = 50;
+  const nestAt = (pos: Vec2, kind: NestKind): Nest => ({
+    id: "n0",
+    pos,
+    hp: NEST_HP_INNER,
+    maxHp: NEST_HP_INNER,
+    alive: true,
+    kind,
+  });
+  // One nest of a chosen kind, armed to fire on the next tick with nothing else in the world.
+  const oneNest = (pos: Vec2, kind: NestKind): EnemyState => ({
+    arena: ARENA,
+    enemies: new Map(),
+    nests: [nestAt(pos, kind)],
+    elapsedMs: SPAWN_GRACE_MS,
+    nestTimers: new Map([["n0", 0]]),
+    rng: () => 0.5, // zero jitter, so the wave spawns on the nest to the last bit
+    nextId: 1,
+  });
+  const fire = (state: EnemyState, players: PlayerRef[]) =>
+    stepEnemies(state, players, [], DT).events.spawns;
+  const distTo = (from: Vec2, to: Vec2) => Math.hypot(to.x - from.x, to.y - from.y);
+  const EDGE = { x: C.x + HALF, y: C.y }; // the outer bound of the nest band: as far out as a nest gets
+
+  test("a nest at the far edge sends its wave at a player standing at centre", () => {
+    const s = oneNest(EDGE, "hunter");
+    const squad = player({ ...C });
+    expect(fire(s, squad)).toHaveLength(1);
+    const hunter = only(s);
+    expect(hunter.hunt).toBe("p1");
+    expect(distTo(hunter.pos, C)).toBeGreaterThan(AGGRO_RADIUS); // committed from far outside aggro
+
+    let closing = distTo(hunter.pos, C);
+    for (let i = 0; i < 40_000 && closing > 100; i++) {
+      stepEnemies(s, squad, [], DT);
+      const now = distTo(hunter.pos, C);
+      expect(now).toBeLessThan(closing); // never stalls, and never at a hold edge
+      closing = now;
+    }
+    expect(closing).toBeLessThanOrEqual(100);
+  });
+
+  test("a wanderer nest's wave hunts nobody, and still stops at the hold edge", () => {
+    const s = oneNest(EDGE, "wanderer");
+    const squad = player({ ...C });
+    expect(fire(s, squad)).toHaveLength(1);
+    const drifter = only(s);
+    expect(drifter.hunt).toBeUndefined();
+    for (let i = 0; i < 40_000; i++) stepEnemies(s, squad, [], DT);
+    expect(distTo(drifter.pos, C)).toBeCloseTo(HOLD_EDGE, 6);
+  });
+
+  test("the wave commits to the nearest player at spawn, at any distance", () => {
+    const nest = { x: C.x + 10_000, y: C.y };
+    const far = { id: "far", pos: { ...C } };
+    const near = { id: "near", pos: { x: C.x + 4_000, y: C.y } };
+    const s = oneNest(nest, "hunter");
+    fire(s, [far, near]);
+    expect(only(s).hunt).toBe("near"); // 6,000 u away against 10,000 — both far outside aggro
+  });
+
+  test("and holds that commitment when another player becomes the nearest", () => {
+    const nest = { x: C.x + 10_000, y: C.y };
+    const far = { id: "far", pos: { ...C } };
+    const near = { id: "near", pos: { x: C.x + 4_000, y: C.y } };
+    const s = oneNest(nest, "hunter");
+    fire(s, [far, near]);
+    const hunter = only(s);
+
+    near.pos = { x: C.x - 14_000, y: C.y }; // the committed one runs clear across the arena
+    const before = { ...hunter.pos };
+    for (let i = 0; i < 200; i++) stepEnemies(s, [far, near], [], DT);
+    expect(hunter.hunt).toBe("near");
+    expect(distTo(hunter.pos, near.pos)).toBeLessThan(distTo(before, near.pos)); // still chasing it
+    expect(distTo(hunter.pos, far.pos)).toBeLessThan(distTo(before, far.pos)); // (which leads past far)
+    expect(hunter.pos.x).toBeLessThan(before.x);
+  });
+
+  test("but breaks off for anything that comes inside AGGRO_RADIUS on the way", () => {
+    const nest = { x: C.x + 10_000, y: C.y };
+    const hunted = { id: "hunted", pos: { ...C } };
+    const s = oneNest(nest, "hunter");
+    fire(s, [hunted]);
+    const hunter = only(s);
+    for (let i = 0; i < 200; i++) stepEnemies(s, [hunted], [], DT); // marching inward
+    expect(hunter.pos.x).toBeLessThan(nest.x);
+
+    // A squadmate steps out in front of it, off the line to the hunted player.
+    const stray = { id: "stray", pos: { x: hunter.pos.x, y: hunter.pos.y + AGGRO_RADIUS - 100 } };
+    const before = { ...hunter.pos };
+    for (let i = 0; i < 40; i++) stepEnemies(s, [hunted, stray], [], DT);
+    expect(hunter.target).toEqual({ kind: "player", id: "stray" });
+    expect(hunter.pos.y).toBeGreaterThan(before.y); // it turned off its line
+    expect(hunter.hunt).toBe("hunted"); // the commitment is not spent, only interrupted
+  });
+
+  test("a hunter whose player is gone marches like anything else", () => {
+    const s = oneNest(EDGE, "hunter");
+    fire(s, player({ ...C }));
+    const orphan = only(s);
+    expect(orphan.hunt).toBe("p1");
+    for (let i = 0; i < 40_000; i++) stepEnemies(s, [], [], DT); // the squad disconnected
+    expect(distTo(orphan.pos, C)).toBeCloseTo(HOLD_EDGE, 6);
+  });
+
+  test("a hunter nest with no squad to aim at commits to nobody", () => {
+    const s = oneNest(EDGE, "hunter");
+    expect(fire(s, [])).toHaveLength(1);
+    expect(only(s).hunt).toBeUndefined();
   });
 });
 
@@ -501,23 +801,6 @@ describe("nests are attackable, and silencing one quietens the ground around it"
     const events = stepEnemies(s, [], [shot(origin, { x: 1, y: 0 })], 0).events;
     expect(events.nests).toEqual([{ id: nest.id, hp: 0, alive: false }]);
     expect(s.nests[0].alive).toBe(false);
-  });
-
-  test("a silenced nest emits nothing next wave; the others still do", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5); // rng 0.5 → zero jitter
-    const silenced = s.nests[0];
-    silenced.alive = false;
-    const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS).events.spawns; // fire wave 1
-    expect(spawns.some((sp) => where(sp.pos) === where(silenced.pos))).toBe(false);
-    expect(spawns).toHaveLength((NEST_COUNT - 1) * (2 + 1)); // exactly the 49 live nests
-  });
-
-  test("a partially-damaged nest still emits its full wave", () => {
-    const s = spawnEnemyState(worldInit(), () => 0.5);
-    const nest = s.nests[0];
-    nest.hp = 1; // damaged but alive
-    const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS).events.spawns;
-    expect(spawns.filter((sp) => where(sp.pos) === where(nest.pos))).toHaveLength(2 + 1);
   });
 });
 
@@ -770,10 +1053,11 @@ describe("M4-T4: structures are solid to the sim too", () => {
   test("a wave spawning on top of a wall is pushed clear of it", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5); // rng 0.5 → zero jitter, so every grunt
     const nest = onlyNest(s); //                           spawns exactly on the nest
+    armed(s, 4); // a full wave of five, so the push is asserted on more than one spawn
     const { build } = walls([tileOf({ x: nest.pos.x - TILE, y: nest.pos.y - TILE })]);
 
-    const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS, build).events.spawns;
-    expect(spawns.length).toBe(2 + 1);
+    const spawns = stepEnemies(s, [], [], 50, build).events.spawns;
+    expect(spawns.length).toBe(WAVE_SIZE_MAX);
     for (const sp of spawns) {
       expect(structureBlocking(build, sp.pos, enemyRadius(sp.kind))).toBeNull();
     }
@@ -782,6 +1066,7 @@ describe("M4-T4: structures are solid to the sim too", () => {
   test("a nest sealed on all sides still emits — the sim never fails a spawn", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
     const nest = onlyNest(s);
+    armed(s, 4);
     // Blanket the nest's whole spawn scatter, so every spawn point starts inside a footprint.
     const tiles: Tile[] = [];
     const origin = tileOf({ x: nest.pos.x - 360, y: nest.pos.y - 360 });
@@ -790,11 +1075,11 @@ describe("M4-T4: structures are solid to the sim too", () => {
     }
     const { build } = walls(tiles);
 
-    const spawns = stepEnemies(s, [], [], WAVE_PERIOD_MS, build).events.spawns;
+    const spawns = stepEnemies(s, [], [], 50, build).events.spawns;
     // Deep inside a solid field one push lands in the neighbouring wall, and that is the
     // deliberate trade: the sim pushes once and never searches for a free tile. What it must
     // never do is drop the spawn — the enemies are there, and they will chew their way out.
-    expect(spawns.length).toBe(2 + 1);
+    expect(spawns.length).toBe(WAVE_SIZE_MAX);
   });
 
   test("with nothing built, enemy motion is byte-for-byte what M3 produced", () => {
@@ -877,7 +1162,7 @@ describe("M4-T8: a turret shoots the nearest enemy, through walls, and sieges ne
   test("a turret line left in front of a nest brings it down unattended", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
     const nest = s.nests[0];
-    s.msUntilWave = Number.POSITIVE_INFINITY; // no waves; the turret is alone with the nest
+    silence(s); // no waves; the turret is alone with the nest
     const { build } = withTurret(tileOf({ x: nest.pos.x - 300, y: nest.pos.y }));
 
     let silenced = false;
@@ -1170,7 +1455,7 @@ describe("M5-I5: a turret's aim streams as a transition, a player's shot as an e
 
   test("a shot at a nest names the nest it damaged", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
-    s.msUntilWave = Number.POSITIVE_INFINITY; // no wave; the nest is the only thing on the ray
+    silence(s); // no wave; the nest is the only thing on the ray
     const nest = s.nests[0];
     expect(step(s, [shot({ x: nest.pos.x - 300, y: nest.pos.y }, { x: 1, y: 0 })]).shots).toEqual([
       { id: "p1", dir: { x: 1, y: 0 }, hit: nest.id },

@@ -103,13 +103,14 @@ export function worstCaseTick(): {
     placeStructure(build, "turret", tileOf(at), spec);
   }
 
-  // Drive waves until the cap governor is holding the remainder. Waves fire every 30 s, so this
-  // is virtual time only — no clock is read anywhere in the sim.
+  // Drive waves until the cap governor is holding the remainder. Every nest fires on its own timer
+  // after a minute of grace (#124), so this is a few virtual minutes — and virtual only: no clock is
+  // read anywhere in the sim.
   const squad = Array.from({ length: PLAYERS }, (_, i) => ({
     id: `p${i + 1}`,
     pos: { x: origin.x + 200 + i * 40, y: origin.y + 200 },
   }));
-  for (let i = 0; i < 4_000 && state.enemies.size < ENEMY_CAP; i++) {
+  for (let i = 0; i < 20_000 && state.enemies.size < ENEMY_CAP; i++) {
     stepEnemies(state, squad, [], TICK_MS, build);
   }
 

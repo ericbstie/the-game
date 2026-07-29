@@ -739,7 +739,7 @@ describe("M3: player health relay and aggro-gating", () => {
 });
 
 describe("M3: reconnect rebuilds live combat state", () => {
-  test("a reconnecter gets the live enemy/nest/wave keyframe and their own HP restored", async () => {
+  test("a reconnecter gets the live enemy/nest keyframe and their own HP restored", async () => {
     const server = startServer({ tickMs: 10, firstWaveMs: 5 }); // spawn a wave almost at once
     servers.push(server);
     const host = await connect(server);
@@ -764,7 +764,6 @@ describe("M3: reconnect rebuilds live combat state", () => {
     );
     expect(keyframe.enemies.length).toBeGreaterThan(0); // live enemies, not the (empty) initial set
     expect(keyframe.nests).toHaveLength(NEST_COUNT);
-    expect(keyframe.wave.index).toBeGreaterThanOrEqual(1); // the wave that fired
 
     const ownHp = expectMessage(
       await back.waitFor((m) => m.type === "game/peer-health" && m.hp === 40),
