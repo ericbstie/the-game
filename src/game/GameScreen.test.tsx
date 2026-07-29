@@ -520,6 +520,40 @@ describe("#120: the gun decides what left-click does", () => {
     expect(onMine).not.toHaveBeenCalled();
   });
 
+  // #103 drops the left hold when the menu opens, and #120 put the pick on that same ref, so the
+  // pick now goes with it. Nobody asked for that; it is pinned here so it cannot change unnoticed.
+  test("opening the Escape menu stops the mining, and none goes into it (#100)", async () => {
+    const { canvas, onMine } = bothJobs();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(MINE_CADENCE_MS * 3);
+    const mined = onMine.mock.calls.length;
+    expect(mined).toBeGreaterThan(0); // mining was really running when Escape came down
+    fireEvent.keyDown(window, { key: "Escape" });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalledTimes(mined);
+  });
+
+  // Death drops the left hold from inside `fireIfDue`, which only runs with the gun up, so a stowed
+  // hold outlives it — refused while dead, and mining again the moment the player is back and in
+  // reach. Recorded rather than chosen: it is what mining did on its old button. The respawn below
+  // is the observable case, not a contrived one — `reviveSelf` snaps to arena centre and
+  // `BOOTSTRAP_PATCHES` seeds metal within reach of it (build.ts:110).
+  test("a stowed hold outlives a death, and mines again on respawn with no fresh press", async () => {
+    const middle = { x: ARENA.width / 2, y: ARENA.height / 2 };
+    const centreTile = { tx: Math.floor(middle.x / TILE), ty: Math.floor(middle.y / TILE) };
+    const world = armed(0); // down before the button ever goes near it
+    world.ore.set(tileKey(centreTile), "metal"); // the bootstrap patch respawn puts you on
+    const { canvas, onMine } = bothJobs(world);
+    fireEvent.mouseDown(canvas, { button: 0, clientX: middle.x, clientY: middle.y });
+    await settle(MINE_CADENCE_MS * 3);
+    expect(onMine).not.toHaveBeenCalled(); // a corpse mines nothing
+    world.reviveSelf();
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalledWith(centreTile);
+  });
+
   // Two buttons, two holds: letting one go must not let the other go with it. The cursor's tile
   // carries a structure, so right-click has something to pull down and left-click has nothing to
   // mine out from under it.
@@ -534,6 +568,20 @@ describe("#120: the gun decides what left-click does", () => {
     await settle(DEMOLISH_HOLD_MS + MINE_CADENCE_MS * 3);
     fireEvent.mouseUp(window, { button: 2 });
     expect(onDemolish).toHaveBeenCalledWith("m1");
+  });
+
+  // And the same in the other direction, which is the one the shared ref put at risk: the pick and
+  // the trigger are now one flag, so a release that reached across buttons would drop whichever of
+  // them was running. No tick has fired between the press and the right button coming up — the
+  // events are synchronous — so every mine counted is one the surviving hold earned.
+  test("releasing the demolish hold leaves left-click's alone", async () => {
+    const { canvas, onMine } = bothJobs();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    fireEvent.mouseDown(canvas, { button: 2 });
+    fireEvent.mouseUp(window, { button: 2 });
+    await settle(MINE_CADENCE_MS * 3);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalled();
   });
 });
 
