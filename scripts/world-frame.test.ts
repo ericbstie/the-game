@@ -73,4 +73,13 @@ describe("entrySource", () => {
     const source = entrySource(parseArgs(["--map", String(MINIMAP_COVERAGE_WIDE_U)]), modules);
     expect(source).toContain(`minimapCoverage: ${MINIMAP_COVERAGE_WIDE_U}`);
   });
+
+  // The starburst is procedural ink rather than a bake, so no sprite sheet shows it and no spy says
+  // whether it reads. This frame is the only channel that puts it at real size over the white spider
+  // it is struck on (ADR 0002 §5) — a burst missing from the entry is a mark nobody ever looks at.
+  test("carries the bursts, so the mark on impact can be looked at (#115)", () => {
+    const source = entrySource(parseArgs([]), modules);
+    expect(source).toContain("demoBursts");
+    expect(source).toContain("bursts: demoBursts(world, DEMO_NOW)");
+  });
 });
