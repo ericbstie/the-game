@@ -77,7 +77,7 @@ describe("keyToBuildSlot", () => {
   });
 
   test("movement and other keys pass through untouched", () => {
-    for (const key of ["w", "a", "s", "d", "ArrowUp", " ", "", "e"]) {
+    for (const key of ["w", "a", "s", "d", "ArrowUp", " ", "", "g"]) {
       expect(keyToBuildSlot(key, 4)).toBeNull();
     }
   });
@@ -96,8 +96,9 @@ describe("isMinimapZoomKey", () => {
   });
 
   test("no other key cycles the map", () => {
-    // `e` among them: #120 takes it for the gun toggle, and the zoom must not answer to it.
-    for (const key of ["w", "a", "s", "d", "ArrowUp", "1", "4", "e", "Escape", " ", ""]) {
+    // `g` among them: #120 takes it for the gun toggle (#132 moved it there), and the zoom must
+    // not answer to it.
+    for (const key of ["w", "a", "s", "d", "ArrowUp", "1", "4", "g", "Escape", " ", ""]) {
       expect(isMinimapZoomKey(key)).toBe(false);
     }
   });
@@ -129,6 +130,9 @@ describe("isGunToggleKey", () => {
       "Escape",
       " ",
       "",
+      // The key #120 shipped and #132 moved off. Listed so a revert to it is a red test rather than
+      // a silent re-binding of a key the match no longer uses.
+      "e",
     ]) {
       expect(isGunToggleKey(key)).toBe(false);
     }

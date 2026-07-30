@@ -132,7 +132,7 @@ export function GameScreen({
   // demolish only fires once the button has been held a while.
   const demolishingRef = useRef<number | null>(null);
   // Whether left-click is down on an empty build bar. What that *does* is not latched here: the gun
-  // decides, and it is read live every tick, so `e` mid-hold switches the hold between the trigger
+  // decides, and it is read live every tick, so `g` mid-hold switches the hold between the trigger
   // (#103) and the pick without the button being let go (#120). A flag rather than the demolish
   // hold's timestamp: neither job cares how long it has been down.
   const leftHeldRef = useRef(false);
@@ -554,7 +554,7 @@ export function GameScreen({
   // decides what either is worth — the client only ever asks.
   //
   // They read their buttons live rather than latching a mode at the press, and that is the whole of
-  // #120's mid-hold switch: `e` pressed under a held left button changes what the very next tick
+  // #120's mid-hold switch: `g` pressed under a held left button changes what the very next tick
   // asks for, with nothing to re-arm. A cursor over nothing minable simply asks for nothing, and
   // starts asking the moment it is over ore — the same way a released button stops without being
   // told.
@@ -634,7 +634,7 @@ export function GameScreen({
       // Left-click is one button with three jobs: lay a run of the selected buildable, or — with
       // the bar empty — shoot with the gun up and mine with it stowed (#120). The buildable is the
       // one of the three latched at the press, because a run must not change what it is laying
-      // halfway down its own path; the other two are decided tick by tick, which is what lets `e`
+      // halfway down its own path; the other two are decided tick by tick, which is what lets `g`
       // swap them under a button that never came up.
       if (kind) {
         const tile = cursorTile(pointerRef.current, aimRef.current.camera);
