@@ -478,6 +478,11 @@ export function drawWorld(
   // whatever happens to be standing over the gap the dead spider left.
   drawPuffs(ctx, options);
 
+  // The lettered word over both of them (#79), and over the sort for the same reason they are —
+  // with one more of its own: it is the only mark in the frame that carries paper, so anything
+  // sorted in front of it would be read as being *inside* the word.
+  drawLettering(options, blitOver);
+
   // Over the sort for the same reason a shot line is: a `+1` marks the miner that earned it rather
   // than standing on the floor beside it, and one half-hidden behind a spider says nothing.
   drawFloats(ctx, options.floats, now);
@@ -707,6 +712,64 @@ function drawPuffs(ctx: CanvasRenderingContext2D, { puffs, camera, viewport }: D
     struck++;
   }
   if (struck > 0) ctx.stroke();
+}
+
+// Which word a mark is lettered with (#79) — a non-negative integer, wrapped by the sprite cache
+// into however many words `src/sprite/lettering.ts` actually draws.
+//
+// **That wrap is the whole interface, and it is why this returns an index rather than a word.** The
+// render layer never learns how large the set is, so adding a word or dropping one is a change to
+// one sprite module and to nothing else — the same property `oreVariant` has, where the packing
+// lives beside the sprite that unpacks it. `SpriteSource` does not expose a subject's facing count
+// and does not need to.
+//
+// Derived from the mark and nothing else, which is what makes it *stable*: a word chosen per frame
+// would cycle the whole set over its own lifetime, and the position is what tells two marks on the
+// same tick apart — every hit in one delta shares an `at` (`ClientWorld.applyMapDelta`). Pure
+// arithmetic, the same mix `tileVariant` scatters the grass with, so it costs no state and every
+// client letters the same blow the same way.
+export function letteringAt(pos: Vec2, at: number): number {
+  const mixed = Math.imul(
+    (Math.round(pos.x) * 73_856_093) ^ (Math.round(pos.y) * 19_349_663) ^ (at * 83_492_791),
+    0x45d9f3b,
+  );
+  return (mixed ^ (mixed >>> 15)) >>> 0;
+}
+
+// The words this frame pops, one over every hit and every death the two mark lists hold (#79).
+//
+// **It rides #115's and #116's marks rather than a list of its own, and that is what times it.** A
+// hit arrives on the 20 Hz tick while the spider it belongs to is `ENEMY_RENDER_DELAY_MS` behind,
+// so a word stamped against the event would pop before the drawing it is about; `impactMarks` has
+// already held every mark back until its sprite caught up, and `deathMarks` has already applied the
+// same delay to a dead spider's *position*. Nothing about that clock is visible from here, and this
+// layer is better off never seeing it.
+//
+// It also means the word's lifetime is the mark's lifetime — `BURST_MS` on a hit, `PUFF_MS` on a
+// death — rather than a third number nobody could hold the other two against.
+//
+// **One blit a word, and no fallback.** Every other entity in this file keeps the shape it drew
+// before its sprite landed; a word has no shape, and the only shape it could fall back to is
+// `fillText`, which is exactly what ADR 0001's grant for this does *not* cover. Without the art the
+// layer draws nothing at all, and `drawWorld` stays the one draw path it has always been.
+function drawLettering(
+  { bursts, puffs, camera, viewport, sprites }: DrawOptions,
+  blitOver: Blit,
+): void {
+  // One lookup for the whole layer, and the box every word shares: without the art there is nothing
+  // to draw, and the cull below needs a reach before it can ask for a second sprite.
+  const probe = sprites?.("lettering", 0, 0);
+  if (!probe) return;
+  const source = sprites as SpriteSource;
+  for (const marks of [bursts, puffs]) {
+    for (const mark of marks ?? []) {
+      // Hits and deaths stream for the whole arena rather than for the part of it the camera is
+      // over, so most of a wave's words belong to a fight nobody is watching (rule 3).
+      if (!isVisible(mark.pos, probe.size / 2, camera, viewport)) continue;
+      const word = source("lettering", letteringAt(mark.pos, mark.at), 0);
+      if (word) blitOver(word, mark.pos.x, mark.pos.y);
+    }
+  }
 }
 
 // The `+1`s a miner throws up as it mines (#99). Each one is literally one whole Metal — never a

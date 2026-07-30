@@ -9,6 +9,7 @@ import grass from "./grass";
 import grunt from "./grunt";
 import gun from "./gun";
 import halo from "./halo";
+import lettering from "./lettering";
 import miner from "./miner";
 import nest from "./nest";
 import oreMetal from "./ore-metal";
@@ -47,6 +48,7 @@ export type SpriteName =
   | "grass"
   | "room" // the perimeter wall unfolded outward, and the escape door
   | "halo" // the barely-yellow self marker
+  | "lettering" // in-world: the hand-lettered word struck where a shot connects or an enemy dies
   | "ammo" // HUD: the squad's forged bullets
   | "gun" // HUD: the weapon — facing 0 stowed and hollow, facing 1 equipped and filled
   | "warning" // HUD: a structure is under attack
@@ -58,8 +60,12 @@ export type SpriteName =
 // the thing it stands for can never drift apart. #81 quotes these same numbers.
 //
 // The names left out have no size fixed by #81: `grass`'s tuft is #72's to settle along with its
-// density, and `halo`, `warning` and `unpowered` are overlays whose box is their own agent's call.
-// Inventing numbers for them here would be deciding by accident.
+// density, and `halo`, `warning`, `unpowered` and `lettering` are overlays whose box is their own
+// agent's call. Inventing numbers for them here would be deciding by accident.
+//
+// `lettering`'s 36 is nonetheless derived rather than picked — off the health bar it must not cover
+// — but the constants it comes off are `draw.ts`'s own, so the derivation is stated where the word
+// is drawn and pinned by a test on the frame rather than restated here as a second copy of it.
 export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
   player: PLAYER_RADIUS * 2, // 28
   grunt: GRUNT_RADIUS * 2, // 32
@@ -97,6 +103,7 @@ export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
   grunt,
   gun,
   halo,
+  lettering,
   miner,
   nest,
   "ore-metal": oreMetal,

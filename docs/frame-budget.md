@@ -33,6 +33,12 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > which is a correction to rule 1 rather than a cost. See
 > [What a death puff costs](#what-a-death-puff-costs-116).
 >
+> [#79](https://github.com/ericbstie/the-game/issues/79) has added a fourth — a lettered word on every
+> hit *and* every death — at **0.04 ms** for the five the cadences put up. It is the **cheapest mark in
+> the frame per unit** by an order of magnitude, and the first one that is a blit rather than a stroke,
+> which is a second correction to rule 1. See [What a lettered word
+> costs](#what-a-lettered-word-costs-79).
+>
 > [#125](https://github.com/ericbstie/the-game/issues/125) has raised `ENEMY_CAP` from 240 to 500, so
 > **the enemy count in every figure below is no longer the cap**. It is worth **+2.40 ms** measured on
 > an isolated probe — the largest single addition to this frame since the page was written, and the
@@ -109,6 +115,7 @@ difference from the row above.
 | + the miner floats | 6.3 | ≈0 | 10 `+1`s, each stroked and filled — see below |
 | + the impact bursts | — | ≈0 | 4 starbursts, one path (#115). Not in the run above; 0.09 ms isolated |
 | + the death puffs | — | ≈0 | 1 ink puff, one path (#116). Not in the run above; 0.05 ms isolated |
+| + the lettered words | — | ≈0 | 5 words, one blit each (#79) — 4 on hits, 1 on deaths. Not in the run above; 0.04 ms isolated |
 | **Total** | **6.3** | | **38% of a 16.67 ms frame** |
 
 **The script's printed labels for the first two rows are wrong, and the names in brackets above are
@@ -394,6 +401,125 @@ whole wave goes at once.** Nothing was narrowed to get there: no cooldown, no ca
 no distance filter — the puff fires on every death the client is streamed. The screenshot the probe
 writes is the frame those numbers were counted on.
 
+## What a lettered word costs (#79)
+
+**A lettered word is 0.04 ms of the frame at the count the game's own cadences put up, and 7.9 µs
+each — the cheapest mark in the frame per unit, by an order of magnitude.** It is also the only one
+of the four that fires on *both* events, so its count is the largest of the four, and it is still the
+cheapest layer. [#79](https://github.com/ericbstie/the-game/issues/79) strikes a hand-lettered word
+where a shot connects and where an enemy dies.
+
+**A word is a blit, and that is the whole explanation.** #114's speed lines, #115's burst and #116's
+puff are all *strokes*, priced by how many pieces they are struck in; a word is a baked sprite
+(`src/sprite/lettering.ts`) blitted into a 36 px box, and a blit is ~5 µs whatever is drawn inside
+it (rule 1). The lettering is by far the most elaborate mark of the four — seven hand-built
+letterforms, sixteen jittered rays, two passes of stroke per word — and it costs the frame less than
+a fifth of what the simplest of the others does, because none of that elaboration is in the frame.
+It is in the bake, once per word per DPR. **Rule 6, priced from the other direction.**
+
+**Five is the count, and it is derived rather than budgeted.** `concurrentLettering()` in
+`scripts/lettering-ink.ts` is `concurrentBursts() + concurrentPuffs()`, and that is not an
+approximation: a word rides #115's impact marks and #116's death marks rather than a list of its own,
+so it is up for exactly as long as they are and there is one of it per mark. Four on hits, one on
+deaths.
+
+Medians of five runs, one machine, dpr 2, `--enemies 500`, **all four marks interleaved in the same
+browser launch** so they are comparable to each other rather than quoted across sessions.
+
+| Concurrent | Lettered words (#79) | Death puffs (#116) | Impact bursts (#115) |
+| ---: | ---: | ---: | ---: |
+| what the cadences put up | **0.040 ms** at 5 | 0.062 ms at 1 | 0.140 ms at 4 |
+| 25 | 0.207 ms | 2.140 ms | 1.010 ms |
+| 50 | 0.395 ms | 4.402 ms | 2.277 ms |
+| 150 — a wave clear, in one tick | 1.097 ms | 14.773 ms | 7.800 ms |
+
+**Linear in the count, as a layer of independent blits has to be**: 8.0 µs a word at 5, 8.3 at 25,
+7.9 at 50, 7.3 at 150. At fifty concurrent that is 7.9 µs a word against 45.5 µs a burst and 88.0 µs
+a puff — **a word costs a sixth of a burst and a eleventh of a puff.** The 150 row is the one to
+watch for every other mark on this page and is the one row lettering makes *cheaper* to reach: a wave
+clear that costs 14.8 ms in puffs costs 1.1 ms in words on top of it.
+
+**The whole-frame instrument could not see this layer, and this is the fifth and sixth independent
+reproduction.** Across the runs taken for this section the cumulative `+ the lettering` row came back
+*cheaper* than the `+ the puffs` row it strictly contains — medians 18.873 against 19.153, and in one
+run 19.895 against 20.807 — and `+ the miner floats` again read dearer than `+ the shot lines` above
+it. Strict subsets cannot cost more than their supersets. Every figure in this section is from the
+isolated ladder, which `bun run frame:budget` prints as `lettering (150)`. **The whole-frame totals
+on this machine — 17.3–19.9 ms at cap 500 — are a different machine from the 6.3 ms headline and are
+not comparable to it**; this is the same container the #125 section measured 15.12 ms at cap 240 on.
+
+**`bun run frame:budget` now measures lettering as a layer of its own, and it has to take the art
+away to do it.** Every other layer on this page is added by handing `drawWorld` another list. A word
+cannot be: it rides lists the frame already carries, so the only way to draw the frame without it is
+a sprite source with no `lettering` entry — which is what the fixture builds, and what
+`drawWorld` then falls back to nothing at all on.
+
+**`bun run sprite:frame` reports 353 blits, up from #125's 349, and no timing at all.** The four it
+gained are the demo world's three impact marks and one death mark, each now lettered. It cannot price
+a layer and is not a substitute for the ladder above; what it is good for is the picture — it is the
+only instrument that shows a word over the spider, the burst and the puff it shares an event with.
+
+### What a lettered word lays
+
+`bun run lettering:ink` blits the shipped bake **through the shipped sprite cache** and counts what it
+puts on the paper, at dpr 1, 2 and 3. That indirection is the point: #120 found that `sprite:sheet`
+measures a sprite's own box, which is only what the player sees when the box and the blit agree. Here
+they do — `lettering.size` is 36 and `drawWorld` blits into 36 — and this probe is what checks it,
+because it takes the box off `BakedSprite.size` rather than assuming the nominal figure.
+
+**Ink** is the sum of per-pixel coverage, so a pixel the rasteriser half covered counts as half a
+pixel; the shot it is held against is one at full reach, axis-aligned. The four words are four
+drawings and do not weigh the same, so the heaviest is reported beside the mean.
+
+| dpr | Word ink (device px) | Heaviest of the four | Against a shot's mark | Solid share |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 262 | 294 | 19.2% | 32.0% |
+| 2 | 1,056 | 1,175 | 19.3% | 61.5% |
+| 3 | 2,394 | 2,664 | 19.4% | 72.4% |
+
+**A word lays almost exactly what a burst does** — 19% of a shot's mark against the burst's 18% and
+the puff's 17% — which is worth stating plainly: the four marks in this frame are within two points
+of each other on ink and span thirteen-fold on cost. Ink says whether a mark will *read*; it has
+never said anything about what one costs, and this is the widest that gap has been measured.
+
+**Its paper is not counted, and that is correct.** A word is the only mark in the frame that carries
+paper of its own — each letter is stroked in white before it is stroked in ink, which is what keeps
+it legible over a spider, exactly as a name and a miner's `+1` are cut out. White on a white floor is
+nothing added, so this table measures what the player sees appear.
+
+**It rasterises about as solidly as a burst does.** At dpr 1 it comes out 32% solid where an
+axis-aligned shot line is 69% — the letterforms are curves and the rays are diagonals, so most device
+pixels a word touches are partial ones. **dpr 1 is where to look first if it ever reads too faint**,
+the same warning the other two marks carry.
+
+### It is not a wall of ink
+
+The question #79 refuses to let an implementer settle by narrowing the trigger, answered with the
+same probe rather than an opinion. **Five words on the 800 × 600 viewport this page measures — four
+on hits and one on deaths, which is both events at the shipped cadences:**
+
+| dpr | 5 words — what the cadences put up | 40 words — a wave clearing at once |
+| ---: | ---: | ---: |
+| 1 | 0.27% of the screen | 2.12% |
+| 2 | 0.27% | 2.14% |
+| 3 | 0.28% | 2.16% |
+
+**Just over a quarter of one percent of the screen at the rate the game fires and kills, and just
+over two percent when a whole wave goes at once.** For scale, on this same viewport #115's four
+bursts ink 0.21% and #116's forty puffs 1.90%, so lettering both events costs about what lettering
+one of them would.
+
+Nothing was narrowed to get there: no cooldown, no cap, no probability and no distance filter — a
+word fires on every `EnemyHit` the client is sent and on every death it is streamed. The screenshot
+the probe writes is the frame those numbers were counted on.
+
+**The one honest caveat is crowding rather than coverage.** A word is 36 units across where a burst
+is 60 and a puff 38, but a word carries paper, so two words landing within a box of each other cut
+into one another instead of overlapping — at `--words 40` the probe's screenshot has a few pairs that
+read as one illegible mark. Forty is a wave clear and not a rate the cadences average to; at five it
+does not happen. It is stated because it is the failure mode a *retune* of either lifetime would
+reach first, and it is invisible in the coverage figures above.
+
 ## What #106's bolder ore costs — nothing (#106)
 
 [#106](https://github.com/ericbstie/the-game/issues/106) put a stroked rim round every ore patch,
@@ -490,6 +616,15 @@ and no timing at all, so it cannot price a cap and is not a substitute for the p
    is charged for those rather than for the one call. **Count segments for a polyline; for anything
    curved, measure it.** The lever on a curved mark is how many arcs it has, and that is all this
    rule can still say.
+
+   **#79 is the mark this rule does not apply to at all, and that is the cheapest place to be.** A
+   lettered word is a **blit**, not a stroke: seven hand-built letterforms, sixteen jittered rays and
+   two stroke passes, for **7.9 µs** — a sixth of a burst and an eleventh of a puff, at a count larger
+   than either because it fires on both events. It lays **19%** of a shot's ink, which is a point more
+   than the burst and two more than the puff, so on the axis that says whether a mark *reads* the four
+   are indistinguishable and on the axis that says what one costs they span thirteen-fold. **The way
+   to make a mark cheap is to stop drawing it every frame.** That is rule 6, and this is what it is
+   worth when a new mark is designed around it from the start rather than retrofitted.
 2. **Nothing new gets a full-viewport pass.** The clear and the paper fill are two of them already,
    1.92 M device pixels each. What one of them costs on its own is **not measured here**: the
    script's first row carries the grass, the squad, the nests and the map alongside them and cannot
@@ -586,6 +721,8 @@ bun run burst:ink                                        # what an impact burst 
 bun run burst:ink --bursts 40                            # a density the cadences cannot reach today
 bun run puff:ink                                         # what a death puff lays, at dpr 1, 2 and 3
 bun run puff:ink --puffs 40                              # a wave clearing at once
+bun run lettering:ink                                    # what a lettered word lays, at dpr 1, 2 and 3
+bun run lettering:ink --words 40                         # a wave clearing at once
 ```
 
 `--enemies` overrides `ENEMY_CAP` for the fixture alone and nothing else, so a frame can be priced
@@ -595,10 +732,10 @@ governor says today, which is what every unlabelled figure on this page was meas
 `frame:budget` prints the layer breakdown and the projected worst case, and writes the frame it
 measured to a PNG so the numbers can be checked against the picture that produced them.
 
-`shot:ink`, `burst:ink` and `puff:ink` answer the other axis and only that one — how much ink a mark lays, never
+`shot:ink`, `burst:ink`, `puff:ink` and `lettering:ink` answer the other axis and only that one — how much ink a mark lays, never
 what it costs. Both take `--dpr` as often as you like (the default is the three above) and `--json`
 for the raw counts. Nothing in either is timed, so neither needs an idle machine: a pixel count is
 the same on a busy one, which is the whole reason the ink claims above can be trusted where a 1.3 ms
-layer could not. `burst:ink` and `puff:ink` also take `--bursts` / `--puffs` for a density the
-shipped cadences cannot reach, which is the only way to ask the wall-of-ink question about a retune
+layer could not. `burst:ink`, `puff:ink` and `lettering:ink` also take `--bursts` / `--puffs` / `--words` for a density
+the shipped cadences cannot reach, which is the only way to ask the wall-of-ink question about a retune
 — or about a wave clear — before it lands.
