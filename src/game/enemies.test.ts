@@ -801,12 +801,15 @@ describe("#125: no safe centre, and the gradient it produces", () => {
 
   // The other half of it, and the slower half: an undirected walk does reach spawn, it just takes a
   // long match to. Observed inside AGGRO_RADIUS of centre at 12:00: 6 for seed 1, 11 for seed 2.
+  // Two twelve-minute matches at 20 Hz is ~4.8 s of real work, against bun's 5 s default — a 3%
+  // margin that CPU contention from a parallel suite eats, which is #126. The cost is the point
+  // here (a shorter match cannot show a slow walk arriving), so the timeout moves, not the test.
   test("and wanderers reach spawn too, late, without anything aiming them there", () => {
     for (const seed of [1, 2]) {
       const s = runFor(seed, 12, player({ ...C }));
       expect(near(s, C, AGGRO_RADIUS, true)).toBeGreaterThan(0);
     }
-  });
+  }, 30_000);
 
   test("and wanderers are denser further out, so a squad that pushes outward meets more", () => {
     // Nobody in the world, so nothing is aimed at anybody and the only thing shaping the field is
