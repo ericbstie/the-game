@@ -28,6 +28,13 @@ export const TILE = 15; // world units per tile; the 31,200² arena is 2,080 × 
 // tiles a side.
 const KEY_STRIDE = 1 << 16;
 
+// The widest arena that assumption holds for. A host sizes the arena now (#127), and this is what
+// stops being true first: past `KEY_STRIDE` tiles a side, two different tiles pack to one key and the
+// ore grid is degenerate. *Identically* degenerate on both sides, so it desyncs nobody — which is why
+// ADR 0006 records it here as a limit rather than enforcing it in the settings parser. It lives beside
+// the stride it is a fact about, so #129's control can offer up to it without a second copy of `TILE`.
+export const MAX_ARENA_SIDE = KEY_STRIDE * TILE;
+
 export type OreGrid = Map<number, OreKind>;
 
 export function tileKey(tile: Tile): number {

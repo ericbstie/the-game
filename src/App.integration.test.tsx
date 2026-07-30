@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { App } from "./App";
 import type { LobbyServer } from "./lobby/server";
 import { startServer } from "./lobby/testing";
@@ -31,6 +31,37 @@ test("clicking Host opens the WS and renders the Squad roster with a shareable c
   const code =
     screen.getByText(/share code/i).parentElement?.querySelector("strong")?.textContent ?? "";
   expect(code).toHaveLength(4);
+});
+
+// #129, end to end and with nothing stubbed: two real <App>s on one harness server. The host moves a
+// knob, and the *other browser* shows it — through `game/settings`, the hub's authority check, the
+// `lobby/settings-changed` echo and `applyRoster`, before anyone has pressed Start.
+test("the squad sees the world the host picks, before Start", async () => {
+  server = startServer();
+  const host = render(<App wsUrl={server.url} />);
+  // Both trees live in the same document, so every query is scoped to its own browser.
+  const hostView = within(host.container);
+  fireEvent.change(hostView.getByLabelText(/name/i), { target: { value: "Ana" } });
+  fireEvent.click(hostView.getByRole("button", { name: /host a lobby/i }));
+  await waitFor(() => expect(hostView.getByRole("button", { name: /start/i })).not.toBeNull());
+  const code =
+    hostView.getByText(/share code/i).parentElement?.querySelector("strong")?.textContent ?? "";
+
+  const squad = render(<App wsUrl={server.url} />);
+  const squadView = within(squad.container);
+  fireEvent.change(squadView.getByLabelText(/name/i), { target: { value: "Ben" } });
+  fireEvent.change(squadView.getByLabelText(/lobby code/i), { target: { value: code } });
+  fireEvent.click(squadView.getByRole("button", { name: /^join$/i }));
+  await waitFor(() => expect(squadView.getByText("Ben")).not.toBeNull());
+
+  const capFor = (view: ReturnType<typeof within>) =>
+    (view.getByRole("spinbutton", { name: /enemy cap/i }) as HTMLInputElement).value;
+  expect(capFor(squadView)).toBe("500"); // the shipped world, until the host says otherwise
+
+  fireEvent.change(hostView.getByRole("spinbutton", { name: /enemy cap/i }), {
+    target: { value: "120" },
+  });
+  await waitFor(() => expect(capFor(squadView)).toBe("120"));
 });
 
 test("the host can Start the match and lands in the canvas game screen", async () => {

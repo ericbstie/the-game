@@ -13,7 +13,14 @@ import {
   waveSize,
 } from "./enemies";
 import { ARENA, generateWorld } from "./world";
-import { DEFAULT_WORLD_SETTINGS, parseWorldSettings, type WorldSettings } from "./worldSettings";
+import {
+  DEFAULT_WORLD_SETTINGS,
+  knobValue,
+  parseWorldSettings,
+  type WorldSettings,
+  withKnob,
+  worldKnobs,
+} from "./worldSettings";
 
 const players = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, slot: i + 1, name: `P${i + 1}` }));
@@ -293,5 +300,110 @@ describe("parseWorldSettings refuses what would not build a world", () => {
 
   test("the world the game ships with is admissible", () => {
     expect(parseWorldSettings(DEFAULT_WORLD_SETTINGS)).toEqual(DEFAULT_WORLD_SETTINGS);
+  });
+});
+
+// #129 draws one control per knob, and a control that can emit a value `parseWorldSettings` refuses
+// is a control that silently does nothing (ADR 0006). So the list of knobs and the range each one may
+// offer are derived here, off the same shape and the same three rules the parser uses, rather than
+// hand-copied into the lobby where the two could disagree.
+describe("worldKnobs enumerates the knobs a control can be drawn for", () => {
+  test("one entry per number in the settings, dotted where the knob is grouped", () => {
+    expect(worldKnobs().map((k) => k.path)).toEqual([
+      "arena.width",
+      "arena.height",
+      "metalPatches",
+      "powerPatches",
+      "oreEdgeBias",
+      "nestCount",
+      "nestEdgeBias",
+      "enemyCap",
+      "nestPeriod.startMs",
+      "nestPeriod.fallMs",
+      "nestPeriod.floorMs",
+      "waveSize.start",
+      "waveSize.growth",
+      "waveSize.max",
+      "eliteShare.ptsPerMin",
+      "eliteShare.max",
+    ]);
+  });
+
+  test("each entry carries the value the game ships with", () => {
+    const shipped = Object.fromEntries(worldKnobs().map((k) => [k.path, k.shipped]));
+    expect(shipped["arena.width"]).toBe(31_200);
+    expect(shipped.oreEdgeBias).toBe(3.5);
+    expect(shipped["nestPeriod.startMs"]).toBe(60_000);
+    expect(shipped["eliteShare.max"]).toBe(0.3);
+  });
+
+  // The whole point of deriving the range: every bound a control offers is admissible, and stepping
+  // one past it is refused. Asserted knob by knob, so a rule that stopped reaching one of them fails
+  // here rather than in a lobby that appears to ignore the host.
+  test("every bound a control may offer is admissible, and one past it is not", () => {
+    for (const knob of worldKnobs()) {
+      for (const edge of [knob.min, knob.max]) {
+        if (edge === undefined) continue;
+        expect(
+          parseWorldSettings(withKnob(DEFAULT_WORLD_SETTINGS, knob.path, edge)),
+        ).not.toBeNull();
+      }
+      if (knob.min !== undefined) {
+        expect(
+          parseWorldSettings(withKnob(DEFAULT_WORLD_SETTINGS, knob.path, knob.min - 1)),
+        ).toBeNull();
+      }
+      if (knob.max !== undefined) {
+        expect(
+          parseWorldSettings(withKnob(DEFAULT_WORLD_SETTINGS, knob.path, knob.max + 1)),
+        ).toBeNull();
+      }
+    }
+  });
+
+  // A knob with no floor a control can print is the strictly-positive kind: "greater than zero" has
+  // no least representable value, so there is no honest number to put in a `min`. Those four are the
+  // four `parseWorldSettings` calls positive, and nothing else.
+  test("only the strictly-positive knobs are left without a floor", () => {
+    expect(
+      worldKnobs()
+        .filter((k) => k.min === undefined)
+        .map((k) => k.path),
+    ).toEqual(["arena.width", "arena.height", "oreEdgeBias", "nestEdgeBias"]);
+    for (const path of ["arena.width", "arena.height", "oreEdgeBias", "nestEdgeBias"]) {
+      expect(parseWorldSettings(withKnob(DEFAULT_WORLD_SETTINGS, path, 0))).toBeNull();
+    }
+  });
+
+  // And a ceiling belongs to exactly the four knobs that mean "make N of these".
+  test("only the counted knobs carry a ceiling, at 100× the shipped value", () => {
+    expect(
+      worldKnobs()
+        .filter((k) => k.max !== undefined)
+        .map((k) => [k.path, k.max]),
+    ).toEqual([
+      ["metalPatches", 14_000],
+      ["powerPatches", 4_000],
+      ["nestCount", 5_000],
+      ["enemyCap", 50_000],
+    ]);
+  });
+});
+
+describe("reading and writing one knob by path", () => {
+  test("knobValue reads a knob at either level", () => {
+    expect(knobValue(DEFAULT_WORLD_SETTINGS, "enemyCap")).toBe(500);
+    expect(knobValue(DEFAULT_WORLD_SETTINGS, "arena.height")).toBe(31_200);
+    expect(knobValue(DEFAULT_WORLD_SETTINGS, "waveSize.growth")).toBe(1);
+  });
+
+  test("withKnob replaces one knob and leaves every other where it was", () => {
+    const candidate = parseWorldSettings(withKnob(DEFAULT_WORLD_SETTINGS, "waveSize.max", 9));
+    expect(candidate).toEqual(settings({ waveSize: { start: 1, growth: 1, max: 9 } }));
+  });
+
+  test("withKnob does not mutate the settings it was handed", () => {
+    withKnob(DEFAULT_WORLD_SETTINGS, "arena.width", 1_000);
+    expect(DEFAULT_WORLD_SETTINGS.arena.width).toBe(31_200);
   });
 });

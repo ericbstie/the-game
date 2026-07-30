@@ -28,6 +28,7 @@ import {
   generateOre,
   HAND_MINE_RATE,
   INTERACT_REACH,
+  MAX_ARENA_SIDE,
   MINE_CADENCE_MS,
   MINE_WINDOW_MAX_MS,
   MINER_TRICKLE,
@@ -80,6 +81,17 @@ describe("the tile grid", () => {
     expect(tileKey({ tx: 1, ty: 0 })).not.toBe(tileKey({ tx: 0, ty: 1 }));
     expect(tileKey({ tx: 2079, ty: 2079 })).toBe(tileKey({ tx: 2079, ty: 2079 }));
     expect(Number.isSafeInteger(tileKey({ tx: 2079, ty: 2079 }))).toBe(true);
+  });
+
+  // The world settings let a host size the arena, and the packing is what stops being valid first
+  // (ADR 0006). Written down as the limit rather than as a comment, so #129's control can offer up to
+  // it without a second copy of `TILE`: an arena this wide reaches a last tile whose key is still its
+  // own, and one tile past it the far end of a column lands on the start of the next one.
+  test("MAX_ARENA_SIDE stops at the last tile index the packed key keeps distinct", () => {
+    const last = Math.floor(MAX_ARENA_SIDE / TILE) - 1;
+    expect(tileKey({ tx: 0, ty: last })).not.toBe(tileKey({ tx: 1, ty: 0 }));
+    expect(tileKey({ tx: 0, ty: last + 1 })).toBe(tileKey({ tx: 1, ty: 0 }));
+    expect(Number.isSafeInteger(tileKey({ tx: last, ty: last }))).toBe(true);
   });
 });
 

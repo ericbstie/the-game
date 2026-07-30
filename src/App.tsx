@@ -39,7 +39,12 @@ export function App({ wsUrl }: { wsUrl?: string } = {}) {
       );
     }
     return (
-      <LobbyScreen state={state} onLeave={() => client.leave()} onStart={() => client.start()} />
+      <LobbyScreen
+        state={state}
+        onLeave={() => client.leave()}
+        onStart={() => client.start()}
+        onSettings={(settings) => client.sendSettings(settings)}
+      />
     );
   }
   return (

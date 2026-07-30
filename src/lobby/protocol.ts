@@ -61,6 +61,11 @@ export interface LobbySnapshot {
   host: PlayerId;
   players: PublicPlayer[]; // sorted by slot
   rev: number;
+  // The knobs the next match will be built from — the host's choice, which the whole squad sees before
+  // Start (#129). On the snapshot rather than only on a delta so a *joiner's* welcome already carries
+  // it: otherwise a player who arrives after the host has chosen would show the shipped world until
+  // the host happened to move another knob, and nothing would ever tell them.
+  settings: WorldSettings;
 }
 
 // World wire types (Milestone 2). The server owns all of these; the client only
@@ -432,6 +437,17 @@ export type PlayerLeft = Envelope<
   { id: PlayerId; slot: number; reason: "left" | "grace-expired"; rev: number }
 >;
 export type HostChanged = Envelope<"lobby/host-changed", { host: PlayerId; rev: number }>;
+// The host moved a knob, and the squad is told (#129). A lobby-shaped delta rather than anything on the
+// world stream: it carries the same session `rev` every other roster delta does, so it folds
+// apply-if-newer through `applyRoster` and a duplicate or a stale one buffered across a reconnect
+// cannot un-choose the host's world.
+//
+// The whole object, matching `game/settings` going the other way — there is nothing to merge, and a
+// per-knob delta would need its own ordering rule for the case where two arrive out of order.
+export type SettingsChanged = Envelope<
+  "lobby/settings-changed",
+  { settings: WorldSettings; rev: number }
+>;
 export type Superseded = Envelope<"lobby/superseded">;
 export type LobbyError = Envelope<"lobby/error", { code: LobbyErrorCode; message?: string }>;
 
@@ -492,6 +508,7 @@ export type ServerMessage =
   | PresenceChanged
   | PlayerLeft
   | HostChanged
+  | SettingsChanged
   | Superseded
   | LobbyError
   | GameWorldInit

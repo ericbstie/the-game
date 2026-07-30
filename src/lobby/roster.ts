@@ -1,6 +1,7 @@
 import type { LobbySnapshot, ServerMessage } from "./protocol";
 
-// Fold a server message into the local roster snapshot. Full-snapshot messages
+// Fold a server message into the local lobby snapshot — the roster, and the world the host has chosen
+// for the next match (#129), which rides the same snapshot and the same `rev`. Full-snapshot messages
 // (`lobby/created`, `lobby/joined`) replace the baseline outright — including on
 // reconnect, where they reset the rev baseline. Deltas apply-if-newer by `rev`, so a
 // duplicate or out-of-order delta is idempotent and a stale delta buffered across a
@@ -27,6 +28,8 @@ export function applyRoster(prev: LobbySnapshot | null, msg: ServerMessage): Lob
       }));
     case "lobby/host-changed":
       return withDelta(prev, msg.rev, (s) => ({ ...s, host: msg.host }));
+    case "lobby/settings-changed":
+      return withDelta(prev, msg.rev, (s) => ({ ...s, settings: msg.settings }));
     default:
       return prev;
   }

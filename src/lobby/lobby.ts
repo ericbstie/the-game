@@ -132,7 +132,9 @@ interface SessionRecord {
   rev: number;
   players: Map<PlayerId, PlayerRecord>;
   graceTimers: Map<PlayerId, ReturnType<typeof setTimeout>>;
-  settings: WorldSettings; // the knobs the next match is built from; the host's to change (#128)
+  // The knobs the next match is built from: the host's to change (#128), and on every snapshot the
+  // squad is sent so they can see the choice before Start (#129).
+  settings: WorldSettings;
   worldInit?: WorldInit; // generated once at start; re-sent verbatim on reconnect
   positions: Map<PlayerId, { pos: Vec2; seq: number }>; // last-known relayed position per player
   health: Map<PlayerId, { hp: number; seq: number }>; // last-reported HP per player (aggro-gating + fan-out)
@@ -447,11 +449,10 @@ export class LobbyHub {
   // the squad's world and not the sender's. Anyone else asking is ignored in silence, as a non-host
   // `game/start` is; the values themselves were already vetted by `parseWorldSettings`.
   //
-  // Deliberately *not* gated on the phase, unlike every in-game command. The world is generated
-  // once at `game/start` and re-sent verbatim from `session.worldInit` afterwards, so a mid-match
-  // write lands on a figure nothing reads again and cannot reach the running match. A guard against
-  // it would be a branch no test could see; it becomes worth having when something echoes the
-  // current settings back to the lobby (#129), and not before.
+  // Gated on the phase as well, now that the squad is told (#129). #128 left this out because nothing
+  // read `session.settings` after `startGame`, so a mid-match write was provably dead. The echo makes
+  // it live: it would announce a world the running match was not built from, and a reconnecter would
+  // rebuild from `worldInit` while their own lobby snapshot claimed something else.
   private setSettings(socketId: string, settings: WorldSettings): void {
     const bind = this.sockets.get(socketId);
     if (!bind) return;
@@ -459,7 +460,12 @@ export class LobbyHub {
     const player = session?.players.get(bind.playerId);
     if (!session || !player || player.socketId !== socketId) return;
     if (session.host !== player.id) return; // only the host chooses the world
+    if (session.phase !== "lobby") return; // the world is chosen before Start, not during
     session.settings = settings;
+    // The whole squad, the host included: every knob a host has not typed into is read off this, so
+    // excepting them would leave the one player who cannot see their own lobby. Stamped with the
+    // session's own rev, so `applyRoster` orders it against the roster deltas.
+    this.broadcast(session, { type: "lobby/settings-changed", settings, rev: ++session.rev });
   }
 
   // Host-only: flip the Session into a match, generate the shared world once from the
@@ -1012,6 +1018,7 @@ function snapshotOf(session: SessionRecord): LobbySnapshot {
     host: session.host,
     players: [...session.players.values()].sort((a, b) => a.slot - b.slot).map(publicOf),
     rev: session.rev,
+    settings: session.settings,
   };
 }
 

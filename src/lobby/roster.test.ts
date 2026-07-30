@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_WORLD_SETTINGS, type WorldSettings, withKnob } from "../game/worldSettings";
 import type { LobbySnapshot, ServerMessage } from "./protocol";
 import { applyRoster } from "./roster";
 
@@ -9,7 +10,10 @@ const snapshot = (rev: number, players: LobbySnapshot["players"]): LobbySnapshot
   host: "p1",
   players,
   rev,
+  settings: DEFAULT_WORLD_SETTINGS,
 });
+
+const CHOSEN = withKnob(DEFAULT_WORLD_SETTINGS, "nestCount", 7) as WorldSettings;
 
 const p = (id: string, slot: number): LobbySnapshot["players"][number] => ({
   id,
@@ -77,6 +81,26 @@ describe("applyRoster", () => {
     });
     expect(next?.players[1].presence).toEqual({ status: "disconnected", graceExpiresAt: 123 });
     expect(next?.players[0].presence).toEqual({ status: "connected" });
+  });
+
+  // The squad's view of the world the host has chosen (#129). The same delta shape and the same
+  // apply-if-newer rule as every other roster change, so a duplicate is idempotent and a stale one
+  // buffered across a reconnect cannot un-choose the host's world.
+  test("settings-changed replaces the whole settings object and advances rev", () => {
+    const base = snapshot(1, [p("p1", 1), p("p2", 2)]);
+    const next = applyRoster(base, { type: "lobby/settings-changed", settings: CHOSEN, rev: 2 });
+    expect(next?.settings).toEqual(CHOSEN);
+    expect(next?.rev).toBe(2);
+  });
+
+  test("a stale settings-changed leaves the chosen world alone", () => {
+    const base = { ...snapshot(3, [p("p1", 1)]), settings: CHOSEN };
+    const stale: ServerMessage = {
+      type: "lobby/settings-changed",
+      settings: DEFAULT_WORLD_SETTINGS,
+      rev: 3,
+    };
+    expect(applyRoster(base, stale)).toBe(base); // rev 3 !> 3
   });
 
   test("a delta not newer than the baseline is ignored (apply-if-newer, idempotent)", () => {
