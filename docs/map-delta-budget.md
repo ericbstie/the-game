@@ -85,6 +85,32 @@ nests did, and it still did not cost more than the count.
 field for the wander heading, no field for a nest's kind. A wanderer's leg is server-only per-enemy
 state, exactly as a hunter's commitment is ([ADR 0004](adr/0004-nest-layout-is-derived-from-a-seed.md)).
 
+### What #128 moved, and it is not this message
+
+[#128](https://github.com/ericbstie/the-game/issues/128) put the world's settings on the wire, and
+the measured tick is **unchanged: 10,501 B raw / 3,855 B deflate.** That is not luck and it is not an
+assumption — the settings are static, so `game/world-init` is the only shape that could carry them,
+and `bun run delta:size` was run on both sides of the change to say so rather than to guess it.
+
+Where the cost landed is the keyframe:
+
+| `game/world-init`, 6 players | raw | deflate |
+|---|---:|---:|
+| before #128 | 608 B | 256 B |
+| after #128 | 906 B | 400 B |
+| **the `settings` field** | **+298 B** | **+144 B** |
+
+**It is paid per connection, not per match**, on the same terms as everything else on this message:
+world-init is re-sent on every reconnect, so a squad with a flaky connection pays it again each time.
+For scale, [ADR 0004](adr/0004-nest-layout-is-derived-from-a-seed.md) measured `nestSeed` at +22 B and
+the streamed alternative to it at +2,449 B.
+
+Unlike that one, this is not a choice between two encodings. Both sides expand `oreSeed` and
+`nestSeed` themselves, so a client that was not told the settings would build a *different world* —
+there is no cheaper encoding of "not sending them". A packed positional encoding of the ten knobs
+would be smaller than the keyed object and was not built: nobody asked, and 298 B once per connection
+against 3,855 B twenty times a second is not where this game's bandwidth is.
+
 **Is 75.3 KiB/s per client acceptable? Yes, and the comparison that settles it is on this page.** The
 game shipped at **222.1 KiB/s** before #84, and #84's own untrimmed float64 tick *at cap 240* was
 **95.2 KiB/s**. So the arena at more than twice the population is cheaper per client than the same
