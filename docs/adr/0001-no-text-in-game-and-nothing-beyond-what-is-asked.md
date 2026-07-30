@@ -1,7 +1,7 @@
-# ADR 0001 — No text in the game world, and nothing built beyond what was asked
+# ADR 0001 — No prose in the game beyond what was asked for
 
-- **Status:** Accepted
-- **Date:** 2026-07-25
+- **Status:** Accepted — amended 2026-07-30
+- **Date:** 2026-07-25; amended 2026-07-30
 - **Applies to:** every milestone from Milestone 5 onward, not just the sprite work
 
 ## Context
@@ -16,77 +16,89 @@ precisely the wrong register.
 The same habit applies beyond text. Features arrive because they seem obviously useful,
 which is how a small game acquires a large surface nobody chose.
 
+### What the first draft of this ADR got wrong
+
+It was written as a **ban plus an allowlist**: no text in the game *world*, and a table in this
+document naming every exception, each one granted by editing this file. Two things were wrong with
+that, and both were read back out of it in practice.
+
+It **policed the wrong axis.** Phrasing the rule around the game world made it sound like a rule
+about *where* text is drawn — canvas versus DOM — and it was cited that way, including as an
+argument for putting new copy in the DOM to stay clear of it. That was never the intent. Text on
+the canvas is fine. The renderer was never the problem.
+
+It made this document a **gate.** Every new string meant an edit here, which puts the decision in
+two places and lets this file disagree with the ticket that actually made it.
+
 ## Decision
 
-**1. No text in the game world.** Outside the allowlist below, nothing renders words —
-not labels, not hints, not explanations, not captions on buildings or waves. Where
-something must be communicated, it is communicated with an **icon**, and icons are used
-sparingly rather than as a replacement vocabulary for the sentences they displaced.
+**1. No prose in the game that was not explicitly asked for.** The default is none. A sentence, a
+label, a hint, an explanation earns its place by having been **requested in writing** — in a ticket,
+an issue, or a written instruction — and by nothing else. "It seemed helpful", "the player will
+need to know", and "while I was in there" are not requests.
 
-**2. Text is allowed only here** (granted explicitly; everything else is removed):
+**2. The ticket is the record.** There is no allowlist to edit and no permission to obtain here.
+Text ships because an issue asked for it, and that issue is the provenance. If you cannot point at
+the request, the answer is not to add it — it is to raise the question or file the issue.
 
-| Where | What |
-|---|---|
-| Main menu | Text as needed |
-| Lobby screen | Text as needed, **including the 4-character lobby code** — it cannot be shared to join without being read |
-| In match | The **name label above each player**; the **Metal and Energy readouts**; the **escape time on the end screen**; the words **`metal / s`** on the Metal-per-second box the Metal readout reveals (granted on request, [#105](https://github.com/ericbstie/the-game/issues/105)); on each build slot, its **Metal cost as a numeral** and its **one-word name** — `mine` · `generator` · `wall` · `turret` (granted on request, [#98](https://github.com/ericbstie/the-game/issues/98)); the **`+1` a miner floats as it mines** (granted on request, [#99](https://github.com/ericbstie/the-game/issues/99)); and on the ammo box, its **spendable bullet count as a numeral** and the **number of bullets queued** in the circle on its corner (granted on request, [#102](https://github.com/ericbstie/the-game/issues/102)); and the **lettered sound effect struck where a shot connects and where an enemy dies** — one of a fixed set of four hand-lettered words, `POW` · `ZAP` · `BAM` · `BOP` (granted on request, [#79](https://github.com/ericbstie/the-game/issues/79)) |
+**3. Where it renders is not the question.** Canvas and DOM are both fine, and this ADR takes no
+position between them. That split is decided by what the thing *is* — screen-fixed chrome that
+takes clicks is DOM, a mark anchored in the world and moving with the camera is canvas — and never
+by this rule. Do not move copy into the DOM to get out from under this ADR; it does not reach
+further into the canvas than it does into the HUD.
 
-Everything not in that table goes, including the controls hint, the HP label and downed
-countdown, and the in-match lobby-code header.
+**4. Prefer an icon where an icon can say it.** A quantity needs a numeral and an identity often
+needs a word, but most of what the old hint text carried is better drawn than written. This is a
+preference and a design bias, not a gate — an icon that has to be explained is worse than the
+sentence it replaced.
 
-The build-slot names were removed under this ADR in Milestone 5 and granted back by explicit
-request in V2.0, alongside the cost numerals, which had never been there. The two buy different
-things. A name identifies the building: it gives what the sprite draws a word, which the drawing
-itself cannot. A numeral states the price, which the player could otherwise only learn by trying to
-place a building and being refused, and which is what makes choosing between a 120 turret and a 150
-generator a judgement rather than a guess. The number keys the names used to carry stayed gone.
+**5. Nothing is implemented that was not explicitly asked for.** Not features, not helpful extras,
+not adjacent improvements. Prose is one instance of this rule, not a separate one. When something
+seems necessary but was not requested, it is raised as a question or filed as an issue — never
+built on assumption. The game grows by explicit addition, one deliberate piece at a time.
 
-The miner's `+1` is the first grant for text over the *arena* rather than on a readout or a slot. It
-was asked for in those words, and it is a number for the same reason the build slot's cost is one:
-what it says is a quantity, and an icon cannot say how much.
+## What has been asked for so far
 
-The ammo box adds two numerals and no words. Both are quantities, which is the one thing an icon
-cannot state: the count is what a player spends against, and the circle says how many more are
-coming — the same figure a build slot's cost circle carries, in the same place and for the same
-reason. What the box *is* stays the icon's job, so nothing there needs a name.
+A record, not an allowlist. It is **non-exhaustive and not a gate** — nothing has to be added here
+to ship, and a string missing from this table is not thereby refused. Each entry cites the request
+that is its actual authority.
 
-The lettered sound effects are the first grant for a **word** over the arena rather than a number,
-and the only entry on that table which is not a readout of anything. It was asked for in exactly
-those terms — lettered onomatopoeia popping over impacts, in the style of the era — and the era is
-the reason it is granted: a 1930s cartoon shouts POW at a blow, and there is no icon that does that.
+| Where | What | Asked for in |
+|---|---|---|
+| Main menu | Text as needed | — |
+| Lobby screen | Text as needed, including the 4-character lobby code — it cannot be shared to join without being read | — |
+| In match | The name label above each player; the Metal and Energy readouts; the escape time on the end screen | — |
+| In match | `metal / s` on the Metal-per-second box | [#105](https://github.com/ericbstie/the-game/issues/105) |
+| In match | On each build slot, its Metal cost as a numeral and its one-word name — `mine` · `generator` · `wall` · `turret` | [#98](https://github.com/ericbstie/the-game/issues/98) |
+| In match | The `+1` a miner floats as it mines | [#99](https://github.com/ericbstie/the-game/issues/99) |
+| In match | On the ammo box, its spendable bullet count and the number queued in the corner circle | [#102](https://github.com/ericbstie/the-game/issues/102) |
+| In match | The lettered sound effect struck where a shot connects and where an enemy dies — `POW` · `ZAP` · `BAM` · `BOP` | [#79](https://github.com/ericbstie/the-game/issues/79) |
 
-Two things bound it, and both are what make it an exception rather than a hole.
+The controls hint, the HP label, the downed countdown and the in-match lobby-code header were
+removed under the original ADR because nobody had asked for any of them. That reasoning is
+unchanged.
 
-The set is **fixed, small and closed**. Four words, chosen once and written down in
-`src/sprite/lettering.ts`; nothing in the game composes a string, and no other string can reach the
-arena. Which of the four a blow gets is arithmetic on where and when it landed, so the grant cannot
-grow by being used.
-
-Every one of them is a **drawn shape and not a typeset word**. Each word is a baked sprite of
-stroked letterforms — no font, no `fillText`, nothing the browser has to have a typeface for — so
-what the arena gained is four drawings, and it gained no second place where the game writes prose.
-That is asserted rather than intended: a test in `src/game/draw.test.ts` holds the world pass to
-adding no text draw at all when a frame is lettered, which is what keeps this grant from widening
-into a licence for a typeface in the world.
-
-The Metal-per-second box, asked for in the same version, needed a grant for only half of what it
-shows. Its figure needed none — that is one more Metal number on a readout already allowed. Its
-unit did: a bare figure sliding out above the total reads as a second total, and `metal / s` is the
-only thing that says the number is a rate.
-
-**3. Nothing is implemented that was not explicitly asked for.** Not features, not helpful
-extras, not "while I was in there" additions. When something seems necessary but was not
-requested, it is raised as a question or filed as an issue — never built on assumption. The
-game grows by explicit addition, one deliberate piece at a time.
+Two notes worth keeping from the first draft, because they are about the work rather than about
+permission. The build-slot **name** and its **cost numeral** buy different things: the name gives
+the sprite an identity the drawing cannot, and the numeral states a price the player could
+otherwise learn only by being refused — which is what makes choosing between a 120 turret and a
+150 generator a judgement rather than a guess. And the four lettered sound effects are **drawn
+shapes, not typeset words**: each is a baked sprite of stroked letterforms in
+`src/sprite/lettering.ts`, with no font and no composed string. A test in `src/game/draw.test.ts`
+holds a lettered frame to adding no text draw at all. That test is an assertion about *how
+lettering is built* — it is art, not typography — and not a mechanism for keeping prose out of the
+canvas. Nothing about this ADR requires such a test for text that is simply written.
 
 ## Consequences
 
-- Any information currently carried by a word must earn an icon or be dropped. Some will be
-  dropped, and that is the intent — a state nobody asked to see does not need to be shown.
-- New work starts from the smallest thing that satisfies the request. Adjacent improvements
-  are proposed, not performed.
-- This ADR is the standing default. Any exception is granted per-case and recorded — the
-  table above is the record of the exceptions granted so far and is expected to grow only
-  by explicit request.
-- The visual direction that prompted this is recorded separately, with the rest of the
-  Milestone 5 art decisions, in the tracker.
+- **Provenance is the test.** Reviewing new copy means asking which ticket asked for it, not
+  checking it against a list in this file. Copy with no request behind it comes out, wherever it
+  renders.
+- **This document stops being a bottleneck.** A feature that was asked for and includes text does
+  not wait on an ADR edit. Adding its row above afterwards is bookkeeping, and optional.
+- **Information carried by a word must still earn it.** Some will be dropped instead, and that is
+  the intent — a state nobody asked to see does not need to be shown.
+- **New work starts from the smallest thing that satisfies the request.** Adjacent improvements are
+  proposed, not performed.
+- The visual direction that prompted this is recorded separately, with the rest of the Milestone 5
+  art decisions, in the tracker.
