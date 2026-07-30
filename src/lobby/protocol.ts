@@ -159,12 +159,6 @@ export interface NestDelta {
   alive: boolean;
 }
 
-// The wave clock's state when a wave fires: the wave index (1-based) and ms until the next.
-export interface WaveDelta {
-  index: number;
-  clockMs: number;
-}
-
 // Full live state for the reconnect keyframe (`game/enemy-init`), which the immutable world-init
 // can't carry: enemies that have moved/died/spawned and nests that have been silenced.
 export interface EnemySnapshot {
@@ -239,7 +233,6 @@ export interface MapDelta {
   hits?: EnemyHit[];
   deaths?: string[];
   nests?: NestDelta[];
-  wave?: WaveDelta;
   bank?: Bank;
   // The squad's spendable bullets (#102). A bare count: the countdown on the bullet being forged is
   // server-only, and this rides on the same "only when it moved" terms as the bank.
@@ -430,7 +423,7 @@ export type GamePeerHealth = Envelope<
   "game/peer-health",
   { id: PlayerId; hp: number; seq: number }
 >;
-// The reconnect keyframe (M3): the session's live enemy/nest/wave state, so a (re)joiner rebuilds
+// The reconnect keyframe (M3): the session's live enemy/nest state, so a (re)joiner rebuilds
 // the world as it actually is now. `tick` seeds the client's apply-if-newer cursor. `exitRevealed`
 // rides here too (#93): the delta that announced the door went out on one tick, long before this
 // client's socket existed, so without it a reconnecter would land in a squad that has found the
@@ -441,7 +434,6 @@ export type GameEnemyInit = Envelope<
     tick: number;
     enemies: EnemySnapshot[];
     nests: NestSnapshot[];
-    wave: WaveDelta;
     exitRevealed?: true;
   }
 >;

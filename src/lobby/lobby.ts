@@ -95,7 +95,10 @@ export interface LobbyConfig {
   // should pass a manual one — sleeping on a real interval races whatever else the CPU is
   // doing, and reds under load. Test knob.
   scheduler?: Scheduler;
-  firstWaveMs?: number; // override the initial wave countdown (default: the sim's 30s). Test knob.
+  // Arm every nest to fire this many ms into the match, overriding the phases the sim deals them
+  // (default: the sim's own — the 1-minute grace plus a per-nest phase). It is what lets a test see
+  // a wave without spending a virtual minute, and it deliberately synchronises the fifty. Test knob.
+  firstWaveMs?: number;
   startingMetal?: number; // seed the shared bank at match start (default 0). Test knob.
   // Seed the squad's bullets at match start (default 0 — a real squad forges every one it fires).
   // A combat test that is about the weapon rather than the economy takes its ammo from here rather
@@ -469,7 +472,9 @@ export class LobbyHub {
 
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
     session.sim = spawnEnemyState(session.worldInit, this.rng);
-    if (this.firstWaveMs !== undefined) session.sim.msUntilWave = this.firstWaveMs;
+    if (this.firstWaveMs !== undefined) {
+      for (const nest of session.sim.nests) session.sim.nestTimers.set(nest.id, this.firstWaveMs);
+    }
     session.simTimer = this.scheduler.every(this.tickMs, () => this.tick(session));
   }
 
@@ -509,7 +514,6 @@ export class LobbyHub {
     const removals = [...events.removals, ...session.pendingRemovals];
     session.pendingRemovals = [];
     if (removals.length > 0) delta.removals = removals;
-    if (events.wave) delta.wave = events.wave;
     if (session.build) {
       // The bank is whole Metal, and the remainder never leaves the server, so it rides only when
       // the figure actually moves — a sparse event, not a per-tick field.
@@ -735,7 +739,7 @@ export class LobbyHub {
   }
 
   // Hand one socket the immutable world plus a burst that brings it fully current: every player's
-  // last-known position, the live enemy/nest/wave keyframe (world-init is immutable and can't
+  // last-known position, the live enemy/nest keyframe (world-init is immutable and can't
   // rebuild a world whose enemies moved/died/spawned), and every player's last HP — including the
   // reconnecter's own, so their client restores it.
   private sendWorldState(session: SessionRecord, socketId: string): void {

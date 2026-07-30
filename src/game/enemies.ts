@@ -12,7 +12,6 @@ import type {
   StructureHit,
   TurretAim,
   Vec2,
-  WaveDelta,
   WorldInit,
 } from "../lobby/protocol";
 import {
@@ -127,9 +126,58 @@ export const NEST_HP_OUTER = 600;
 export const WANDERER_CHANCE_OUTER = 0.9; // at the inner bound it is 0, and linear between
 const SPAWN_JITTER = 300; // grunts spawn within this radius of their nest, so they don't stack
 
-// Waves — the ~30 s escalating drumbeat. Wave w spawns 2+w grunts per still-active nest.
-export const WAVE_PERIOD_MS = 30_000; // first wave at 0:30, then every 30 s
 export const ENEMY_CAP = 240; // hard concurrency governor; a nest holds its remainder at the cap
+
+// Spawning (#124): every nest keeps its own timer, and three curves escalate what that timer fires.
+// All five numbers below, and the grace, are **provisional** — only a played match can judge them,
+// and a later change to one of them is a retune rather than a correction.
+//
+// Nothing spawns for the first minute: the squad gets one minute to hand-mine before the first wave
+// (~60 Metal at HAND_MINE_RATE 1 — one miner, with 10 spare).
+export const SPAWN_GRACE_MS = 60_000;
+// The curves are anchored at the *end* of the grace, so the first wave a squad ever meets is a
+// starting value: one grunt, no elite, and 60 s until the next. Anchoring them at 0:00 instead would
+// make all three starting values unobservable — a wave of 1 and a 0% elite share would exist only
+// during the minute in which no nest fires — so #111's "max rate at 10:00 / capped at 4:00 / capped
+// at 6:00" annotations land one minute later here than they read there.
+const ESCALATION_STEP_MS = 60_000; // "per minute", the step every curve below is quantised to
+export const NEST_PERIOD_START_MS = 60_000;
+const NEST_PERIOD_FALL_MS = 5_000; // per minute
+export const NEST_PERIOD_FLOOR_MS = 10_000; // maximum rate, reached at 11:00
+export const WAVE_SIZE_START = 1;
+const WAVE_SIZE_GROWTH = 1; // per minute
+export const WAVE_SIZE_MAX = 5; // reached at 5:00
+const ELITE_SHARE_PTS_PER_MIN = 5;
+export const ELITE_SHARE_MAX = 0.3; // reached at 7:00
+
+// Whole minutes of spawning elapsed: 0 for the grace and for the first minute after it, then one
+// per minute. Quantised rather than continuous, so a wave fired a tick apart from another is fired
+// on the same terms — the curves are a drumbeat, not a slope.
+function escalation(elapsedMs: number): number {
+  return Math.max(0, Math.floor((elapsedMs - SPAWN_GRACE_MS) / ESCALATION_STEP_MS));
+}
+
+// How long a nest waits between waves at this point in the match.
+export function nestPeriodMs(elapsedMs: number): number {
+  return Math.max(
+    NEST_PERIOD_FLOOR_MS,
+    NEST_PERIOD_START_MS - escalation(elapsedMs) * NEST_PERIOD_FALL_MS,
+  );
+}
+
+// How many enemies one nest's wave carries.
+export function waveSize(elapsedMs: number): number {
+  return Math.min(WAVE_SIZE_MAX, WAVE_SIZE_START + escalation(elapsedMs) * WAVE_SIZE_GROWTH);
+}
+
+// The chance each enemy in a wave is an elite rather than a grunt — a share, drawn per enemy, so a
+// wave of 5 at 30% is usually one or two elites rather than exactly 1.5.
+//
+// Whole percentage points divided at the end, not a repeated float addition: 0.05 accumulated six
+// times is 0.30000000000000004, which is not 30%.
+export function eliteShare(elapsedMs: number): number {
+  return Math.min(ELITE_SHARE_MAX, (escalation(elapsedMs) * ELITE_SHARE_PTS_PER_MIN) / 100);
+}
 
 export function enemyRadius(kind: EnemyKind): number {
   return STATS[kind].radius;
@@ -146,6 +194,11 @@ export type EnemyTarget = { kind: "player"; id: PlayerId } | { kind: "structure"
 // One live enemy. `target` is what it is currently chasing (ENGAGED), held until that target dies
 // or leaves range. `biteMs` counts down to its next bite on a structure — driven by the injected
 // `dtMs`, never a clock, so the sim stays deterministic.
+//
+// `hunt` is what a hunter nest's wave was sent after (#124): the player nearest the nest when the
+// wave fired, committed to for this enemy's whole life and chased at any distance. It is a standing
+// commitment rather than a lock — `target` still overrides it for anything inside AGGRO_RADIUS —
+// which is why the two are separate fields. An enemy out of a wanderer nest has none.
 export interface Enemy {
   id: string;
   kind: EnemyKind;
@@ -153,10 +206,12 @@ export interface Enemy {
   hp: number;
   biteMs: number;
   target?: EnemyTarget;
+  hunt?: PlayerId;
 }
 
-// What a nest sends. A hunter nest fires waves that march at a player; a wanderer nest leaks grunts
-// that roam (#124 and #125 give the two their behaviour — this module only assigns the type).
+// What a nest sends. A hunter nest fires waves committed to a player at any distance (#124); a
+// wanderer nest leaks grunts that roam (#125 gives them the roaming — today they march like the
+// rest, they simply hunt nobody).
 // Chosen once at world gen and fixed for the match, and deliberately invisible: the two look
 // identical, so the only way to learn which a nest is, is to watch what comes out of it. That is
 // why `RenderedNest` carries no kind — the render layer is never told.
@@ -189,15 +244,14 @@ export interface Attack {
 }
 
 // What changed this tick, shaped to fill a `game/map-delta` directly: every enemy's position in
-// `moves`, enemies spawned this tick, damaged enemies' new HP, killed ids, damaged/silenced
-// nests, and — when a wave fires — the wave clock.
+// `moves`, enemies spawned this tick, damaged enemies' new HP, killed ids, and damaged/silenced
+// nests.
 export interface EnemyEvents {
   moves: EnemyMove[];
   spawns: EnemySpawn[];
   hits: EnemyHit[];
   deaths: string[];
   nests: NestDelta[];
-  wave: WaveDelta | null;
   // Structures chewed on this tick, and the ids of any that fell. Sparse, mirroring hits/deaths.
   structHits: StructureHit[];
   removals: string[];
@@ -258,8 +312,14 @@ export interface EnemyState {
   arena: Arena;
   enemies: Map<string, Enemy>;
   nests: Nest[];
-  waveIndex: number; // waves fired so far (0 before the first)
-  msUntilWave: number; // countdown to the next wave; the first lands at 0:30
+  elapsedMs: number; // match clock, driven by the injected `dtMs`; the three curves read off it
+  // Each nest's countdown to its own next wave, by nest id. There is no global wave clock and no
+  // wave index (#124): fifty nests on fifty phases, so nothing is synchronised but by coincidence.
+  //
+  // Here rather than on `Nest` because a `Nest` is derived from the world seed on both sides of the
+  // wire (ADR 0004), and a timer is sim state the client has no business holding. Here rather than
+  // in module scope because this module is pure — #97 threads its config through this same state.
+  nestTimers: Map<string, number>;
   rng: () => number;
   nextId: number;
 }
@@ -297,12 +357,12 @@ export function nestLayout(arena: Arena, seed: number): Nest[] {
   });
 }
 
-// Snapshot the live sim for the reconnect keyframe: every current enemy, every nest's state, and
-// the wave clock. Positions are copied so the snapshot never aliases live state.
+// Snapshot the live sim for the reconnect keyframe: every current enemy and every nest's state.
+// Positions are copied so the snapshot never aliases live state. The per-nest timers are absent
+// deliberately — a client draws no countdown, and #124 left no global clock to draw one from.
 export function snapshotEnemies(state: EnemyState): {
   enemies: EnemySnapshot[];
   nests: NestSnapshot[];
-  wave: WaveDelta;
 } {
   return {
     enemies: [...state.enemies.values()].map((e) => ({
@@ -317,19 +377,21 @@ export function snapshotEnemies(state: EnemyState): {
       hp: n.hp,
       alive: n.alive,
     })),
-    wave: { index: state.waveIndex, clockMs: state.msUntilWave },
   };
 }
 
-// Seed the sim from the world: place the nests and arm the wave clock. No enemies yet — the
-// first wave spawns them from the nests at 0:30.
+// Seed the sim from the world: place the nests and arm each one's own timer. No enemies yet — the
+// grace is enforced here rather than by a guard in the tick, by never arming a nest inside it: the
+// first wave of the match lands at 1:00 at the earliest, and each nest is dealt its own phase
+// through the first period so fifty of them do not fire together.
 export function spawnEnemyState(world: WorldInit, rng: () => number = Math.random): EnemyState {
+  const nests = nestLayout(world.arena, world.nestSeed);
   return {
     arena: world.arena,
     enemies: new Map(),
-    nests: nestLayout(world.arena, world.nestSeed),
-    waveIndex: 0,
-    msUntilWave: WAVE_PERIOD_MS,
+    nests,
+    elapsedMs: 0,
+    nestTimers: new Map(nests.map((n) => [n.id, SPAWN_GRACE_MS + rng() * NEST_PERIOD_START_MS])),
     rng,
     nextId: 1,
   };
@@ -346,7 +408,7 @@ export function stepEnemies(
   dtMs: number,
   build: BuildState | null = null,
 ): { state: EnemyState; events: EnemyEvents } {
-  const { spawns, wave } = tickWaves(state, dtMs, build);
+  const spawns = tickNests(state, players, dtMs, build);
   // Player shots and turret fire land in the same damage pass, so a target struck by both this
   // tick reports once. The sim stays the sole writer of enemy and nest HP either way.
   const enemiesHit = new Set<string>();
@@ -375,7 +437,7 @@ export function stepEnemies(
     moves.push([enemy.id, Math.round(enemy.pos.x), Math.round(enemy.pos.y)]);
   return {
     state,
-    events: { moves, spawns, hits, deaths, nests, wave, aims, shots, ...reapStructures(context) },
+    events: { moves, spawns, hits, deaths, nests, aims, shots, ...reapStructures(context) },
   };
 }
 
@@ -410,41 +472,57 @@ function reapStructures(context: StepContext): { structHits: StructureHit[]; rem
   return { structHits, removals };
 }
 
-// Advance the wave clock; when it reaches zero, fire the next wave and re-arm it. Real ticks are
-// ~50 ms so at most one wave fires per step; the clock is driven by the injected `dtMs`.
-function tickWaves(
+// Advance the match clock and every live nest's own timer; a nest whose timer runs out fires a wave
+// and re-arms on the period the curve gives at that moment. Real ticks are ~50 ms against a period
+// floored at 10 s, so a nest fires at most once per step — and a `dtMs` big enough to owe two waves
+// pays the second on the next tick rather than bursting, which is what keeps the cap the only thing
+// that ever governs density.
+function tickNests(
   state: EnemyState,
+  players: PlayerRef[],
   dtMs: number,
   build: BuildState | null,
-): { spawns: EnemySpawn[]; wave: WaveDelta | null } {
-  state.msUntilWave -= dtMs;
-  if (state.msUntilWave > 0) return { spawns: [], wave: null };
-  state.msUntilWave += WAVE_PERIOD_MS;
-  const spawns = spawnWave(state, build);
-  return { spawns, wave: { index: state.waveIndex, clockMs: state.msUntilWave } };
+): EnemySpawn[] {
+  state.elapsedMs += dtMs;
+  const spawns: EnemySpawn[] = [];
+  for (const nest of state.nests) {
+    if (!nest.alive) continue; // silenced: it drops out of the drumbeat for good
+    const due = (state.nestTimers.get(nest.id) ?? 0) - dtMs;
+    const fires = due <= 0;
+    state.nestTimers.set(nest.id, fires ? due + nestPeriodMs(state.elapsedMs) : due);
+    if (fires) spawns.push(...fireNestWave(state, nest, players, build));
+  }
+  return spawns;
 }
 
-// Every still-active nest emits `2 + w` grunts at its own position, plus `max(0, w−2)` elites
-// spread across distinct nests (none before wave 3), all up to the concurrency cap. A nest that
-// would breach ENEMY_CAP holds its remainder rather than spawning it.
-function spawnWave(state: EnemyState, build: BuildState | null): EnemySpawn[] {
-  state.waveIndex += 1;
-  const w = state.waveIndex;
-  const active = state.nests.filter((n) => n.alive);
+// One nest's wave: `waveSize` enemies at its own position, each one drawn against `eliteShare`, all
+// up to the concurrency cap. A nest that would breach ENEMY_CAP holds its remainder.
+//
+// A hunter nest aims the whole wave at the player nearest the nest, at any distance — that is what
+// keeps hunters the early threat when the edge bias has put almost every nest far from centre. A
+// wanderer nest sends its wave after nobody. The nest's kind is read here and nowhere else, and it
+// reaches the client only as what the wave then does (ADR 0004).
+function fireNestWave(
+  state: EnemyState,
+  nest: Nest,
+  players: PlayerRef[],
+  build: BuildState | null,
+): EnemySpawn[] {
+  const size = waveSize(state.elapsedMs);
+  const share = eliteShare(state.elapsedMs);
+  const hunt =
+    nest.kind === "hunter"
+      ? nearestWithin(players, nest.pos, Number.POSITIVE_INFINITY)?.id
+      : undefined;
   const spawns: EnemySpawn[] = [];
-  const emit = (kind: EnemyKind, nest: Nest): boolean => {
-    if (state.enemies.size >= ENEMY_CAP) return false; // cap governor holds the remainder
+  for (let i = 0; i < size; i++) {
+    if (state.enemies.size >= ENEMY_CAP) break; // cap governor holds the remainder
+    const kind: EnemyKind = state.rng() < share ? "elite" : "grunt";
     // A nest walled in is a legitimate strategy, so a wave that lands inside a footprint still
     // spawns — the overlapping enemy is simply pushed clear.
     const at = pushOutOfSolids(build, jitter(nest.pos, state.rng), enemyRadius(kind));
-    spawns.push(addEnemy(state, kind, at));
-    return true;
-  };
-  for (const nest of active) {
-    for (let i = 0; i < 2 + w; i++) if (!emit("grunt", nest)) return spawns; // grunts(w) = 2 + w
+    spawns.push(addEnemy(state, kind, at, hunt));
   }
-  const elites = Math.max(0, w - 2); // elites(w), none before wave 3
-  for (let i = 0; i < elites && i < active.length; i++) emit("elite", active[i]);
   return spawns;
 }
 
@@ -698,18 +776,20 @@ function nearestRayHit(state: EnemyState, attack: Attack): { enemy?: Enemy; nest
   return best === null ? null : { enemy: best.enemy, nest: best.nest };
 }
 
-// One enemy's pure geometric step — one of three states:
+// One enemy's pure geometric step — one of four states:
 //   ENGAGED — a player or structure within AGGRO_RADIUS → chase it, never overshooting; chew on
 //             it once in contact.
-//   MARCH   — un-aggroed and still outside the hold edge → advance toward center, stopping
-//             exactly at the edge (so it never floods the safe center).
-//   HOLD    — un-aggroed and at/inside the hold edge → stop. A wave forms a front line here.
+//   HUNTING — un-aggroed, but out of a hunter nest and committed to a player → chase that player
+//             at any distance. No hold edge applies: it comes all the way in.
+//   MARCH   — un-aggroed, hunting nobody, still outside the hold edge → advance toward center,
+//             stopping exactly at the edge (so it never floods the safe center).
+//   HOLD    — un-aggroed, hunting nobody, at/inside the hold edge → stop.
 function stepEnemy(enemy: Enemy, context: StepContext): void {
   enemy.biteMs = Math.max(0, enemy.biteMs - context.dtMs);
   const speed = enemySpeed(enemy.kind) * (context.dtMs / 1000);
   const engaged = acquire(enemy, context);
   if (engaged) {
-    stepToward(enemy, engaged.pos, speed, context); // ENGAGED
+    stepToward(enemy, engaged.pos, speed, context); // ENGAGED or HUNTING
     return;
   }
   const { center, holdEdge } = context;
@@ -730,6 +810,10 @@ interface Engagement {
 // Lock and commit: a held target is kept until it dies or leaves AGGRO_RADIUS — an enemy chasing
 // you will not swap to a closer teammate. The one override is priority: a player in range always
 // beats a structure, so walking into a wave pulls it off your miner.
+//
+// Everything inside AGGRO_RADIUS is settled before the hunt is consulted, which is how "committed
+// to for life" and "still breaks off for anything on the way" hold at once: the hunt is what a
+// hunter does when nothing nearer has its attention, and interrupting it never spends it.
 function acquire(enemy: Enemy, context: StepContext): Engagement | null {
   const held = resolveTarget(enemy.target, enemy.pos, context);
   if (held && enemy.target?.kind === "player") return held;
@@ -747,7 +831,16 @@ function acquire(enemy: Enemy, context: StepContext): Engagement | null {
     return { pos: structureCenter(structure), radius: structureRadius(structure), structure };
   }
   enemy.target = undefined;
-  return null;
+  return hunted(enemy, context);
+}
+
+// Where this enemy's committed hunt is now — at any distance, with no aggro test. Null for anything
+// out of a wanderer nest, and for a hunter whose player has died or disconnected: that one marches
+// like the rest until they are back, since a player keeps their id across a respawn.
+function hunted(enemy: Enemy, context: StepContext): Engagement | null {
+  if (enemy.hunt === undefined) return null;
+  const player = context.players.find((p) => p.id === enemy.hunt);
+  return player ? { pos: player.pos, radius: PLAYER_RADIUS } : null;
 }
 
 // Where a held target is now, or null if it has died, disconnected, or left the aggro radius —
@@ -841,10 +934,12 @@ function nearestWithin(players: PlayerRef[], from: Vec2, radius: number): Player
 }
 
 // Add one enemy to the sim and return its spawn announcement (the client needs kind/hp before
-// position deltas flow for it).
-function addEnemy(state: EnemyState, kind: EnemyKind, pos: Vec2): EnemySpawn {
+// position deltas flow for it). `hunt` is server-only and deliberately not in the announcement.
+function addEnemy(state: EnemyState, kind: EnemyKind, pos: Vec2, hunt?: PlayerId): EnemySpawn {
   const id = `e${state.nextId++}`;
   const hp = STATS[kind].hp;
-  state.enemies.set(id, { id, kind, pos: { ...pos }, hp, biteMs: 0 });
+  const enemy: Enemy = { id, kind, pos: { ...pos }, hp, biteMs: 0 };
+  if (hunt !== undefined) enemy.hunt = hunt;
+  state.enemies.set(id, enemy);
   return { id, kind, pos: { ...pos }, hp };
 }
