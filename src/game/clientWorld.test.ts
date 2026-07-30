@@ -3,6 +3,7 @@ import type { MapDelta, Vec2, WorldInit } from "../lobby/protocol";
 import {
   BUILDABLES,
   type BuildableSpec,
+  generateOre,
   MINER_TRICKLE,
   structureBlocking,
   TILE,
@@ -22,7 +23,7 @@ import {
 import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, nestLayout, spawnEnemyState } from "./enemies";
 import { SEED_FACING } from "./facing";
 import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
-import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
+import { DEFAULT_WORLD_SETTINGS, type WorldSettings } from "./worldSettings";
 
 const STILL = { up: false, down: false, left: false, right: false };
 const held = (dir: keyof typeof STILL) => ({ ...STILL, [dir]: true });
@@ -36,6 +37,7 @@ const init = (): WorldInit => ({
   ],
   nestSeed: 7,
   oreSeed: 1,
+  settings: DEFAULT_WORLD_SETTINGS,
 });
 
 // The render time a peer sample stamped at `arrival` is shown = arrival + RENDER_DELAY_MS.
@@ -80,6 +82,47 @@ describe("ClientWorld construction", () => {
     for (const nest of new ClientWorld(init(), "self").snapshot(0).nests) {
       expect(Object.keys(nest).sort()).toEqual(["alive", "hp", "id", "maxHp", "pos", "radius"]);
     }
+  });
+
+  // #128. Both sides expand the two seeds themselves, so the settings have to reach the client or it
+  // builds a different world from the same seeds — a player mining a tile another cannot see, with
+  // no field to compare (ADR 0004). Proven at settings nobody ships: at the defaults an init the
+  // client ignored entirely would look identical.
+  describe("the client builds the world the init was built at", () => {
+    const CHOSEN: WorldSettings = {
+      ...DEFAULT_WORLD_SETTINGS,
+      metalPatches: 9,
+      powerPatches: 2,
+      oreEdgeBias: 1.25,
+      nestCount: 7,
+      nestEdgeBias: 2.5,
+    };
+    const world = (): WorldInit => ({ ...init(), settings: CHOSEN });
+
+    test("expands the ore seed at the init's settings, tile for tile", () => {
+      const client = new ClientWorld(world(), "self");
+      expect(client.ore).toEqual(generateOre(ARENA, 1, CHOSEN));
+      expect(client.ore).not.toEqual(generateOre(ARENA, 1, DEFAULT_WORLD_SETTINGS));
+    });
+
+    test("expands the nest seed at the init's settings, nest for nest", () => {
+      const client = new ClientWorld(world(), "self").snapshot(0).nests;
+      const server = spawnEnemyState(world(), () => 0.5, world().settings).nests;
+      expect(client.map((n) => [n.id, n.pos.x, n.pos.y, n.hp, n.maxHp, n.alive])).toEqual(
+        server.map((n) => [n.id, n.pos.x, n.pos.y, n.hp, n.maxHp, n.alive]),
+      );
+      expect(client).toHaveLength(CHOSEN.nestCount);
+    });
+
+    // ADR 0004's point, re-checked now that a client can compute the layout for itself: it may know
+    // where every nest is and how much HP it has, and still not be able to tell what any of them is.
+    test("still says nothing about a nest's type", () => {
+      const derived = nestLayout(ARENA, 7, CHOSEN);
+      expect(new Set(derived.map((n) => n.kind))).toEqual(new Set(["hunter", "wanderer"]));
+      for (const nest of new ClientWorld(world(), "self").snapshot(0).nests) {
+        expect(Object.keys(nest).sort()).toEqual(["alive", "hp", "id", "maxHp", "pos", "radius"]);
+      }
+    });
   });
 
   test("a different nestSeed lays the nests out somewhere else", () => {

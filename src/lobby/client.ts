@@ -1,4 +1,5 @@
 import { ClientWorld } from "../game/clientWorld";
+import type { WorldSettings } from "../game/worldSettings";
 import { normalizeCode } from "./code";
 import {
   type BuildableKind,
@@ -101,6 +102,13 @@ export class LobbyClient {
   // Host-only in practice (the server rejects a non-host); begins the match.
   start(): void {
     this.send({ type: "game/start" });
+  }
+
+  // Choose the world the next match is built from (#128), host-only on the same terms as `start`.
+  // The whole object each time — there is nothing to merge server-side — and nothing local is
+  // written: what the squad plays is whatever the hub accepted, and it arrives back on `WorldInit`.
+  sendSettings(settings: WorldSettings): void {
+    this.send({ type: "game/settings", settings });
   }
 
   // Stream the client's own integrated position. `seq` is monotonic across the client's

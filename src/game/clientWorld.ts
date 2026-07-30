@@ -167,12 +167,15 @@ export class ClientWorld {
     this.selfHp = initialHp;
     this.arena = init.arena;
     this.exit = init.exit;
-    // Both expanded at the default settings, which is only right because the server generated the
-    // world at them too (#127). Nothing on `WorldInit` says otherwise yet — putting the settings on
-    // the wire is #128, and until then a server built at anything else would hand this client a
-    // different arena with no field to compare (ADR 0004).
-    this.nests = nestLayout(init.arena, init.nestSeed);
-    this.ore = generateOre(init.arena, init.oreSeed);
+    // Both expanded at the settings the server built the world at, which is why they ride the init
+    // (#128). Neither expansion crosses the wire — the ore grid never has, and the nest layout is
+    // derived on both sides (ADR 0004) — so settings this client had to guess would put it in a
+    // different world from its squad, with no field anywhere to compare.
+    //
+    // The arena stays its own argument rather than being taken from `settings`, exactly as on the
+    // server: the box is the one thing the init states outright, so it cannot be got wrong here.
+    this.nests = nestLayout(init.arena, init.nestSeed, init.settings);
+    this.ore = generateOre(init.arena, init.oreSeed, init.settings);
     this.build = freshBuildState(init.arena);
     for (const s of init.spawns) {
       this.avatars.set(s.id, {

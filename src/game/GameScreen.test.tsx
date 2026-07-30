@@ -24,6 +24,7 @@ import { GameScreen } from "./GameScreen";
 import { GUN_TOGGLE_KEY, MINIMAP_ZOOM_KEY, NO_MOVE } from "./input";
 import { MINIMAP_COVERAGE_CLOSE_U, MINIMAP_COVERAGE_U, MINIMAP_SIZE } from "./minimap";
 import { ARENA } from "./world";
+import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
 
 const SPAWN = { x: 400, y: 300 };
 const init: WorldInit = {
@@ -32,6 +33,7 @@ const init: WorldInit = {
   spawns: [{ id: "me", slot: 1, name: "Me", pos: SPAWN }],
   oreSeed: 1,
   nestSeed: 1,
+  settings: DEFAULT_WORLD_SETTINGS,
 };
 
 // Real elapsed time rather than a mocked clock: happy-dom installs its own `Date`, which shadows

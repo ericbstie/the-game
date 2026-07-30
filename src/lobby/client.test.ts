@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { BULLET_COST } from "../game/build";
+import { DEFAULT_WORLD_SETTINGS } from "../game/worldSettings";
 import { LobbyClient, type LobbyClientOptions } from "./client";
 import type { LobbyServer, ServeLobbyOptions } from "./server";
 import { makeClient, startServer, type TestClient, waitForState } from "./testing";
@@ -308,5 +309,22 @@ describe("#102: ordering a bullet", () => {
     client.sendForge();
     await poll(() => client.getState().world?.queuedBullets() === 1);
     expect(client.getState().world?.metal()).toBe(0);
+  });
+});
+
+// #128. The host's half of the seam: the choice goes out as a command and comes back in the world
+// the squad is handed, end to end over a real socket. What the lobby *shows* while it is being
+// chosen is #129's.
+describe("#128: choosing the world before Start", () => {
+  test("sendSettings() decides the world the client then builds", async () => {
+    const server = spawn();
+    const client = newClient({ wsUrl: server.url });
+    client.host("Ana");
+    await waitForState(client, (s) => s.status === "lobby");
+
+    client.sendSettings({ ...DEFAULT_WORLD_SETTINGS, nestCount: 4, metalPatches: 6 });
+    client.start();
+    const state = await waitForState(client, (s) => s.world !== undefined);
+    expect(state.world?.snapshot(0).nests).toHaveLength(4);
   });
 });

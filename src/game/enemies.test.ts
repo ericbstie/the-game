@@ -70,6 +70,7 @@ const worldInit = (nestSeed = 1): WorldInit => ({
   spawns: [],
   oreSeed: 1,
   nestSeed,
+  settings: DEFAULTS,
 });
 
 const grunt = (id: string, pos: Vec2, hp = GRUNT_HP): Enemy => ({

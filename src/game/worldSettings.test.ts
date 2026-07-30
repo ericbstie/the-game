@@ -13,7 +13,7 @@ import {
   waveSize,
 } from "./enemies";
 import { ARENA, generateWorld } from "./world";
-import { DEFAULT_WORLD_SETTINGS, type WorldSettings } from "./worldSettings";
+import { DEFAULT_WORLD_SETTINGS, parseWorldSettings, type WorldSettings } from "./worldSettings";
 
 const players = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, slot: i + 1, name: `P${i + 1}` }));
@@ -180,6 +180,10 @@ describe("defaults reproduce the world as it stood before the config", () => {
       ],
       oreSeed: 2_265_367_787,
       nestSeed: 4_213_581_821,
+      // The one field #128 added. Every figure above it is the pre-config capture untouched, which
+      // is the point: putting the settings on the wire consumed no rng draw, so a given seed still
+      // places the same door and expands into the same ore.
+      settings: DEFAULT_WORLD_SETTINGS,
     });
     const other = generateWorld(players(3), { rng: mulberry32(4_242) });
     expect(other.exit).toEqual({ x: 8_475.2090737205, y: 31_102, width: 936, height: 98 });
@@ -237,6 +241,7 @@ const world = (): WorldInit => ({
   spawns: [],
   oreSeed: ORE_SEED,
   nestSeed: NEST_SEED,
+  settings: DEFAULT_WORLD_SETTINGS,
 });
 
 // One nest, past the grace, with an rng of 0.1 — under any elite share these tests set and over the
@@ -269,3 +274,24 @@ function meanOutwardness(grid: OreGrid): number {
   }
   return sum / grid.size;
 }
+
+// #128 vets an untrusted payload here rather than at the hub, because what a legal knob value is
+// belongs with the knobs. Every rule is asserted through the wire in `protocol.test.ts`; what only a
+// direct call can reach is the pair of numbers JSON cannot carry — `JSON.stringify` writes NaN and
+// Infinity as `null`, so a caller holding a live object is the only way either arrives as a number.
+describe("parseWorldSettings refuses what would not build a world", () => {
+  test("NaN and Infinity are refused as numbers, not merely as non-numbers", () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(parseWorldSettings(settings({ enemyCap: bad }))).toBeNull();
+      expect(parseWorldSettings(settings({ oreEdgeBias: bad }))).toBeNull();
+      expect(parseWorldSettings(settings({ arena: { width: bad, height: 1_000 } }))).toBeNull();
+      expect(
+        parseWorldSettings(settings({ nestPeriod: { startMs: bad, fallMs: 1, floorMs: 1 } })),
+      ).toBeNull();
+    }
+  });
+
+  test("the world the game ships with is admissible", () => {
+    expect(parseWorldSettings(DEFAULT_WORLD_SETTINGS)).toEqual(DEFAULT_WORLD_SETTINGS);
+  });
+});

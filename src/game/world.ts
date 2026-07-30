@@ -40,7 +40,8 @@ export interface WorldOptions {
 }
 
 export function generateWorld(players: SpawnPlayer[], options: WorldOptions = {}): WorldInit {
-  const { arena } = options.settings ?? DEFAULT_WORLD_SETTINGS;
+  const settings = options.settings ?? DEFAULT_WORLD_SETTINGS;
+  const { arena } = settings;
   const rng = options.rng ?? Math.random;
   return {
     arena,
@@ -52,6 +53,11 @@ export function generateWorld(players: SpawnPlayer[], options: WorldOptions = {}
     // The nest layout rides the same idiom for the same reason (ADR 0004). Drawn after the ore seed
     // so adding it left the exit and the ore grid of a given rng byte-for-byte where they were.
     nestSeed: Math.floor(rng() * 0x1_0000_0000),
+    // What the world above was built from, so the client expands the two seeds on the same terms
+    // (#128). Returned rather than left to the caller to attach: the box the init reports and the
+    // box these settings name are then the same statement, and a server cannot generate a world at
+    // one setting and announce another.
+    settings,
   };
 }
 

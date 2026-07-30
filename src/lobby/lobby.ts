@@ -34,7 +34,7 @@ import {
   stepEnemies,
 } from "../game/enemies";
 import { generateWorld, insideExit, PLAYER_MAX_HP, revealsExit } from "../game/world";
-import { DEFAULT_WORLD_SETTINGS } from "../game/worldSettings";
+import { DEFAULT_WORLD_SETTINGS, type WorldSettings } from "../game/worldSettings";
 import { generateCode, normalizeCode } from "./code";
 import {
   type BuildableKind,
@@ -132,6 +132,7 @@ interface SessionRecord {
   rev: number;
   players: Map<PlayerId, PlayerRecord>;
   graceTimers: Map<PlayerId, ReturnType<typeof setTimeout>>;
+  settings: WorldSettings; // the knobs the next match is built from; the host's to change (#128)
   worldInit?: WorldInit; // generated once at start; re-sent verbatim on reconnect
   positions: Map<PlayerId, { pos: Vec2; seq: number }>; // last-known relayed position per player
   health: Map<PlayerId, { hp: number; seq: number }>; // last-reported HP per player (aggro-gating + fan-out)
@@ -203,6 +204,9 @@ export class LobbyHub {
         return;
       case "game/start":
         this.startGame(socketId);
+        return;
+      case "game/settings":
+        this.setSettings(socketId, msg.settings);
         return;
       case "game/pos":
         this.gamePos(socketId, msg.pos, msg.seq);
@@ -294,6 +298,7 @@ export class LobbyHub {
       phase: "lobby",
       host: player.id,
       rev: 0,
+      settings: DEFAULT_WORLD_SETTINGS,
       players: new Map([[player.id, player]]),
       graceTimers: new Map(),
       positions: new Map(),
@@ -437,6 +442,26 @@ export class LobbyHub {
     }
   }
 
+  // Host-only: choose the world the next match is built from (#128). Gated exactly as `game/start`
+  // is, and for the same reason — the server generates one world for the whole squad, so this is
+  // the squad's world and not the sender's. Anyone else asking is ignored in silence, as a non-host
+  // `game/start` is; the values themselves were already vetted by `parseWorldSettings`.
+  //
+  // Deliberately *not* gated on the phase, unlike every in-game command. The world is generated
+  // once at `game/start` and re-sent verbatim from `session.worldInit` afterwards, so a mid-match
+  // write lands on a figure nothing reads again and cannot reach the running match. A guard against
+  // it would be a branch no test could see; it becomes worth having when something echoes the
+  // current settings back to the lobby (#129), and not before.
+  private setSettings(socketId: string, settings: WorldSettings): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (session.host !== player.id) return; // only the host chooses the world
+    session.settings = settings;
+  }
+
   // Host-only: flip the Session into a match, generate the shared world once from the
   // current Squad, and hand every client its immutable world-init. The server does not
   // simulate avatars — it becomes a relay; clients own and stream their own positions.
@@ -452,14 +477,17 @@ export class LobbyHub {
     session.phase = "in-game";
     session.startedAt = Date.now(); // the stopwatch: elapsed time from here is the score
     // One settings object builds the whole world (#127): the box and the ore below, and the sim's
-    // nests, curves and cap further down. Today it is always the default world — the host does not
-    // choose it until it rides `WorldInit` (#128) and the lobby grows controls for it (#129).
-    const settings = DEFAULT_WORLD_SETTINGS;
+    // nests, curves and cap further down. The host's choice, defaulting to today's world (#128).
     session.worldInit = generateWorld(
       [...session.players.values()].map((p) => ({ id: p.id, slot: p.slot, name: p.name })),
-      { settings },
+      { settings: session.settings },
     );
     this.broadcast(session, { type: "game/world-init", init: session.worldInit });
+    // Read back off the init rather than used from above, so the server's two generators run on
+    // exactly the object every client was handed. Ore never crosses the wire and the nest layout is
+    // derived on both sides (ADR 0004), so a server building at settings it did not announce would
+    // desync the squad silently — this is what makes announcing and building one statement.
+    const { settings } = session.worldInit;
 
     // The ore never rides the wire — the server expands the same seed every client does, so
     // its admission checks read a grid byte-identical to the one under the player's cursor.
