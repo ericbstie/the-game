@@ -34,6 +34,7 @@ import {
   stepEnemies,
 } from "../game/enemies";
 import { generateWorld, insideExit, PLAYER_MAX_HP, revealsExit } from "../game/world";
+import { DEFAULT_WORLD_SETTINGS } from "../game/worldSettings";
 import { generateCode, normalizeCode } from "./code";
 import {
   type BuildableKind,
@@ -450,14 +451,19 @@ export class LobbyHub {
 
     session.phase = "in-game";
     session.startedAt = Date.now(); // the stopwatch: elapsed time from here is the score
+    // One settings object builds the whole world (#127): the box and the ore below, and the sim's
+    // nests, curves and cap further down. Today it is always the default world — the host does not
+    // choose it until it rides `WorldInit` (#128) and the lobby grows controls for it (#129).
+    const settings = DEFAULT_WORLD_SETTINGS;
     session.worldInit = generateWorld(
       [...session.players.values()].map((p) => ({ id: p.id, slot: p.slot, name: p.name })),
+      { settings },
     );
     this.broadcast(session, { type: "game/world-init", init: session.worldInit });
 
     // The ore never rides the wire — the server expands the same seed every client does, so
     // its admission checks read a grid byte-identical to the one under the player's cursor.
-    session.ore = generateOre(session.worldInit.arena, session.worldInit.oreSeed);
+    session.ore = generateOre(session.worldInit.arena, session.worldInit.oreSeed, settings);
     session.build = freshBuildState(session.worldInit.arena);
     // Seeded through the same door every other Metal comes in by, so the bank is whole because of
     // how it is written rather than because every caller happened to pass a round number.
@@ -471,7 +477,7 @@ export class LobbyHub {
     session.sentQueued = session.build.ammo.queued;
 
     // The world is now dynamic: arm the server-authoritative enemy sim and stream its deltas.
-    session.sim = spawnEnemyState(session.worldInit, this.rng);
+    session.sim = spawnEnemyState(session.worldInit, this.rng, settings);
     if (this.firstWaveMs !== undefined) {
       for (const nest of session.sim.nests) session.sim.nestTimers.set(nest.id, this.firstWaveMs);
     }

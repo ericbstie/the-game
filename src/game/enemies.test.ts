@@ -27,8 +27,6 @@ import {
   type Attack,
   admitAttack,
   ELITE_HP,
-  ELITE_SHARE_MAX,
-  ENEMY_CAP,
   type Enemy,
   type EnemyState,
   eliteShare,
@@ -40,12 +38,8 @@ import {
   GRUNT_RADIUS,
   GRUNT_SPEED,
   NEST_BAND_INNER,
-  NEST_COUNT,
-  NEST_EDGE_BIAS,
   NEST_HP_INNER,
   NEST_HP_OUTER,
-  NEST_PERIOD_FLOOR_MS,
-  NEST_PERIOD_START_MS,
   NEST_RADIUS,
   type Nest,
   type NestKind,
@@ -62,11 +56,10 @@ import {
   stepEnemies,
   WANDER_LEG_MS,
   WANDERER_CHANCE_OUTER,
-  WAVE_SIZE_MAX,
-  WAVE_SIZE_START,
   waveSize,
 } from "./enemies";
 import { ARENA } from "./world";
+import { DEFAULT_WORLD_SETTINGS as DEFAULTS } from "./worldSettings";
 
 const C = { x: ARENA.width / 2, y: ARENA.height / 2 };
 const HALF = (ARENA.width / 2) * (1 - 0.08); // the mid-band inset: the nest band's outer bound
@@ -93,6 +86,7 @@ const stateWith = (enemies: Enemy[], rng: () => number = () => 0.5): EnemyState 
   elapsedMs: 0,
   nestTimers: new Map(),
   rng,
+  settings: DEFAULTS,
   nextId: enemies.length + 1,
 });
 // Take every nest off its timer, for the tests that want the nests standing there without spawning.
@@ -124,12 +118,12 @@ const shot = (pos: Vec2, dir: Vec2, by = "p1"): Attack => ({ pos, dir, by });
 const step = (state: EnemyState, attacks: Attack[]) => stepEnemies(state, [], attacks, 0).events;
 
 describe("spawnEnemyState", () => {
-  test("places NEST_COUNT nests, no enemies, and starts the match clock at zero", () => {
+  test("places `nestCount` nests, no enemies, and starts the match clock at zero", () => {
     const s = spawnEnemyState(worldInit(), () => 0);
-    expect(s.nests).toHaveLength(NEST_COUNT);
+    expect(s.nests).toHaveLength(DEFAULTS.nestCount);
     expect(s.enemies.size).toBe(0);
     expect(s.elapsedMs).toBe(0);
-    expect([...s.nestTimers.values()]).toEqual(Array(NEST_COUNT).fill(SPAWN_GRACE_MS));
+    expect([...s.nestTimers.values()]).toEqual(Array(DEFAULTS.nestCount).fill(SPAWN_GRACE_MS));
   });
 
   test("every nest starts alive at its own full HP", () => {
@@ -167,8 +161,8 @@ describe("nest layout (#123)", () => {
   });
 
   test("there are fifty of them", () => {
-    expect(NEST_COUNT).toBe(50);
-    expect(nestLayout(ARENA, 1)).toHaveLength(NEST_COUNT);
+    expect(DEFAULTS.nestCount).toBe(50);
+    expect(nestLayout(ARENA, 1)).toHaveLength(DEFAULTS.nestCount);
   });
 
   test("none lands inside 3,600 u of centre or beyond 14,352 u, on any seed", () => {
@@ -195,13 +189,13 @@ describe("nest layout (#123)", () => {
   });
 
   test("density rises toward the wall on u ** (1 / 3.5)", () => {
-    expect(NEST_EDGE_BIAS).toBe(3.5);
+    expect(DEFAULTS.nestEdgeBias).toBe(3.5);
     const all = many();
     const bins = new Array(10).fill(0);
     for (const n of all) bins[Math.min(9, Math.floor(outward(n) * 10))]++;
     // Sampling the radial fraction as u ** (1 / 3.5) makes its CDF u ** 3.5, so a decile of the band
     // holds ((i+1)/10) ** 3.5 − (i/10) ** 3.5 of the nests. Spelled as the literal the ticket asked
-    // for, not as `NEST_EDGE_BIAS`, so retuning the exponent cannot move the expectation with it.
+    // for, not as `nestEdgeBias`, so retuning the exponent cannot move the expectation with it.
     for (let i = 0; i < 10; i++) {
       const share = bins[i] / all.length;
       const expected = ((i + 1) / 10) ** 3.5 - (i / 10) ** 3.5;
@@ -283,7 +277,7 @@ describe("nest layout (#123)", () => {
       s.enemies.clear(); // so the cap never swallows a later wave
     }
     expect(s.nests.filter((n) => !n.alive)).toHaveLength(1); // one really was silenced
-    expect(spawned).toBeGreaterThan(NEST_COUNT); // and waves really did fire
+    expect(spawned).toBeGreaterThan(DEFAULTS.nestCount); // and waves really did fire
     expect(s.nests.map((n) => `${n.id}:${n.kind}`)).toEqual(typed);
   });
 });
@@ -297,8 +291,8 @@ describe("the escalation curves (#124)", () => {
 
   describe("period", () => {
     test("is its starting 60 s for the whole first minute of spawning", () => {
-      expect(nestPeriodMs(at(0))).toBe(NEST_PERIOD_START_MS);
-      expect(nestPeriodMs(at(1) - 1)).toBe(NEST_PERIOD_START_MS);
+      expect(nestPeriodMs(at(0))).toBe(DEFAULTS.nestPeriod.startMs);
+      expect(nestPeriodMs(at(1) - 1)).toBe(DEFAULTS.nestPeriod.startMs);
     });
 
     test("falls one step per minute after that", () => {
@@ -309,21 +303,21 @@ describe("the escalation curves (#124)", () => {
 
     test("floors at 10 s and never falls through it", () => {
       expect(nestPeriodMs(at(9))).toBe(15_000);
-      expect(nestPeriodMs(at(10))).toBe(NEST_PERIOD_FLOOR_MS);
-      expect(nestPeriodMs(at(11))).toBe(NEST_PERIOD_FLOOR_MS);
-      expect(nestPeriodMs(at(600))).toBe(NEST_PERIOD_FLOOR_MS);
+      expect(nestPeriodMs(at(10))).toBe(DEFAULTS.nestPeriod.floorMs);
+      expect(nestPeriodMs(at(11))).toBe(DEFAULTS.nestPeriod.floorMs);
+      expect(nestPeriodMs(at(600))).toBe(DEFAULTS.nestPeriod.floorMs);
     });
 
     test("reads as its starting value through the grace, when no nest is armed anyway", () => {
-      expect(nestPeriodMs(0)).toBe(NEST_PERIOD_START_MS);
-      expect(nestPeriodMs(SPAWN_GRACE_MS - 1)).toBe(NEST_PERIOD_START_MS);
+      expect(nestPeriodMs(0)).toBe(DEFAULTS.nestPeriod.startMs);
+      expect(nestPeriodMs(SPAWN_GRACE_MS - 1)).toBe(DEFAULTS.nestPeriod.startMs);
     });
   });
 
   describe("wave size", () => {
     test("is one for the whole first minute of spawning", () => {
-      expect(waveSize(at(0))).toBe(WAVE_SIZE_START);
-      expect(waveSize(at(1) - 1)).toBe(WAVE_SIZE_START);
+      expect(waveSize(at(0))).toBe(DEFAULTS.waveSize.start);
+      expect(waveSize(at(1) - 1)).toBe(DEFAULTS.waveSize.start);
     });
 
     test("grows by one per minute after that", () => {
@@ -333,13 +327,13 @@ describe("the escalation curves (#124)", () => {
     });
 
     test("caps at five and never grows past it", () => {
-      expect(waveSize(at(4))).toBe(WAVE_SIZE_MAX);
-      expect(waveSize(at(5))).toBe(WAVE_SIZE_MAX);
-      expect(waveSize(at(600))).toBe(WAVE_SIZE_MAX);
+      expect(waveSize(at(4))).toBe(DEFAULTS.waveSize.max);
+      expect(waveSize(at(5))).toBe(DEFAULTS.waveSize.max);
+      expect(waveSize(at(600))).toBe(DEFAULTS.waveSize.max);
     });
 
     test("is one through the grace", () => {
-      expect(waveSize(0)).toBe(WAVE_SIZE_START);
+      expect(waveSize(0)).toBe(DEFAULTS.waveSize.start);
     });
   });
 
@@ -356,9 +350,9 @@ describe("the escalation curves (#124)", () => {
     });
 
     test("caps at thirty points and never grows past it", () => {
-      expect(eliteShare(at(6))).toBe(ELITE_SHARE_MAX);
-      expect(eliteShare(at(7))).toBe(ELITE_SHARE_MAX);
-      expect(eliteShare(at(600))).toBe(ELITE_SHARE_MAX);
+      expect(eliteShare(at(6))).toBe(DEFAULTS.eliteShare.max);
+      expect(eliteShare(at(7))).toBe(DEFAULTS.eliteShare.max);
+      expect(eliteShare(at(600))).toBe(DEFAULTS.eliteShare.max);
     });
 
     test("is nothing through the grace", () => {
@@ -394,29 +388,29 @@ describe("per-nest spawning (#124)", () => {
     // wrong one of the pair.
     s.rng = () => 0.5;
     const fired = new Set<string>();
-    for (let i = 0; i < (SPAWN_GRACE_MS + NEST_PERIOD_START_MS) / DT; i++) {
+    for (let i = 0; i < (SPAWN_GRACE_MS + DEFAULTS.nestPeriod.startMs) / DT; i++) {
       s.enemies.clear(); // the cap is not what this test is about
       for (const sp of stepEnemies(s, [], [], DT).events.spawns) fired.add(where(sp.pos));
     }
-    expect(fired.size).toBe(NEST_COUNT);
+    expect(fired.size).toBe(DEFAULTS.nestCount);
   });
 
   test("every nest is armed inside the first period after the grace, never before it", () => {
     const s = spawnEnemyState(worldInit(3), mulberry32(3));
-    expect(s.nestTimers.size).toBe(NEST_COUNT);
+    expect(s.nestTimers.size).toBe(DEFAULTS.nestCount);
     for (const nest of s.nests) {
       const armedAt = s.nestTimers.get(nest.id) as number;
       expect(armedAt).toBeGreaterThanOrEqual(SPAWN_GRACE_MS);
-      expect(armedAt).toBeLessThan(SPAWN_GRACE_MS + NEST_PERIOD_START_MS);
+      expect(armedAt).toBeLessThan(SPAWN_GRACE_MS + DEFAULTS.nestPeriod.startMs);
     }
   });
 
   test("the timers are independent — fifty nests do not fire on one tick", () => {
     const s = spawnEnemyState(worldInit(11), mulberry32(11));
-    const window = ticks(s, (SPAWN_GRACE_MS + NEST_PERIOD_START_MS) / DT);
+    const window = ticks(s, (SPAWN_GRACE_MS + DEFAULTS.nestPeriod.startMs) / DT);
     const firing = window.filter((spawns) => spawns.length > 0);
-    expect(firing.length).toBeGreaterThan(NEST_COUNT / 2); // spread across many ticks, not one
-    expect(Math.max(...firing.map((spawns) => spawns.length))).toBeLessThan(NEST_COUNT / 5);
+    expect(firing.length).toBeGreaterThan(DEFAULTS.nestCount / 2); // spread across many ticks, not one
+    expect(Math.max(...firing.map((spawns) => spawns.length))).toBeLessThan(DEFAULTS.nestCount / 5);
   });
 
   test("a nest re-arms on the period the curve gives, not on a global clock", () => {
@@ -430,7 +424,7 @@ describe("per-nest spawning (#124)", () => {
       } while (stepEnemies(s, [], [], DT).events.spawns.length === 0);
       return gap;
     };
-    expect(one(0)).toBe(NEST_PERIOD_START_MS);
+    expect(one(0)).toBe(DEFAULTS.nestPeriod.startMs);
     expect(one(2)).toBe(50_000);
   });
 
@@ -445,7 +439,7 @@ describe("per-nest spawning (#124)", () => {
   test("a wave spawns at its own nest", () => {
     const s = armed(spawnEnemyState(worldInit(), () => 0.5)); // rng 0.5 → zero jitter
     const spawns = stepEnemies(s, [], [], DT).events.spawns;
-    expect(spawns).toHaveLength(NEST_COUNT * WAVE_SIZE_START);
+    expect(spawns).toHaveLength(DEFAULTS.nestCount * DEFAULTS.waveSize.start);
     expect(spawns.map((sp) => where(sp.pos)).sort()).toEqual(
       s.nests.map((n) => where(n.pos)).sort(),
     );
@@ -457,8 +451,8 @@ describe("per-nest spawning (#124)", () => {
       return stepEnemies(s, [], [], DT).events.spawns.map((sp) => sp.kind);
     };
     expect(mix(0, 0)).toEqual(["grunt"]); // a 0% share admits nothing, however low the roll
-    expect(mix(6, 0.29)).toEqual(Array(WAVE_SIZE_MAX).fill("elite")); // under 30% — every one
-    expect(mix(6, 0.31)).toEqual(Array(WAVE_SIZE_MAX).fill("grunt")); // over it — none
+    expect(mix(6, 0.29)).toEqual(Array(DEFAULTS.waveSize.max).fill("elite")); // under 30% — every one
+    expect(mix(6, 0.31)).toEqual(Array(DEFAULTS.waveSize.max).fill("grunt")); // over it — none
   });
 
   test("an elite spawns at ELITE_HP", () => {
@@ -467,12 +461,13 @@ describe("per-nest spawning (#124)", () => {
     expect(spawns.find((sp) => sp.kind === "elite")?.hp).toBe(ELITE_HP);
   });
 
-  test("ENEMY_CAP governs concurrency: a nest holds its remainder at the cap", () => {
+  test("the enemy cap governs concurrency: a nest holds its remainder at the cap", () => {
     const s = spawnEnemyState(worldInit(), () => 0.5);
-    for (let i = 0; i < 8_000 && s.enemies.size < ENEMY_CAP; i++) stepEnemies(s, [], [], DT);
-    expect(s.enemies.size).toBe(ENEMY_CAP);
+    for (let i = 0; i < 8_000 && s.enemies.size < DEFAULTS.enemyCap; i++)
+      stepEnemies(s, [], [], DT);
+    expect(s.enemies.size).toBe(DEFAULTS.enemyCap);
     ticks(s, 200);
-    expect(s.enemies.size).toBe(ENEMY_CAP); // reached and held, never breached
+    expect(s.enemies.size).toBe(DEFAULTS.enemyCap); // reached and held, never breached
   });
 
   test("a silenced nest never fires again; its neighbours keep their timers", () => {
@@ -480,14 +475,14 @@ describe("per-nest spawning (#124)", () => {
     const doomed = s.nests[0];
     doomed.alive = false;
     const spawns = stepEnemies(s, [], [], DT).events.spawns;
-    expect(spawns).toHaveLength((NEST_COUNT - 1) * WAVE_SIZE_START);
+    expect(spawns).toHaveLength((DEFAULTS.nestCount - 1) * DEFAULTS.waveSize.start);
     expect(spawns.map((sp) => where(sp.pos))).not.toContain(where(doomed.pos));
   });
 
   test("a partially-damaged nest still fires its full wave", () => {
     const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => 0.5)), 4);
     s.nests[0].hp = 1;
-    expect(stepEnemies(s, [], [], DT).events.spawns).toHaveLength(WAVE_SIZE_MAX);
+    expect(stepEnemies(s, [], [], DT).events.spawns).toHaveLength(DEFAULTS.waveSize.max);
   });
 
   // The purity claim in the module's own header, asserted the only way that can catch shared
@@ -527,6 +522,7 @@ describe("hunter waves (#124)", () => {
     elapsedMs: SPAWN_GRACE_MS,
     nestTimers: new Map([["n0", 0]]),
     rng: () => 0.5, // zero jitter, so the wave spawns on the nest to the last bit
+    settings: DEFAULTS,
     nextId: 1,
   });
   const fire = (state: EnemyState, players: PlayerRef[]) =>
@@ -740,7 +736,7 @@ describe("stepEnemies AI (ENGAGED / HUNTING / WANDER)", () => {
 // injected rng, so each count is a fixed number that passes always or fails always rather than a
 // tendency that passes most of the time.
 //
-// They are counts of a shaped field, so they move when the shape does: `ENEMY_CAP` and
+// They are counts of a shaped field, so they move when the shape does: the enemy cap and
 // `WANDER_LEG_MS` are both provisional, and a retune of either will red some of these. That is the
 // price of asserting a gradient rather than describing one, and re-reading the counts is the fix.
 describe("#125: no safe centre, and the gradient it produces", () => {
@@ -771,7 +767,7 @@ describe("#125: no safe centre, and the gradient it produces", () => {
   test("the cap is the density dial, and it is 500", () => {
     // Provisional (#111). A retune of this line moves `docs/frame-budget.md` and
     // `docs/map-delta-budget.md` with it, which is why it is pinned here rather than left implicit.
-    expect(ENEMY_CAP).toBe(500);
+    expect(DEFAULTS.enemyCap).toBe(500);
   });
 
   // ADR 0004: a nest's kind must never become visible to the client, which is the whole reason the
@@ -822,7 +818,7 @@ describe("#125: no safe centre, and the gradient it produces", () => {
     }
   });
 
-  // Measured at 4:00, before the cap binds. That is the honest window: `ENEMY_CAP` is a population
+  // Measured at 4:00, before the cap binds. That is the honest window: the enemy cap is a population
   // governor, so once it is binding the other forty-nine nests refill whatever a silenced one stops
   // sending and the local reduction narrows to noise. Standing against silenced within 4,000 u of the
   // nest, seeds 1–4: 6/1, 18/11, 11/6, 40/31.
@@ -1202,7 +1198,7 @@ describe("M4-T4: structures are solid to the sim too", () => {
     const { build } = walls([tileOf({ x: nest.pos.x - TILE, y: nest.pos.y - TILE })]);
 
     const spawns = stepEnemies(s, [], [], 50, build).events.spawns;
-    expect(spawns.length).toBe(WAVE_SIZE_MAX);
+    expect(spawns.length).toBe(DEFAULTS.waveSize.max);
     for (const sp of spawns) {
       expect(structureBlocking(build, sp.pos, enemyRadius(sp.kind))).toBeNull();
     }
@@ -1224,7 +1220,7 @@ describe("M4-T4: structures are solid to the sim too", () => {
     // Deep inside a solid field one push lands in the neighbouring wall, and that is the
     // deliberate trade: the sim pushes once and never searches for a free tile. What it must
     // never do is drop the spawn — the enemies are there, and they will chew their way out.
-    expect(spawns.length).toBe(WAVE_SIZE_MAX);
+    expect(spawns.length).toBe(DEFAULTS.waveSize.max);
   });
 
   test("with nothing built, enemy motion is byte-for-byte what M3 produced", () => {

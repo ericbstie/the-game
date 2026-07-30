@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { ENEMY_CAP } from "../src/game/enemies";
+import { DEFAULT_WORLD_SETTINGS } from "../src/game/worldSettings";
 import { measure, worstCaseTick } from "./delta-size";
 
 describe("the worst case is the one the game actually supports", () => {
-  test("drives the sim to ENEMY_CAP rather than asserting against a hand-written fixture", () => {
+  test("drives the sim to the enemy cap rather than asserting against a hand-written fixture", () => {
     const { enemies, trimmed } = worstCaseTick();
-    expect(enemies).toBe(ENEMY_CAP);
-    expect(trimmed.moves).toHaveLength(ENEMY_CAP);
+    expect(enemies).toBe(DEFAULT_WORLD_SETTINGS.enemyCap);
+    expect(trimmed.moves).toHaveLength(DEFAULT_WORLD_SETTINGS.enemyCap);
   });
 
   test("every player's shot rides the measured tick, so `shots` is at its per-tick maximum", () => {

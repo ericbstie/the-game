@@ -167,6 +167,10 @@ export class ClientWorld {
     this.selfHp = initialHp;
     this.arena = init.arena;
     this.exit = init.exit;
+    // Both expanded at the default settings, which is only right because the server generated the
+    // world at them too (#127). Nothing on `WorldInit` says otherwise yet — putting the settings on
+    // the wire is #128, and until then a server built at anything else would hand this client a
+    // different arena with no field to compare (ADR 0004).
     this.nests = nestLayout(init.arena, init.nestSeed);
     this.ore = generateOre(init.arena, init.oreSeed);
     this.build = freshBuildState(init.arena);

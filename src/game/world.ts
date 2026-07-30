@@ -1,4 +1,5 @@
 import type { Arena, Exit, MoveInput, PlayerId, Spawn, Vec2, WorldInit } from "../lobby/protocol";
+import { DEFAULT_WORLD_SETTINGS, type WorldSettings } from "./worldSettings";
 
 // The box world's shared shape and motion, as pure functions. `generateWorld` builds the
 // immutable world-init the server hands to every client once; `stepPos` integrates a
@@ -8,7 +9,10 @@ import type { Arena, Exit, MoveInput, PlayerId, Spawn, Vec2, WorldInit } from ".
 
 // One giant box: ~2 minutes to walk end-to-end at PLAYER_SPEED (≈120 s edge-to-edge,
 // ≈60 s center → perimeter). You spawn dead center and push outward toward the danger.
-export const ARENA: Arena = { width: 31_200, height: 31_200 };
+//
+// Read off the default settings rather than stated twice: the arena is a knob now (#127), and the
+// two could otherwise disagree about how big the box is.
+export const ARENA: Arena = DEFAULT_WORLD_SETTINGS.arena;
 export const PLAYER_RADIUS = 14;
 export const PLAYER_SPEED = 260; // world units / second
 export const PLAYER_MAX_HP = 100; // client-authoritative; the client judges its own contact damage
@@ -31,12 +35,12 @@ export interface SpawnPlayer {
 }
 
 export interface WorldOptions {
-  arena?: Arena;
+  settings?: WorldSettings; // the knobs the world is built from; defaults to today's world
   rng?: () => number; // defaults to Math.random; injected for deterministic exit placement
 }
 
 export function generateWorld(players: SpawnPlayer[], options: WorldOptions = {}): WorldInit {
-  const arena = options.arena ?? ARENA;
+  const { arena } = options.settings ?? DEFAULT_WORLD_SETTINGS;
   const rng = options.rng ?? Math.random;
   return {
     arena,

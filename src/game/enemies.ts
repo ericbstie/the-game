@@ -33,6 +33,7 @@ import {
   type TurretRuntime,
 } from "./build";
 import { clamp, DANGER_BAND_FRAC, PLAYER_RADIUS } from "./world";
+import { DEFAULT_WORLD_SETTINGS, type WorldSettings } from "./worldSettings";
 
 // The box world's dynamic side (Milestone 3): a pure, server-authoritative enemy simulation.
 // `spawnEnemyState` seeds the initial enemies from the immutable world-init; `stepEnemies`
@@ -112,8 +113,9 @@ export const WANDER_LEG_MS = 3_000; // 546 u of walking at GRUNT_SPEED
 
 // Nests — the static spawners scattered through the outer arena. The count, the band, the bias, the
 // HP pair and the wanderer chance are all **provisional** (#123): only a played match can judge
-// them, and a later change to one of them is a retune rather than a correction.
-export const NEST_COUNT = 50;
+// them, and a later change to one of them is a retune rather than a correction. The count and the
+// bias are knobs now (`WorldSettings.nestCount`, `nestEdgeBias`); the rest are not, because nobody
+// asked for them.
 export const NEST_RADIUS = 48;
 // The band they are placed in, as a radius from arena centre. Inner is two aggro radii, so the
 // squad never spawns already inside a nest's notice; outer is the mid-band inset the ore gradient
@@ -122,10 +124,11 @@ export const NEST_BAND_INNER = 2 * AGGRO_RADIUS; // 3,600 u
 export function nestBandOuter(arena: Arena): number {
   return (Math.min(arena.width, arena.height) / 2) * (1 - DANGER_BAND_FRAC); // 14,352 u at 31,200
 }
-// The radial fraction is sampled as u ** (1 / NEST_EDGE_BIAS) — the same curve and the same
-// exponent the ore gradient uses (`build.ts` EDGE_BIAS) — which puts ~91% of the nests in the outer
-// half of the band. The squad has to push outward to find most of them.
-export const NEST_EDGE_BIAS = 3.5;
+// The radial fraction is sampled as u ** (1 / nestEdgeBias) — the same curve and the same exponent
+// the ore gradient uses (`WorldSettings.oreEdgeBias`), and deliberately a separate knob from it
+// (`docs/adr/0005`) — which puts ~91% of the nests in the outer half of the band. The squad has to
+// push outward to find most of them.
+//
 // HP and type both read off that same fraction, so distance is the only dial: an inner nest is
 // cheap to clear and sends hunters; an outer one is a long fight that mostly leaks wanderers.
 export const NEST_HP_INNER = 150;
@@ -133,16 +136,10 @@ export const NEST_HP_OUTER = 600;
 export const WANDERER_CHANCE_OUTER = 0.9; // at the inner bound it is 0, and linear between
 const SPAWN_JITTER = 300; // grunts spawn within this radius of their nest, so they don't stack
 
-// Hard concurrency governor; a nest holds its remainder at the cap. It binds within a couple of
-// minutes of the wave-size cap, so from mid-match on it is this number — not the escalation curves —
-// that sets how full the arena feels, which is why #97 will expose it. **Provisional**, and the one
-// number here that a measurement rather than a played match can veto: `docs/frame-budget.md` and
-// `docs/map-delta-budget.md` are both characterised at it.
-export const ENEMY_CAP = 500;
-
 // Spawning (#124): every nest keeps its own timer, and three curves escalate what that timer fires.
-// All five numbers below, and the grace, are **provisional** — only a played match can judge them,
-// and a later change to one of them is a retune rather than a correction.
+// The curves and the concurrency cap are knobs (`WorldSettings.nestPeriod`, `waveSize`,
+// `eliteShare`, `enemyCap`); the grace is not. All of them are **provisional** — only a played match
+// can judge them, and a later change to one of them is a retune rather than a correction.
 //
 // Nothing spawns for the first minute: the squad gets one minute to hand-mine before the first wave
 // (~60 Metal at HAND_MINE_RATE 1 — one miner, with 10 spare).
@@ -153,14 +150,6 @@ export const SPAWN_GRACE_MS = 60_000;
 // during the minute in which no nest fires — so #111's "max rate at 10:00 / capped at 4:00 / capped
 // at 6:00" annotations land one minute later here than they read there.
 const ESCALATION_STEP_MS = 60_000; // "per minute", the step every curve below is quantised to
-export const NEST_PERIOD_START_MS = 60_000;
-const NEST_PERIOD_FALL_MS = 5_000; // per minute
-export const NEST_PERIOD_FLOOR_MS = 10_000; // maximum rate, reached at 11:00
-export const WAVE_SIZE_START = 1;
-const WAVE_SIZE_GROWTH = 1; // per minute
-export const WAVE_SIZE_MAX = 5; // reached at 5:00
-const ELITE_SHARE_PTS_PER_MIN = 5;
-export const ELITE_SHARE_MAX = 0.3; // reached at 7:00
 
 // Whole minutes of spawning elapsed: 0 for the grace and for the first minute after it, then one
 // per minute. Quantised rather than continuous, so a wave fired a tick apart from another is fired
@@ -170,16 +159,21 @@ function escalation(elapsedMs: number): number {
 }
 
 // How long a nest waits between waves at this point in the match.
-export function nestPeriodMs(elapsedMs: number): number {
-  return Math.max(
-    NEST_PERIOD_FLOOR_MS,
-    NEST_PERIOD_START_MS - escalation(elapsedMs) * NEST_PERIOD_FALL_MS,
-  );
+export function nestPeriodMs(
+  elapsedMs: number,
+  settings: WorldSettings = DEFAULT_WORLD_SETTINGS,
+): number {
+  const { startMs, fallMs, floorMs } = settings.nestPeriod;
+  return Math.max(floorMs, startMs - escalation(elapsedMs) * fallMs);
 }
 
 // How many enemies one nest's wave carries.
-export function waveSize(elapsedMs: number): number {
-  return Math.min(WAVE_SIZE_MAX, WAVE_SIZE_START + escalation(elapsedMs) * WAVE_SIZE_GROWTH);
+export function waveSize(
+  elapsedMs: number,
+  settings: WorldSettings = DEFAULT_WORLD_SETTINGS,
+): number {
+  const { start, growth, max } = settings.waveSize;
+  return Math.min(max, start + escalation(elapsedMs) * growth);
 }
 
 // The chance each enemy in a wave is an elite rather than a grunt — a share, drawn per enemy, so a
@@ -187,8 +181,12 @@ export function waveSize(elapsedMs: number): number {
 //
 // Whole percentage points divided at the end, not a repeated float addition: 0.05 accumulated six
 // times is 0.30000000000000004, which is not 30%.
-export function eliteShare(elapsedMs: number): number {
-  return Math.min(ELITE_SHARE_MAX, (escalation(elapsedMs) * ELITE_SHARE_PTS_PER_MIN) / 100);
+export function eliteShare(
+  elapsedMs: number,
+  settings: WorldSettings = DEFAULT_WORLD_SETTINGS,
+): number {
+  const { ptsPerMin, max } = settings.eliteShare;
+  return Math.min(max, (escalation(elapsedMs) * ptsPerMin) / 100);
 }
 
 export function enemyRadius(kind: EnemyKind): number {
@@ -335,9 +333,12 @@ export interface EnemyState {
   //
   // Here rather than on `Nest` because a `Nest` is derived from the world seed on both sides of the
   // wire (ADR 0004), and a timer is sim state the client has no business holding. Here rather than
-  // in module scope because this module is pure — #97 threads its config through this same state.
+  // in module scope because this module is pure.
   nestTimers: Map<string, number>;
   rng: () => number;
+  // The knobs this sim runs on (#127), carried as data for the same reason the timers are: config in
+  // module scope would be shared state, and two sims of two worlds could not run in one process.
+  settings: WorldSettings;
   nextId: number;
 }
 
@@ -350,16 +351,20 @@ export interface EnemyState {
 // Pure, and pointedly not fed by the sim's own `rng`: the layout a session gets is fixed by its
 // world-init, so no amount of stepping can move a nest, and a reconnecting client rebuilding from
 // the same world-init lands on the same fifty.
-export function nestLayout(arena: Arena, seed: number): Nest[] {
+export function nestLayout(
+  arena: Arena,
+  seed: number,
+  settings: WorldSettings = DEFAULT_WORLD_SETTINGS,
+): Nest[] {
   const rng = mulberry32(seed);
   const cx = arena.width / 2;
   const cy = arena.height / 2;
   const span = nestBandOuter(arena) - NEST_BAND_INNER;
-  return Array.from({ length: NEST_COUNT }, (_, k) => {
+  return Array.from({ length: settings.nestCount }, (_, k) => {
     const angle = rng() * 2 * Math.PI;
     // How far out this nest sits: 0 at the inner bound, 1 at the outer. One biased draw, and then
     // the only thing HP and type are read from — distance is the whole gradient.
-    const outward = rng() ** (1 / NEST_EDGE_BIAS);
+    const outward = rng() ** (1 / settings.nestEdgeBias);
     const reach = NEST_BAND_INNER + outward * span;
     // Whole HP, so it rides the wire as one number rather than seventeen digits of float (#84).
     const hp = Math.round(NEST_HP_INNER + outward * (NEST_HP_OUTER - NEST_HP_INNER));
@@ -401,15 +406,22 @@ export function snapshotEnemies(state: EnemyState): {
 // grace is enforced here rather than by a guard in the tick, by never arming a nest inside it: the
 // first wave of the match lands at 1:00 at the earliest, and each nest is dealt its own phase
 // through the first period so fifty of them do not fire together.
-export function spawnEnemyState(world: WorldInit, rng: () => number = Math.random): EnemyState {
-  const nests = nestLayout(world.arena, world.nestSeed);
+export function spawnEnemyState(
+  world: WorldInit,
+  rng: () => number = Math.random,
+  settings: WorldSettings = DEFAULT_WORLD_SETTINGS,
+): EnemyState {
+  const nests = nestLayout(world.arena, world.nestSeed, settings);
   return {
     arena: world.arena,
     enemies: new Map(),
     nests,
     elapsedMs: 0,
-    nestTimers: new Map(nests.map((n) => [n.id, SPAWN_GRACE_MS + rng() * NEST_PERIOD_START_MS])),
+    nestTimers: new Map(
+      nests.map((n) => [n.id, SPAWN_GRACE_MS + rng() * settings.nestPeriod.startMs]),
+    ),
     rng,
+    settings,
     nextId: 1,
   };
 }
@@ -508,14 +520,17 @@ function tickNests(
     if (!nest.alive) continue; // silenced: it drops out of the drumbeat for good
     const due = (state.nestTimers.get(nest.id) ?? 0) - dtMs;
     const fires = due <= 0;
-    state.nestTimers.set(nest.id, fires ? due + nestPeriodMs(state.elapsedMs) : due);
+    state.nestTimers.set(
+      nest.id,
+      fires ? due + nestPeriodMs(state.elapsedMs, state.settings) : due,
+    );
     if (fires) spawns.push(...fireNestWave(state, nest, players, build));
   }
   return spawns;
 }
 
 // One nest's wave: `waveSize` enemies at its own position, each one drawn against `eliteShare`, all
-// up to the concurrency cap. A nest that would breach ENEMY_CAP holds its remainder.
+// up to the concurrency cap. A nest that would breach `enemyCap` holds its remainder.
 //
 // A hunter nest aims the whole wave at the player nearest the nest, at any distance — that is what
 // keeps hunters the early threat when the edge bias has put almost every nest far from centre. A
@@ -527,15 +542,15 @@ function fireNestWave(
   players: PlayerRef[],
   build: BuildState | null,
 ): EnemySpawn[] {
-  const size = waveSize(state.elapsedMs);
-  const share = eliteShare(state.elapsedMs);
+  const size = waveSize(state.elapsedMs, state.settings);
+  const share = eliteShare(state.elapsedMs, state.settings);
   const hunt =
     nest.kind === "hunter"
       ? nearestWithin(players, nest.pos, Number.POSITIVE_INFINITY)?.id
       : undefined;
   const spawns: EnemySpawn[] = [];
   for (let i = 0; i < size; i++) {
-    if (state.enemies.size >= ENEMY_CAP) break; // cap governor holds the remainder
+    if (state.enemies.size >= state.settings.enemyCap) break; // cap governor holds the remainder
     const kind: EnemyKind = state.rng() < share ? "elite" : "grunt";
     // A nest walled in is a legitimate strategy, so a wave that lands inside a footprint still
     // spawns — the overlapping enemy is simply pushed clear.
@@ -940,7 +955,7 @@ function nearestStructureWithin(
 // Move the enemy toward `to` by up to `maxTravel`, never past it — unless a structure is in the
 // way, in which case it stops and bashes that structure instead.
 //
-// There is no pathfinding: at ENEMY_CAP 500 across a 31,200² arena — 2,080² tiles at TILE 15 — a
+// There is no pathfinding: at a 500 enemy cap across a 31,200² arena — 2,080² tiles at TILE 15 — a
 // nav-grid costs more than the behaviour is worth (#49). Doubling the cap in #125 did not weaken that
 // reasoning, it strengthened it: the grid would be the same size and twice as many agents would query
 // it every tick.
