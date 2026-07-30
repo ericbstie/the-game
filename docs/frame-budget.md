@@ -725,9 +725,9 @@ bun run lettering:ink                                    # what a lettered word 
 bun run lettering:ink --words 40                         # a wave clearing at once
 ```
 
-`--enemies` overrides `ENEMY_CAP` for the fixture alone and nothing else, so a frame can be priced
-at a density before the simulation is raised to it. Without it the worst case is whatever the
-governor says today, which is what every unlabelled figure on this page was measured at.
+`--enemies` overrides `WorldSettings.enemyCap` for the fixture alone and nothing else, so a frame can
+be priced at a density before the simulation is raised to it. Without it the worst case is whatever
+the governor says today, which is what every unlabelled figure on this page was measured at.
 
 `frame:budget` prints the layer breakdown and the projected worst case, and writes the frame it
 measured to a PNG so the numbers can be checked against the picture that produced them.

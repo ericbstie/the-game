@@ -13,10 +13,10 @@ the game's bandwidth.
 **At the caps the game supports, one client receives 3,855 B/tick — 75.3 KiB/s. Before
 [#84](https://github.com/ericbstie/the-game/issues/84) it was 11,369 B/tick, 222.1 KiB/s.**
 
-The worst case is not hypothetical: 500 enemies (`ENEMY_CAP`, the hard governor), a full squad of 6,
-30 turrets, and every player firing on the measured tick so `shots` is at its per-tick maximum. It
-is produced by driving a real `stepEnemies` sim to the cap and assembling the delta exactly as
-`LobbyHub.tick` assembles it, not by a hand-written fixture.
+The worst case is not hypothetical: 500 enemies (`WorldSettings.enemyCap`, the hard governor), a
+full squad of 6, 30 turrets, and every player firing on the measured tick so `shots` is at its
+per-tick maximum. It is produced by driving a real `stepEnemies` sim to the cap and assembling the
+delta exactly as `LobbyHub.tick` assembles it, not by a hand-written fixture.
 
 | | per tick | per client |
 |---|---:|---:|
