@@ -112,3 +112,64 @@ function admissible(value: unknown, path: string, shipped: number): boolean {
   if (POSITIVE.has(path) ? value <= 0 : value < 0) return false;
   return !COUNTS.has(path) || value <= shipped * MAX_MULTIPLE;
 }
+
+// One knob, as a control can be drawn for it (#129): the dotted path that names it, the value the game
+// ships with, and the range it may offer.
+//
+// `min` and `max` are absent rather than infinite where no bound applies. A missing `max` means the
+// knob is not one of the four that mean "make N of these" — nothing else costs the server work, so
+// nothing else has a ceiling. A missing `min` means the knob is strictly positive: "greater than zero"
+// has no least representable value, so there is no honest number to print in a form field. A draft
+// that reaches zero is caught by `parseWorldSettings`, which is the predicate the server applies too.
+export interface WorldKnob {
+  path: string;
+  shipped: number;
+  min?: number;
+  max?: number;
+}
+
+// Every knob a world has, flattened, in the order `DEFAULT_WORLD_SETTINGS` declares them.
+//
+// Derived from the same shape and the same three rules `parseWorldSettings` enforces rather than
+// listed again where the controls are drawn: a hand-copied range is a second source of truth that can
+// disagree with the validator, and ADR 0006 turns a disagreement into a lobby that appears to ignore
+// the host. A knob added to `WorldSettings` also gets a control the day it appears.
+export function worldKnobs(): WorldKnob[] {
+  const knobs: WorldKnob[] = [];
+  for (const [key, shipped] of Object.entries(DEFAULT_WORLD_SETTINGS)) {
+    if (typeof shipped === "number") {
+      knobs.push(bound(key, shipped));
+      continue;
+    }
+    for (const [field, value] of Object.entries(shipped as Record<string, number>)) {
+      knobs.push(bound(`${key}.${field}`, value));
+    }
+  }
+  return knobs;
+}
+
+function bound(path: string, shipped: number): WorldKnob {
+  return {
+    path,
+    shipped,
+    ...(POSITIVE.has(path) ? {} : { min: 0 }),
+    ...(COUNTS.has(path) ? { max: shipped * MAX_MULTIPLE } : {}),
+  };
+}
+
+export function knobValue(settings: WorldSettings, path: string): number {
+  const [key, field] = path.split(".");
+  const at = (settings as unknown as Record<string, unknown>)[key];
+  return field === undefined ? (at as number) : ((at as Record<string, number>)[field] as number);
+}
+
+// A candidate settings object with one knob replaced. Deliberately **not** typed `WorldSettings`: the
+// value came from a form field, so this is a candidate until `parseWorldSettings` admits it — which is
+// what stops a control from emitting a payload the server would refuse.
+export function withKnob(settings: WorldSettings, path: string, value: number): unknown {
+  const [key, field] = path.split(".");
+  const out = { ...settings } as unknown as Record<string, unknown>;
+  out[key] =
+    field === undefined ? value : { ...(out[key] as Record<string, number>), [field]: value };
+  return out;
+}

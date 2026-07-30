@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { DEFAULT_WORLD_SETTINGS } from "../src/game/worldSettings";
 import { measure, worstCaseTick } from "./delta-size";
+
+// Every test here drives the sim to `enemyCap` itself, which is ~1.4 s apiece — comfortable alone,
+// and about 5.3 s under a full suite's CPU contention, against bun's 5 s default. That is #126's
+// shape a second time, and the same answer applies: the work is the point (a hand-written fixture is
+// exactly what these tests exist not to trust), so the timeout moves rather than the tests.
+//
+// Per-file rather than global: a raised default everywhere would hide a real hang, and every test in
+// *this* file shares the one expensive step.
+setDefaultTimeout(30_000);
 
 describe("the worst case is the one the game actually supports", () => {
   test("drives the sim to the enemy cap rather than asserting against a hand-written fixture", () => {

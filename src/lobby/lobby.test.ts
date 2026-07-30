@@ -2700,6 +2700,97 @@ describe("#128: the world's settings ride WorldInit", () => {
     });
   });
 
+  // #129. `WorldInit` only exists once the match starts, so it cannot answer "the squad sees the
+  // choice **before** Start". This is the channel that does: the session's settings ride the lobby
+  // snapshot, and a change fans out as a `rev`-stamped delta like every other roster change.
+  describe("#129: the squad sees the host's world before Start", () => {
+    const changesTo = (t: Capture, socketId: string) =>
+      t.sent
+        .filter((m) => m.socketId === socketId && m.msg.type === "lobby/settings-changed")
+        .map((m) => expectMessage(m.msg, "lobby/settings-changed"));
+    const snapshotFor = (t: Capture, socketId: string) => {
+      const found = t.sent.find(
+        (m) =>
+          m.socketId === socketId &&
+          (m.msg.type === "lobby/created" || m.msg.type === "lobby/joined"),
+      )?.msg;
+      if (!found) throw new Error(`no welcome reached ${socketId}`);
+      return (found as Extract<ServerMessage, { type: "lobby/created" }>).snapshot;
+    };
+
+    test("a lobby nobody has touched shows the world the game ships with", () => {
+      const { t, hub } = lobby();
+      expect(snapshotFor(t, "s2").settings).toEqual(DEFAULT_WORLD_SETTINGS);
+      hub.dispose();
+    });
+
+    test("the host's choice reaches the rest of the squad, whole", () => {
+      const { t, hub } = lobby();
+      hub.handleMessage("s1", JSON.stringify({ type: "game/settings", settings: CHOSEN }));
+      expect(changesTo(t, "s2").map((m) => m.settings)).toEqual([CHOSEN]);
+      hub.dispose();
+    });
+
+    // The host is not excepted from the fan-out. Every knob they have not typed into reads off the
+    // snapshot, so a host left out would be the one player who could not see their own lobby.
+    test("the host is told too", () => {
+      const { t, hub } = lobby();
+      hub.handleMessage("s1", JSON.stringify({ type: "game/settings", settings: CHOSEN }));
+      expect(changesTo(t, "s1").map((m) => m.settings)).toEqual([CHOSEN]);
+      hub.dispose();
+    });
+
+    // The session's own rev, shared with the roster deltas, so `applyRoster` can order all of them
+    // against one another. A change that did not advance it would be dropped as stale by its own
+    // apply-if-newer rule.
+    test("a change advances the session rev past the snapshot the squad holds", () => {
+      const { t, hub } = lobby();
+      const before = snapshotFor(t, "s2").rev;
+      hub.handleMessage("s1", JSON.stringify({ type: "game/settings", settings: CHOSEN }));
+      hub.handleMessage(
+        "s1",
+        JSON.stringify({ type: "game/settings", settings: DEFAULT_WORLD_SETTINGS }),
+      );
+      expect(changesTo(t, "s2").map((m) => m.rev)).toEqual([before + 1, before + 2]);
+      hub.dispose();
+    });
+
+    // The open question #129 asks and nothing answered: what a player who arrives after the host has
+    // chosen sees. They see the choice — it is on the welcome snapshot, so there is no window in
+    // which a late joiner shows the shipped world and nothing ever corrects them.
+    test("a player who joins after the choice is welcomed into the chosen world", () => {
+      const { t, hub, code } = lobby();
+      hub.handleMessage("s1", JSON.stringify({ type: "game/settings", settings: CHOSEN }));
+      hub.handleMessage("s3", JSON.stringify({ type: "lobby/join", code, name: "Cal" }));
+      expect(snapshotFor(t, "s3").settings).toEqual(CHOSEN);
+      hub.dispose();
+    });
+
+    // The authority box, now with a second observable: a non-host's ask does not even produce an echo,
+    // so no client can be talked into displaying a world the server is not holding.
+    test("a non-host's ask tells nobody anything", () => {
+      const { t, hub } = lobby();
+      hub.handleMessage("s2", JSON.stringify({ type: "game/settings", settings: CHOSEN }));
+      expect(changesTo(t, "s1")).toHaveLength(0);
+      expect(changesTo(t, "s2")).toHaveLength(0);
+      hub.dispose();
+    });
+
+    // The gate #128 wrote, proved dead and deleted. It is alive now: the echo would announce a world
+    // the running match was not built from, and a reconnecter would rebuild from `worldInit` while
+    // their lobby snapshot claimed something else.
+    test("the world cannot be changed once the match has started", () => {
+      const { t, hub, code } = lobby();
+      hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+      hub.handleMessage("s1", JSON.stringify({ type: "game/settings", settings: CHOSEN }));
+      expect(changesTo(t, "s1")).toHaveLength(0);
+      hub.handleMessage("s3", JSON.stringify({ type: "lobby/join", code, name: "Late" }));
+      expect(snapshotFor(t, "s3").settings).toEqual(DEFAULT_WORLD_SETTINGS);
+      expect(initFor(t, "s3").settings).toEqual(DEFAULT_WORLD_SETTINGS);
+      hub.dispose();
+    });
+  });
+
   const deltasFor = (t: Capture, socketId: string) =>
     t.sent
       .filter((m) => m.socketId === socketId && m.msg.type === "game/map-delta")

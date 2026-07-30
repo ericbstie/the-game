@@ -65,6 +65,7 @@ body {
 .kicker,
 .field,
 .badge,
+.world h2,
 .code-label,
 .end-time-label,
 .bank-label,
@@ -280,6 +281,81 @@ button:disabled {
 .presence {
   font-style: italic;
   font-size: 0.8rem;
+}
+
+/* The world the next match is built from (#129). Set as a second ruled list under the roster rather
+   than as a grid of boxes: sixteen figures are read down the page far more often than they are typed
+   into, and the whole squad reads them. Label left, figure right, hairline between. */
+.world {
+  border-top: var(--rule);
+  padding-top: 1.15rem;
+}
+
+.world h2 {
+  margin-bottom: 0.5rem;
+}
+
+/* Scrolls inside the sheet rather than growing it past the viewport — the roster and Start have to
+   stay reachable, and the sheet's torn-out-page frame only reads as one if it fits on screen. */
+.knobs {
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.world .field {
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.3rem 0.15rem;
+  border-bottom: var(--hairline);
+}
+
+.world input {
+  flex: none;
+  width: 7.5rem;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.95rem;
+  text-align: right;
+}
+
+/* A figure the lobby will not send, ruled off the way a printed correction is. The server refuses a
+   payload whole rather than clamping it (ADR 0006), so a field it would refuse has to say so here. */
+.world input[aria-invalid="true"] {
+  border-left: 5px solid var(--ink);
+  font-style: italic;
+}
+
+/* Everyone but the host is reading, not choosing. The figure stays fully inked — it is the world they
+   are about to be dropped into — but the field loses the frame that invites typing. */
+.world input:read-only {
+  border-color: transparent;
+  padding-right: 0;
+}
+
+/* The reason beside the mark. `aria-invalid` alone announces "invalid entry" and leaves the why to be
+   guessed, so the bounds are said in full — and said on the page, not only to a screen reader. */
+.world .refused {
+  flex-basis: 100%;
+  text-align: right;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* Numbers that describe one curve are fenced as one, so they are not read as unrelated fields. The
+   fence is a rule and a name, not a box — the sheet is a torn-out page, not a dialog. */
+.world .group {
+  border: none;
+  border-top: var(--hairline);
+  margin: 0.6rem 0 0;
+  padding: 0.35rem 0 0;
+}
+
+.world .group legend {
+  padding: 0 0.4rem 0 0;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .lobby-actions {
