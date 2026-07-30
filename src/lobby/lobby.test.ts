@@ -13,14 +13,9 @@ import {
   tileCenter,
   tileOf,
 } from "../game/build";
-import {
-  ATTACK_POS_TOLERANCE,
-  NEST_COUNT,
-  type Nest,
-  nestLayout,
-  RANGED_CADENCE_MS,
-} from "../game/enemies";
+import { ATTACK_POS_TOLERANCE, type Nest, nestLayout, RANGED_CADENCE_MS } from "../game/enemies";
 import { ARENA } from "../game/world";
+import { DEFAULT_WORLD_SETTINGS } from "../game/worldSettings";
 import { type LobbyConfig, LobbyHub, livePlayers, type Transport } from "./lobby";
 import type { EnemySpawn, Exit, ServerMessage, Tile, Vec2 } from "./protocol";
 import type { LobbyServer } from "./server";
@@ -769,7 +764,7 @@ describe("M3: reconnect rebuilds live combat state", () => {
       "game/enemy-init",
     );
     expect(keyframe.enemies.length).toBeGreaterThan(0); // live enemies, not the (empty) initial set
-    expect(keyframe.nests).toHaveLength(NEST_COUNT);
+    expect(keyframe.nests).toHaveLength(DEFAULT_WORLD_SETTINGS.nestCount);
 
     const ownHp = expectMessage(
       await back.waitFor((m) => m.type === "game/peer-health" && m.hp === 40),

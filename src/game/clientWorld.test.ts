@@ -19,16 +19,10 @@ import {
   RESPAWN_DELAY_MS,
   SHOT_RETENTION_MS,
 } from "./clientWorld";
-import {
-  enemyContactDamage,
-  GRUNT_HP,
-  GRUNT_RADIUS,
-  NEST_COUNT,
-  nestLayout,
-  spawnEnemyState,
-} from "./enemies";
+import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, nestLayout, spawnEnemyState } from "./enemies";
 import { SEED_FACING } from "./facing";
 import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
+import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
 
 const STILL = { up: false, down: false, left: false, right: false };
 const held = (dir: keyof typeof STILL) => ({ ...STILL, [dir]: true });
@@ -60,7 +54,7 @@ describe("ClientWorld construction", () => {
 
   test("derives the nest layout from the world's seed (positions never ride the wire)", () => {
     const snap = new ClientWorld(init(), "self").snapshot(0);
-    expect(snap.nests).toHaveLength(NEST_COUNT);
+    expect(snap.nests).toHaveLength(DEFAULT_WORLD_SETTINGS.nestCount);
     expect(snap.nests.every((n) => n.alive && n.hp === n.maxHp)).toBe(true);
   });
 

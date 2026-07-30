@@ -6,8 +6,9 @@ import {
   placeStructure,
   tileOf,
 } from "../src/game/build";
-import { ENEMY_CAP, spawnEnemyState, stepEnemies } from "../src/game/enemies";
+import { spawnEnemyState, stepEnemies } from "../src/game/enemies";
 import { generateWorld } from "../src/game/world";
+import { DEFAULT_WORLD_SETTINGS } from "../src/game/worldSettings";
 import type { MapDelta, Vec2, WorldInit } from "../src/lobby/protocol";
 
 // Measure `game/map-delta` at the caps the game actually supports, and show what the wire costs
@@ -18,7 +19,7 @@ import type { MapDelta, Vec2, WorldInit } from "../src/lobby/protocol";
 //
 // The delta is assembled here exactly as `LobbyHub.tick` assembles it — every optional array
 // rides only when non-empty — and it is fed by a real `stepEnemies` tick over a real sim driven
-// to ENEMY_CAP, not by a hand-written fixture. The baseline this produces is written down in
+// to the enemy cap, not by a hand-written fixture. The baseline this produces is written down in
 // `docs/map-delta-budget.md`. It exists as a command and not only as a number because a budget
 // nobody can re-measure is a budget that rots.
 
@@ -72,7 +73,7 @@ function timeDeflate(delta: MapDelta, samples = 400): number {
   return (Bun.nanoseconds() - started) / samples / 1e6;
 }
 
-// One worst-case tick: the sim at ENEMY_CAP with a full squad, a turret line engaged, and every
+// One worst-case tick: the sim at the enemy cap with a full squad, a turret line engaged, and every
 // player firing. Returns the delta the hub would broadcast, plus the same delta rebuilt at full
 // float64 precision so the two can be compared byte for byte.
 export function worstCaseTick(): {
@@ -110,7 +111,7 @@ export function worstCaseTick(): {
     id: `p${i + 1}`,
     pos: { x: origin.x + 200 + i * 40, y: origin.y + 200 },
   }));
-  for (let i = 0; i < 20_000 && state.enemies.size < ENEMY_CAP; i++) {
+  for (let i = 0; i < 20_000 && state.enemies.size < DEFAULT_WORLD_SETTINGS.enemyCap; i++) {
     stepEnemies(state, squad, [], TICK_MS, build);
   }
 
@@ -192,7 +193,7 @@ export function format(report: Report): string {
     `  ${label.padEnd(30)}${`+${r.raw - trimmed.raw} B`.padStart(12)}${`+${r.compressed - trimmed.compressed} B deflate`.padStart(20)}`;
   return [
     `game/map-delta at the caps the game supports`,
-    `  ${trimmed.enemies} enemies (ENEMY_CAP ${ENEMY_CAP}), ${trimmed.players} players, ${trimmed.turrets} turrets, ${TICKS_PER_SECOND} Hz`,
+    `  ${trimmed.enemies} enemies (cap ${DEFAULT_WORLD_SETTINGS.enemyCap}), ${trimmed.players} players, ${trimmed.turrets} turrets, ${TICKS_PER_SECOND} Hz`,
     ``,
     `per tick, and per client:`,
     row("float64 coords, raw", full.raw),

@@ -10,6 +10,7 @@ import type {
   Vec2,
 } from "../lobby/protocol";
 import { DANGER_BAND_FRAC } from "./world";
+import { DEFAULT_WORLD_SETTINGS, type WorldSettings } from "./worldSettings";
 
 // The box world's buildable side (Milestone 4): the tile grid every structure snaps to, the
 // ore the arena is seeded with, and the admission rules guarding the shared economy. Pure and
@@ -93,20 +94,19 @@ export function tilesBetween(from: Tile, to: Tile): Tile[] {
 // gradient: DESIGN.md puts the riches at the dangerous wall, so pushing outward pays. A handful
 // of patches are reserved for the center so a squad that has just spawned can always bootstrap.
 
-const METAL_PATCHES = 140;
+// How many patches of each ore, and how far out they sit, are knobs — `WorldSettings.metalPatches`,
+// `powerPatches` and `oreEdgeBias` (#127). What a patch is *made of* is not: the sizes below shape
+// what a patch looks like once placed, and nobody asked for those.
 const METAL_PATCH_MIN = 30;
 const METAL_PATCH_MAX = 80;
-const POWER_PATCHES = 40; // power ore is smaller and sparser than metal, per the spec
 const POWER_PATCH_MIN = 10;
 const POWER_PATCH_MAX = 20;
 
 // Patch centers sit at `frac` of the arena half-extent, in the max-norm — the same square
-// projection `nestLayout` uses, so ore and nests share one notion of "how far out".
+// projection `nestLayout` uses, so ore and nests share one notion of "how far out". They do not
+// share how hard they lean on it: that is a knob each (`docs/adr/0005`).
 const ORE_MAX_FRAC = 1 - DANGER_BAND_FRAC / 2; // patches reach past the nest ring, short of the wall
 const ORE_MIN_FRAC = 0.02;
-// Radial fraction is sampled as u^(1/EDGE_BIAS): the areal density then grows toward the wall
-// instead of thinning out as the rings get longer.
-const EDGE_BIAS = 3.5;
 const BOOTSTRAP_PATCHES = 4; // metal patches pinned near center; the rest follow the gradient
 const BOOTSTRAP_MAX_FRAC = 0.06;
 
@@ -119,26 +119,35 @@ const NEIGHBORS: ReadonlyArray<readonly [number, number]> = [
 
 // Seed the arena's ore. Power patches are placed first so they stay whole — metal is common
 // enough that the holes it inherits don't matter, and a tile is only ever one kind.
-export function generateOre(arena: Arena, seed: number): OreGrid {
+//
+// `arena` stays its own argument rather than being read off `settings`: it is the one thing both
+// sides already agree on off `WorldInit`, and the client's settings are still local defaults until
+// #128 puts them on the wire. Taking the box from the world-init is what keeps a settings mismatch
+// from also becoming a differently-sized grid.
+export function generateOre(
+  arena: Arena,
+  seed: number,
+  settings: WorldSettings = DEFAULT_WORLD_SETTINGS,
+): OreGrid {
   const rng = mulberry32(seed);
   const grid: OreGrid = new Map();
   const maxTile = Math.floor(Math.min(arena.width, arena.height) / TILE) - 1;
-  for (let i = 0; i < POWER_PATCHES; i++) {
+  for (let i = 0; i < settings.powerPatches; i++) {
     growPatch(
       grid,
       "power",
-      patchSeedTile(arena, rng, false),
+      patchSeedTile(arena, rng, false, settings.oreEdgeBias),
       size(rng, POWER_PATCH_MIN, POWER_PATCH_MAX),
       rng,
       maxTile,
     );
   }
-  for (let i = 0; i < METAL_PATCHES; i++) {
+  for (let i = 0; i < settings.metalPatches; i++) {
     const bootstrap = i < BOOTSTRAP_PATCHES;
     growPatch(
       grid,
       "metal",
-      patchSeedTile(arena, rng, bootstrap),
+      patchSeedTile(arena, rng, bootstrap, settings.oreEdgeBias),
       size(rng, METAL_PATCH_MIN, METAL_PATCH_MAX),
       rng,
       maxTile,
@@ -152,11 +161,16 @@ function size(rng: () => number, min: number, max: number): number {
 }
 
 // Where a patch starts: a bearing plus a radial fraction, projected onto the arena square.
-function patchSeedTile(arena: Arena, rng: () => number, bootstrap: boolean): Tile {
+function patchSeedTile(
+  arena: Arena,
+  rng: () => number,
+  bootstrap: boolean,
+  edgeBias: number,
+): Tile {
   const angle = rng() * Math.PI * 2;
   const frac = bootstrap
     ? ORE_MIN_FRAC + rng() * (BOOTSTRAP_MAX_FRAC - ORE_MIN_FRAC)
-    : ORE_MIN_FRAC + rng() ** (1 / EDGE_BIAS) * (ORE_MAX_FRAC - ORE_MIN_FRAC);
+    : ORE_MIN_FRAC + rng() ** (1 / edgeBias) * (ORE_MAX_FRAC - ORE_MIN_FRAC);
   const half = Math.min(arena.width, arena.height) / 2;
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
