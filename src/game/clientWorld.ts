@@ -104,7 +104,7 @@ interface EnemyRecord {
   buffer: PosSample[];
   lastContactAt: number;
   lastHitAt: number;
-  gait: Gait; // dies with the record, so 240 enemies a wave cost nothing to track
+  gait: Gait; // dies with the record, so a capful of enemies costs nothing to track
 }
 
 // A squadmate's shot as the client holds it: the wire event plus the client-clock instant it

@@ -32,7 +32,7 @@ import {
   TURRET_RANGE,
   type TurretRuntime,
 } from "./build";
-import { DANGER_BAND_FRAC, PLAYER_RADIUS } from "./world";
+import { clamp, DANGER_BAND_FRAC, PLAYER_RADIUS } from "./world";
 
 // The box world's dynamic side (Milestone 3): a pure, server-authoritative enemy simulation.
 // `spawnEnemyState` seeds the initial enemies from the immutable world-init; `stepEnemies`
@@ -99,9 +99,16 @@ export const RANGED_CADENCE_MS = 250;
 // moves ≈52 u in one ~200 ms round-trip at 260 u/s), tight enough to reject teleport-aim.
 export const ATTACK_POS_TOLERANCE = 500;
 
-// AI: a peel-off aggro radius and the front-line hold edge (the danger/safe boundary).
+// AI: a peel-off aggro radius, and the leg an un-aggroed enemy walks before it turns.
 export const AGGRO_RADIUS = 1_800; // a player this close pulls the nearest enemies off the line
-const HOLD_EDGE_FRAC = 0.5 - 0.08; // band inner edge = 13,104 u from center at 31,200
+// #125 removed the front-line hold edge, and nothing replaced it: no enemy stops at a radius any
+// more, there is no safe centre, and nothing protects the respawn point. What an un-aggroed enemy
+// does instead is wander — a straight leg on a heading drawn from the sim's own rng, re-rolled when
+// the leg runs out, with no leash to the nest it came from.
+//
+// The leg is **provisional**: it is the persistence length of an undirected walk, so it alone sets
+// how fast wanderers diffuse inward, and only a played match can judge it.
+export const WANDER_LEG_MS = 3_000; // 546 u of walking at GRUNT_SPEED
 
 // Nests — the static spawners scattered through the outer arena. The count, the band, the bias, the
 // HP pair and the wanderer chance are all **provisional** (#123): only a played match can judge
@@ -126,7 +133,12 @@ export const NEST_HP_OUTER = 600;
 export const WANDERER_CHANCE_OUTER = 0.9; // at the inner bound it is 0, and linear between
 const SPAWN_JITTER = 300; // grunts spawn within this radius of their nest, so they don't stack
 
-export const ENEMY_CAP = 240; // hard concurrency governor; a nest holds its remainder at the cap
+// Hard concurrency governor; a nest holds its remainder at the cap. It binds within a couple of
+// minutes of the wave-size cap, so from mid-match on it is this number — not the escalation curves —
+// that sets how full the arena feels, which is why #97 will expose it. **Provisional**, and the one
+// number here that a measurement rather than a played match can veto: `docs/frame-budget.md` and
+// `docs/map-delta-budget.md` are both characterised at it.
+export const ENEMY_CAP = 500;
 
 // Spawning (#124): every nest keeps its own timer, and three curves escalate what that timer fires.
 // All five numbers below, and the grace, are **provisional** — only a played match can judge them,
@@ -199,6 +211,11 @@ export type EnemyTarget = { kind: "player"; id: PlayerId } | { kind: "structure"
 // wave fired, committed to for this enemy's whole life and chased at any distance. It is a standing
 // commitment rather than a lock — `target` still overrides it for anything inside AGGRO_RADIUS —
 // which is why the two are separate fields. An enemy out of a wanderer nest has none.
+//
+// `wander` is the leg it is walking when nothing at all has its attention (#125): a heading in
+// radians and what is left of the leg. Absent until it first wanders. Both fields are server-only
+// and neither is announced — which is what keeps a nest's kind off the wire, since the only trace a
+// wanderer nest leaves is that its wave walks its own way instead of at somebody (ADR 0004).
 export interface Enemy {
   id: string;
   kind: EnemyKind;
@@ -207,11 +224,11 @@ export interface Enemy {
   biteMs: number;
   target?: EnemyTarget;
   hunt?: PlayerId;
+  wander?: { rad: number; ms: number };
 }
 
 // What a nest sends. A hunter nest fires waves committed to a player at any distance (#124); a
-// wanderer nest leaks grunts that roam (#125 gives them the roaming — today they march like the
-// rest, they simply hunt nobody).
+// wanderer nest leaks enemies that roam free, unleashed from the nest and aimed at nobody (#125).
 // Chosen once at world gen and fixed for the match, and deliberately invisible: the two look
 // identical, so the only way to learn which a nest is, is to watch what comes out of it. That is
 // why `RenderedNest` carries no kind — the render layer is never told.
@@ -422,8 +439,8 @@ export function stepEnemies(
   const context: StepContext = {
     players,
     build,
-    center: { x: state.arena.width / 2, y: state.arena.height / 2 },
-    holdEdge: Math.min(state.arena.width, state.arena.height) * HOLD_EDGE_FRAC,
+    arena: state.arena,
+    rng: state.rng,
     dtMs,
     damaged: new Set<string>(),
   };
@@ -446,8 +463,10 @@ export function stepEnemies(
 interface StepContext {
   players: PlayerRef[];
   build: BuildState | null;
-  center: Vec2;
-  holdEdge: number;
+  arena: Arena; // the walls a wandering enemy is kept inside
+  // The sim's own injected rng, threaded rather than reached for: a wander heading is the one thing
+  // an enemy's step needs entropy for, and taking it from here is what keeps the module pure.
+  rng: () => number;
   dtMs: number;
   damaged: Set<string>; // structure ids bitten this tick, resolved into hits/removals at the end
 }
@@ -776,27 +795,49 @@ function nearestRayHit(state: EnemyState, attack: Attack): { enemy?: Enemy; nest
   return best === null ? null : { enemy: best.enemy, nest: best.nest };
 }
 
-// One enemy's pure geometric step — one of four states:
+// One enemy's pure geometric step — one of three states:
 //   ENGAGED — a player or structure within AGGRO_RADIUS → chase it, never overshooting; chew on
 //             it once in contact.
 //   HUNTING — un-aggroed, but out of a hunter nest and committed to a player → chase that player
-//             at any distance. No hold edge applies: it comes all the way in.
-//   MARCH   — un-aggroed, hunting nobody, still outside the hold edge → advance toward center,
-//             stopping exactly at the edge (so it never floods the safe center).
-//   HOLD    — un-aggroed, hunting nobody, at/inside the hold edge → stop.
+//             at any distance, all the way in.
+//   WANDER  — un-aggroed and committed to nobody → walk its own heading and turn every
+//             WANDER_LEG_MS (#125).
+//
+// There is no state that stops at a radius. The old MARCH/HOLD pair advanced an un-aggroed enemy to
+// 13,104 u and parked it, which left a guaranteed-empty circle around spawn; that circle is gone, so
+// base defence is live from the first wave and the respawn point is protected by nothing.
 function stepEnemy(enemy: Enemy, context: StepContext): void {
   enemy.biteMs = Math.max(0, enemy.biteMs - context.dtMs);
   const speed = enemySpeed(enemy.kind) * (context.dtMs / 1000);
   const engaged = acquire(enemy, context);
-  if (engaged) {
-    stepToward(enemy, engaged.pos, speed, context); // ENGAGED or HUNTING
-    return;
+  // ENGAGED and HUNTING differ only in what `acquire` returned, never in how the step is taken.
+  if (engaged) stepToward(enemy, engaged.pos, speed, context);
+  else wander(enemy, speed, context);
+}
+
+// One step of an undirected walk: hold a heading for WANDER_LEG_MS, then draw another. The heading
+// comes from the sim's injected rng and the leg is per-enemy state, so wandering introduces no
+// ambient randomness and no module state — two sims of one world still step identically (M3).
+//
+// The walk is undirected, so it diffuses rather than advances: a wanderer covers ~546 u per leg but
+// its net displacement grows with the square root of the legs, which is what keeps the early game
+// open while wanderers accumulate near centre over a long match. And it is unleashed — nothing pulls
+// it back toward its nest — so the only gradient in the arena is where the nests are.
+//
+// Clamped inside the walls, because an undirected walk that drew an outward heading near the
+// perimeter would otherwise leave the arena for good.
+function wander(enemy: Enemy, speed: number, context: StepContext): void {
+  if (enemy.wander === undefined || enemy.wander.ms <= 0) {
+    enemy.wander = { rad: context.rng() * 2 * Math.PI, ms: WANDER_LEG_MS };
   }
-  const { center, holdEdge } = context;
-  const distFromCenter = Math.hypot(center.x - enemy.pos.x, center.y - enemy.pos.y);
-  if (distFromCenter <= holdEdge) return; // HOLD
-  // MARCH, capped at the edge so it never floods the safe centre.
-  stepToward(enemy, center, Math.min(speed, distFromCenter - holdEdge), context);
+  enemy.wander.ms -= context.dtMs;
+  const { arena } = context;
+  const edge = enemyRadius(enemy.kind);
+  const to = {
+    x: clamp(enemy.pos.x + Math.cos(enemy.wander.rad) * speed, edge, arena.width - edge),
+    y: clamp(enemy.pos.y + Math.sin(enemy.wander.rad) * speed, edge, arena.height - edge),
+  };
+  stepToward(enemy, to, speed, context);
 }
 
 interface Engagement {
@@ -835,7 +876,7 @@ function acquire(enemy: Enemy, context: StepContext): Engagement | null {
 }
 
 // Where this enemy's committed hunt is now — at any distance, with no aggro test. Null for anything
-// out of a wanderer nest, and for a hunter whose player has died or disconnected: that one marches
+// out of a wanderer nest, and for a hunter whose player has died or disconnected: that one wanders
 // like the rest until they are back, since a player keeps their id across a respawn.
 function hunted(enemy: Enemy, context: StepContext): Engagement | null {
   if (enemy.hunt === undefined) return null;
@@ -899,9 +940,15 @@ function nearestStructureWithin(
 // Move the enemy toward `to` by up to `maxTravel`, never past it — unless a structure is in the
 // way, in which case it stops and bashes that structure instead.
 //
-// There is no pathfinding: at ENEMY_CAP 240 across a 31,200² arena a nav-grid costs more than the
-// behaviour is worth (#49). The accepted price is that an enemy will chew a stray open-field wall
-// rather than walk around its end. It is also what makes walling a nest in a real strategy — the
+// There is no pathfinding: at ENEMY_CAP 500 across a 31,200² arena — 2,080² tiles at TILE 15 — a
+// nav-grid costs more than the behaviour is worth (#49). Doubling the cap in #125 did not weaken that
+// reasoning, it strengthened it: the grid would be the same size and twice as many agents would query
+// it every tick.
+//
+// The accepted price is that an enemy will chew a stray open-field wall rather than walk around its
+// end, and #125 widened it — a wanderer meets walls anywhere on an undirected walk, where a marching
+// enemy only met the ones between its nest and centre. That reads as ambient pressure on the base
+// rather than as a bug, and it is the same property that makes walling a nest in a real strategy: the
 // enemies inside attack the wall.
 function stepToward(enemy: Enemy, to: Vec2, maxTravel: number, context: StepContext): void {
   const dx = to.x - enemy.pos.x;

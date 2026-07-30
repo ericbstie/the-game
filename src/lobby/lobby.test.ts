@@ -388,6 +388,12 @@ describe("T4: disconnect greys the slot; reconnect reclaims it", () => {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// How far behind an enemy a shot is fired from, when a test wants that shot to connect. It has to
+// clear the whole-unit rounding the delta applies to positions (#84) — half a unit either way, which
+// is otherwise enough to put the ray's origin the wrong side of its target — and stay well inside the
+// 300 u of spawn jitter, so the shooter's own nest cannot end up between the two.
+const BEHIND = 4;
+
 describe("T5: grace expiry, takeover, and empty-session teardown", () => {
   test("when grace elapses the player becomes gone and the slot is released", async () => {
     const server = spawn(40); // short grace
@@ -868,21 +874,26 @@ describe("M3: enemy sim tick lifecycle", () => {
     expect(target?.kind).toBe("grunt");
     if (!target) throw new Error("no spawn");
 
-    // Stand on it (so the server's range-check passes) and swing toward center — where an
-    // un-aggroed grunt marches, so the wedge covers it wherever it drifted.
-    const dx = ARENA.width / 2 - target.pos.x;
-    const dy = ARENA.height / 2 - target.pos.y;
+    // Where it has walked to, off the stream: an un-aggroed enemy wanders on a heading of its own
+    // (#125), so the point in the spawn announcement is already stale.
+    let at = target.pos;
+    for (const d of deltas(t)) {
+      const msg = d.msg as Extract<ServerMessage, { type: "game/map-delta" }>;
+      for (const [id, x, y] of msg.moves) if (id === target.id) at = { x, y };
+    }
+    // Stand just behind it on the line to centre and swing along that line. `BEHIND` clears the whole-
+    // unit rounding the stream applies (#84) — an origin *on* the enemy leaves half a unit of rounding
+    // to decide whether it counts as in front of the ray or behind it — and is small enough that the
+    // grunt's own nest, up to 300 u of jitter away, cannot slip in between and take the shot.
+    const dx = ARENA.width / 2 - at.x;
+    const dy = ARENA.height / 2 - at.y;
     const len = Math.hypot(dx, dy);
-    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: target.pos, seq: 1 }));
+    const dir = { x: dx / len, y: dy / len };
+    const from = { x: at.x - dir.x * BEHIND, y: at.y - dir.y * BEHIND };
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: from, seq: 1 }));
     hub.handleMessage(
       "s1",
-      JSON.stringify({
-        type: "game/attack",
-        weapon: "melee",
-        pos: target.pos,
-        dir: { x: dx / len, y: dy / len },
-        seq: 1,
-      }),
+      JSON.stringify({ type: "game/attack", weapon: "melee", pos: from, dir, seq: 1 }),
     );
     clock.advance(30);
     hub.dispose();
@@ -910,7 +921,6 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
   }
 
   const CENTRE = { x: ARENA.width / 2, y: ARENA.height / 2 };
-  const HOLD_EDGE = Math.min(ARENA.width, ARENA.height) * (0.5 - 0.08); // 13,104 u from centre
   const dist = (a: Vec2, b: Vec2) => Math.hypot(a.x - b.x, a.y - b.y);
 
   // The first captured message of a type, narrowed — with a real error if it never arrived.
@@ -936,15 +946,13 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
     return { t, hub, clock, code };
   }
 
-  // A grunt of the opening wave that will actually march, straight off the stream: one spawned
-  // outside the hold edge, where an un-aggroed enemy still advances. Since #123 the nests are
-  // scattered from 3,600 u out, so most of them sit inside that edge and their grunts simply hold —
-  // which makes "it turned away" unobservable. #125 removes the edge and this goes with it.
-  function firstMarchingSpawn(t: Capture): EnemySpawn {
+  // A grunt of the opening wave, straight off the stream. Any of them will do: since #125 there is
+  // no radius at which an un-aggroed enemy stops, so every spawn moves.
+  function firstSpawn(t: Capture): EnemySpawn {
     const spawned = t.sent
       .flatMap(({ msg }) => (msg.type === "game/map-delta" ? (msg.spawns ?? []) : []))
-      .find((sp) => dist(sp.pos, CENTRE) > HOLD_EDGE + 500);
-    if (!spawned) throw new Error("the first wave spawned nothing outside the hold edge");
+      .at(0);
+    if (!spawned) throw new Error("the first wave spawned nothing");
     return spawned;
   }
 
@@ -960,20 +968,20 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
 
   test("an enemy chasing a player that drops turns away from the frozen point", () => {
     const { t, hub, clock } = matchWithWave();
-    const spawned = firstMarchingSpawn(t);
+    const spawned = firstSpawn(t);
 
-    // Ben stands just *outward* of the grunt — away from centre — so chasing him and marching
-    // to centre move the grunt in opposite directions and the two are never confusable.
+    // Ben stands 300 u *outward* of the grunt and Ana 900 u *inward* of it. Both are inside
+    // AGGRO_RADIUS, and Ben is the nearer, so the grunt locks on to Ben — and when his socket drops
+    // the only body left for it to notice is Ana, in the opposite direction. That is what makes
+    // "it turned away" a certainty rather than a heading it might have drawn (#125).
     const outward = {
       x: (spawned.pos.x - CENTRE.x) / dist(spawned.pos, CENTRE),
       y: (spawned.pos.y - CENTRE.y) / dist(spawned.pos, CENTRE),
     };
-    const benAt = { x: spawned.pos.x + outward.x * 400, y: spawned.pos.y + outward.y * 400 };
+    const benAt = { x: spawned.pos.x + outward.x * 300, y: spawned.pos.y + outward.y * 300 };
+    const anaAt = { x: spawned.pos.x - outward.x * 900, y: spawned.pos.y - outward.y * 900 };
     hub.handleMessage("s2", JSON.stringify({ type: "game/pos", pos: benAt, seq: 1 }));
-    hub.handleMessage(
-      "s1",
-      JSON.stringify({ type: "game/pos", pos: CENTRE, seq: 1 }), // Ana is far away at spawn
-    );
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: anaAt, seq: 1 }));
 
     clock.advance(150);
     const chasing = enemyPos(t, spawned.id);
@@ -991,7 +999,7 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
 
   test("and it resumes the chase when they reconnect inside the window", () => {
     const { t, hub, clock, code } = matchWithWave();
-    const spawned = firstMarchingSpawn(t);
+    const spawned = firstSpawn(t);
     const joined = firstOf(t, "lobby/joined");
     const benAt = { x: spawned.pos.x, y: spawned.pos.y };
     hub.handleMessage("s2", JSON.stringify({ type: "game/pos", pos: benAt, seq: 1 }));
@@ -1694,6 +1702,19 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     return found.msg as Extract<ServerMessage, { type: "game/build-init" }>;
   };
 
+  // A spawn re-read as the place to shoot it from: on the line from arena centre through wherever the
+  // grunt has walked to, just behind it. Both halves of that matter since #125 — an un-aggroed enemy
+  // wanders on a heading of its own, so the announced spawn point is stale; and an origin exactly on
+  // the enemy leaves the whole-unit rounding of the stream (#84) to decide whether it counts as in
+  // front of the ray or behind it. `BEHIND` clears that rounding, and stays small enough that the
+  // grunt's own nest — up to 300 u of jitter away — cannot slip in between and take the shot.
+  const firingSpot = (t: Capture, spawn: EnemySpawn): EnemySpawn => {
+    let at = spawn.pos;
+    for (const d of deltas(t)) for (const [id, x, y] of d.moves) if (id === spawn.id) at = { x, y };
+    const aim = aimAt(at, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    return { ...spawn, pos: { x: at.x - aim.x * BEHIND, y: at.y - aim.y * BEHIND } };
+  };
+
   // A solo match already one wave in, with a grunt to shoot at and metal to build with.
   async function fighting(): Promise<{ t: Capture; hub: LobbyHub; me: string; grunt: EnemySpawn }> {
     const t = new Capture();
@@ -1711,9 +1732,10 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     const me = created(t).you.id;
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
     await sleep(TICK * 3);
-    const grunt = deltas(t).flatMap((d) => d.spawns ?? [])[0];
-    if (!grunt) throw new Error("the first wave spawned nothing");
-    // Stand on it, so the server's anti-teleport-aim check passes and the ray reaches it.
+    const spawned = deltas(t).flatMap((d) => d.spawns ?? [])[0];
+    if (!spawned) throw new Error("the first wave spawned nothing");
+    // `grunt.pos` is where the player stands, not where the grunt is — see `firingSpot`.
+    const grunt = firingSpot(t, spawned);
     hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: grunt.pos, seq: 1 }));
     return { t, hub, me, grunt };
   }
@@ -1748,8 +1770,9 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "Ben" }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
     await sleep(TICK * 3);
-    const grunt = deltas(t).flatMap((d) => d.spawns ?? [])[0];
-    if (!grunt) throw new Error("the first wave spawned nothing");
+    const spawned = deltas(t).flatMap((d) => d.spawns ?? [])[0];
+    if (!spawned) throw new Error("the first wave spawned nothing");
+    const grunt = firingSpot(t, spawned);
     hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: grunt.pos, seq: 1 }));
     hub.handleMessage("s2", JSON.stringify({ type: "game/health", hp: 100, seq: 1 })); // Ben lives
     return { t, hub, grunt, dir: aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 }) };
@@ -1984,8 +2007,27 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
   function fighting(config: Partial<LobbyConfig> = {}) {
     const { t, hub, clock } = match(config);
     clock.advance(TICK);
-    const grunt = deltas(t).flatMap((d) => d.spawns ?? [])[0];
-    if (!grunt) throw new Error("the first wave spawned nothing");
+    const spawned = deltas(t).flatMap((d) => d.spawns ?? [])[0];
+    if (!spawned) throw new Error("the first wave spawned nothing");
+    // A firing spot rather than the announced spawn point: an un-aggroed enemy wanders on a heading of
+    // its own (#125), so where it was created is stale, and an origin exactly on it leaves the stream's
+    // whole-unit rounding to decide whether the ray points at it or away.
+    let walked = spawned.pos;
+    for (const d of deltas(t)) {
+      for (const [id, x, y] of d.moves) if (id === spawned.id) walked = { x, y };
+    }
+    const toEnemy = {
+      x: ARENA.width / 2 - walked.x,
+      y: ARENA.height / 2 - walked.y,
+    };
+    const reach = Math.hypot(toEnemy.x, toEnemy.y) || 1;
+    const grunt = {
+      ...spawned,
+      pos: {
+        x: walked.x - (toEnemy.x / reach) * BEHIND,
+        y: walked.y - (toEnemy.y / reach) * BEHIND,
+      },
+    };
     hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos: grunt.pos, seq: 1 }));
     const toCentre = {
       x: ARENA.width / 2 - grunt.pos.x,

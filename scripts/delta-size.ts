@@ -95,7 +95,7 @@ export function worstCaseTick(): {
   build.ammo.bullets = AMMO_POOL;
   build.ammo.queued = FORGE_QUEUE;
 
-  // A turret line, placed clear of the arena centre so the wave marching inward engages it.
+  // A turret line, placed clear of the arena centre so the waves that converge on the squad engage it.
   const spec = BUILDABLES.turret as BuildableSpec;
   const origin = { x: world.arena.width / 2, y: world.arena.height / 2 };
   for (let i = 0; i < TURRETS; i++) {

@@ -60,6 +60,7 @@ import {
   SPAWN_GRACE_MS,
   spawnEnemyState,
   stepEnemies,
+  WANDER_LEG_MS,
   WANDERER_CHANCE_OUTER,
   WAVE_SIZE_MAX,
   WAVE_SIZE_START,
@@ -85,13 +86,13 @@ const grunt = (id: string, pos: Vec2, hp = GRUNT_HP): Enemy => ({
   hp,
   biteMs: 0,
 });
-const stateWith = (enemies: Enemy[]): EnemyState => ({
+const stateWith = (enemies: Enemy[], rng: () => number = () => 0.5): EnemyState => ({
   arena: ARENA,
   enemies: new Map(enemies.map((e) => [e.id, e])),
   nests: [], // and so nothing spawns during these targeted tests
   elapsedMs: 0,
   nestTimers: new Map(),
-  rng: () => 0.5,
+  rng,
   nextId: enemies.length + 1,
 });
 // Take every nest off its timer, for the tests that want the nests standing there without spawning.
@@ -117,15 +118,6 @@ const onlyNestState = (state: EnemyState): EnemyState => {
   return state;
 };
 const onlyNest = (state: EnemyState): Nest => onlyNestState(state).nests[0];
-// Which nest a spawn came out of. Jitter is 300 u against a band 10,752 u wide, so the nearest nest
-// to a spawn point is the one that emitted it.
-const nearestNest = (state: EnemyState, pos: Vec2): string =>
-  state.nests.reduce((best, n) =>
-    Math.hypot(n.pos.x - pos.x, n.pos.y - pos.y) <
-    Math.hypot(best.pos.x - pos.x, best.pos.y - pos.y)
-      ? n
-      : best,
-  ).id;
 const at = (state: EnemyState, id: string) => state.enemies.get(id);
 const player = (pos: Vec2) => [{ id: "p1", pos }];
 const shot = (pos: Vec2, dir: Vec2, by = "p1"): Attack => ({ pos, dir, by });
@@ -396,10 +388,15 @@ describe("per-nest spawning (#124)", () => {
 
   test("and the grace really does end: every nest has fired by the end of the first period", () => {
     const s = spawnEnemyState(worldInit(5), mulberry32(5));
+    // The phases stay as the seed dealt them; only the jitter is stood down, so a spawn point is its
+    // nest's position exactly. Seed 5 puts two nests 458 u apart, and nothing forbids that (#111
+    // asks for no minimum separation), so attributing a jittered spawn by proximity can pick the
+    // wrong one of the pair.
+    s.rng = () => 0.5;
     const fired = new Set<string>();
     for (let i = 0; i < (SPAWN_GRACE_MS + NEST_PERIOD_START_MS) / DT; i++) {
       s.enemies.clear(); // the cap is not what this test is about
-      for (const sp of stepEnemies(s, [], [], DT).events.spawns) fired.add(nearestNest(s, sp.pos));
+      for (const sp of stepEnemies(s, [], [], DT).events.spawns) fired.add(where(sp.pos));
     }
     expect(fired.size).toBe(NEST_COUNT);
   });
@@ -549,20 +546,23 @@ describe("hunter waves (#124)", () => {
     for (let i = 0; i < 40_000 && closing > 100; i++) {
       stepEnemies(s, squad, [], DT);
       const now = distTo(hunter.pos, C);
-      expect(now).toBeLessThan(closing); // never stalls, and never at a hold edge
+      expect(now).toBeLessThan(closing); // never stalls, and stops at no radius at all
       closing = now;
     }
     expect(closing).toBeLessThanOrEqual(100);
   });
 
-  test("a wanderer nest's wave hunts nobody, and still stops at the hold edge", () => {
-    const s = oneNest(EDGE, "wanderer");
+  test("a wanderer nest's wave hunts nobody, and walks past the squad rather than at it", () => {
+    // Off the axis the squad stands on, so a due-west leg never brings it inside AGGRO_RADIUS of
+    // the player — a hunter out of this nest would close on him from any distance.
+    const s = oneNest({ x: C.x + 10_000, y: C.y + 4_000 }, "wanderer");
     const squad = player({ ...C });
     expect(fire(s, squad)).toHaveLength(1);
     const drifter = only(s);
     expect(drifter.hunt).toBeUndefined();
     for (let i = 0; i < 40_000; i++) stepEnemies(s, squad, [], DT);
-    expect(distTo(drifter.pos, C)).toBeCloseTo(HOLD_EDGE, 6);
+    expect(drifter.pos.x).toBeCloseTo(GRUNT_RADIUS, 6); // crossed the arena, on its own heading
+    expect(distTo(drifter.pos, C)).toBeGreaterThan(AGGRO_RADIUS); // and never noticed him
   });
 
   test("the wave commits to the nearest player at spawn, at any distance", () => {
@@ -609,13 +609,13 @@ describe("hunter waves (#124)", () => {
     expect(hunter.hunt).toBe("hunted"); // the commitment is not spent, only interrupted
   });
 
-  test("a hunter whose player is gone marches like anything else", () => {
+  test("a hunter whose player is gone wanders like anything else", () => {
     const s = oneNest(EDGE, "hunter");
     fire(s, player({ ...C }));
     const orphan = only(s);
     expect(orphan.hunt).toBe("p1");
     for (let i = 0; i < 40_000; i++) stepEnemies(s, [], [], DT); // the squad disconnected
-    expect(distTo(orphan.pos, C)).toBeCloseTo(HOLD_EDGE, 6);
+    expect(orphan.pos.x).toBeCloseTo(GRUNT_RADIUS, 6); // walked its own heading to the far wall
   });
 
   test("a hunter nest with no squad to aim at commits to nobody", () => {
@@ -625,9 +625,10 @@ describe("hunter waves (#124)", () => {
   });
 });
 
-const HOLD_EDGE = Math.min(ARENA.width, ARENA.height) * (0.5 - 0.08); // 13,104 u from center
+// Where the front line used to be, kept only so #125 can assert that nothing stops there any more.
+const OLD_HOLD_EDGE = Math.min(ARENA.width, ARENA.height) * (0.5 - 0.08); // 13,104 u from center
 
-describe("stepEnemies AI (ENGAGED / MARCH / HOLD)", () => {
+describe("stepEnemies AI (ENGAGED / HUNTING / WANDER)", () => {
   // The other half of #93's independence check, which lives in `world.test.ts`. The two numbers
   // agree today, so only a retune can tell them apart — and a retune that moves this one has to
   // change this line and leave the other alone, which is the whole of what was asked.
@@ -646,33 +647,70 @@ describe("stepEnemies AI (ENGAGED / MARCH / HOLD)", () => {
     expect(d).toBeLessThanOrEqual((GRUNT_SPEED * 100) / 1000 + 1e-6); // capped by speed
   });
 
-  test("MARCH: an un-aggroed enemy advances toward center and parks on the hold edge", () => {
-    const s = stateWith([grunt("e1", { x: C.x + HALF, y: C.y })]); // in the band, past the edge
-    for (let i = 0; i < 2000; i++) stepEnemies(s, [], [], 100); // no players anywhere
+  // #125. There is no march and no hold edge left: an un-aggroed enemy walks a heading of its own,
+  // re-rolled out of the sim's rng every WANDER_LEG_MS. A constant rng pins that heading exactly —
+  // 0 is due east, 0.5 is due west — so a wander is asserted to the unit rather than to a tendency.
+  const EAST = () => 0;
+  const WEST = () => 0.5;
+  const WALK = (seconds: number) => GRUNT_SPEED * seconds;
+
+  test("WANDER: an un-aggroed enemy walks outward, so nothing marches it toward centre", () => {
+    const start = { x: C.x + 3_000, y: C.y };
+    const s = stateWith([grunt("e1", { ...start })], EAST);
+    for (let i = 0; i < 40; i++) stepEnemies(s, [], [], 100); // 4 s, no players anywhere
+    expect(only(s).pos.x - start.x).toBeCloseTo(WALK(4), 6);
+    expect(only(s).pos.y).toBeCloseTo(start.y, 6);
+  });
+
+  test("WANDER: nothing stops an enemy at the radius the hold edge used to be", () => {
+    const s = stateWith([grunt("e1", { x: C.x + OLD_HOLD_EDGE, y: C.y })], WEST);
+    for (let i = 0; i < 40; i++) stepEnemies(s, [], [], 100);
     const dist = Math.hypot(only(s).pos.x - C.x, only(s).pos.y - C.y);
-    expect(dist).toBeCloseTo(HOLD_EDGE, 0); // parked on the front line…
-    expect(dist).toBeGreaterThanOrEqual(HOLD_EDGE - 1e-6); // …never crossing into the safe center
+    expect(dist).toBeCloseTo(OLD_HOLD_EDGE - WALK(4), 6); // walked straight through it
   });
 
-  test("HOLD: an un-aggroed enemy at the hold edge stays put", () => {
-    const onEdge = { x: C.x + HOLD_EDGE, y: C.y };
-    const s = stateWith([grunt("e1", { ...onEdge })]);
-    stepEnemies(s, [], [], 100);
-    expect(only(s).pos).toEqual(onEdge);
-    expect(only(s).target).toBeUndefined();
+  test("WANDER: the heading is re-rolled every leg, so it turns instead of walking one line", () => {
+    const s = stateWith([grunt("e1", { ...C })], mulberry32(5));
+    const heading = () => {
+      const from = { ...only(s).pos };
+      stepEnemies(s, [], [], 50);
+      return Math.atan2(only(s).pos.y - from.y, only(s).pos.x - from.x);
+    };
+    const first = heading();
+    for (let i = 0; i < WANDER_LEG_MS / 50; i++) stepEnemies(s, [], [], 50); // the leg runs out
+    expect(heading()).not.toBeCloseTo(first, 6);
   });
 
-  test("peels to chase when a player enters aggro, reverts to holding when they retreat", () => {
-    const onEdge = { x: C.x + HOLD_EDGE, y: C.y };
-    const s = stateWith([grunt("e1", { ...onEdge })]);
-    stepEnemies(s, [{ id: "p1", pos: { x: onEdge.x + 500, y: onEdge.y } }], [], 100); // within aggro
+  test("WANDER: the walk is bounded by the arena walls, so nothing leaves for good", () => {
+    const s = stateWith([grunt("e1", { x: ARENA.width - 1_000, y: C.y })], EAST);
+    for (let i = 0; i < 400; i++) stepEnemies(s, [], [], 100); // 40 s of due-east walking
+    expect(only(s).pos.x).toBeCloseTo(ARENA.width - GRUNT_RADIUS, 6);
+  });
+
+  test("a wandering enemy inside AGGRO_RADIUS stops wandering and chases", () => {
+    const start = { x: C.x + 5_000, y: C.y };
+    const s = stateWith([grunt("e1", { ...start })], WEST);
+    for (let i = 0; i < 10; i++) stepEnemies(s, [], [], 100);
+    const wandered = { ...only(s).pos };
+    expect(wandered.x).toBeLessThan(start.x); // on a westward leg, and nobody in the world
+
+    const prey = { x: wandered.x, y: wandered.y + AGGRO_RADIUS - 100 };
+    stepEnemies(s, [{ id: "p1", pos: prey }], [], 100);
     expect(only(s).target).toEqual({ kind: "player", id: "p1" });
-    expect(only(s).pos.x).toBeGreaterThan(onEdge.x); // peeled outward toward the player
+    expect(only(s).pos.y).toBeGreaterThan(wandered.y); // turned off its heading, onto the player
+  });
 
-    const peeledOut = Math.hypot(only(s).pos.x - C.x, only(s).pos.y - C.y);
+  test("peels to chase when a player enters aggro, and wanders again when they retreat", () => {
+    const start = { x: C.x + 10_000, y: C.y };
+    const s = stateWith([grunt("e1", { ...start })], WEST);
+    stepEnemies(s, [{ id: "p1", pos: { x: start.x + 500, y: start.y } }], [], 100); // within aggro
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
+    expect(only(s).pos.x).toBeGreaterThan(start.x); // peeled outward toward the player
+
+    const peeled = { ...only(s).pos };
     stepEnemies(s, [{ id: "p1", pos: { ...C } }], [], 100); // player retreats far beyond aggro
     expect(only(s).target).toBeUndefined(); // un-aggroed again
-    expect(Math.hypot(only(s).pos.x - C.x, only(s).pos.y - C.y)).toBeLessThan(peeledOut); // marching back
+    expect(only(s).pos.x).toBeCloseTo(peeled.x - WALK(0.1), 6); // and away on a heading of its own
   });
 
   test("motion is frame-rate independent while ENGAGED (2×dt ≈ 2× the distance)", () => {
@@ -691,6 +729,113 @@ describe("stepEnemies AI (ENGAGED / MARCH / HOLD)", () => {
     const snapshot = player({ x: C.x + 1200, y: C.y });
     stepEnemies(s, players, [], 100);
     expect(players).toEqual(snapshot);
+  });
+});
+
+// #125. What removing the hold edge is for: the arena reads as a gradient — hunter waves early,
+// ambient wanderers accumulating as the squad pushes outward — and there is no circle around spawn
+// that nothing can enter.
+//
+// Every figure below is taken over a fixed seed set, #123's precedent: the sim's only entropy is an
+// injected rng, so each count is a fixed number that passes always or fails always rather than a
+// tendency that passes most of the time.
+//
+// They are counts of a shaped field, so they move when the shape does: `ENEMY_CAP` and
+// `WANDER_LEG_MS` are both provisional, and a retune of either will red some of these. That is the
+// price of asserting a gradient rather than describing one, and re-reading the counts is the fix.
+describe("#125: no safe centre, and the gradient it produces", () => {
+  const DT = 50;
+  const MINUTE = 60_000;
+
+  // A real world of fifty nests driven for `minutes` of virtual time. Virtual only: no clock is read
+  // anywhere in the sim, so this is arithmetic and not a wait.
+  const runFor = (seed: number, minutes: number, squad: PlayerRef[] = []): EnemyState => {
+    const s = spawnEnemyState(worldInit(seed), mulberry32(seed));
+    for (let i = 0; i < (minutes * MINUTE) / DT; i++) stepEnemies(s, squad, [], DT);
+    return s;
+  };
+  const advance = (s: EnemyState, minutes: number, squad: PlayerRef[] = []): EnemyState => {
+    for (let i = 0; i < (minutes * MINUTE) / DT; i++) stepEnemies(s, squad, [], DT);
+    return s;
+  };
+  // How many enemies are close enough to `at` to be an encounter. `wanderersOnly` drops everything a
+  // hunter nest committed to a player, so what is left is the ambient walk rather than a wave aimed
+  // at the squad — the only discriminator needed, since a hunter's commitment is set at spawn.
+  const near = (s: EnemyState, at: Vec2, radius = AGGRO_RADIUS, wanderersOnly = false): number =>
+    [...s.enemies.values()].filter(
+      (e) =>
+        Math.hypot(e.pos.x - at.x, e.pos.y - at.y) <= radius &&
+        (!wanderersOnly || e.hunt === undefined),
+    ).length;
+
+  test("the cap is the density dial, and it is 500", () => {
+    // Provisional (#111). A retune of this line moves `docs/frame-budget.md` and
+    // `docs/map-delta-budget.md` with it, which is why it is pinned here rather than left implicit.
+    expect(ENEMY_CAP).toBe(500);
+  });
+
+  // ADR 0004: a nest's kind must never become visible to the client, which is the whole reason the
+  // layout derives from a seed instead of riding the wire. Two fields on `Enemy` would give it away —
+  // the hunt a hunter nest's wave was committed to (#124) and the leg a wanderer walks (#125) — and
+  // announcing either would put the kind one JSON field away from the renderer.
+  test("a spawn announcement carries the wire fields and nothing server-only", () => {
+    const s = armed(spawnEnemyState(worldInit(), () => 0.5));
+    const spawns = stepEnemies(s, player({ ...C }), [], 50).events.spawns;
+    for (const spawn of spawns) {
+      expect(Object.keys(spawn).sort()).toEqual(["hp", "id", "kind", "pos"]);
+    }
+    // Not vacuous: this world holds nests of both kinds, so both server-only fields are in play.
+    const live = [...s.enemies.values()];
+    expect(live.some((e) => e.hunt !== undefined)).toBe(true);
+    expect(live.some((e) => e.wander !== undefined)).toBe(true);
+  });
+
+  // A squad that never leaves spawn is fought there, and what fights it changes over the match:
+  // hunter waves commit at any distance and arrive at once, while wanderers arrive by diffusion,
+  // which takes minutes from 14,000 u out. Observed at 5:00 for seeds 1, 2, 3: 149/121/131 hunters
+  // inside AGGRO_RADIUS of centre and not one wanderer.
+  test("a player standing at spawn is fought at spawn from the first waves", () => {
+    for (const seed of [1, 2, 3]) {
+      const s = runFor(seed, 5, player({ ...C }));
+      expect(near(s, C) - near(s, C, AGGRO_RADIUS, true)).toBeGreaterThan(0); // hunter waves
+      expect(near(s, C, AGGRO_RADIUS, true)).toBe(0); // and the walk has not got there yet
+    }
+  });
+
+  // The other half of it, and the slower half: an undirected walk does reach spawn, it just takes a
+  // long match to. Observed inside AGGRO_RADIUS of centre at 12:00: 6 for seed 1, 11 for seed 2.
+  test("and wanderers reach spawn too, late, without anything aiming them there", () => {
+    for (const seed of [1, 2]) {
+      const s = runFor(seed, 12, player({ ...C }));
+      expect(near(s, C, AGGRO_RADIUS, true)).toBeGreaterThan(0);
+    }
+  });
+
+  test("and wanderers are denser further out, so a squad that pushes outward meets more", () => {
+    // Nobody in the world, so nothing is aimed at anybody and the only thing shaping the field is
+    // the walk itself against where the nests are.
+    //
+    // Observed at 8:00 within 4,000 u, centre against 12,000 u out: 8 against 42, and 5 against 53.
+    for (const seed of [1, 2]) {
+      const s = runFor(seed, 8);
+      expect(near(s, { x: C.x + 12_000, y: C.y }, 4_000)).toBeGreaterThan(near(s, C, 4_000));
+    }
+  });
+
+  // Measured at 4:00, before the cap binds. That is the honest window: `ENEMY_CAP` is a population
+  // governor, so once it is binding the other forty-nine nests refill whatever a silenced one stops
+  // sending and the local reduction narrows to noise. Standing against silenced within 4,000 u of the
+  // nest, seeds 1–4: 6/1, 18/11, 11/6, 40/31.
+  test("killing a nest reduces the pressure in its area", () => {
+    for (const seed of [1, 2, 3, 4]) {
+      const standing = spawnEnemyState(worldInit(seed), mulberry32(seed));
+      const silenced = spawnEnemyState(worldInit(seed), mulberry32(seed));
+      const at = { ...standing.nests[0].pos };
+      silenced.nests[0].alive = false;
+      advance(standing, 4);
+      advance(silenced, 4);
+      expect(near(silenced, at, 4_000)).toBeLessThan(near(standing, at, 4_000));
+    }
   });
 });
 
@@ -1018,7 +1163,7 @@ describe("M4-T3: enemies leave the front line to chew on your structures", () =>
   });
 
   test("with no build state at all the sim behaves exactly as it did in M3", () => {
-    const s = stateWith([grunt("e1", { x: C.x + HOLD_EDGE, y: C.y })]);
+    const s = stateWith([grunt("e1", { x: C.x + 10_000, y: C.y })]);
     const events = stepEnemies(s, [], [], 100).events;
     expect(events.structHits).toEqual([]);
     expect(events.removals).toEqual([]);

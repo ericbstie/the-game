@@ -10,23 +10,23 @@ the game's bandwidth.
 
 ## The number
 
-**At the caps the game supports, one client receives 1,985 B/tick — 38.8 KiB/s. Before
+**At the caps the game supports, one client receives 3,855 B/tick — 75.3 KiB/s. Before
 [#84](https://github.com/ericbstie/the-game/issues/84) it was 11,369 B/tick, 222.1 KiB/s.**
 
-The worst case is not hypothetical: 240 enemies (`ENEMY_CAP`, the hard governor), a full squad of 6,
+The worst case is not hypothetical: 500 enemies (`ENEMY_CAP`, the hard governor), a full squad of 6,
 30 turrets, and every player firing on the measured tick so `shots` is at its per-tick maximum. It
 is produced by driving a real `stepEnemies` sim to the cap and assembling the delta exactly as
 `LobbyHub.tick` assembles it, not by a hand-written fixture.
 
 | | per tick | per client |
 |---|---:|---:|
-| float64 coordinates, uncompressed | 10,941 B | 213.7 KiB/s |
-| trimmed coordinates, uncompressed | 5,216 B | 101.9 KiB/s |
-| float64 coordinates, deflate | 4,874 B | 95.2 KiB/s |
-| **trimmed coordinates, deflate — what ships** | **1,985 B** | **38.8 KiB/s** |
+| float64 coordinates, uncompressed | 21,363 B | 417.2 KiB/s |
+| trimmed coordinates, uncompressed | 10,501 B | 205.1 KiB/s |
+| float64 coordinates, deflate | 9,540 B | 186.3 KiB/s |
+| **trimmed coordinates, deflate — what ships** | **3,855 B** | **75.3 KiB/s** |
 
-Trimming alone takes **52.3%** off. Deflate takes **61.9%** off what remains. Together they are
-**81.9%** against the old wire.
+Trimming alone takes **50.8%** off. Deflate takes **63.3%** off what remains. Together they are
+**82.0%** against the old wire.
 
 ### What #123 moved, and why it is not a leak
 
@@ -62,6 +62,35 @@ the squad instead of holding at a 13,104 u edge, so their coordinates carry diff
 budget measures**, which is worth saying twice: two features in a row have moved it without
 touching a message.
 
+### What #125 moved, and this one is the cap itself
+
+[#125](https://github.com/ericbstie/the-game/issues/125) raised `ENEMY_CAP` from **240 to 500** and
+removed the hold edge, so an un-aggroed enemy now wanders anywhere in the arena instead of parking on
+a ring. `game/map-delta` is a per-enemy stream, so this is the first of the three stages whose cost is
+in the *count* rather than in the coordinates:
+
+| | at cap 240 | at cap 500 | ratio |
+|---|---:|---:|---:|
+| trimmed raw | 5,216 B | 10,501 B | ×2.013 |
+| **trimmed deflate — what ships** | **1,985 B** | **3,855 B** | **×1.942** |
+| deflate CPU, per tick per client | 0.107 ms | 0.223 ms | ×2.08 |
+
+**It is sub-linear in the cap, which is the thing worth knowing.** 500/240 is ×2.083 and the shipped
+bytes went up by ×1.942, because deflate's take *improved* — 61.9% → 63.3% — on 2.08× as many `moves`
+entries. More enemies means more repetition of `["eNNNN",` and of leading coordinate digits, and that
+is what the compressor eats. Undirected wandering scatters the coordinates further than #123's fifty
+nests did, and it still did not cost more than the count.
+
+**Nothing was added to the shape.** `src/lobby/protocol.ts` is byte-identical across this stage: no
+field for the wander heading, no field for a nest's kind. A wanderer's leg is server-only per-enemy
+state, exactly as a hunter's commitment is ([ADR 0004](adr/0004-nest-layout-is-derived-from-a-seed.md)).
+
+**Is 75.3 KiB/s per client acceptable? Yes, and the comparison that settles it is on this page.** The
+game shipped at **222.1 KiB/s** before #84, and #84's own untrimmed float64 tick *at cap 240* was
+**95.2 KiB/s**. So the arena at more than twice the population is cheaper per client than the same
+arena was before coordinates were trimmed. Server egress for a full squad is 6 × 20 × 3,855 B =
+**452 KiB/s**, and the compressor bill for that squad is **2.7% of one core** (up from 1.3%).
+
 ## Where it went
 
 **Coordinate precision was ~55% of the baseline.** A single `moves` entry used to serialise as
@@ -90,13 +119,13 @@ compressed.
 
 It is worth it by a wide margin, and the cost side is the half that bytes alone cannot show:
 
-- **60.4% smaller**, even after the trim — the payload is repetitive JSON, with ids and key names
-  recurring 240 times a tick.
-- **0.10 ms per tick per client**, which is **1.2% of one core** for a full squad of 6.
+- **63.3% smaller**, even after the trim — the payload is repetitive JSON, with ids and key names
+  recurring 500 times a tick.
+- **0.22 ms per tick per client**, which is **2.7% of one core** for a full squad of 6.
 
 Trimming and compressing are not alternatives. Trimming also makes the stream *more* compressible:
-the trimmed delta deflates to 1,985 B where the float64 one deflates to 4,874 B, so the trim is
-still worth 59% after the compressor has had its turn.
+the trimmed delta deflates to 3,855 B where the float64 one deflates to 9,540 B, so the trim is
+still worth 60% after the compressor has had its turn.
 
 ## Re-measuring
 

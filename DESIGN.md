@@ -19,7 +19,8 @@ Score is your escape time.
 ## The arena
 
 - One big box, ~2 minutes to walk end-to-end. No other rooms.
-- **Spawn:** dead center, relatively safe.
+- **Spawn:** dead center, and protected by nothing. Enemies come all the way in, so a squadmate
+  respawning arrives into whatever is standing there.
 - **Escape door:** a single random spot on the perimeter wall. Found by clearing the edge.
 - **Enemy nests are scattered through the outer arena**, denser and tougher the closer you get
   to the wall.
@@ -59,6 +60,10 @@ Score is your escape time.
 - **Timed escalating waves.** Nothing for the first minute, then **each nest on its own timer** —
   no global clock, so fifty nests are fifty drumbeats. The waves come faster, bigger and with more
   elites in them the longer the match runs. Watchable tension.
+- **Two things an enemy does when nobody has its attention.** A hunter wave is aimed at a player the
+  moment it spawns and comes for them from any distance. Anything else **wanders** — an undirected
+  walk with no leash to its nest, which is why the far arena fills up with drifting spiders and the
+  middle only slowly does. Either one turns on you the moment you are close enough.
 - **Roster:** mostly a single grunt type in numbers, with the occasional **elite**. Readable, easy to expand later.
 
 ## Weapons & combat

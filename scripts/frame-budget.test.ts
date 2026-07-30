@@ -21,10 +21,11 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--map", "wide"])).toThrow(/--map/);
   });
 
-  // #111 raises `ENEMY_CAP` to 500 and has not landed. A frame that has to hold at that density can
-  // be priced now or guessed at later, and guessing is what rule 5 of the budget exists to stop.
-  test("takes an enemy count, so a cap the governor has not been raised to yet can be priced", () => {
-    expect(parseArgs(["--enemies", "500"]).enemies).toBe(500);
+  // The flag existed before #125 raised `ENEMY_CAP` to 500, so that the frame at that density could be
+  // priced rather than guessed at (rule 5). It stays afterwards: the *old* cap is what has to be asked
+  // for now, and the two counts have to be measurable side by side for the raise to mean anything.
+  test("takes an enemy count, so a cap other than the governor's own can be priced", () => {
+    expect(parseArgs(["--enemies", "240"]).enemies).toBe(240);
     expect(parseArgs([]).enemies).toBeNull(); // the governor's own cap, whatever it is today
     expect(() => parseArgs(["--enemies", "0"])).toThrow(/--enemies/);
     expect(() => parseArgs(["--enemies", "lots"])).toThrow(/--enemies/);
