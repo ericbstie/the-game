@@ -25,11 +25,15 @@ is the root — it is not nested under anything. **Every issue created in this r
 a sub-issue of the current version's tracking issue** — feature tickets, investigations
 and bugs alike. The one exception is a deferred issue, below.
 
-- **Current: [TRACKING] Breakout Box — Version 2.0**
-  ([#91](https://github.com/ericbstie/the-game/issues/91)), label `version-2.0`.
+- **No version is open.** Version 2.0 shipped and closed on 2026-07-30, so there is no
+  root to file under. Open the next version's tracking issue — and label it with its
+  version — before creating any issue that is not `deferred`.
+- [#91](https://github.com/ericbstie/the-game/issues/91) is the **historical record for
+  v2.0** — 37 sub-issues, closed and complete, released as v2.28.0. Its closing note
+  carries what shipped, what was dropped, and what was left unmeasured.
 - [#3](https://github.com/ericbstie/the-game/issues/3) is the **historical record for
-  v1** — milestones 1–5, closed and complete. Read it for how the game got here; never
-  file new work under it. A closed tracker cannot carry open work.
+  v1** — milestones 1–5, closed and complete. Read both for how the game got here; never
+  file new work under either. A closed tracker cannot carry open work.
 
 When a version ships, close its tracking issue and open the next one. That new issue
 becomes the root for everything after it. Fold anything deliberately left behind into

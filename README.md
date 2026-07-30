@@ -53,9 +53,10 @@ To demo a lobby across two networks, see [docs/cross-network-demo.md](docs/cross
 **Claim first.** Before writing code for an issue, comment that you're taking it, name your
 branch in that comment, and assign the author. Every issue carries one type label
 (`feature` · `improvement` · `bug` · `investigation`), one size (`XS`–`XL`, measured by
-blast radius — **never** by time), and its version (`version-2.0`). Work is tracked
-per version — the current one is [#91](https://github.com/ericbstie/the-game/issues/91).
-See [CLAUDE.md](CLAUDE.md).
+blast radius — **never** by time). Work is tracked per version, and an issue's version is
+its parent rather than a label of its own. Version 2.0
+([#91](https://github.com/ericbstie/the-game/issues/91)) is closed, so the next version
+needs its own tracking issue before new work can be filed. See [CLAUDE.md](CLAUDE.md).
 
 **Build:**
 
