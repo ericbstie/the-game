@@ -109,7 +109,11 @@ describe("every knob reaches the world it configures", () => {
     expect(nestPeriodMs(SPAWN_GRACE_MS + 2 * 60_000, s)).toBe(6_000);
     expect(nestPeriodMs(SPAWN_GRACE_MS + 90 * 60_000, s)).toBe(3_000);
 
+    // The start period spreads the nests' opening phases too, not only their re-arms: at rng 0.1
+    // this nest is dealt a tenth of the way through an 8 s period rather than a 60 s one.
     const sim = oneNest(s);
+    expect(sim.nestTimers.get(sim.nests[0].id)).toBe(SPAWN_GRACE_MS + 800);
+
     sim.nestTimers.set(sim.nests[0].id, 0);
     stepEnemies(sim, [], [], 50);
     expect(sim.nestTimers.get(sim.nests[0].id)).toBe(8_000 - 50);
