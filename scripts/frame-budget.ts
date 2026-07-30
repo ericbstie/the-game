@@ -27,7 +27,7 @@ const DRAW_MODULE = join(import.meta.dir, "../src/game/draw.ts");
 const CACHE_MODULE = join(import.meta.dir, "../src/sprite/cache.ts");
 const REGISTRY_MODULE = join(import.meta.dir, "../src/sprite/registry.ts");
 const BUILD_MODULE = join(import.meta.dir, "../src/game/build.ts");
-const ENEMIES_MODULE = join(import.meta.dir, "../src/game/enemies.ts");
+const SETTINGS_MODULE = join(import.meta.dir, "../src/game/worldSettings.ts");
 const FLOATS_MODULE = join(import.meta.dir, "../src/game/floats.ts");
 const FX_MODULE = join(import.meta.dir, "../src/game/fx.ts");
 
@@ -39,7 +39,7 @@ export interface BudgetRequest {
   // cycled to (#110). It defaults to the level the map opens at, so a plain run measures the frame
   // the published budget measures.
   map: number;
-  // How many enemies the worst frame holds, or null for whatever `ENEMY_CAP` is today. A cap the
+  // How many enemies the worst frame holds, or null for whatever the world config's cap is today. A cap the
   // governor has not been raised to yet — #111's 500 — can only be priced by asking for it, and the
   // alternative is a number nobody measured (rule 5).
   enemies: number | null;
@@ -105,7 +105,7 @@ import { drawWorld } from ${JSON.stringify(DRAW_MODULE)};
 import { createSpriteCache } from ${JSON.stringify(CACHE_MODULE)};
 import { SPRITES } from ${JSON.stringify(REGISTRY_MODULE)};
 import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
-import { ENEMY_CAP } from ${JSON.stringify(ENEMIES_MODULE)};
+import { DEFAULT_WORLD_SETTINGS } from ${JSON.stringify(SETTINGS_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
 import { inkPuff, speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
 import { letteringAt } from ${JSON.stringify(DRAW_MODULE)};
@@ -232,7 +232,7 @@ try {
 
   const empty = build(0, 0, false);
   const floor = build(0, 0, true);
-  const full = build(${request.enemies ?? "ENEMY_CAP"}, STRUCTURES, true);
+  const full = build(${request.enemies ?? "DEFAULT_WORLD_SETTINGS.enemyCap"}, STRUCTURES, true);
 
   // The shot lines, through the shipped path rather than a hand-rolled stroke: the powered turrets
   // generate their own pulse, and squadmates' relayed shots make the count up to the budgeted 50.
@@ -456,7 +456,7 @@ if (import.meta.main) {
   );
   console.log(`corner map  ${request.map} u across`);
   console.log(
-    `enemy cap   ${request.enemies === null ? "ENEMY_CAP, as the governor stands" : `${request.enemies}, asked for`}`,
+    `enemy cap   ${request.enemies === null ? "the config's, as the governor stands" : `${request.enemies}, asked for`}`,
   );
   console.log(
     `sprites     ${Object.keys(request.sprites).join(", ") || "the registry as it stands"}`,

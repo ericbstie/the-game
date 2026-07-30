@@ -49,9 +49,9 @@ describe("entrySource", () => {
     const source = entrySource(parseArgs([]));
     expect(source).toContain("src/game/draw.ts");
     expect(source).toContain("drawWorld(ctx, full, opts)");
-    // The cap is read from the simulation, so the worst case cannot drift from the governor.
-    expect(source).toContain("ENEMY_CAP");
-    expect(source).toContain("build(ENEMY_CAP, STRUCTURES, true)");
+    // The cap is read from the world config, so the worst case cannot drift from the governor.
+    expect(source).toContain("src/game/worldSettings.ts");
+    expect(source).toContain("build(DEFAULT_WORLD_SETTINGS.enemyCap, STRUCTURES, true)");
   });
 
   test("builds the count it was asked for instead, when it was asked for one", () => {
