@@ -111,6 +111,31 @@ const OFFERED: WorldKnob[] = worldKnobs().map((knob) =>
   knob.path.startsWith("arena.") ? { ...knob, max: MAX_ARENA_SIDE } : knob,
 );
 
+// A dotted knob is one number of several describing one thing, and the group is what a reader needs
+// to know: three of these fields are one escalation curve, and hearing them as three unrelated
+// numbers is what a flat list gives a screen reader. `eliteShare` gets one for two fields as much as
+// `nestPeriod` does for three — two numbers are still a curve, and a group that appears only when a
+// thing has three parts is a rule nobody can hear.
+const GROUPS: Record<string, string> = {
+  arena: "Arena",
+  nestPeriod: "Nest period",
+  waveSize: "Wave size",
+  eliteShare: "Elite share",
+};
+
+const groupOf = (path: string) => (path.includes(".") ? path.split(".")[0] : null);
+
+// What the parser would refuse, said in the form's own terms. `aria-invalid` alone announces "invalid
+// entry" and leaves the reason to be guessed; the bounds are already on the knob, so saying them costs
+// nothing and is the difference between a mark and a message. Read off the knob rather than restated,
+// so a retune of `MAX_MULTIPLE` or `MAX_ARENA_SIDE` cannot leave this lying.
+function refusalOf(knob: WorldKnob): string {
+  const floor = knob.min === undefined ? "more than 0" : `${knob.min} or more`;
+  return knob.max === undefined
+    ? `Must be ${floor}.`
+    : `Must be ${floor}, and at most ${knob.max}.`;
+}
+
 // The world the next match is built from. The host picks and the squad reads — the same fields either
 // way, because a squad that cannot see the world it is about to be dropped into is guessing.
 //
@@ -128,40 +153,75 @@ function World({
 }) {
   const [typed, setTyped] = useState<Record<string, string>>({});
 
+  const field = (knob: WorldKnob) => {
+    const raw = typed[knob.path] ?? String(knobValue(settings, knob.path));
+    const wrong = raw.trim() !== "" && admit(knob, settings, raw) === null;
+    const saying = `${knob.path}-refused`;
+    return (
+      <label className="field" key={knob.path}>
+        {LABELS[knob.path]}
+        <input
+          type="number"
+          name={knob.path}
+          value={raw}
+          readOnly={!isHost}
+          min={knob.min}
+          max={knob.max}
+          // Set from the same predicate that decides whether to send, so a field the lobby is
+          // about to ignore always says so. Absent rather than `false` when there is nothing
+          // wrong, including mid-edit: a half-typed number is unfinished, not incorrect.
+          aria-invalid={wrong || undefined}
+          // Pointed at the reason only while there is one, so nothing is announced on a field that
+          // is merely unfinished.
+          aria-describedby={wrong ? saying : undefined}
+          onChange={(e) => {
+            const next = e.target.value;
+            setTyped((prev) => ({ ...prev, [knob.path]: next }));
+            const settled = admit(knob, settings, next);
+            if (settled) onSettings(settled);
+          }}
+        />
+        {wrong && (
+          <span className="refused" id={saying}>
+            {refusalOf(knob)}
+          </span>
+        )}
+      </label>
+    );
+  };
+
   return (
     <section className="world">
       <h2>World</h2>
       <div className="knobs">
-        {OFFERED.map((knob) => {
-          const raw = typed[knob.path] ?? String(knobValue(settings, knob.path));
-          const wrong = raw.trim() !== "" && admit(knob, settings, raw) === null;
-          return (
-            <label className="field" key={knob.path}>
-              {LABELS[knob.path]}
-              <input
-                type="number"
-                name={knob.path}
-                value={raw}
-                readOnly={!isHost}
-                min={knob.min}
-                max={knob.max}
-                // Set from the same predicate that decides whether to send, so a field the lobby is
-                // about to ignore always says so. Absent rather than `false` when there is nothing
-                // wrong, including mid-edit: a half-typed number is unfinished, not incorrect.
-                aria-invalid={wrong || undefined}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setTyped((prev) => ({ ...prev, [knob.path]: next }));
-                  const settled = admit(knob, settings, next);
-                  if (settled) onSettings(settled);
-                }}
-              />
-            </label>
-          );
-        })}
+        {runs(OFFERED).map((run) =>
+          run.group === null ? (
+            run.knobs.map(field)
+          ) : (
+            <fieldset className="group" key={run.group}>
+              <legend>{GROUPS[run.group]}</legend>
+              {run.knobs.map(field)}
+            </fieldset>
+          ),
+        )}
       </div>
     </section>
   );
+}
+
+// The knobs in the order `worldKnobs()` gives them, with each stretch of one group fenced together.
+// Walking the list rather than filtering per group is what keeps the form's order the settings' own —
+// a group's members are already adjacent, so fencing them costs no reordering, and a knob added to the
+// middle of a group later lands where the settings put it rather than where this file would.
+function runs(knobs: WorldKnob[]): { group: string | null; knobs: WorldKnob[] }[] {
+  const out: { group: string | null; knobs: WorldKnob[] }[] = [];
+  for (const knob of knobs) {
+    const group = groupOf(knob.path);
+    const last = out.at(-1);
+    if (last && last.group === group) last.knobs.push(knob);
+    else out.push({ group, knobs: [knob] });
+  }
+  return out;
 }
 
 // The world this field would choose, or null if it would not choose one.

@@ -333,6 +333,31 @@ button:disabled {
   padding-right: 0;
 }
 
+/* The reason beside the mark. `aria-invalid` alone announces "invalid entry" and leaves the why to be
+   guessed, so the bounds are said in full — and said on the page, not only to a screen reader. */
+.world .refused {
+  flex-basis: 100%;
+  text-align: right;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* Numbers that describe one curve are fenced as one, so they are not read as unrelated fields. The
+   fence is a rule and a name, not a box — the sheet is a torn-out page, not a dialog. */
+.world .group {
+  border: none;
+  border-top: var(--hairline);
+  margin: 0.6rem 0 0;
+  padding: 0.35rem 0 0;
+}
+
+.world .group legend {
+  padding: 0 0.4rem 0 0;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .lobby-actions {
   display: flex;
   gap: 0.75rem;

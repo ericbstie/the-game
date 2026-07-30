@@ -271,4 +271,52 @@ describe("the world controls", () => {
       "9",
     );
   });
+
+  // Three numbers describing one escalation curve are one thing, and a flat list says otherwise —
+  // tabbing them gives a screen reader three unrelated fields. The fence is what carries the
+  // relationship, so it is asserted by the name a group is announced under, not by the markup.
+  test("the numbers of one curve are fenced together under a name", () => {
+    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    for (const [legend, count] of [
+      [/^arena$/i, 2],
+      [/^nest period$/i, 3],
+      [/^wave size$/i, 3],
+      [/^elite share$/i, 2],
+    ] as const) {
+      const group = screen.getByRole("group", { name: legend });
+      expect(within(group).getAllByRole("spinbutton")).toHaveLength(count);
+    }
+  });
+
+  // The fence must not reorder the form: the order is the settings' own, so a knob added to the middle
+  // of a group later lands where the settings put it rather than where the screen's markup would.
+  test("fencing leaves the controls in the order the settings give them", () => {
+    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    expect(controls().map((i) => i.name)).toEqual(worldKnobs().map((k) => k.path));
+  });
+
+  // `aria-invalid` alone announces "invalid entry" and leaves the why to be guessed. The server
+  // refuses a payload whole rather than clamping it (ADR 0006), so the bounds are said in full — and
+  // said on the page, so a sighted host reads the same reason a screen reader is given.
+  test("a refused figure says why, and the field points at the saying", () => {
+    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    const nests = screen.getByRole("spinbutton", { name: /^nests$/i }) as HTMLInputElement;
+    fireEvent.change(nests, { target: { value: String(ceilingOf("nestCount") + 1) } });
+
+    const saying = nests.getAttribute("aria-describedby");
+    expect(saying).toBeTruthy();
+    const said = document.getElementById(saying as string);
+    expect(said?.textContent ?? "").toContain(String(ceilingOf("nestCount")));
+    expect(said?.textContent ?? "").not.toBe("");
+  });
+
+  // Nothing is said about a field that is merely unfinished — a half-typed number is not yet wrong,
+  // and announcing a reason for it would be noise on every keystroke.
+  test("a half-typed figure is pointed at no saying at all", () => {
+    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    const nests = screen.getByRole("spinbutton", { name: /^nests$/i }) as HTMLInputElement;
+    fireEvent.change(nests, { target: { value: "" } });
+    expect(nests.getAttribute("aria-describedby")).toBeNull();
+    expect(screen.queryByText(/must be/i)).toBeNull();
+  });
 });
