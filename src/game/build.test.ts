@@ -313,6 +313,45 @@ describe("admitMine", () => {
   });
 });
 
+// #96: income is structural rather than manual. Hand-mining used to be twice a miner; it is now
+// half of one. Both sides of the comparison are run through the real paths and the same
+// `creditMetal`, so what is asserted is the ratio the bank is actually paid over one held stretch —
+// not two constants divided by each other.
+describe("#96: a standing miner out-earns a hand-miner two to one", () => {
+  const ore = generateOre(ARENA, SEED);
+  const metal = untileKey([...ore.entries()].find(([, kind]) => kind === "metal")?.[0] as number);
+  const HELD_MS = 10_000;
+  const TICK_MS = 50; // the sim's own 20 Hz tick
+
+  // One player holding the button for the whole stretch, reporting at the honest cadence.
+  function byHand(): number {
+    const guard = freshMineGuard();
+    const build = freshBuildState(ARENA);
+    for (let t = 0; t <= HELD_MS; t += MINE_CADENCE_MS) {
+      creditMetal(build, admitMine(guard, { tile: metal, seq: t + 1 }, tileOrigin(metal), ore, t));
+    }
+    return build.bank.metal;
+  }
+
+  // One miner standing on the same ore for the same stretch. Measured as a delta so the Metal it
+  // cost to put up is not counted as income.
+  function byMiner(): number {
+    const build = freshBuildState(ARENA);
+    const spec = BUILDABLES.miner as BuildableSpec;
+    build.bank.metal = spec.cost;
+    placeStructure(build, "miner", metal, spec);
+    const before = build.bank.metal;
+    for (let t = 0; t < HELD_MS; t += TICK_MS) stepBuild(build, TICK_MS);
+    return build.bank.metal - before;
+  }
+
+  test("over the same ten seconds, the miner banks exactly twice what the digging does", () => {
+    const hand = byHand();
+    expect(hand).toBeGreaterThan(0);
+    expect(byMiner()).toBe(2 * hand);
+  });
+});
+
 describe("the buildable registry", () => {
   test("the bar has four slots in a fixed order, so 1–4 always mean the same thing", () => {
     expect(BUILD_SLOTS).toEqual(["miner", "wall", "turret", "generator"]);
