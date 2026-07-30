@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { MINIMAP_COVERAGE_U, MINIMAP_COVERAGE_WIDE_U } from "../src/game/minimap";
 import { concurrentBursts } from "./burst-ink";
 import { entrySource, parseArgs } from "./frame-budget";
+import { concurrentLettering } from "./lettering-ink";
 import { concurrentPuffs } from "./puff-ink";
 
 describe("parseArgs", () => {
@@ -123,5 +124,32 @@ describe("entrySource", () => {
     const source = entrySource(parseArgs([]));
     expect(source).toContain("puffsMs");
     expect(source).toContain("150: +puffs(150)");
+  });
+
+  // #79's words are the one layer that cannot be added by handing `drawWorld` another list: a word
+  // rides #115's and #116's marks, so the only way to draw the frame without it is to take the art
+  // away. Get this wrong and the lettering row is the puff row measured twice.
+  test("isolates the lettering layer by taking the art away, not by adding a list", () => {
+    const source = entrySource(parseArgs([]));
+    // Matched as a statement rather than as a substring: a commented-out `delete` still contains
+    // the words, and the layer would then be the puff layer measured twice under another name.
+    expect(source).toMatch(/^\s*delete unlettered\.lettering;$/m);
+    expect(source).toContain("const withLettering = { ...withPuffs, sprites: lettered }");
+    // Three: the layer is timed lettered, the blits and bars are counted on the lettered frame, and
+    // the screenshot is the lettered frame. Counted, because the timing call alone passing is exactly
+    // how a report comes to quote a word count off a frame that had no words in it.
+    expect(source.split("drawWorld(ctx, full, withLettering)").length - 1).toBe(3);
+    // The count is derived from the cadences that actually fire, not chosen here
+    // (`lettering-ink.ts`), and it is the two mark counts added because a word rides both.
+    expect(source).toContain(`const LETTERING = ${concurrentLettering()};`);
+  });
+
+  // A blit is priced by its pixels where a stroke is priced by its pieces, so the lettering cannot be
+  // read off either ladder beside it. It is also the only mark that fires on both events.
+  test("prices the words on their own, through the shipped cache and the shipped rule", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("letteringMs");
+    expect(source).toContain("150: +words(150)");
+    expect(source).toContain('lettered("lettering", letteringAt(m.pos, m.at), 0)');
   });
 });

@@ -9,11 +9,26 @@ import type {
   WorldSnapshot,
 } from "../lobby/protocol";
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
+import lettering from "../sprite/lettering";
 import type { SpriteName } from "../sprite/registry";
 import { tileKey, tileOf } from "./build";
 import type { Camera, Viewport } from "./camera";
-import { DEATH_RETENTION_MS, HIT_FLASH_MS, type Mark } from "./clientWorld";
-import { BURST_MS, drawWorld, grassAt, PUFF_MS, type ShotSource } from "./draw";
+import {
+  ClientWorld,
+  DEATH_RETENTION_MS,
+  ENEMY_RENDER_DELAY_MS,
+  HIT_FLASH_MS,
+  type Mark,
+} from "./clientWorld";
+import {
+  BURST_MS,
+  type DrawOptions,
+  drawWorld,
+  grassAt,
+  letteringAt,
+  PUFF_MS,
+  type ShotSource,
+} from "./draw";
 import { ELITE_RADIUS, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, type MetalFloat } from "./floats";
 import { inkPuff, speedLines, starburst } from "./fx";
@@ -1749,6 +1764,191 @@ describe("the ink puff on death", () => {
     const bodies = ctx.calls.map((c) => c.fn).lastIndexOf("drawImage");
     expect(bodies).toBeGreaterThan(-1);
     expect(ctx.calls.map((c) => c.fn).indexOf("stroke")).toBeGreaterThan(bodies);
+  });
+});
+
+// #79: a hand-lettered word popping over a hit and over a death, in the style of the era. The render
+// layer holds no state here either, and it holds no *lifetime* either: the word rides the very marks
+// #115's burst and #116's puff already ride, so it is judged on the delayed clock the spiders are
+// drawn against without this layer ever seeing that delay.
+//
+// What is left to pin is that the word is a **blit** and not a written word, that it is aimed at the
+// mark, that it keeps off the one damage readout the game has, and that the word a mark gets is the
+// same word every frame it is up.
+describe("the lettered word over a hit and a death", () => {
+  const MARK: Vec2 = { x: 1_300, y: 1_200 };
+  const spiders: WorldSnapshot = {
+    ...world,
+    players: [],
+    nests: [],
+    structures: [],
+    enemies: [{ ...POSE, id: "e1", kind: "grunt", pos: MARK, radius: 16, hp: 12 }],
+  };
+  const sprites = stubSprites({ grunt: 32, lettering: lettering.size });
+  const frame = (options: Partial<DrawOptions> = {}, patch: Partial<WorldSnapshot> = {}) => {
+    const ctx = spyCtx();
+    drawWorld(
+      ctx,
+      { ...spiders, ...patch },
+      {
+        camera,
+        viewport,
+        now: 1_000,
+        sprites,
+        ...options,
+      },
+    );
+    return ctx;
+  };
+  const words = (ctx: { calls: Call[] }) =>
+    blits(ctx).filter((b) => b.tag.startsWith("lettering/"));
+
+  test("blits a word centred on the blow when a shot connects", () => {
+    const drawn = words(frame({ bursts: [{ pos: MARK, at: 900 }] }));
+    expect(drawn.length).toBe(1);
+    expect({ x: drawn[0].x, y: drawn[0].y, width: drawn[0].width }).toEqual({
+      x: MARK.x - lettering.size / 2,
+      y: MARK.y - lettering.size / 2,
+      width: lettering.size,
+    });
+  });
+
+  // The other half of the ask, and the half that has no burst of its own to sit on: a death is
+  // #116's mark, and the word rides it exactly as it rides a hit's.
+  test("blits one where an enemy died as well", () => {
+    expect(words(frame({ puffs: [{ pos: MARK, at: 900 }] })).length).toBe(1);
+    expect(
+      words(frame({ bursts: [{ pos: MARK, at: 900 }], puffs: [{ pos: MARK, at: 900 }] })).length,
+    ).toBe(2);
+  });
+
+  // **The Verify box ADR 0001's grant turns on.** The exception is for four drawings, not for a
+  // typeface in the arena, so a lettered frame has to add no text draw at all — counted against the
+  // same frame without the marks rather than asserted flat, because a player's name is written in
+  // every frame and is on the allowlist already.
+  test("adds no text draw to the world pass: the word is a bake, never a writing", () => {
+    const wrote = (ctx: { calls: Call[] }) =>
+      worldCalls(ctx).filter((c) => c.fn === "fillText" || c.fn === "strokeText").length;
+    const lettered = frame({ bursts: [{ pos: MARK, at: 900 }], puffs: [{ pos: MARK, at: 940 }] });
+    expect(words(lettered).length).toBe(2);
+    expect(wrote(lettered)).toBe(wrote(frame()));
+  });
+
+  // A word that changed between frames would flicker through the whole set over its own lifetime,
+  // and one word for every mark would be a set of four wearing one label. Both are properties of
+  // `letteringAt`, so both are pinned on it rather than on a frame.
+  test("gives one mark one word for as long as it is up, and does not give every mark the same one", () => {
+    expect(letteringAt(MARK, 900)).toBe(letteringAt({ ...MARK }, 900));
+    // Both halves of the mark have to reach the word, and each is the case the other cannot cover.
+    // Every hit in one delta shares an `at` (`ClientWorld.applyMapDelta`), so a word off the instant
+    // alone letters a whole wave identically; and one mark keeps its position for its whole life
+    // while `at` never moves, so a word off the position alone letters every blow on one spider the
+    // same. Counted in words rather than in hashes — the wrap is what the player sees.
+    const across = new Set<number>();
+    const over = new Set<number>();
+    for (let i = 0; i < 200; i++) {
+      across.add(letteringAt({ x: 1_000 + i * 7, y: 1_200 - i * 3 }, 900) % lettering.facings);
+      over.add(letteringAt(MARK, 900 + i * 50) % lettering.facings);
+    }
+    expect(across.size).toBe(lettering.facings);
+    expect(over.size).toBe(lettering.facings);
+  });
+
+  // Hits and deaths stream for the whole arena rather than for the part of it the camera is over, so
+  // most of a wave's words belong to a fight nobody is watching. Culled before the sprite is asked
+  // for (rule 3).
+  test("blits nothing for a mark the camera cannot see", () => {
+    const away = { pos: { x: 9_000, y: 9_000 }, at: 900 };
+    expect(words(frame({ bursts: [away], puffs: [away] }))).toEqual([]);
+  });
+
+  // Not "no blit" but *no call*: a frame in which nothing was hit and nothing died has to be the
+  // identical frame to one that has never heard of lettering at all. Held against two frames rather
+  // than one, because they close different holes — a mark list the layer was never given, and the art
+  // being absent from the registry. A layer that opened a path or set a style before finding it had
+  // nothing to draw would pass the first and fail the second.
+  test("costs the frame nothing at all when nothing has been hit or died", () => {
+    const empty = frame({ bursts: [], puffs: [] }).calls.map((c) => c.fn);
+    expect(empty).toEqual(frame().calls.map((c) => c.fn));
+    const unlettered = spyCtx();
+    drawWorld(unlettered, spiders, {
+      camera,
+      viewport,
+      now: 1_000,
+      sprites: stubSprites({ grunt: 32 }),
+      bursts: [],
+      puffs: [],
+    });
+    expect(empty).toEqual(unlettered.calls.map((c) => c.fn));
+  });
+
+  // The one thing this layer must never fall back to. Every other entity keeps the M2 shape it drew
+  // before its sprite landed; a word has no shape, and the shape it would reach for is `fillText`.
+  test("draws nothing at all when the art has not landed", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, spiders, {
+      camera,
+      viewport,
+      now: 1_000,
+      sprites: stubSprites({ grunt: 32 }),
+      bursts: [{ pos: MARK, at: 900 }],
+      puffs: [{ pos: MARK, at: 900 }],
+    });
+    expect(words(ctx)).toEqual([]);
+    expect(ctx.calls.filter((c) => c.fn === "fillText")).toEqual([]);
+  });
+
+  // Over the Y-sort, like a shot line, a burst and a puff: the word is about an event rather than a
+  // thing standing on the floor, and one sorted in behind the spider it belongs to says nothing.
+  test("is blitted over the bodies, never sorted among them", () => {
+    const ctx = frame({ bursts: [{ pos: MARK, at: 900 }] });
+    const tags = blits(ctx).map((b) => b.tag);
+    expect(tags.lastIndexOf("grunt/2/0")).toBeLessThan(
+      tags.findIndex((t) => t.startsWith("lettering/")),
+    );
+  });
+
+  // The box is derived from this and nothing else (`src/sprite/lettering.ts`). A damaged spider
+  // carries the game's only damage readout directly above its sprite (#81), and the word is struck
+  // centred on the blow — so a box any taller would cover the bar at the moment it is being read.
+  // #115 could put its long spikes on the diagonal; a blitted box has no diagonal to hide in.
+  test("stops short of the health bar over the spider it belongs to", () => {
+    const ctx = frame({ bursts: [{ pos: MARK, at: 900 }] });
+    const bar = ctx.calls.find((c) => c.fn === "fillRect" && c.args[3] === 4);
+    const under = (bar?.args[1] as number) + (bar?.args[3] as number);
+    expect(bar).toBeDefined();
+    expect(words(ctx)[0].y).toBeGreaterThanOrEqual(under);
+  });
+
+  // The whole of the ticket's "timed against the rendered sprite, not the raw event" box, end to end
+  // through the class that owns the clock. A hit rides the 20 Hz tick while the spider it belongs to
+  // is `ENEMY_RENDER_DELAY_MS` behind it, so a word stamped on arrival would pop before the drawing
+  // it is about. It rides `impactMarks`, which is what holds it back.
+  test("is held back until the spider it belongs to has caught up with the blow", () => {
+    const at = 5_000;
+    const client = new ClientWorld(
+      {
+        arena: { width: 31_200, height: 31_200 },
+        exit: { x: 0, y: 100, width: 18, height: 96 },
+        spawns: [{ id: "self", slot: 1, name: "Me", pos: MARK }],
+        nestSeed: 7,
+        oreSeed: 1,
+      },
+      "self",
+    );
+    client.applyMapDelta(
+      { tick: 1, moves: [], spawns: [{ id: "e9", kind: "grunt", hp: 12, pos: MARK }] },
+      at,
+    );
+    client.applyMapDelta(
+      { tick: 2, moves: [["e9", MARK.x, MARK.y]], hits: [{ id: "e9", hp: 6 }] },
+      at,
+    );
+    const lettered = (now: number) =>
+      words(frame({ bursts: client.impactMarks(now, BURST_MS), now }));
+    expect(lettered(at)).toEqual([]);
+    expect(lettered(at + ENEMY_RENDER_DELAY_MS).length).toBe(1);
+    expect(lettered(at + ENEMY_RENDER_DELAY_MS + BURST_MS)).toEqual([]);
   });
 });
 

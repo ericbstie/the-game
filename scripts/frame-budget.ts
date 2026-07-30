@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import { MINIMAP_COVERAGE_U } from "../src/game/minimap";
 import { concurrentBursts } from "./burst-ink";
 import { capture, measurementsIn } from "./headless";
+import { concurrentLettering } from "./lettering-ink";
 import { concurrentPuffs } from "./puff-ink";
 
 // Measure the worst frame the game can be asked to draw, layer by layer, through the shipped
@@ -82,12 +83,14 @@ export interface BudgetResult {
   floats: number;
   bursts: number;
   puffs: number;
+  lettering: number;
   layers: Record<string, number>;
   ySortMs: number;
   healthBarsMs: Record<string, number>;
   shotLinesMs: Record<string, number>;
   burstsMs: Record<string, number>;
   puffsMs: Record<string, number>;
+  letteringMs: Record<string, number>;
 }
 
 export function entrySource(request: BudgetRequest): string {
@@ -105,6 +108,7 @@ import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { ENEMY_CAP } from ${JSON.stringify(ENEMIES_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
 import { inkPuff, speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
+import { letteringAt } from ${JSON.stringify(DRAW_MODULE)};
 
 const VIEW = { width: 800, height: 600 };
 const DPR = ${request.dpr};
@@ -122,6 +126,9 @@ const BURSTS = ${concurrentBursts()};
 // #116's puffs, derived the same way and off the other side of the same split: \`reapDamage\` reports
 // a killing connect as a death, so the shots into one grunt burst many times and puff once.
 const PUFFS = ${concurrentPuffs()};
+// #79's lettered words, which ride the two mark lists above rather than a list of their own — so the
+// count is one word per mark of either kind, and it is derived from the same arithmetic they are.
+const LETTERING = ${concurrentLettering()};
 
 // Deterministic, so two runs of this script compare to each other.
 function rng(seed) {
@@ -210,7 +217,16 @@ function measure(fn, iters = ITERS) {
 }
 
 try {
-  const sprites = createSpriteCache({ ...SPRITES, ${table} }).source(DPR);
+  // Two sources over the same subjects, because #79's words are the one layer that cannot be added
+  // by handing drawWorld another list: a word rides #115's and #116's marks, so the only way to
+  // measure the frame without it is to take the art away. Every row up to "+ the puffs" therefore
+  // draws through a set with no lettering entry — where drawWorld falls back to nothing at all — and
+  // the last row draws through the whole registry.
+  const subjects = { ...SPRITES, ${table} };
+  const lettered = createSpriteCache(subjects).source(DPR);
+  const unlettered = { ...subjects };
+  delete unlettered.lettering;
+  const sprites = createSpriteCache(unlettered).source(DPR);
   const setup = () => ctx.setTransform(DPR, 0, 0, DPR, -CAM.x * DPR, -CAM.y * DPR);
   const opts = { selfId: "p0", camera: CAM, viewport: VIEW, dpr: DPR, now: 1000, sprites, minimapCoverage: ${request.map} };
 
@@ -263,6 +279,10 @@ try {
   };
   const withPuffs = { ...withBursts, puffs: puffMarks(PUFFS) };
 
+  // #79's words, on exactly the marks the two layers above already carry. Nothing is added to the
+  // frame but the art itself, which is what makes this row the cost of the lettering and nothing else.
+  const withLettering = { ...withPuffs, sprites: lettered };
+
   // Whichever layer is measured first otherwise absorbs the canvas's one-time setup and reads two
   // to three times its true cost. Spend it here, on a result nobody reads.
   measure(() => { setup(); drawWorld(ctx, full, m5); }, 10);
@@ -275,6 +295,7 @@ try {
   const floatsMs = measure(() => { setup(); drawWorld(ctx, full, withFloats); });
   const burstsMs = measure(() => { setup(); drawWorld(ctx, full, withBursts); });
   const puffsMs = measure(() => { setup(); drawWorld(ctx, full, withPuffs); });
+  const letteringMs = measure(() => { setup(); drawWorld(ctx, full, withLettering); });
 
   let blits = 0;
   let bars = 0;
@@ -286,7 +307,7 @@ try {
   ctx.stroke = (...args) => { lines++; rawStroke(...args); };
   ctx.fillRect = (...args) => { if (args[3] === 4) bars++; rawFill(...args); };
   setup();
-  drawWorld(ctx, full, withPuffs);
+  drawWorld(ctx, full, withLettering);
   ctx.drawImage = raw;
   ctx.stroke = rawStroke;
   ctx.fillRect = rawFill;
@@ -355,6 +376,22 @@ try {
     });
   };
 
+  // The words (#79), blitted the way drawLettering blits them: one baked sprite a mark, centred on
+  // it, out of the shipped cache. **The one mark in the frame that is a blit rather than a stroke**,
+  // so it is the one whose cost the frame budget's rule 1 says nothing about — a blit is charged for
+  // its pixels and a stroke for its pieces. Priced at a wave clear's counts as well as at the one the
+  // cadences average to, because both events letter and a clear lands many of them at once.
+  const words = (n) => {
+    const marks = [...burstMarks(n), ...puffMarks(n)].slice(0, n);
+    return measure(() => {
+      setup();
+      for (const m of marks) {
+        const s = lettered("lettering", letteringAt(m.pos, m.at), 0);
+        ctx.drawImage(s.image, m.pos.x - s.size / 2, m.pos.y - s.size / 2, s.size, s.size);
+      }
+    });
+  };
+
   const result = {
     standing: full.enemies.length + STRUCTURES + full.players.length + full.nests.length,
     blits,
@@ -363,6 +400,7 @@ try {
     floats: floats.length,
     bursts: BURSTS,
     puffs: PUFFS,
+    lettering: LETTERING,
     layers: {
       paper: +paperMs.toFixed(3),
       floor: +floorMs.toFixed(3),
@@ -371,17 +409,19 @@ try {
       floats: +floatsMs.toFixed(3),
       bursts: +burstsMs.toFixed(3),
       puffs: +puffsMs.toFixed(3),
+      lettering: +letteringMs.toFixed(3),
     },
     ySortMs: +ySortMs.toFixed(4),
     healthBarsMs: { 60: +healthBars(60).toFixed(3), 240: +healthBars(240).toFixed(3) },
     shotLinesMs: { 10: +shotLines(10).toFixed(3), 25: +shotLines(25).toFixed(3), 50: +shotLines(50).toFixed(3), 150: +shotLines(150).toFixed(3) },
     burstsMs: { [BURSTS]: +bursts(BURSTS).toFixed(3), 25: +bursts(25).toFixed(3), 50: +bursts(50).toFixed(3), 150: +bursts(150).toFixed(3) },
     puffsMs: { [PUFFS]: +puffs(PUFFS).toFixed(3), 25: +puffs(25).toFixed(3), 50: +puffs(50).toFixed(3), 150: +puffs(150).toFixed(3) },
+    letteringMs: { [LETTERING]: +words(LETTERING).toFixed(3), 25: +words(25).toFixed(3), 50: +words(50).toFixed(3), 150: +words(150).toFixed(3) },
   };
 
   // Drawn last so the screenshot is the frame that was measured, not the final probe.
   setup();
-  drawWorld(ctx, full, withPuffs);
+  drawWorld(ctx, full, withLettering);
   document.getElementById("measurements").textContent = JSON.stringify(result);
 } catch (e) {
   document.getElementById("measurements").textContent = JSON.stringify({ error: String(e && e.stack || e) });
@@ -412,7 +452,7 @@ if (import.meta.main) {
   const share = (ms: number) => `${((ms / FRAME_MS) * 100).toFixed(1)}%`;
   console.log(request.out);
   console.log(
-    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} stroked paths, ${r.floats} miner floats, ${r.bursts} impact bursts, ${r.puffs} death puffs, dpr ${request.dpr}`,
+    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} stroked paths, ${r.floats} miner floats, ${r.bursts} impact bursts, ${r.puffs} death puffs, ${r.lettering} lettered words, dpr ${request.dpr}`,
   );
   console.log(`corner map  ${request.map} u across`);
   console.log(
@@ -428,17 +468,19 @@ if (import.meta.main) {
   console.log(`  + the shot lines    ${r.layers.m5.toFixed(3)} ms`);
   console.log(`  + the miner floats  ${r.layers.floats.toFixed(3)} ms`);
   console.log(`  + the bursts        ${r.layers.bursts.toFixed(3)} ms`);
+  console.log(`  + the puffs         ${r.layers.puffs.toFixed(3)} ms`);
   console.log(
-    `  + the puffs         ${r.layers.puffs.toFixed(3)} ms   ${share(r.layers.puffs)} of a 16.67 ms frame`,
+    `  + the lettering     ${r.layers.lettering.toFixed(3)} ms   ${share(r.layers.lettering)} of a 16.67 ms frame`,
   );
   console.log("");
   console.log(`  y-sort alone        ${(r.ySortMs * 1000).toFixed(1)} us`);
   console.log(`  shot lines (150)    ${r.shotLinesMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log(`  bursts (150)        ${r.burstsMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log(`  puffs (150)         ${r.puffsMs[150].toFixed(3)} ms   standalone, for scale`);
+  console.log(`  lettering (150)     ${r.letteringMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log("");
   console.log(`Worst case, measured through the shipped drawWorld`);
   console.log(
-    `  ${r.layers.puffs.toFixed(2)} ms   ${share(r.layers.puffs)}   headroom ${(FRAME_MS - r.layers.puffs).toFixed(2)} ms`,
+    `  ${r.layers.lettering.toFixed(2)} ms   ${share(r.layers.lettering)}   headroom ${(FRAME_MS - r.layers.lettering).toFixed(2)} ms`,
   );
 }
