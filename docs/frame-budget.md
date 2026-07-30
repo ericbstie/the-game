@@ -32,6 +32,12 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > an order of magnitude rarer than hits. It is nonetheless the **dearest mark in the frame per unit**,
 > which is a correction to rule 1 rather than a cost. See
 > [What a death puff costs](#what-a-death-puff-costs-116).
+>
+> [#125](https://github.com/ericbstie/the-game/issues/125) has raised `ENEMY_CAP` from 240 to 500, so
+> **the enemy count in every figure below is no longer the cap**. It is worth **+2.40 ms** measured on
+> an isolated probe — the largest single addition to this frame since the page was written, and the
+> only one set by a constant rather than by a cadence. See
+> [What ENEMY_CAP 500 costs](#what-enemy_cap-500-costs-125).
 
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
 6.3 ms — 38% of it, leaving 10.4 ms of headroom.**
@@ -40,7 +46,8 @@ That is the **median of eleven runs** on an idle machine: 6.27 ms, spread 6.09�
 mean is the worse statistic here — one run of the eleven read 7.76 ms on its own and drags it — and
 a run taken while the machine was under load read 6.83 ms and is not in the set at all.
 
-The worst case is not hypothetical: 240 enemies (`ENEMY_CAP`, the hard governor), 40 structures,
+The worst case is not hypothetical: 240 enemies (`ENEMY_CAP` as it stood; #125 has since raised it to
+500 — see [What ENEMY_CAP 500 costs](#what-enemy_cap-500-costs-125)), 40 structures,
 6 players and 4 nests, *all inside the viewport so nothing is culled*, over the full grass-and-ore
 floor, everything standing passing through the Y-sort — and every one of them damaged, so every one
 of them carries a bar. The script reports it as **290 standing entities, 847 blits, 286 health bars,
@@ -408,6 +415,49 @@ before-and-after pair means anything:
 
 Every one of those differences is inside the ±15% run-to-run variance this page warns about. The
 right reading is *unchanged*, not *cheaper*.
+
+## What ENEMY_CAP 500 costs (#125)
+
+**Raising the governor from 240 to 500 adds 2.40 ms to the frame.** That is 260 more spiders, each
+one a blit and a bar, and it is the only thing on this page whose cost is set by a constant rather
+than by a cadence.
+
+It was asked for by [#111](https://github.com/ericbstie/the-game/issues/111) as the main engineering
+risk of the wave rework, and [#125](https://github.com/ericbstie/the-game/issues/125) shipped it, so
+**every figure above marked "240 enemies" was measured at a cap the game no longer has.**
+
+### The figure comes from an isolated probe, not from the whole-frame instrument
+
+The whole-frame instrument cannot see a 2.4 ms layer on the container this was measured on. Four
+alternating runs read **15.12 / 14.16 / 14.08 ms at 240** against **17.21 / 14.40 / 15.98 ms at
+500** — overlapping ranges — and two of those runs printed a superset layer *cheaper* than the layer
+it contains (`+ the bursts` under `+ the miner floats`, `+ the puffs` under `+ the bursts`). That is
+the same failure the floats row above documents, and it is why the number quoted is from a probe
+that measures the entity layer and nothing else, **interleaved inside one browser launch** so drift
+lands on both counts equally:
+
+| | median of 9 rounds | the entity layer |
+| --- | ---: | ---: |
+| 6 players, no enemies | 2.028 ms | — |
+| + 240 enemies | 4.648 ms | 2.620 ms |
+| + 500 enemies | 7.052 ms | 5.023 ms |
+| **what the cap raise costs** | | **+2.403 ms** |
+
+**All nine rounds ordered correctly** — bare under 240 under 500, with no crossing — which is the
+property the whole-frame runs could not manage. Per enemy it is 10.9 µs at 240 and 10.0 µs at 500:
+**linear in the count**, as a layer of independent blits and bars has to be. The Y-sort goes with it
+and stays free — 72–81 µs at 240, 133–139 µs at 500.
+
+### What it does not tell you
+
+**Do not add 2.40 ms to the 6.3 ms headline.** This container reads **15.12 ms at cap 240** where
+that headline reads 6.3, so it is roughly 2.4× slower on this frame and its deltas are inflated by
+about as much. Scaled by that ratio the cap raise is worth **~1 ms** on the machine the headline was
+taken on. Both numbers are honest; neither may be added to the other. Re-run
+`bun run frame:budget` on an idle machine before quoting a total.
+
+`bun run sprite:frame` was run too and is unaffected: it draws the demo world, reports **349 blits**
+and no timing at all, so it cannot price a cap and is not a substitute for the probe above.
 
 ## The rules
 
