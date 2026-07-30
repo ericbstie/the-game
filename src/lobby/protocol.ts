@@ -3,6 +3,12 @@
 // family is one union so TypeScript narrows each case exactly. Protocol version is
 // connection-scoped, negotiated once at the WS upgrade (`/ws?v=1`), never per-frame.
 
+// The one game module this contract names, and only because the wire now carries the world's knobs
+// (#128). What a legal knob value is belongs with the knobs themselves, so the narrowing below
+// delegates to `parseWorldSettings` rather than restating ten fields here. The edge is one-way at
+// runtime: `worldSettings.ts` imports nothing from here but the `Arena` type, which is erased.
+import { parseWorldSettings, type WorldSettings } from "../game/worldSettings";
+
 export const PROTOCOL_VERSION = 1;
 export const WS_PATH = "/ws";
 
@@ -134,6 +140,15 @@ export interface WorldInit {
   // And the seed both sides expand into the nest layout (ADR 0004). Its own number rather than a
   // reuse of `oreSeed`, so retuning ore generation cannot silently move all fifty nests.
   nestSeed: number;
+  // The knobs the server built this world from (#128). Here because the two seeds above are
+  // expanded on both sides: settings the client never saw would make it build a different ore grid
+  // and a different nest layout from the same seeds, and neither has a field to compare afterwards.
+  //
+  // Required, not optional: an init that omits them is unrepresentable, so "what does an absent
+  // payload mean" is a question this side of the wire never has to answer. `arena` appears here as
+  // well as above because it is a knob like any other — `generateWorld` reads the box off these
+  // settings, so the two cannot disagree.
+  settings: WorldSettings;
 }
 
 // --- Dynamic enemies & combat (Milestone 3) ---
@@ -346,6 +361,15 @@ export type LeaveLobby = Envelope<"lobby/leave">;
 // the server relays them, never re-simulates them). `seq` is monotonic per player so a
 // stale/out-of-order frame is dropped.
 export type StartGame = Envelope<"game/start">;
+// The knobs the next match is built from (#128). Host-only, enforced server-side exactly as
+// `game/start` is: the server generates the world for the whole squad, so it is the only thing that
+// decides what a squad plays and a non-host asking changes nothing. It only ever decides the *next*
+// match — the world is generated once at `game/start` and re-sent verbatim from then on.
+//
+// The whole object every time rather than one knob at a time. There is nothing to merge, so a
+// repeat of the same message is a no-op and a lost one costs the sender nothing beyond re-sending;
+// and no `seq`, on `game/forge`'s reasoning — the message carries no state that could arrive stale.
+export type SetWorldSettings = Envelope<"game/settings", { settings: WorldSettings }>;
 export type GamePos = Envelope<"game/pos", { pos: Vec2; seq: number }>;
 // A reported player shot (M3, single-weapon since M4): the client fires and reports it; the
 // server validates (cadence + loose range + seq) and applies the damage — enemy HP is never
@@ -373,6 +397,7 @@ export type ClientMessage =
   | JoinLobby
   | LeaveLobby
   | StartGame
+  | SetWorldSettings
   | GamePos
   | GameAttack
   | GameHealth
@@ -513,6 +538,13 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       return { type: "lobby/leave" };
     case "game/start":
       return { type: "game/start" };
+    case "game/settings": {
+      // Refused whole rather than repaired: see `parseWorldSettings`. A refusal here answers
+      // `lobby/error: invalid` and leaves the session's settings untouched.
+      const settings = parseWorldSettings(msg.settings);
+      if (settings === null) return null;
+      return { type: "game/settings", settings };
+    }
     case "game/pos": {
       const pos = asVec2(msg.pos);
       if (pos === null || !isFiniteNumber(msg.seq)) return null;

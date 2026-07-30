@@ -7,17 +7,22 @@ import {
   generateOre,
   HAND_MINE_RATE,
   MINE_CADENCE_MS,
+  type OreGrid,
+  TILE,
   TURRET_CADENCE_MS,
   TURRET_DAMAGE,
   TURRET_RANGE,
   tileCenter,
+  tileFromKey,
+  tileKey,
   tileOf,
 } from "../game/build";
+import { ClientWorld } from "../game/clientWorld";
 import { ATTACK_POS_TOLERANCE, type Nest, nestLayout, RANGED_CADENCE_MS } from "../game/enemies";
 import { ARENA } from "../game/world";
-import { DEFAULT_WORLD_SETTINGS } from "../game/worldSettings";
+import { DEFAULT_WORLD_SETTINGS, type WorldSettings } from "../game/worldSettings";
 import { type LobbyConfig, LobbyHub, livePlayers, type Transport } from "./lobby";
-import type { EnemySpawn, Exit, ServerMessage, Tile, Vec2 } from "./protocol";
+import type { Arena, EnemySpawn, Exit, ServerMessage, Tile, Vec2 } from "./protocol";
 import type { LobbyServer } from "./server";
 import {
   expectMessage,
@@ -2510,4 +2515,224 @@ describe("#93: finding the door", () => {
     expect(keyframeFor(t, "s9")).not.toHaveProperty("exitRevealed");
     hub.dispose();
   });
+});
+
+// #128. The host picks the world and the server builds it, but the client has to expand two seeds
+// into the same ore and the same nests — so the settings themselves have to reach it (ADR 0004).
+describe("#128: the world's settings ride WorldInit", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+
+  // A whole world nobody ships: every one of the ten knobs is off its default, so an assertion that
+  // a world was built at these settings cannot be satisfied by a world built at the defaults. The
+  // counts are small to keep the generators quick, and the arena stays wide enough that the nest
+  // band (`NEST_BAND_INNER` at 3,600 u) still fits inside it.
+  const CHOSEN: WorldSettings = {
+    arena: { width: 20_000, height: 20_000 },
+    metalPatches: 12,
+    powerPatches: 3,
+    oreEdgeBias: 1.5,
+    nestCount: 6,
+    nestEdgeBias: 2,
+    enemyCap: 9,
+    nestPeriod: { startMs: 20_000, fallMs: 2_000, floorMs: 4_000 },
+    waveSize: { start: 2, growth: 2, max: 6 },
+    eliteShare: { ptsPerMin: 10, max: 0.5 },
+  };
+
+  const created = (t: Capture) =>
+    t.sent[0].msg as Extract<ServerMessage, { type: "lobby/created" }>;
+  const initFor = (t: Capture, socketId: string) => {
+    const found = t.sent.find(
+      (m) => m.socketId === socketId && m.msg.type === "game/world-init",
+    )?.msg;
+    if (!found) throw new Error(`no world-init reached ${socketId}`);
+    return expectMessage(found, "game/world-init").init;
+  };
+
+  // A two-player lobby, not yet started: s1 hosts, s2 joined.
+  function lobby() {
+    const t = new Capture();
+    const hub = new LobbyHub(t, { tickMs: 50, scheduler: new ManualScheduler() });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));
+    hub.handleMessage(
+      "s2",
+      JSON.stringify({ type: "lobby/join", code: created(t).code, name: "Ben" }),
+    );
+    return { t, hub, code: created(t).code };
+  }
+
+  test("a match built at the defaults says so on the wire", () => {
+    const { t, hub } = lobby();
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    expect(initFor(t, "s2").settings).toEqual(DEFAULT_WORLD_SETTINGS);
+    hub.dispose();
+  });
+
+  test("the host's choice is what the squad is handed", () => {
+    const { t, hub } = lobby();
+    hub.handleMessage("s1", JSON.stringify({ type: "game/settings", settings: CHOSEN }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    expect(initFor(t, "s2").settings).toEqual(CHOSEN);
+    hub.dispose();
+  });
+
+  // The authority box. Gated at the hub and not in a UI, on the same terms `game/start` already is:
+  // a client that never draws the controls can still send the message.
+  test("a non-host asking for a different world does not get one", () => {
+    const { t, hub } = lobby();
+    hub.handleMessage("s2", JSON.stringify({ type: "game/settings", settings: CHOSEN }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    expect(initFor(t, "s2").settings).toEqual(DEFAULT_WORLD_SETTINGS);
+    hub.dispose();
+  });
+
+  test("a non-host cannot undo the host's choice either", () => {
+    const { t, hub } = lobby();
+    hub.handleMessage("s1", JSON.stringify({ type: "game/settings", settings: CHOSEN }));
+    hub.handleMessage(
+      "s2",
+      JSON.stringify({ type: "game/settings", settings: DEFAULT_WORLD_SETTINGS }),
+    );
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    expect(initFor(t, "s1").settings).toEqual(CHOSEN);
+    hub.dispose();
+  });
+
+  // A payload the server will not build a world from is refused whole, and the session keeps the
+  // world it had. Clamping would hand the squad a world the host never chose and could not see.
+  test("a hostile payload is refused whole, and changes nothing", () => {
+    const { t, hub } = lobby();
+    hub.handleMessage("s1", JSON.stringify({ type: "game/settings", settings: CHOSEN }));
+    hub.handleMessage(
+      "s1",
+      JSON.stringify({ type: "game/settings", settings: { ...CHOSEN, nestCount: 5_000_000 } }),
+    );
+    expect(t.sent.filter((m) => m.msg.type === "lobby/error")).toHaveLength(1);
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    expect(initFor(t, "s1").settings).toEqual(CHOSEN);
+    hub.dispose();
+  });
+
+  // The hazard this whole stage exists for, at settings nobody ships: the server's ore grid and its
+  // nest layout are built from the settings it announced, and a client handed that announcement
+  // builds the same two. Neither can be compared in a match — the ore never crosses the wire and a
+  // nest carries no field that would give the layout away — so it is compared here.
+  describe("server and client build one world at non-default settings", () => {
+    // A started match at `CHOSEN`, plus a late socket the hub has handed the whole world to: the
+    // world-init and, because the sim is live, the enemy keyframe carrying the server's own nests.
+    function matchAt(settings: WorldSettings, config: Partial<LobbyConfig> = {}) {
+      const t = new Capture();
+      const clock = new ManualScheduler();
+      const hub = new LobbyHub(t, { tickMs: 50, scheduler: clock, ...config });
+      hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));
+      const code = created(t).code;
+      hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "Ben" }));
+      hub.handleMessage("s1", JSON.stringify({ type: "game/settings", settings }));
+      hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+      return { t, hub, clock, code };
+    }
+
+    const keyframeFor = (t: Capture, socketId: string) => {
+      const found = t.sent.find(
+        (m) => m.socketId === socketId && m.msg.type === "game/enemy-init",
+      )?.msg;
+      if (!found) throw new Error(`no enemy-init reached ${socketId}`);
+      return expectMessage(found, "game/enemy-init");
+    };
+    const nestsOf = (nests: { id: string; pos: Vec2; hp: number }[]) =>
+      nests.map((n) => [n.id, n.pos.x, n.pos.y, n.hp]);
+
+    // The server's nests are observable: the reconnect keyframe still streams each one's position
+    // (ADR 0004 left that redundancy in place). So this compares the live sim's fifty — six, here —
+    // against the ones a client derives from nothing but the init, key for key.
+    test("the client's nests are the running sim's, nest for nest", () => {
+      const { t, hub, code } = matchAt(CHOSEN);
+      hub.handleMessage("s9", JSON.stringify({ type: "lobby/join", code, name: "Late" }));
+      const init = initFor(t, "s9");
+      const client = new ClientWorld(init, "late").snapshot(0).nests;
+      expect(client).toHaveLength(CHOSEN.nestCount);
+      expect(nestsOf(client)).toEqual(nestsOf(keyframeFor(t, "s9").nests));
+      hub.dispose();
+    });
+
+    // And the server's ore grid, which is observable only through what it admits. Two probes with
+    // opposite answers: a miner goes down on the tile only the chosen world has ore at, and is
+    // refused on the tile only the default world has ore at. A server that had quietly generated
+    // today's world would answer both the other way round.
+    test("the server mines the chosen world's ore, not the default world's", () => {
+      const { t, hub, clock } = matchAt(CHOSEN, { startingMetal: 1_000 });
+      const seed = initFor(t, "s1").oreSeed;
+      const chosen = generateOre(CHOSEN.arena, seed, CHOSEN);
+      const dflt = generateOre(CHOSEN.arena, seed, DEFAULT_WORLD_SETTINGS);
+      const onlyIn = (grid: OreGrid, notIn: OreGrid) => minerSpot(grid, notIn, CHOSEN.arena);
+
+      place(hub, "s1", onlyIn(chosen, dflt), 1);
+      place(hub, "s2", onlyIn(dflt, chosen), 2);
+      clock.advance(50);
+      const builds = deltasFor(t, "s1").flatMap((d) => d.builds ?? []);
+      expect(builds.map((b) => b.tile)).toEqual([onlyIn(chosen, dflt)]);
+      hub.dispose();
+    });
+
+    // The settings ride the keyframe because they ride the init, and the init is what a reconnecter
+    // is re-sent. A rebuilt world has to be the same world — the squad is standing in it.
+    test("a reconnecting player rebuilds the world they left", () => {
+      const { t, hub, code } = matchAt(CHOSEN);
+      const joined = t.sent.find((m) => m.socketId === "s2" && m.msg.type === "lobby/joined")?.msg;
+      if (!joined) throw new Error("Ben never joined");
+      const token = expectMessage(joined, "lobby/joined").you.token;
+      const before = new ClientWorld(initFor(t, "s2"), "ben");
+      hub.handleClose("s2");
+      hub.handleMessage("s3", JSON.stringify({ type: "lobby/join", code, name: "Ben", token }));
+      const after = new ClientWorld(initFor(t, "s3"), "ben");
+
+      expect(initFor(t, "s3").settings).toEqual(CHOSEN);
+      expect(after.ore).toEqual(before.ore);
+      expect(nestsOf(after.snapshot(0).nests)).toEqual(nestsOf(before.snapshot(0).nests));
+      expect(nestsOf(after.snapshot(0).nests)).toEqual(nestsOf(keyframeFor(t, "s3").nests));
+      hub.dispose();
+    });
+  });
+
+  const deltasFor = (t: Capture, socketId: string) =>
+    t.sent
+      .filter((m) => m.socketId === socketId && m.msg.type === "game/map-delta")
+      .map((m) => m.msg as Extract<ServerMessage, { type: "game/map-delta" }>);
+
+  // Walk a player onto a tile and place a miner there, which the hub admits only if its own grid
+  // holds metal under the footprint. One placement per socket, so no cadence is ever in play.
+  const place = (hub: LobbyHub, socketId: string, tile: Tile, seq: number) => {
+    hub.handleMessage(
+      socketId,
+      JSON.stringify({ type: "game/pos", pos: footprintCenter(tile, 2), seq }),
+    );
+    hub.handleMessage(socketId, JSON.stringify({ type: "game/build", kind: "miner", tile, seq }));
+  };
+
+  // A tile a miner can be placed on in `grid` and nowhere near ore in `without`: metal under its
+  // 2×2 footprint in the one, and not a single metal tile under it in the other. Anything less
+  // would let one grid's answer be satisfied by the other's ore.
+  function minerSpot(grid: OreGrid, without: OreGrid, arena: Arena): Tile {
+    const maxTile = Math.floor(Math.min(arena.width, arena.height) / TILE) - 2;
+    for (const key of grid.keys()) {
+      const tile = tileFromKey(key);
+      if (tile.tx < 0 || tile.ty < 0 || tile.tx > maxTile || tile.ty > maxTile) continue;
+      const footprint = [
+        tile,
+        { tx: tile.tx + 1, ty: tile.ty },
+        { tx: tile.tx, ty: tile.ty + 1 },
+        { tx: tile.tx + 1, ty: tile.ty + 1 },
+      ];
+      if (!footprint.some((f) => grid.get(tileKey(f)) === "metal")) continue;
+      if (footprint.some((f) => without.get(tileKey(f)) === "metal")) continue;
+      return tile;
+    }
+    throw new Error("the two grids share every metal tile");
+  }
 });

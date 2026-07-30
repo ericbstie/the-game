@@ -42,6 +42,7 @@ import {
   nextMinimapCoverage,
   projectRect,
 } from "./minimap";
+import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
 
 // happy-dom returns null from getContext('2d'), so the draw path is exercised against a
 // spy that records the calls and lets any property be assigned.
@@ -1933,6 +1934,7 @@ describe("the lettered word over a hit and a death", () => {
         spawns: [{ id: "self", slot: 1, name: "Me", pos: MARK }],
         nestSeed: 7,
         oreSeed: 1,
+        settings: DEFAULT_WORLD_SETTINGS,
       },
       "self",
     );

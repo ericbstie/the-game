@@ -120,10 +120,11 @@ const NEIGHBORS: ReadonlyArray<readonly [number, number]> = [
 // Seed the arena's ore. Power patches are placed first so they stay whole — metal is common
 // enough that the holes it inherits don't matter, and a tile is only ever one kind.
 //
-// `arena` stays its own argument rather than being read off `settings`: it is the one thing both
-// sides already agree on off `WorldInit`, and the client's settings are still local defaults until
-// #128 puts them on the wire. Taking the box from the world-init is what keeps a settings mismatch
-// from also becoming a differently-sized grid.
+// `arena` stays its own argument rather than being read off `settings`, even though the settings
+// now ride `WorldInit` too (#128): the box is the one thing the init states outright, so taking it
+// from there keeps a settings mismatch from also becoming a differently-sized grid. Both are the
+// same number by construction — `generateWorld` reads the arena it reports off the settings it
+// reports — and this way that stays true because of where each is read, not by coincidence.
 export function generateOre(
   arena: Arena,
   seed: number,
