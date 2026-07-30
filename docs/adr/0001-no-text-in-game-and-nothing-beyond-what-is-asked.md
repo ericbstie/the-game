@@ -29,7 +29,7 @@ sparingly rather than as a replacement vocabulary for the sentences they displac
 |---|---|
 | Main menu | Text as needed |
 | Lobby screen | Text as needed, **including the 4-character lobby code** — it cannot be shared to join without being read |
-| In match | The **name label above each player**; the **Metal and Energy readouts**; the **escape time on the end screen**; the words **`metal / s`** on the Metal-per-second box the Metal readout reveals (granted on request, [#105](https://github.com/ericbstie/the-game/issues/105)); on each build slot, its **Metal cost as a numeral** and its **one-word name** — `mine` · `generator` · `wall` · `turret` (granted on request, [#98](https://github.com/ericbstie/the-game/issues/98)); the **`+1` a miner floats as it mines** (granted on request, [#99](https://github.com/ericbstie/the-game/issues/99)); and on the ammo box, its **spendable bullet count as a numeral** and the **number of bullets queued** in the circle on its corner (granted on request, [#102](https://github.com/ericbstie/the-game/issues/102)) |
+| In match | The **name label above each player**; the **Metal and Energy readouts**; the **escape time on the end screen**; the words **`metal / s`** on the Metal-per-second box the Metal readout reveals (granted on request, [#105](https://github.com/ericbstie/the-game/issues/105)); on each build slot, its **Metal cost as a numeral** and its **one-word name** — `mine` · `generator` · `wall` · `turret` (granted on request, [#98](https://github.com/ericbstie/the-game/issues/98)); the **`+1` a miner floats as it mines** (granted on request, [#99](https://github.com/ericbstie/the-game/issues/99)); and on the ammo box, its **spendable bullet count as a numeral** and the **number of bullets queued** in the circle on its corner (granted on request, [#102](https://github.com/ericbstie/the-game/issues/102)); and the **lettered sound effect struck where a shot connects and where an enemy dies** — one of a fixed set of four hand-lettered words, `POW` · `ZAP` · `BAM` · `BOP` (granted on request, [#79](https://github.com/ericbstie/the-game/issues/79)) |
 
 Everything not in that table goes, including the controls hint, the HP label and downed
 countdown, and the in-match lobby-code header.
@@ -49,6 +49,25 @@ The ammo box adds two numerals and no words. Both are quantities, which is the o
 cannot state: the count is what a player spends against, and the circle says how many more are
 coming — the same figure a build slot's cost circle carries, in the same place and for the same
 reason. What the box *is* stays the icon's job, so nothing there needs a name.
+
+The lettered sound effects are the first grant for a **word** over the arena rather than a number,
+and the only entry on that table which is not a readout of anything. It was asked for in exactly
+those terms — lettered onomatopoeia popping over impacts, in the style of the era — and the era is
+the reason it is granted: a 1930s cartoon shouts POW at a blow, and there is no icon that does that.
+
+Two things bound it, and both are what make it an exception rather than a hole.
+
+The set is **fixed, small and closed**. Four words, chosen once and written down in
+`src/sprite/lettering.ts`; nothing in the game composes a string, and no other string can reach the
+arena. Which of the four a blow gets is arithmetic on where and when it landed, so the grant cannot
+grow by being used.
+
+Every one of them is a **drawn shape and not a typeset word**. Each word is a baked sprite of
+stroked letterforms — no font, no `fillText`, nothing the browser has to have a typeface for — so
+what the arena gained is four drawings, and it gained no second place where the game writes prose.
+That is asserted rather than intended: a test in `src/game/draw.test.ts` holds the world pass to
+adding no text draw at all when a frame is lettered, which is what keeps this grant from widening
+into a licence for a typeface in the world.
 
 The Metal-per-second box, asked for in the same version, needed a grant for only half of what it
 shows. Its figure needed none — that is one more Metal number on a readout already allowed. Its

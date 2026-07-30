@@ -175,6 +175,7 @@ the collision it stands for cannot drift apart. They are in code as `SPRITE_BOX`
 | `ore-power` | one tile, glowing red — several variants | **15** | variants | 1 | yes |
 | `room` | the perimeter wall unfolded outward: **0 N, 1 E, 2 S, 3 W**, and **4 the door** the run switches to where it crosses the exit | **30** | 5 | 1 | yes |
 | `halo` | the self marker. Drawn **behind** your avatar and centred on its body, so make it wider than the player's 28 or it will not show | your call | 1 | your call | yes |
+| `lettering` | in-world: the hand-lettered sound effect struck where a shot connects and where an enemy dies. The facing is **which word** — one variant per entry in that module's own `WORDS`, and `drawWorld` hands the cache an unwrapped index so the set's size never leaves the module | 36 | one per word | 1 | yes |
 | `unpowered` | the hollow lightning over a turret holding a target it has no power to fire on | your call | 1 | **2+ — it flashes**, one frame per 400 ms | yes |
 | `grass` | the tufts scattered on the white floor | your call | variants | 1 | **not yet — see below** |
 | `warning` | HUD: a structure is under attack | your call | 1 | 2+ (flashes) | **not yet — see below** |
