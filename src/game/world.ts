@@ -141,7 +141,9 @@ function spawn(player: SpawnPlayer, arena: Arena): Spawn {
   };
 }
 
-function clamp(value: number, lo: number, hi: number): number {
+// Keeping a body inside the walls, which is now two modules' problem: an avatar integrating its
+// input, and an enemy walking a wander heading that happens to point at the perimeter (#125).
+export function clamp(value: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, value));
 }
 
