@@ -347,7 +347,7 @@ describe("#103: holding left-click auto-fires at one shot per cadence", () => {
   });
 });
 
-// #120: the gun. `e` equips and stows it, and that is what left-click means — the trigger with the
+// #120: the gun. `g` equips and stows it, and that is what left-click means — the trigger with the
 // gun up, the pick with it down. A buildable on the bar outranks both. Right-click keeps demolish
 // and the build bar's cancel, and mines nothing.
 describe("#120: the gun decides what left-click does", () => {
@@ -387,7 +387,7 @@ describe("#120: the gun decides what left-click does", () => {
     expect(onMine).not.toHaveBeenCalled();
   });
 
-  test("`e` again stows it, and left-click is back to mining", async () => {
+  test("`g` again stows it, and left-click is back to mining", async () => {
     const { canvas, onMine, onAttack } = bothJobs();
     toggleGun();
     toggleGun();
@@ -402,7 +402,7 @@ describe("#120: the gun decides what left-click does", () => {
   // times a second and land on whichever side the key happened to come up on — the same hole #110's
   // zoom closed. happy-dom does not synthesise native repeat, so this drives the flag the browser
   // sets on one.
-  test("a repeat of a held `e` toggles nothing", async () => {
+  test("a repeat of a held `g` toggles nothing", async () => {
     const { canvas, onMine, onAttack } = bothJobs();
     toggleGun();
     // An odd number of repeats, so a toggle that answered to them would land on the *other* side
@@ -483,7 +483,7 @@ describe("#120: the gun decides what left-click does", () => {
 
   // The half of the ticket a latched press cannot do: the button never comes up, and what it is
   // doing changes under it.
-  test("`e` under a held button stops the fire and starts mining on the spot", async () => {
+  test("`g` under a held button stops the fire and starts mining on the spot", async () => {
     const { canvas, onMine, onAttack } = bothJobs();
     toggleGun();
     fireEvent.mouseDown(canvas, { button: 0 });
@@ -497,7 +497,7 @@ describe("#120: the gun decides what left-click does", () => {
     expect(onAttack).toHaveBeenCalledTimes(fired); // and not one shot more
   });
 
-  test("`e` under a held button stops the mining and starts the fire on the spot", async () => {
+  test("`g` under a held button stops the mining and starts the fire on the spot", async () => {
     const { canvas, onMine, onAttack } = bothJobs();
     fireEvent.mouseDown(canvas, { button: 0 });
     await settle(MINE_CADENCE_MS * 3);
@@ -530,8 +530,8 @@ describe("#120: the gun decides what left-click does", () => {
 
   // #104's run is the one of the three that *is* latched at the press, so the gun must not disturb
   // it: the ticket puts the build bar above the gun in both states, which means a drag crossing an
-  // `e` is still the same drag.
-  test("`e` mid-drag neither ends the run nor fires into it", async () => {
+  // `g` is still the same drag.
+  test("`g` mid-drag neither ends the run nor fires into it", async () => {
     const world = armed();
     world.build.bank.metal = 100_000;
     const asked: Tile[] = [];
@@ -1549,7 +1549,7 @@ describe("#120: the gun icon over the health bar is filled or hollow", () => {
     expect(plate("Gun stowed").nextElementSibling).toBe(screen.getByLabelText("Health"));
   });
 
-  test("stowed it is stroked and never filled; `e` fills the same contour", () => {
+  test("stowed it is stroked and never filled; `g` fills the same contour", () => {
     renderMatch();
     const icon = plate("Gun stowed").querySelector("canvas") as HTMLCanvasElement;
     const stowed = bakedInto(icon, 0);
@@ -1563,7 +1563,7 @@ describe("#120: the gun icon over the health bar is filled or hollow", () => {
     expect(plate("Gun equipped").querySelector("canvas")).toBe(icon);
   });
 
-  test("and `e` again empties it", () => {
+  test("and `g` again empties it", () => {
     renderMatch();
     const icon = plate("Gun stowed").querySelector("canvas") as HTMLCanvasElement;
     fireEvent.keyDown(window, { key: GUN_TOGGLE_KEY });
