@@ -126,8 +126,38 @@ Pixel facts on the committed sheet, dpr 2, 64 px bakes: ink 394–495 per bake, 
 across all sixteen; coverage boxes 50–54 wide by 39–56 tall, starting between y 5 and y 13. No bake
 drew nothing and none touches the edge of its box. At dpr 1, ink is 18% of covered.
 
-The eight facings are legible at real size in panel 2 and in `bun run sprite:frame`, where the
-creature's snout points the way it is running. The author's remaining doubts: the jaws are
-effectively invisible below the contact grid, and the sack's lumps read as an ellipse at 32 px.
+The author's remaining doubts: the jaws are effectively invisible below the contact grid, and the
+sack's lumps read as an ellipse at 32 px.
 
-Advisory, per ADR 0002 §3. The sprite ships with these notes open.
+## The second blind review — on the revised sheet, and it did not clear
+
+A second reviewer, a fresh one with no knowledge of the first review or that anything had changed,
+was shown the revised sheet under the identical brief. It reached the same verdict, and its finding
+stands unresolved:
+
+> **Most serious problem:** The eight compass facings don't actually encode direction — they reduce
+> to two interchangeable poses (legs-visible for E/SE/S/SW/W, legs-hidden for NW/N/NE), with no
+> differentiation between facings inside each cluster. A directional sprite sheet that can't tell
+> the player which way the creature is facing, at any zoom level including the one they'll actually
+> play at, has failed at its one job.
+
+On panel 2 specifically: *"All eight thumbnails look almost identical to each other. I cannot tell
+which way any of them are facing."* On the creature: *"two-lobed slime … there is no head-shaped
+element, no eyes, nothing that reads as 'front.'"* On the walk: *"only the thin leg/spike scribbles
+change, and they change unpredictably … noise superimposed on a motionless blob."*
+
+**This supersedes the claim made above that the facings are legible at real size.** Two independent
+reviewers, on two different versions, said they are not, and the author's own notes concede the rear
+three are the closest. The revision fixed what was structurally wrong — the interior contour is gone
+and the silhouette now turns, which the pixel facts confirm (ink origin varies by 8 device px across
+the facings against a constant 7 before) — but "it turns measurably" and "a player can read which way
+it is pointing at 32 px" are not the same claim, and only the first is established.
+
+**What the sheet cannot settle.** A player never sees this creature standing still. It runs at you,
+bleeds a trail behind it as it goes, and the trail is the direction. A static grid is the wrong
+instrument for the question, and both reviewers were answering the question the instrument asked.
+That is a reason to decide it in the game, not a reason to treat the finding as answered.
+
+Advisory, per ADR 0002 §3 — the reviewer's findings are recorded and travel with the sprite, and the
+final call is the author's, made by looking at the work in the game. This ships with the facing
+finding **open**, twice-reported and not closed.
