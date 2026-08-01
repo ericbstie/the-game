@@ -74,7 +74,7 @@ export const BLAST_TRIGGER = 2 * (PLAYER_RADIUS + BLOODLING_RADIUS);
 // it off rather than to that player alone.
 export const BLAST_RADIUS = 2 * BLAST_TRIGGER;
 // What the blast takes off a player inside it. Twice the elite's bite — the largest single blow in
-// the game until now — which is two fifths of PLAYER_MAX_HP: four of them kill you from full, and
+// the game until now — which is two fifths of PLAYER_MAX_HP: three of them kill you from full, and
 // none of them alone does.
 export const BLAST_DAMAGE = 40;
 // The share of a nest's wave that comes out as bloodlings. Drawn off the same roll as the elite
