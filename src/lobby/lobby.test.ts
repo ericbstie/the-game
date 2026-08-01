@@ -742,6 +742,17 @@ describe("M3: player health relay and aggro-gating", () => {
     expect(livePlayers(positions, health, new Set(["here"])).map((p) => p.id)).toEqual(["here"]);
     expect(positions.has("gone")).toBe(true); // and the position is still held for the peers
   });
+
+  // #131: the sim leads a chase along the heading two samples describe, so the one each position
+  // replaced has to reach it. A player the hub has heard from once has none, and is chased raw.
+  test("livePlayers carries the sample each position replaced", () => {
+    const positions: Map<string, { pos: Vec2; seq: number; prev?: Vec2 }> = new Map([
+      ["moving", { pos: { x: 10, y: 0 }, seq: 2, prev: { x: 0, y: 0 } }],
+      ["fresh", { pos: { x: 5, y: 5 }, seq: 1 }],
+    ]);
+    const live = livePlayers(positions, new Map(), new Set(["moving", "fresh"]));
+    expect(live.map((p) => p.prev)).toEqual([{ x: 0, y: 0 }, undefined]);
+  });
 });
 
 describe("M3: reconnect rebuilds live combat state", () => {
@@ -1028,6 +1039,59 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
     expect(dist(back, benAt)).toBeLessThan(dist(drifted, benAt)); // chasing him again
 
     hub.dispose();
+  });
+});
+
+// #131. An enemy steers at a lead point ahead of the player, along the heading its last two
+// accepted samples describe. Nothing new rides the wire for it, so the whole rule rests on the hub
+// keeping the sample each `game/pos` replaces — which is what this reads, through what the sim does.
+describe("#131: the chase heading is derived from the position stream", () => {
+  class Capture implements Transport {
+    readonly sent: { socketId: string; msg: ServerMessage }[] = [];
+    send(socketId: string, msg: ServerMessage): void {
+      this.sent.push({ socketId, msg });
+    }
+    close(): void {}
+  }
+
+  const deltas = (t: Capture) =>
+    t.sent.flatMap(({ msg }) => (msg.type === "game/map-delta" ? [msg] : []));
+
+  const report = (hub: LobbyHub, pos: Vec2, seq: number) =>
+    hub.handleMessage("s1", JSON.stringify({ type: "game/pos", pos, seq }));
+
+  // Where a given enemy has walked to, off the stream.
+  const enemyAt = (t: Capture, id: string): Vec2 | undefined => {
+    let at: Vec2 | undefined;
+    for (const d of deltas(t)) {
+      for (const s of d.spawns ?? []) if (s.id === id) at = s.pos;
+      for (const [mid, x, y] of d.moves) if (mid === id) at = { x, y };
+    }
+    return at;
+  };
+
+  test("two accepted samples lead the chase off the straight line to the body", () => {
+    const t = new Capture();
+    const clock = new ManualScheduler();
+    const hub = new LobbyHub(t, { tickMs: 50, firstWaveMs: 1, scheduler: clock });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    clock.advance(50); // the opening wave fires
+    const grunt = deltas(t).flatMap((d) => d.spawns ?? [])[0];
+    if (!grunt) throw new Error("the first wave spawned nothing");
+    const from = enemyAt(t, grunt.id);
+    if (!from) throw new Error("the grunt never moved");
+
+    // Standing 300 u due east of it, having run in from the south: chasing the body is a due-east
+    // step that cannot move the grunt's y, so any northward travel is the lead and nothing else.
+    const standing = { x: from.x + 300, y: from.y };
+    report(hub, { x: standing.x, y: standing.y + 40 }, 1);
+    report(hub, standing, 2); // heading due north
+    clock.advance(150);
+    hub.dispose();
+
+    const chasing = enemyAt(t, grunt.id);
+    expect(chasing?.y).toBeLessThan(from.y - 1);
   });
 });
 
