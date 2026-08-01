@@ -181,6 +181,11 @@ export interface DrawOptions {
   // is nothing in the snapshot that tells them apart from a teammate standing still — so without
   // the roster the only honest arrow is none (#75).
   connected?: ReadonlySet<PlayerId>;
+  // How black the screen goes this frame from a blow *you* took (#142) — `damageFx(…).flash`, an
+  // alpha in [0, 1]. Absent or zero, nothing is laid at all. Handed in rather than aged here for
+  // the reason a burst's lifetime is: the instant it is measured from is `ClientWorld`'s, and this
+  // layer has never seen it.
+  damageFlash?: number;
 }
 
 // One thing standing on the floor, waiting for its turn to paint. `y` is its floor line — the
@@ -529,6 +534,22 @@ export function drawWorld(
   // player who is down is out of the fight, and reading the arena is part of the fight.
   if (self && self.hp <= 0) {
     ctx.fillStyle = DOWNED_DIM;
+    ctx.fillRect(camera.x, camera.y, viewport.width, viewport.height);
+  }
+
+  // The blow's own veil (#142), last of everything — the darkening above included, because a hit
+  // taken on the frame you go down on is still a hit.
+  //
+  // This is exactly the full-viewport pass `docs/frame-budget.md` rule 2 says nothing new gets, and
+  // it is drawn on the one exemption that rule grants and already spends on the darkening: only the
+  // player who was hit lays it, and only for the fraction of a second `damageFx` allows. A screen
+  // flashing black is a full-screen mark or it is nothing, so there is no cheaper drawing of it.
+  //
+  // The alpha rides the colour rather than `globalAlpha`, so the frame ends in the drawing state it
+  // began in and there is nothing for the next one to inherit.
+  const veil = options.damageFlash ?? 0;
+  if (veil > 0) {
+    ctx.fillStyle = `rgba(0, 0, 0, ${veil})`;
     ctx.fillRect(camera.x, camera.y, viewport.width, viewport.height);
   }
 }

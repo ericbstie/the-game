@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { FLASH_ALPHA, SHAKE_MS, SHAKE_REACH } from "../src/game/damageFx";
 import { MINIMAP_COVERAGE_U, MINIMAP_COVERAGE_WIDE_U } from "../src/game/minimap";
 import { entrySource, parseArgs } from "./world-frame";
 
@@ -11,12 +12,20 @@ describe("parseArgs", () => {
     expect(request.dpr).toBe(2);
     expect(request.at).toBeNull();
     expect(request.map).toBe(MINIMAP_COVERAGE_U);
+    expect(request.damage).toBe(Number.POSITIVE_INFINITY); // a frame with no blow behind it
   });
 
   test("takes the corner map's zoom, so a level can be looked at (#110)", () => {
     expect(parseArgs(["--map", String(MINIMAP_COVERAGE_WIDE_U)]).map).toBe(MINIMAP_COVERAGE_WIDE_U);
     expect(() => parseArgs(["--map", "0"])).toThrow(/--map/);
     expect(() => parseArgs(["--map", "wide"])).toThrow(/--map/);
+  });
+
+  test("takes how long ago the blow landed, so the damage VFX can be looked at (#142)", () => {
+    expect(parseArgs(["--damage", "0"]).damage).toBe(0);
+    expect(parseArgs(["--damage", String(SHAKE_MS)]).damage).toBe(SHAKE_MS);
+    expect(() => parseArgs(["--damage", "-1"])).toThrow(/--damage/);
+    expect(() => parseArgs(["--damage", "peak"])).toThrow(/--damage/);
   });
 
   test("takes a sprite per name, so a frame can carry more than one at a time", () => {
@@ -77,6 +86,21 @@ describe("entrySource", () => {
   // The starburst is procedural ink rather than a bake, so no sprite sheet shows it and no spy says
   // whether it reads. This frame is the only channel that puts it at real size over the white spider
   // it is struck on (ADR 0002 §5) — a burst missing from the entry is a mark nobody ever looks at.
+  // The swing and the veil are the only marks in the game that are not drawn *in* the world, so no
+  // sprite sheet and no spy can show either. This frame is the whole review channel for them: at
+  // `--damage 0` the view is thrown its full reach and the veil is at its blackest.
+  test("throws the view and veils the frame at the instant of the blow (#142)", () => {
+    const source = entrySource(parseArgs(["--damage", "0"]), modules);
+    expect(source).toContain(`const shake = {"x":${SHAKE_REACH},"y":0};`);
+    expect(source).toContain(`damageFlash: ${FLASH_ALPHA}`);
+  });
+
+  test("paints a frame with no blow behind it exactly as the game always has (#142)", () => {
+    const source = entrySource(parseArgs([]), modules);
+    expect(source).toContain('const shake = {"x":0,"y":0};');
+    expect(source).toContain("damageFlash: 0");
+  });
+
   test("carries the bursts, so the mark on impact can be looked at (#115)", () => {
     const source = entrySource(parseArgs([]), modules);
     expect(source).toContain("demoBursts");

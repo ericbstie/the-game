@@ -152,6 +152,11 @@ export class ClientWorld {
   private selfHp: number; // client-authoritative: the owner judges its own contact damage
   // Client clock, stamped when a `structHits` entry last landed. See `structureUnderAttack`.
   private lastStructHitAt = Number.NEGATIVE_INFINITY;
+  // Client clock, stamped when the owner last took a blow (#142) — the player-side twin of an
+  // enemy's `lastHitAt`. Written in exactly one place, `updateHealth`, which is the only thing in
+  // the class that damages anybody: a teammate's health is a render hint that arrives elsewhere, so
+  // it can never reach this and a squadmate being bitten can never shake this screen.
+  private lastDamageAt = Number.NEGATIVE_INFINITY;
   // Client clock, stamped when the bullet at the head of the forge queue was last seen to start.
   // Null while nothing is forging. See `forgeStartedAt`.
   private forgeAt: number | null = null;
@@ -263,12 +268,21 @@ export class ClientWorld {
       if (now - enemy.lastContactAt >= enemyContactCadenceMs(enemy.kind)) {
         this.selfHp = Math.max(0, this.selfHp - enemyContactDamage(enemy.kind));
         enemy.lastContactAt = now;
+        this.lastDamageAt = now;
       }
     }
   }
 
   hp(): number {
     return this.selfHp;
+  }
+
+  // When the owner last took a blow, on this client's own clock, or negative infinity before the
+  // first one (#142). An instant and not a duration, exactly as `forgeStartedAt` is: how long the
+  // screen shakes and how long it stays black are `damageFx`'s, so nothing about the effect's shape
+  // or its length lives in the state that triggers it.
+  damagedAt(): number {
+    return this.lastDamageAt;
   }
 
   isDead(): boolean {

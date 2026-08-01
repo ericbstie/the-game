@@ -19,11 +19,12 @@ import {
   tileKey,
 } from "./build";
 import { ClientWorld } from "./clientWorld";
-import { RANGED_CADENCE_MS } from "./enemies";
+import { SHAKE_MS } from "./damageFx";
+import { GRUNT_HP, GRUNT_RADIUS, RANGED_CADENCE_MS } from "./enemies";
 import { GameScreen } from "./GameScreen";
-import { GUN_TOGGLE_KEY, MINIMAP_ZOOM_KEY, NO_MOVE } from "./input";
+import { aimDir, GUN_TOGGLE_KEY, MINIMAP_ZOOM_KEY, NO_MOVE } from "./input";
 import { MINIMAP_COVERAGE_CLOSE_U, MINIMAP_COVERAGE_U, MINIMAP_SIZE } from "./minimap";
-import { ARENA } from "./world";
+import { ARENA, PLAYER_RADIUS } from "./world";
 import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
 
 const SPAWN = { x: 400, y: 300 };
@@ -1571,5 +1572,103 @@ describe("#120: the gun icon over the health bar is filled or hollow", () => {
     fireEvent.keyDown(window, { key: GUN_TOGGLE_KEY });
     expect(bakedInto(icon, mark)).not.toContain("fill");
     expect(plate("Gun stowed")).toBeTruthy();
+  });
+});
+
+// #142: a blow you take throws the view about and lays a black veil over the frame. Neither reaches
+// the DOM — the swing is a translation on the transform and the veil is a fill, both inside the
+// render loop — so what was drawn is the only place either is visible, exactly as the map's zoom is.
+describe("#142: taking damage shakes the screen and flashes it black", () => {
+  let drawn: { calls: DrawnCall[]; restore: () => void };
+
+  beforeEach(() => {
+    drawn = recordFrames();
+  });
+  afterEach(() => drawn.restore());
+
+  // Where the world was painted from on each frame — the two translation terms of the transform the
+  // loop sets up, which is the only place the swing shows.
+  const views = (calls: DrawnCall[], canvas: HTMLElement) =>
+    calls
+      .filter((c) => c.into === canvas && c.fn === "setTransform")
+      .map((c) => `${c.args[4]},${c.args[5]}`);
+
+  // The viewport-sized fills a stretch of frames laid. One a frame is the paper alone; more than
+  // that is the veil behind it.
+  const fills = (calls: DrawnCall[], canvas: HTMLElement) =>
+    calls.filter(
+      (c) => c.into === canvas && c.fn === "fillRect" && c.args[2] === 800 && c.args[3] === 600,
+    ).length;
+
+  // A grunt standing at exactly the contact distance: near enough that `updateHealth` lands a blow
+  // on the next frame, far enough that `pushOutOfBodies` never shoves the player (`dist >= apart`
+  // is its whole condition). The camera therefore never moves, so every difference between one
+  // frame's transform and the next is the swing and nothing else.
+  const bite = (world: ClientWorld) =>
+    world.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        spawns: [
+          {
+            id: "e1",
+            kind: "grunt",
+            pos: { x: SPAWN.x + PLAYER_RADIUS + GRUNT_RADIUS, y: SPAWN.y },
+            hp: GRUNT_HP,
+          },
+        ],
+      },
+      Date.now(),
+    );
+
+  test("an unhurt player's frames all paint from one place, and lay only the paper", async () => {
+    const canvas = renderMatch({}, armed());
+    await nextFrames();
+    const at = drawn.calls.length;
+    await nextFrames();
+    const quiet = drawn.calls.slice(at);
+    expect(views(quiet, canvas).length).toBeGreaterThan(0);
+    expect(new Set(views(quiet, canvas)).size).toBe(1);
+    expect(fills(quiet, canvas)).toBe(views(quiet, canvas).length);
+  });
+
+  test("a blow throws the view about and lays a veil over the frame", async () => {
+    const world = armed();
+    const canvas = renderMatch({}, world);
+    await nextFrames();
+    const at = drawn.calls.length;
+    bite(world);
+    await nextFrames();
+    const struck = drawn.calls.slice(at);
+    expect(new Set(views(struck, canvas)).size).toBeGreaterThan(1);
+    expect(fills(struck, canvas)).toBeGreaterThan(views(struck, canvas).length);
+  });
+
+  test("both end on their own and the frame goes back to painting from one place", async () => {
+    const world = armed();
+    const canvas = renderMatch({}, world);
+    bite(world);
+    await settle(SHAKE_MS + 40); // past the swing, and well inside the grunt's bite cadence
+    const at = drawn.calls.length;
+    await nextFrames();
+    const settled = drawn.calls.slice(at);
+    expect(views(settled, canvas).length).toBeGreaterThan(0);
+    expect(new Set(views(settled, canvas)).size).toBe(1);
+    expect(fills(settled, canvas)).toBe(views(settled, canvas).length);
+  });
+
+  // The veil is a fill on the canvas and the swing is a transform, so neither takes the pointer or
+  // covers the arena with anything that could. The aim is the sharper half of the claim: the swing
+  // moves what the world is *painted* through and never the camera the cursor is read against, so a
+  // shot fired mid-shake goes exactly where a shot fired at rest would.
+  test("input stays live through it, and the swing never drags the aim with it", async () => {
+    const fired: Vec2[] = [];
+    const world = armed();
+    const canvas = renderMatch({ onAttack: (_pos, dir) => fired.push(dir) }, world);
+    equipGun();
+    bite(world);
+    await settle(20); // inside the veil, and inside the swing
+    fireEvent.mouseDown(canvas, { button: 0, clientX: 0, clientY: 0 });
+    expect(fired).toEqual([aimDir({ x: 0, y: 0 }, SPAWN, { x: 0, y: 0 })]);
   });
 });

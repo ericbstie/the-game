@@ -2606,3 +2606,71 @@ describe("the minimap", () => {
     expect(depth).toBe(0);
   });
 });
+
+// #142: the black veil a blow lays over your own screen. The render layer holds no state here — it
+// is handed an alpha the frame worked out from the instant it was hit (`damageFx`) and lays one
+// fill at it. What is left to pin is that the fill is the whole viewport, that it is black, that it
+// is the last thing in the frame, and — the one that matters most — that a frame carrying no blow
+// is byte-for-byte the frame the game has always drawn.
+describe("the damage veil", () => {
+  // The viewport-sized fills in a frame, in the order they were laid. The paper is always the
+  // first; a veil is a second one behind it.
+  const fullScreen = (ctx: { calls: Call[] }) =>
+    ctx.calls.filter(
+      (c) => c.fn === "fillRect" && c.args[2] === viewport.width && c.args[3] === viewport.height,
+    );
+  const veiled = (damageFlash?: number) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { selfId: "p1", camera, viewport, damageFlash });
+    return ctx;
+  };
+
+  test("a frame with no blow behind it lays nothing over the world", () => {
+    expect(fullScreen(veiled()).length).toBe(1); // the paper, and only the paper
+    expect(fullScreen(veiled(0)).length).toBe(1);
+  });
+
+  test("a blow lays one black fill over the whole viewport", () => {
+    const laid = fullScreen(veiled(0.5));
+    expect(laid.length).toBe(2);
+    expect(laid[1].args).toEqual([camera.x, camera.y, viewport.width, viewport.height]);
+    expect(laid[1].fill).toBe("rgba(0, 0, 0, 0.5)");
+  });
+
+  test("goes darker as the alpha does", () => {
+    expect(fullScreen(veiled(0.125))[1].fill).toBe("rgba(0, 0, 0, 0.125)");
+  });
+
+  test("is the last mark in the frame — nothing in the world is drawn over the blow", () => {
+    const ctx = veiled(0.5);
+    expect(ctx.calls.at(-1)).toBe(fullScreen(ctx)[1]);
+  });
+
+  // The whole of "the frame returns exactly to normal": the alpha rides the colour rather than
+  // `globalAlpha`, so there is no drawing state left set for the next frame to inherit.
+  test("leaves no alpha on the context for the next frame to inherit", () => {
+    const ctx = veiled(0.5) as unknown as { globalAlpha?: number; calls: Call[] };
+    expect(ctx.globalAlpha ?? 1).toBe(1);
+    expect(ctx.calls.every((c) => c.composite === "source-over")).toBe(true);
+  });
+
+  // Both are black and both are the dying player's own. A blow landing on the frame you go down on
+  // is still a blow, so the veil goes over the darkening rather than under it.
+  test("falls over the downed darkening, not beneath it", () => {
+    const ctx = spyCtx();
+    drawWorld(
+      ctx,
+      {
+        ...world,
+        players: [
+          { ...POSE, id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 0 },
+        ],
+        nests: [],
+      },
+      { selfId: "p1", camera, viewport, damageFlash: 0.5 },
+    );
+    const laid = fullScreen(ctx);
+    expect(laid.length).toBe(3); // paper, the darkening, the veil
+    expect(laid[2].fill).toBe("rgba(0, 0, 0, 0.5)");
+  });
+});

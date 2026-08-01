@@ -23,6 +23,7 @@ import {
 } from "./build";
 import { type Camera, computeCamera } from "./camera";
 import { type ClientWorld, RESPAWN_DELAY_MS } from "./clientWorld";
+import { damageFx } from "./damageFx";
 import { BURST_MS, type BuildGhost, drawWorld, type OwnShot, PUFF_MS, SHOT_LINE_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { freshMetalFloats, stepMetalFloats } from "./floats";
@@ -428,7 +429,15 @@ export function GameScreen({
           const viewport = { width: w, height: h };
           const camera = computeCamera(self, viewport, world.arena);
           aimRef.current = { camera, self }; // feed the attack handlers the live origin + camera
-          ctx.setTransform(dpr, 0, 0, dpr, -camera.x * dpr, -camera.y * dpr);
+          // What a blow you took does to the screen (#142). The swing is applied to the camera the
+          // world is *painted* from and to nothing else: `aimRef` above keeps the true one, so a
+          // shaking screen never moves where a click lands or which tile the cursor is over. Every
+          // other consumer of the camera is inside `drawWorld` — the clear, the paper, the cull,
+          // the pixel snap and the corner map — and each of them has to follow the swing or the
+          // frame would be painted through one camera and bounded by another.
+          const fx = damageFx(clock - world.damagedAt());
+          const view = { x: camera.x + fx.shake.x, y: camera.y + fx.shake.y };
+          ctx.setTransform(dpr, 0, 0, dpr, -view.x * dpr, -view.y * dpr);
           const kind = selectedRef.current;
           const ghost: BuildGhost | undefined = kind
             ? {
@@ -451,10 +460,11 @@ export function GameScreen({
           // resolution, and the cache empties itself rather than being told to.
           drawWorld(ctx, snapshot, {
             selfId: selfIdRef.current,
-            camera,
+            camera: view,
             viewport,
             ghost,
             dpr,
+            damageFlash: fx.flash,
             minimapCoverage: minimapCoverageRef.current,
             connected: connectedRef.current,
             now: clock,
