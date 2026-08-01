@@ -28,6 +28,18 @@ import { type Camera, isVisible, type Viewport } from "./camera";
 //     completed while culled are dropped outright, not banked up for later. The reconciliation this
 //     holds to is therefore over *visible* miners, not the whole squad. It is a camera-culled
 //     cosmetic: what nobody was looking at is not owed a number.
+//
+// A hand digging the same Metal out of the ground floats the same number (#136), and it is the only
+// other source. It gets no accrual here at all: #130 hands the harvesting client a whole-Metal
+// crossing of its own — one per completed harvest — so this module is *given* that beat rather than
+// working one out. Two things about a hand's number follow from where its beat comes from, and both
+// are deliberate:
+//
+//   - **It is anchored on the ore tile**, not on the player, who may stand `INTERACT_REACH` from
+//     what they are digging.
+//   - **It is private to the client that dug it**, where a miner's is on every screen that can see
+//     the miner. #130's event is client-local and nothing about hand-mining but the completed
+//     harvest crosses the wire, so there is nothing for a teammate's client to derive one from.
 
 // How long one number stays up. A miner completes a Metal every 1000/MINER_TRICKLE ms — 500 at the
 // trickle as it stands — so a life a little longer than that keeps a working miner continuously
@@ -46,16 +58,26 @@ const MAX_STEP_MS = 100;
 const MINER_FOOTPRINT = BUILDABLES.miner?.footprint ?? 1;
 const MINER_HALF = (MINER_FOOTPRINT * TILE) / 2;
 
-// Where a miner's number starts: centred on its footprint, at the top edge of it. From the middle
-// it would spend its first frames inside the building that earned it.
+// Where a number starts: centred on the footprint it came out of, at the top edge of it. From the
+// middle it would spend its first frames inside the thing that earned it.
+function floatOrigin(tile: Tile, footprint: number): Vec2 {
+  return { x: tile.tx * TILE + (footprint * TILE) / 2, y: tile.ty * TILE };
+}
+
 export function minerFloatOrigin(tile: Tile): Vec2 {
-  return { x: tile.tx * TILE + MINER_HALF, y: tile.ty * TILE };
+  return floatOrigin(tile, MINER_FOOTPRINT);
+}
+
+// And where a hand's starts (#136) — the same anchor, over the one tile of ore it was dug out of.
+export function oreFloatOrigin(tile: Tile): Vec2 {
+  return floatOrigin(tile, 1);
 }
 
 // One rising number. `id` is the miner it came from, so the miner's death takes it with it rather
-// than leaving a figure hanging over bare ground.
+// than leaving a figure hanging over bare ground. Null for one a hand earned: it belongs to no
+// structure, so nothing can be destroyed out from under it.
 export interface MetalFloat {
-  id: string;
+  id: string | null;
   pos: Vec2;
   at: number;
 }
@@ -82,15 +104,20 @@ export function freshMetalFloats(): MetalFloats {
   return { accruals: new Map(), orphanedThousandths: 0, live: [], lastAt: null };
 }
 
-// Advance every standing miner and return the floats currently in the air. A command as much as a
-// query, like `ClientWorld.snapshot`: the render loop is the single caller, once a frame, and
-// calling it twice on one clock accrues nothing the second time.
+// Advance every standing miner, take in whatever a hand finished this frame, and return the floats
+// currently in the air. A command as much as a query, like `ClientWorld.snapshot`: the render loop
+// is the single caller, once a frame, and calling it twice on one clock accrues nothing the second
+// time. Every number is born here, which is what keeps one list, one lifetime and one drawing over
+// both sources.
 export function stepMetalFloats(
   floats: MetalFloats,
   structures: readonly Standing[],
   camera: Camera,
   viewport: Viewport,
   now: number,
+  // The ore tile a hand completed a harvest on this frame, or null — #130's at-zero event, which is
+  // the whole of a hand's beat. Optional, so a caller with no hand to report says nothing.
+  mined: Tile | null = null,
 ): readonly MetalFloat[] {
   // Bounded below as well as above: `now` is wall-clock, and a clock stepped backwards would
   // otherwise hand the accrual a negative payment and unwind a remainder it had already earned.
@@ -123,11 +150,20 @@ export function stepMetalFloats(
     for (let i = 0; i < whole; i++) floats.live.push({ id: s.id, pos: { ...pos }, at: now });
   }
 
+  // One number for the Metal a hand finished (#136). Nothing is accrued or crossed here: a harvest
+  // reaching zero *is* the whole Metal, so the count is already exact and one event is one number.
+  // Not culled by `isVisible` the way a miner's is: #130's event fires for the tile under the
+  // player's own cursor, which is on screen by construction.
+  if (mined) floats.live.push({ id: null, pos: oreFloatOrigin(mined), at: now });
+
   for (const [id, accrual] of floats.accruals) {
     if (miners.has(id)) continue;
     floats.orphanedThousandths += accrual.metalThousandths;
     floats.accruals.delete(id);
   }
-  floats.live = floats.live.filter((f) => miners.has(f.id) && now - f.at < FLOAT_MS);
+  // A hand's number is owned by nothing, so age is the only thing that can take it.
+  floats.live = floats.live.filter(
+    (f) => (f.id === null || miners.has(f.id)) && now - f.at < FLOAT_MS,
+  );
   return floats.live;
 }

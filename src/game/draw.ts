@@ -149,8 +149,9 @@ export interface DrawOptions {
   ghost?: BuildGhost;
   // This frame's shot lines. Absent — in a test, or before the first shot — nothing is drawn.
   shots?: ShotSource;
-  // The `+1`s currently in the air (#99), accrued per miner by `stepMetalFloats`. Aged here, like
-  // a shot line: the render layer owns how long one is up, and nothing about it rides the wire.
+  // The `+1`s currently in the air — one per whole Metal, off a miner (#99) or off the player's own
+  // hand (#136), both handed over by `stepMetalFloats`. Aged here, like a shot line: the render
+  // layer owns how long one is up, and nothing about it rides the wire.
   floats?: readonly MetalFloat[];
   // Where shots have connected and the sprites have caught up (#115) — `ClientWorld.impactMarks`,
   // already aged to `BURST_MS`. Handed in rather than aged here, because the clock a burst is judged
@@ -252,7 +253,8 @@ const INK = "#000";
 const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
 
 // The game's own typeface, as every other word in it is — the fallbacks match `styles.css`. Shared
-// by the two things ADR 0001 allows to be written in the world: a player's name and a miner's `+1`.
+// by the two things ADR 0001 allows to be written in the world: a player's name and the `+1` a
+// whole Metal floats.
 const WORLD_FONT = '12px "Playfair Display", "Times New Roman", Times, serif';
 const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for no other figure
 
@@ -520,8 +522,8 @@ export function drawWorld(
   // sorted in front of it would be read as being *inside* the word.
   drawLettering(options, blitOver);
 
-  // Over the sort for the same reason a shot line is: a `+1` marks the miner that earned it rather
-  // than standing on the floor beside it, and one half-hidden behind a spider says nothing.
+  // Over the sort for the same reason a shot line is: a `+1` marks what earned it rather than
+  // standing on the floor beside it, and one half-hidden behind a spider says nothing.
   drawFloats(ctx, options.floats, now);
 
   // Over the world for the same reason again: an arrow marks the edge of the screen rather than a
@@ -872,10 +874,12 @@ function drawLettering(
   }
 }
 
-// The `+1`s a miner throws up as it mines (#99). Each one is literally one whole Metal — never a
-// batched total — so the figure never changes and the only things that age are its height and its
-// opacity. Cut out of paper exactly as a name is, and for the same reason: the floor is white and
-// the sprites are solid ink, so unoutlined black over a spider is invisible.
+// The `+1`s a miner throws up as it mines (#99), and the ones a player's own hand does (#136). Each
+// is literally one whole Metal — never a batched total — so the figure never changes and the only
+// things that age are its height and its opacity. One drawing for both: where a number came from is
+// settled before it gets here, and a hand's Metal is worth what a miner's is. Cut out of paper
+// exactly as a name is, and for the same reason: the floor is white and the sprites are solid ink,
+// so unoutlined black over a spider is invisible.
 function drawFloats(
   ctx: CanvasRenderingContext2D,
   floats: readonly MetalFloat[] | undefined,

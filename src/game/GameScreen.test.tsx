@@ -7,12 +7,10 @@ import {
   BUILD_SLOTS,
   BUILDABLES,
   type BuildableSpec,
-  DEMOLISH_HOLD_MS,
   FORGE_MS,
   footprintCenter,
   INTERACT_REACH,
   insertStructure,
-  MINE_CADENCE_MS,
   MINER_TRICKLE,
   placeStructure,
   TILE,
@@ -22,7 +20,8 @@ import { ClientWorld } from "./clientWorld";
 import { SHAKE_MS } from "./damageFx";
 import { GRUNT_HP, GRUNT_RADIUS, RANGED_CADENCE_MS } from "./enemies";
 import { GameScreen } from "./GameScreen";
-import { aimDir, GUN_TOGGLE_KEY, MINIMAP_ZOOM_KEY, NO_MOVE } from "./input";
+import { ORE_HARVEST_MS, STRUCTURE_HARVEST_MS } from "./harvest";
+import { aimDir, GUN_TOGGLE_KEY, MINIMAP_ZOOM_KEY, movesEqual, NO_MOVE } from "./input";
 import { MINIMAP_COVERAGE_CLOSE_U, MINIMAP_COVERAGE_U, MINIMAP_SIZE } from "./minimap";
 import { ARENA, PLAYER_RADIUS } from "./world";
 import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
@@ -112,6 +111,13 @@ function recordMoves(world: ClientWorld): MoveInput[] {
 const settle = (ms: number) => act(async () => await sleep(ms));
 
 const nextFrames = () => settle(60);
+
+// Long enough for one whole harvest to come out of the ground (#130), plus room for the render
+// loop to be late: progress is spent from real frame deltas, so a starved loop credits a little
+// less than the wall clock says. Every "nothing was reported" below waits one of these out, so no
+// such assertion can pass merely by being asked before the harvest could have finished.
+const HARVEST_WINDOW = ORE_HARVEST_MS + 400;
+const DEMOLISH_WINDOW = STRUCTURE_HARVEST_MS + 400;
 
 afterEach(cleanup);
 
@@ -360,42 +366,59 @@ describe("#120: the gun decides what left-click does", () => {
   const toggleGun = (init: KeyboardEventInit = {}) =>
     fireEvent.keyDown(window, { key: GUN_TOGGLE_KEY, ...init });
 
-  // Both jobs left-click has when the build bar is empty, watched together — every test here is
-  // about which of the two a press does, so neither is ever asserted without the other.
-  function bothJobs(world = overOre()) {
+  // Every job left-click has, watched together — every test here is about which of them a press
+  // does, so none is ever asserted without the others.
+  //
+  // Mining reports nothing until a whole Metal is out of the ground (#130), so *which* job a held
+  // button is doing is read off the pin the mine imposes (#109): a mine in progress is exactly a
+  // frame stepped with `NO_MOVE` while a direction is held, and that answer lands on the next frame
+  // rather than a harvest later. `onMine` is still watched, and is what says a harvest ran all the
+  // way to zero — asserted over a window longer than one, so "nothing was reported" cannot pass by
+  // being asked too early.
+  function heldJobs(world = overOre()) {
     const onMine = mock(() => {});
     const onAttack = mock(() => {});
-    const canvas = renderMatch({ onMine, onAttack }, world);
-    return { canvas, onMine, onAttack, world };
+    const onBuild = mock(() => {});
+    const moves = recordMoves(world);
+    const canvas = renderMatch({ onMine, onAttack, onBuild }, world);
+    fireEvent.keyDown(window, { key: "w" }); // held for the whole test, so the pin is readable
+    const mining = () => {
+      const last = moves.at(-1);
+      return last !== undefined && movesEqual(last, NO_MOVE);
+    };
+    return { canvas, onMine, onAttack, onBuild, world, mining };
   }
 
   test("the gun starts stowed, so left-click mines and fires nothing", async () => {
-    const { canvas, onMine, onAttack } = bothJobs();
+    const { canvas, onMine, onAttack, mining } = heldJobs();
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
+    expect(mining()).toBe(true);
+    await settle(HARVEST_WINDOW);
     fireEvent.mouseUp(window, { button: 0 });
-    expect(onMine).toHaveBeenCalled();
+    expect(onMine).toHaveBeenCalledWith(CURSOR_TILE); // and the tile came all the way out
     expect(onAttack).not.toHaveBeenCalled();
   });
 
   test("with the gun equipped left-click fires and mines nothing", async () => {
-    const { canvas, onMine, onAttack } = bothJobs();
+    const { canvas, onMine, onAttack, mining } = heldJobs();
     toggleGun();
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
+    expect(mining()).toBe(false);
     fireEvent.mouseUp(window, { button: 0 });
     expect(onAttack).toHaveBeenCalled();
     expect(onMine).not.toHaveBeenCalled();
   });
 
   test("`g` again stows it, and left-click is back to mining", async () => {
-    const { canvas, onMine, onAttack } = bothJobs();
+    const { canvas, onAttack, mining } = heldJobs();
     toggleGun();
     toggleGun();
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
+    expect(mining()).toBe(true);
     fireEvent.mouseUp(window, { button: 0 });
-    expect(onMine).toHaveBeenCalled();
     expect(onAttack).not.toHaveBeenCalled();
   });
 
@@ -404,7 +427,7 @@ describe("#120: the gun decides what left-click does", () => {
   // zoom closed. happy-dom does not synthesise native repeat, so this drives the flag the browser
   // sets on one.
   test("a repeat of a held `g` toggles nothing", async () => {
-    const { canvas, onMine, onAttack } = bothJobs();
+    const { canvas, onMine, onAttack, mining } = heldJobs();
     toggleGun();
     // An odd number of repeats, so a toggle that answered to them would land on the *other* side
     // rather than back where the one real press left it — the count is what makes this discriminate.
@@ -412,7 +435,8 @@ describe("#120: the gun decides what left-click does", () => {
     toggleGun({ repeat: true });
     toggleGun({ repeat: true });
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
+    expect(mining()).toBe(false);
     fireEvent.mouseUp(window, { button: 0 });
     expect(onAttack).toHaveBeenCalled(); // still equipped, as one press left it
     expect(onMine).not.toHaveBeenCalled();
@@ -421,12 +445,11 @@ describe("#120: the gun decides what left-click does", () => {
   test("a buildable on the bar outranks the stowed gun: left-click builds and mines nothing", async () => {
     const world = overOre();
     world.build.bank.metal = 1_000;
-    const onBuild = mock(() => {});
-    const onMine = mock(() => {});
-    const canvas = renderMatch({ onBuild, onMine }, world);
+    const { canvas, onBuild, onMine, mining } = heldJobs(world);
     fireEvent.keyDown(window, { key: "1" });
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
+    expect(mining()).toBe(false);
     fireEvent.mouseUp(window, { button: 0 });
     expect(onBuild).toHaveBeenCalledTimes(1);
     expect(onMine).not.toHaveBeenCalled();
@@ -435,13 +458,11 @@ describe("#120: the gun decides what left-click does", () => {
   test("a buildable outranks the equipped gun too: left-click builds and fires nothing", async () => {
     const world = overOre();
     world.build.bank.metal = 1_000;
-    const onBuild = mock(() => {});
-    const onAttack = mock(() => {});
-    const canvas = renderMatch({ onBuild, onAttack }, world);
+    const { canvas, onBuild, onAttack } = heldJobs(world);
     toggleGun();
     fireEvent.keyDown(window, { key: "1" });
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
     fireEvent.mouseUp(window, { button: 0 });
     expect(onBuild).toHaveBeenCalledTimes(1);
     expect(onAttack).not.toHaveBeenCalled();
@@ -453,12 +474,12 @@ describe("#120: the gun decides what left-click does", () => {
   test("a press that starts a run arms no hold behind it, so clearing the bar mines nothing", async () => {
     const world = overOre();
     world.build.bank.metal = 1_000;
-    const onMine = mock(() => {});
-    const canvas = renderMatch({ onMine }, world);
+    const { canvas, onMine, mining } = heldJobs(world);
     fireEvent.keyDown(window, { key: "1" });
     fireEvent.mouseDown(canvas, { button: 0 });
     fireEvent.mouseDown(canvas, { button: 2 }); // right-click takes the ghost away, and the run
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
+    expect(mining()).toBe(false);
     fireEvent.mouseUp(window, { button: 0 });
     expect(onMine).not.toHaveBeenCalled();
   });
@@ -468,65 +489,66 @@ describe("#120: the gun decides what left-click does", () => {
   test("selecting a buildable mid-hold stops the mining and places nothing on its own", async () => {
     const world = overOre();
     world.build.bank.metal = 1_000;
-    const onBuild = mock(() => {});
-    const onMine = mock(() => {});
-    const canvas = renderMatch({ onBuild, onMine }, world);
+    const { canvas, onBuild, onMine, mining } = heldJobs(world);
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 3);
-    const mined = onMine.mock.calls.length;
-    expect(mined).toBeGreaterThan(0); // mining was really running when the bar was taken
+    await nextFrames();
+    expect(mining()).toBe(true); // mining was really running when the bar was taken
     fireEvent.keyDown(window, { key: "1" });
-    await settle(MINE_CADENCE_MS * 3);
+    await settle(HARVEST_WINDOW); // longer than the harvest it interrupted
+    expect(mining()).toBe(false);
     fireEvent.mouseUp(window, { button: 0 });
-    expect(onMine).toHaveBeenCalledTimes(mined);
+    expect(onMine).not.toHaveBeenCalled(); // the progress went with the selection
     expect(onBuild).not.toHaveBeenCalled(); // and the hold does not place what it just selected
   });
 
   // The half of the ticket a latched press cannot do: the button never comes up, and what it is
   // doing changes under it.
   test("`g` under a held button stops the fire and starts mining on the spot", async () => {
-    const { canvas, onMine, onAttack } = bothJobs();
+    const { canvas, onMine, onAttack, mining } = heldJobs();
     toggleGun();
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 2);
+    await settle(2 * RANGED_CADENCE_MS);
     const fired = onAttack.mock.calls.length;
     expect(fired).toBeGreaterThan(0); // the fire was really running when the gun went down
     toggleGun();
-    await settle(MINE_CADENCE_MS * 3);
+    await settle(HARVEST_WINDOW);
     fireEvent.mouseUp(window, { button: 0 });
-    expect(onMine).toHaveBeenCalled();
+    expect(mining()).toBe(true);
+    expect(onMine).toHaveBeenCalledWith(CURSOR_TILE); // a harvest started and finished under the hold
     expect(onAttack).toHaveBeenCalledTimes(fired); // and not one shot more
   });
 
   test("`g` under a held button stops the mining and starts the fire on the spot", async () => {
-    const { canvas, onMine, onAttack } = bothJobs();
+    const { canvas, onMine, onAttack, mining } = heldJobs();
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 3);
-    const mined = onMine.mock.calls.length;
-    expect(mined).toBeGreaterThan(0); // mining was really running when the gun came up
+    await nextFrames();
+    expect(mining()).toBe(true); // mining was really running when the gun came up
     toggleGun();
-    await settle(MINE_CADENCE_MS * 3);
+    await settle(HARVEST_WINDOW); // longer than the harvest it interrupted
     fireEvent.mouseUp(window, { button: 0 });
     expect(onAttack).toHaveBeenCalled();
-    expect(onMine).toHaveBeenCalledTimes(mined); // and not one tick more
+    expect(mining()).toBe(false);
+    expect(onMine).not.toHaveBeenCalled(); // and the interrupted progress earned nothing
   });
 
   // "Provided the cursor is over something valid for the new action" — and the hold is not spent by
   // failing that test. Nothing is latched at the press, so the switch is simply asked again on the
-  // next tick, and the tick that finds ore under the cursor is the one that starts mining.
+  // next frame, and the frame that finds ore under the cursor is the one that starts mining.
   test("switching onto nothing minable asks for nothing, and takes the ore up when it arrives", async () => {
     const world = armed(); // bare ground under the cursor: no ore anywhere near it
-    const { canvas, onMine } = bothJobs(world);
+    const { canvas, onMine, mining } = heldJobs(world);
     toggleGun();
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 2);
+    await nextFrames();
     toggleGun(); // the gun goes down over ground that yields nothing
-    await settle(MINE_CADENCE_MS * 3);
-    expect(onMine).not.toHaveBeenCalled();
+    await nextFrames();
+    expect(mining()).toBe(false);
     world.ore.set(tileKey(CURSOR_TILE), "metal"); // and now there is something there
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
+    expect(mining()).toBe(true); // with no second press
+    await settle(HARVEST_WINDOW);
     fireEvent.mouseUp(window, { button: 0 });
-    expect(onMine).toHaveBeenCalled(); // with no second press
+    expect(onMine).toHaveBeenCalledWith(CURSOR_TILE);
   });
 
   // #104's run is the one of the three that *is* latched at the press, so the gun must not disturb
@@ -552,9 +574,10 @@ describe("#120: the gun decides what left-click does", () => {
   });
 
   test("right-click no longer mines, whatever the gun is doing", async () => {
-    const { canvas, onMine } = bothJobs();
+    const { canvas, onMine, mining } = heldJobs();
     fireEvent.mouseDown(canvas, { button: 2 });
-    await settle(DEMOLISH_HOLD_MS + MINE_CADENCE_MS * 3);
+    await settle(HARVEST_WINDOW);
+    expect(mining()).toBe(false);
     fireEvent.mouseUp(window, { button: 2 });
     expect(onMine).not.toHaveBeenCalled();
   });
@@ -562,15 +585,14 @@ describe("#120: the gun decides what left-click does", () => {
   // #103 drops the left hold when the menu opens, and #120 put the pick on that same ref, so the
   // pick now goes with it. Nobody asked for that; it is pinned here so it cannot change unnoticed.
   test("opening the Escape menu stops the mining, and none goes into it (#100)", async () => {
-    const { canvas, onMine } = bothJobs();
+    const { canvas, onMine, mining } = heldJobs();
     fireEvent.mouseDown(canvas, { button: 0 });
-    await settle(MINE_CADENCE_MS * 3);
-    const mined = onMine.mock.calls.length;
-    expect(mined).toBeGreaterThan(0); // mining was really running when Escape came down
+    await nextFrames();
+    expect(mining()).toBe(true); // mining was really running when Escape came down
     fireEvent.keyDown(window, { key: "Escape" });
-    await settle(MINE_CADENCE_MS * 3);
+    await settle(HARVEST_WINDOW); // longer than the harvest it interrupted
     fireEvent.mouseUp(window, { button: 0 });
-    expect(onMine).toHaveBeenCalledTimes(mined);
+    expect(onMine).not.toHaveBeenCalled();
   });
 
   // Death drops the left hold from inside `fireIfDue`, which only runs with the gun up, so a stowed
@@ -583,12 +605,12 @@ describe("#120: the gun decides what left-click does", () => {
     const centreTile = { tx: Math.floor(middle.x / TILE), ty: Math.floor(middle.y / TILE) };
     const world = armed(0); // down before the button ever goes near it
     world.ore.set(tileKey(centreTile), "metal"); // the bootstrap patch respawn puts you on
-    const { canvas, onMine } = bothJobs(world);
+    const { canvas, onMine } = heldJobs(world);
     fireEvent.mouseDown(canvas, { button: 0, clientX: middle.x, clientY: middle.y });
-    await settle(MINE_CADENCE_MS * 3);
-    expect(onMine).not.toHaveBeenCalled(); // a corpse mines nothing
+    await settle(HARVEST_WINDOW);
+    expect(onMine).not.toHaveBeenCalled(); // a corpse mines nothing, however long it holds
     world.reviveSelf();
-    await settle(MINE_CADENCE_MS * 3);
+    await settle(HARVEST_WINDOW);
     fireEvent.mouseUp(window, { button: 0 });
     expect(onMine).toHaveBeenCalledWith(centreTile);
   });
@@ -604,23 +626,23 @@ describe("#120: the gun decides what left-click does", () => {
     fireEvent.mouseDown(canvas, { button: 2 });
     fireEvent.mouseDown(canvas, { button: 0 });
     fireEvent.mouseUp(window, { button: 0 });
-    await settle(DEMOLISH_HOLD_MS + MINE_CADENCE_MS * 3);
+    await settle(DEMOLISH_WINDOW);
     fireEvent.mouseUp(window, { button: 2 });
     expect(onDemolish).toHaveBeenCalledWith("m1");
   });
 
   // And the same in the other direction, which is the one the shared ref put at risk: the pick and
   // the trigger are now one flag, so a release that reached across buttons would drop whichever of
-  // them was running. No tick has fired between the press and the right button coming up — the
-  // events are synchronous — so every mine counted is one the surviving hold earned.
+  // them was running. The pin is what shows the survivor — the mine is still live several frames
+  // after the other button came up.
   test("releasing the demolish hold leaves left-click's alone", async () => {
-    const { canvas, onMine } = bothJobs();
+    const { canvas, mining } = heldJobs();
     fireEvent.mouseDown(canvas, { button: 0 });
     fireEvent.mouseDown(canvas, { button: 2 });
     fireEvent.mouseUp(window, { button: 2 });
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
+    expect(mining()).toBe(true);
     fireEvent.mouseUp(window, { button: 0 });
-    expect(onMine).toHaveBeenCalled();
   });
 });
 
@@ -830,7 +852,7 @@ describe("#100: right-click cancels a selected buildable", () => {
     fireEvent.click(wall);
     fireEvent.mouseDown(canvas, { button: 2 });
     expect(wall.getAttribute("aria-pressed")).toBe("false");
-    await settle(DEMOLISH_HOLD_MS + MINE_CADENCE_MS * 3);
+    await settle(DEMOLISH_WINDOW);
     expect(onDemolish).toHaveBeenCalledTimes(0);
   });
 
@@ -838,12 +860,31 @@ describe("#100: right-click cancels a selected buildable", () => {
     const onDemolish = mock(() => {});
     const canvas = renderMatch({ onDemolish }, withStructure());
     fireEvent.mouseDown(canvas, { button: 2 });
-    await settle(MINE_CADENCE_MS * 2); // inside the hold: nothing yet
+    await settle(STRUCTURE_HARVEST_MS / 2); // inside the harvest: nothing yet
     expect(onDemolish).toHaveBeenCalledTimes(0);
-    await settle(DEMOLISH_HOLD_MS);
+    await settle(DEMOLISH_WINDOW);
     fireEvent.mouseUp(window, { button: 2 });
     expect(onDemolish).toHaveBeenCalledWith("m1");
   });
+
+  // Harvest progress is a separate statistic from HP (#130), and this is where the two would quietly
+  // merge: a wall chewed to a sliver by enemies must cost the same hold to pull down as an untouched
+  // one, or "time to demolish" becomes a second, invisible health bar.
+  test.each([(BUILDABLES.miner as BuildableSpec).hp, 1])(
+    "a building at %i HP takes the same hold to pull down",
+    async (hp) => {
+      const world = armed();
+      insertStructure(world.build, { id: "m1", kind: "miner", tile: CURSOR_TILE, hp });
+      const onDemolish = mock(() => {});
+      const canvas = renderMatch({ onDemolish }, world);
+      fireEvent.mouseDown(canvas, { button: 2 });
+      await settle(STRUCTURE_HARVEST_MS / 2);
+      expect(onDemolish).toHaveBeenCalledTimes(0); // not half-way to gone, whatever its HP
+      await settle(DEMOLISH_WINDOW);
+      fireEvent.mouseUp(window, { button: 2 });
+      expect(onDemolish).toHaveBeenCalledWith("m1"); // and gone by the same hold, whatever its HP
+    },
+  );
 });
 
 // #117 reverses the stance #100 shipped: Escape cancels a selected buildable, and reaches the menu
@@ -900,7 +941,7 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
   test("movement input is ignored while the button is held, and the player does not move", async () => {
     const world = overMetal();
     const { moves, from } = mineAndWalk(world);
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
     expect(moves.at(-1)).toEqual(NO_MOVE);
     expect(world.selfPos()).toEqual(from);
   });
@@ -908,7 +949,7 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
   test("releasing it restores movement on the very next input read, with no tail", async () => {
     const world = overMetal();
     const { moves } = mineAndWalk(world);
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
     expect(moves.at(-1)).toEqual(NO_MOVE);
     const released = moves.length;
     fireEvent.mouseUp(window, { button: 0 });
@@ -916,16 +957,18 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
     expect(moves[released]?.up).toBe(true);
   });
 
+  // The pin and the progress are one answer read once a frame (#130), so a blur that lifts the pin
+  // has necessarily dropped the progress behind it: the whole harvest window below passes with the
+  // button still notionally down and nothing comes out of the ground.
   test("blur mid-mine releases the harvest and the pin together", async () => {
     const onMine = mock(() => {});
     const world = overMetal();
     const { moves } = mineAndWalk(world, { onMine });
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
     expect(moves.at(-1)).toEqual(NO_MOVE);
     const blurred = moves.length;
-    onMine.mockClear();
     fireEvent.blur(window);
-    await settle(MINE_CADENCE_MS * 3);
+    await settle(HARVEST_WINDOW);
     expect(onMine).toHaveBeenCalledTimes(0);
     expect(moves[blurred]?.up).toBe(true);
   });
@@ -933,10 +976,10 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
   test("a player who dies mid-mine is not pinned on respawn", async () => {
     const world = overMetal();
     const { moves } = mineAndWalk(world);
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
     expect(moves.at(-1)).toEqual(NO_MOVE);
     world.applyPeerHealth("me", 0, 1); // down mid-mine, with right-click still held
-    await settle(MINE_CADENCE_MS * 2);
+    await nextFrames();
     world.reviveSelf();
     // Respawning snaps you to the arena centre, half the map from the ore you died on — so the
     // harvest cannot resume even with the button still down, and nothing carries the pin over.
@@ -948,35 +991,29 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
   // The server refuses a mine reported from further off than INTERACT_REACH (build.ts:209). A pin
   // there would freeze the player banking nothing, so the client asks for nothing either.
   test("Metal ore beyond INTERACT_REACH starts no harvest, and so imposes no pin", async () => {
-    const onMine = mock(() => {});
-    const { moves } = mineAndWalk(overMetal({ x: INTERACT_REACH * 2, y: 300 }), { onMine });
-    await settle(MINE_CADENCE_MS * 3);
-    expect(onMine).toHaveBeenCalledTimes(0);
+    const { moves } = mineAndWalk(overMetal({ x: INTERACT_REACH * 2, y: 300 }));
+    await nextFrames();
     expect(moves.at(-1)?.up).toBe(true);
   });
 
-  // The pin follows whether a harvest is running, not whether the button is down. Every one of
-  // these holds right-click on something that resolves to no mine.
+  // The pin follows whether a harvest is running, not whether the button is down — which is exactly
+  // what makes it the readable half of client-side progress (#130). Every one of these holds
+  // left-click on something that resolves to no mine.
   test("bare grass starts no harvest and imposes no pin", async () => {
-    const onMine = mock(() => {});
-    const { moves } = mineAndWalk(armed(), { onMine });
-    await settle(MINE_CADENCE_MS * 3);
-    expect(onMine).toHaveBeenCalledTimes(0);
+    const { moves } = mineAndWalk(armed());
+    await nextFrames();
     expect(moves.at(-1)?.up).toBe(true);
   });
 
   test("power ore starts no harvest and imposes no pin", async () => {
-    const onMine = mock(() => {});
     const world = armed();
     world.ore.set(tileKey(CURSOR_TILE), "power");
-    const { moves } = mineAndWalk(world, { onMine });
-    await settle(MINE_CADENCE_MS * 3);
-    expect(onMine).toHaveBeenCalledTimes(0);
+    const { moves } = mineAndWalk(world);
+    await nextFrames();
     expect(moves.at(-1)?.up).toBe(true);
   });
 
   test("an occupied tile is a demolish, not a mine, so it imposes no pin", async () => {
-    const onMine = mock(() => {});
     const world = overMetal(); // a miner sits on metal ore by definition
     world.applyMapDelta(
       {
@@ -986,9 +1023,8 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
       },
       Date.now(),
     );
-    const { moves } = mineAndWalk(world, { onMine });
-    await settle(MINE_CADENCE_MS * 3);
-    expect(onMine).toHaveBeenCalledTimes(0);
+    const { moves } = mineAndWalk(world);
+    await nextFrames();
     expect(moves.at(-1)?.up).toBe(true);
   });
 
@@ -996,7 +1032,7 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
   test("the escape menu opened mid-mine leaves nothing pinned once the button is up", async () => {
     const world = overMetal();
     const { moves } = mineAndWalk(world);
-    await settle(MINE_CADENCE_MS * 3);
+    await nextFrames();
     expect(moves.at(-1)).toEqual(NO_MOVE);
     fireEvent.keyDown(window, { key: "Escape" });
     fireEvent.mouseUp(window, { button: 0 });
@@ -1004,6 +1040,34 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
     const released = moves.length;
     await nextFrames();
     expect(moves[released]?.up).toBe(true);
+  });
+});
+
+// #130: a harvest's progress lives exactly as long as the hold making it. `harvest.ts` says so
+// about the module; this says it about the screen, which is where the release actually reaches it —
+// the button comes up between two frames, and it is the frame that reads it that drops the target.
+describe("#130: a released hold banks nothing, and the next press starts the tile from full", () => {
+  test("two part-harvests either side of a release do not add up to a Metal", async () => {
+    const world = armed();
+    world.ore.set(tileKey(CURSOR_TILE), "metal");
+    const onMine = mock(() => {});
+    const canvas = renderMatch({ onMine }, world);
+    const PART_MS = 0.8 * ORE_HARVEST_MS;
+
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(PART_MS);
+    fireEvent.mouseUp(window, { button: 0 });
+    await nextFrames(); // the release has to be read on a frame to be read at all
+    fireEvent.mouseDown(canvas, { button: 0 }); // straight back onto the same tile
+    await settle(PART_MS);
+    // Two parts are well over one whole harvest, and progress is spent from frame deltas that can
+    // only be shorter than the wall clock they ran over — so a Metal here is progress that outlived
+    // its hold, never a fast loop.
+    expect(onMine).not.toHaveBeenCalled();
+
+    await settle(HARVEST_WINDOW); // and the fresh harvest, given its own whole length, still lands
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalledWith(CURSOR_TILE);
   });
 });
 
@@ -1670,5 +1734,50 @@ describe("#142: taking damage shakes the screen and flashes it black", () => {
     await settle(20); // inside the veil, and inside the swing
     fireEvent.mouseDown(canvas, { button: 0, clientX: 0, clientY: 0 });
     expect(fired).toEqual([aimDir({ x: 0, y: 0 }, SPAWN, { x: 0, y: 0 })]);
+  });
+});
+
+// #136: a Metal dug out by hand floats the same `+1` a miner does, over the tile it came out of.
+// Nothing about it reaches the DOM — it is a client-derived mark inside the render loop, off #130's
+// at-zero event — so what was drawn is the only place it is visible, as the map's zoom and the
+// screen's swing are.
+describe("#136: hand-mining a whole Metal floats a +1 over the ore tile", () => {
+  let drawn: { calls: DrawnCall[]; restore: () => void };
+
+  beforeEach(() => {
+    drawn = recordFrames();
+  });
+  afterEach(() => drawn.restore());
+
+  // Every `+1` painted into the arena so far. No miner stands in either world below, so a number in
+  // the log can only have come out of the hand.
+  const plusOnes = (canvas: HTMLElement) =>
+    drawn.calls.filter((c) => c.into === canvas && c.fn === "fillText" && c.args[0] === "+1");
+
+  const overMetal = () => {
+    const world = armed();
+    world.ore.set(tileKey(CURSOR_TILE), "metal");
+    return world;
+  };
+
+  test("none floats until a whole Metal is out of the ground, and then one does", async () => {
+    const canvas = renderMatch({}, overMetal());
+    fireEvent.mouseDown(canvas, { button: 0 }); // the gun starts stowed, so left-click mines (#120)
+    await nextFrames();
+    expect(plusOnes(canvas)).toEqual([]); // mid-harvest: nothing is banked, so nothing is floated
+    await settle(HARVEST_WINDOW);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(plusOnes(canvas).length).toBeGreaterThan(0);
+  });
+
+  test("it rises from the ore tile, not from the player standing off it", async () => {
+    const canvas = renderMatch({}, overMetal());
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(HARVEST_WINDOW);
+    fireEvent.mouseUp(window, { button: 0 });
+    const [first] = plusOnes(canvas);
+    expect(first.args[1]).toBe(CURSOR_TILE.tx * TILE + TILE / 2); // centred on the tile...
+    expect(first.args[2] as number).toBeLessThanOrEqual(CURSOR_TILE.ty * TILE); // ...off its top edge
+    expect(first.args[1]).not.toBe(SPAWN.x); // and not over the player, who is a screen away from it
   });
 });

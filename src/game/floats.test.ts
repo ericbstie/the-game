@@ -4,6 +4,7 @@ import {
   BUILDABLES,
   type BuildableSpec,
   freshBuildState,
+  HAND_MINE_RATE,
   MINER_TRICKLE,
   mulberry32,
   placeStructure,
@@ -12,7 +13,15 @@ import {
   TILE,
 } from "./build";
 import type { Camera, Viewport } from "./camera";
-import { FLOAT_MS, freshMetalFloats, type MetalFloat, stepMetalFloats } from "./floats";
+import {
+  FLOAT_MS,
+  freshMetalFloats,
+  type MetalFloat,
+  type MetalFloats,
+  minerFloatOrigin,
+  stepMetalFloats,
+} from "./floats";
+import { freshHarvest, stepHarvest } from "./harvest";
 import { ARENA } from "./world";
 
 const camera: Camera = { x: 1_000, y: 1_000 };
@@ -250,5 +259,74 @@ describe("a miner floating its Metal", () => {
         (f) => f.at === oldest,
       ),
     ).toBe(false);
+  });
+});
+
+// #136: the same number, for a Metal dug out by hand. There is no accrual of its own here — the
+// beat is #130's at-zero event, handed in — so what these hold is that the crossing is spent
+// exactly once, that it is anchored on the tile rather than on whoever dug it, and that it lives
+// and dies by the miner's own constants.
+describe("a Metal taken by hand", () => {
+  const ORE: Tile = { tx: 68, ty: 70 };
+  const oreTop = { x: ORE.tx * TILE + TILE / 2, y: ORE.ty * TILE };
+  // Nothing standing in any of these: a hand's number must not depend on a structure being alive.
+  const step = (state: MetalFloats, now: number, mined: Tile | null = null) =>
+    stepMetalFloats(state, [], camera, viewport, now, mined);
+
+  test("floats one number on the step a harvest reaches zero, and none on the steps between", () => {
+    const state = freshMetalFloats();
+    step(state, 0);
+    expect(step(state, 16)).toEqual([]);
+    const live = step(state, 32, ORE);
+    expect(live.length).toBe(1);
+    expect(live[0].at).toBe(32);
+    expect(step(state, 48).length).toBe(1); // still the one, and no second off the same crossing
+  });
+
+  test("it rises from the ore tile, anchored as a miner's is over its own footprint", () => {
+    const state = freshMetalFloats();
+    step(state, 0);
+    const [float] = step(state, 16, ORE);
+    expect(float.pos).toEqual(oreTop);
+    expect(float.pos.y).toBe(minerFloatOrigin(ORE).y); // the tile's top edge, exactly as a miner's
+  });
+
+  test("a miner dying beside it takes its own numbers and leaves the hand's alone", () => {
+    const state = freshMetalFloats();
+    const miner = visibleMiner("b1");
+    run([miner], 1_000, state);
+    const both = stepMetalFloats(state, [miner], camera, viewport, 1_001, ORE);
+    expect(both.length).toBeGreaterThan(1); // the miner's are in the air alongside it
+    const left = stepMetalFloats(state, [], camera, viewport, 1_002);
+    expect(left.map((f) => f.pos)).toEqual([oreTop]);
+  });
+
+  test("it is gone once its life is up, on the same FLOAT_MS a miner's is", () => {
+    const state = freshMetalFloats();
+    step(state, 0);
+    step(state, 16, ORE);
+    expect(step(state, 16 + FLOAT_MS - 1).length).toBe(1);
+    expect(step(state, 16 + FLOAT_MS)).toEqual([]);
+  });
+
+  // The cosmetic against the economy, as the miner's is against `stepBuild`: a completed harvest
+  // banks exactly one whole Metal, so a held button owes exactly one number per completed harvest —
+  // never a batched total, and never a crossing this module worked out for itself.
+  test("a held hand-mine floats exactly the Metal it banks", () => {
+    const harvest = freshHarvest();
+    const state = freshMetalFloats();
+    const target = { kind: "mine", tile: ORE } as const;
+    const SECONDS = 3;
+    let now = 0;
+    let floated = 0;
+    stepMetalFloats(state, [], camera, viewport, now); // starts the clock; accrues nothing
+    for (let i = 0; now < SECONDS * 1_000; i++) {
+      const dt = FRAME_MS[i % FRAME_MS.length];
+      now += dt;
+      const harvested = stepHarvest(harvest, target, dt);
+      const mined = harvested?.kind === "mine" ? harvested.tile : null;
+      floated += step(state, now, mined).filter((f) => f.at === now).length;
+    }
+    expect(floated).toBe(SECONDS * HAND_MINE_RATE);
   });
 });
