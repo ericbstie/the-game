@@ -1082,10 +1082,11 @@ describe("M4-T1: hand-mining fills the squad's shared Metal bank", () => {
     expect(onBen.bank?.metal).toBe(onHost.bank?.metal); // one shared bank, not a per-player purse
   });
 
-  // Progress is per-player and client-local, so two hands on one tile are two harvests rather than
-  // one shared bar — and the bank is paid for each. Nothing here is a race: the two reports are
-  // independent claims, and the squad ends up with both.
-  test("two players harvesting the same tile each bank their own Metal", async () => {
+  // Two reports of one tile from two players are independent claims — one guard each, and no race
+  // between them — so the bank is paid for both rather than deduplicating them down to one. That
+  // each of those reports stood for its own client-local progress is `harvest.ts`'s to say; from
+  // here they are simply two admissions.
+  test("two players reporting the same tile are each paid a whole Metal", async () => {
     const server = spawn();
     const { client: ana, code } = await host(server, "Ana");
     const { client: ben } = await joinLobby(server, code, "Ben");

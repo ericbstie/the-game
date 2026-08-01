@@ -422,10 +422,13 @@ export function GameScreen({
         if (!world.isDead()) world.stepSelf(dt, move, clock); // a downed player holds still
         world.updateHealth(clock); // judge contact damage at the owner's true position
         // The frame's own delta is what the harvest is spent from, so progress runs at the rate the
-        // button was held for rather than at whatever cadence a message stream happened to have. The
-        // server hears nothing until one completes, and `harvested` is where anything else that
-        // wants to know hangs off: a `+1` on the crossing (#136), sparks on the ore (#107, #78). It
-        // is a value, so a second consumer is a second reader of it and costs the harvest nothing.
+        // button was held for rather than at whatever cadence a message stream happened to have. It
+        // is the avatar's clamped `dt`, deliberately and not by accident: below 10 fps you harvest
+        // slower than the wall clock, which is the price of the alternative being a stalled tab
+        // coming back and paying out every harvest it slept through at once. The server hears
+        // nothing until one completes, and `harvested` is where anything else that wants to know
+        // hangs off: a `+1` on the crossing (#136), sparks on the ore (#107, #78). It is a value, so
+        // a second consumer is a second reader of it and costs the harvest nothing.
         const harvested = stepHarvest(harvestRef.current, target, dt);
         if (harvested?.kind === "mine") onMineRef.current(harvested.tile);
         if (harvested?.kind === "demolish") onDemolishRef.current(harvested.id);

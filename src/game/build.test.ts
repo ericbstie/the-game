@@ -29,6 +29,7 @@ import {
   INTERACT_REACH,
   MAX_ARENA_SIDE,
   MINE_CADENCE_MS,
+  MINE_JITTER_MS,
   MINER_TRICKLE,
   metalRate,
   mulberry32,
@@ -290,7 +291,42 @@ describe("admitMine", () => {
     const guard = freshMineGuard();
     admitMine(guard, { tile: metal, seq: 1 }, atTile(metal), grid, 1_000);
     admitMine(guard, { tile: metal, seq: 2 }, atTile(metal), grid, 1_010); // dropped
-    expect(admitMine(guard, { tile: metal, seq: 3 }, atTile(metal), grid, 1_200)).toBe(1);
+    const next = admitMine(
+      guard,
+      { tile: metal, seq: 3 },
+      atTile(metal),
+      grid,
+      1_000 + ORE_HARVEST_MS,
+    );
+    expect(next).toBe(1);
+  });
+
+  // The floor is not a number of its own: it is the harvest a report claims, less the jitter an
+  // honest one is allowed to arrive early by. Pinned because the two constants live in different
+  // modules and cannot be read side by side anywhere else.
+  test("the cadence floor is one whole harvest, less a frame's jitter", () => {
+    expect(MINE_CADENCE_MS).toBe(ORE_HARVEST_MS - MINE_JITTER_MS);
+  });
+
+  // The upper bound the floor exists for, in the shape it had before a report became a whole Metal:
+  // what caps a spammer is now how often it may repeat rather than how much each repeat is worth. So
+  // the ceiling is stated against the honest hand's own income widened by the jitter it is allowed,
+  // and never against the floor itself — a bound derived from the constant under test would move
+  // with it and pass however loose it got, which is exactly how a 10× floor went unnoticed.
+  test("a full stretch of holding banks the hand-mine rate, however often it reports", () => {
+    const HELD_MS = 10_000;
+    const total = (stepMs: number) => {
+      const guard = freshMineGuard();
+      const build = freshBuildState(ARENA);
+      for (let t = ORE_HARVEST_MS; t <= HELD_MS; t += stepMs) {
+        creditMetal(build, admitMine(guard, { tile: metal, seq: t }, atTile(metal), grid, t));
+      }
+      return build.bank.metal;
+    };
+    const honest = total(ORE_HARVEST_MS);
+    expect(honest).toBe((HELD_MS / 1_000) * HAND_MINE_RATE);
+    // a spammer earns no more than an honest client, bar the jitter it is allowed
+    expect(total(1)).toBeLessThanOrEqual(honest * (1 + MINE_JITTER_MS / ORE_HARVEST_MS));
   });
 
   // #109 drops the hand rate to 1, and #130 spends it as one harvested tile a second: through

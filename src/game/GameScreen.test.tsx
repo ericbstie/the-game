@@ -1043,6 +1043,34 @@ describe("#109: hand-mining Metal ore pins the player where it stands", () => {
   });
 });
 
+// #130: a harvest's progress lives exactly as long as the hold making it. `harvest.ts` says so
+// about the module; this says it about the screen, which is where the release actually reaches it —
+// the button comes up between two frames, and it is the frame that reads it that drops the target.
+describe("#130: a released hold banks nothing, and the next press starts the tile from full", () => {
+  test("two part-harvests either side of a release do not add up to a Metal", async () => {
+    const world = armed();
+    world.ore.set(tileKey(CURSOR_TILE), "metal");
+    const onMine = mock(() => {});
+    const canvas = renderMatch({ onMine }, world);
+    const PART_MS = 0.8 * ORE_HARVEST_MS;
+
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(PART_MS);
+    fireEvent.mouseUp(window, { button: 0 });
+    await nextFrames(); // the release has to be read on a frame to be read at all
+    fireEvent.mouseDown(canvas, { button: 0 }); // straight back onto the same tile
+    await settle(PART_MS);
+    // Two parts are well over one whole harvest, and progress is spent from frame deltas that can
+    // only be shorter than the wall clock they ran over — so a Metal here is progress that outlived
+    // its hold, never a fast loop.
+    expect(onMine).not.toHaveBeenCalled();
+
+    await settle(HARVEST_WINDOW); // and the fresh harvest, given its own whole length, still lands
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalledWith(CURSOR_TILE);
+  });
+});
+
 describe("#104: hold and drag left-click to place a run of buildables", () => {
   type Placement = { kind: BuildableKind; tile: Tile };
   const SLOT_KEY: Record<BuildableKind, string> = {

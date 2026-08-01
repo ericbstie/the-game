@@ -82,8 +82,14 @@ describe("harvest progress", () => {
     expect(hold(ana, mine(), 100)).toEqual([mine()]);
   });
 
-  test("a frame longer than the whole harvest completes it once, not twice", () => {
-    expect(hold(freshHarvest(), mine(), 4 * ORE_HARVEST_MS, 4 * ORE_HARVEST_MS)).toEqual([mine()]);
+  // Asserted on the frames *after* the huge one, because the frame itself cannot tell the two
+  // behaviours apart: one call returns one event either way. What the clamp decides is how much
+  // overshoot the harvest carries out of it — unbounded, the three harvests that frame swallowed
+  // would come due on the three ordinary frames behind it, one each.
+  test("a frame longer than the whole harvest completes it once, and carries no backlog", () => {
+    const harvest = freshHarvest();
+    expect(stepHarvest(harvest, mine(), 4 * ORE_HARVEST_MS)).toEqual(mine());
+    expect(hold(harvest, mine(), ORE_HARVEST_MS - 1)).toEqual([]);
   });
 
   test("a clock stepped backwards neither completes a harvest nor unwinds one", () => {

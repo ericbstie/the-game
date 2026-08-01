@@ -237,7 +237,23 @@ export function mulberry32(seed: number): () => number {
 // the one whole Metal it just earned.
 
 export const HAND_MINE_RATE = 1; // metal per second held
-export const MINE_CADENCE_MS = 100; // server-side floor on how often a client may report mining
+
+// How far short of a whole harvest two honest reports may land, and the only reason the floor below
+// is not the harvest's full length. A client spends its progress from render-frame deltas and
+// reports on the frame one completes, so a repeat leaves a frame *after* its deadline rather than
+// before it — but the server times arrivals, and a quicker second trip closes that gap again. One
+// frame at 60 Hz is what a report's departure is quantised to, so it is what a pair's arrival is
+// allowed to be short by. Everything wider is Metal that was never dug.
+export const MINE_JITTER_MS = 1_000 / 60;
+
+// Server-side floor on how often a client may report mining, and the whole bound on a forged one's
+// income. It is the harvest being claimed, less that jitter: one report is one tile taken to zero,
+// which takes 1_000 / HAND_MINE_RATE ms of holding — ORE_HARVEST_MS in `harvest.ts`, derived there
+// from this same rate and not imported here, because what both sides run must not depend on the
+// client-local module that depends on it. A floor looser than the harvest is a multiplier on a
+// liar's income and nothing else: at 100 ms a motionless forgery earned ten Metal a second against
+// an honest hand's one.
+export const MINE_CADENCE_MS = 1_000 / HAND_MINE_RATE - MINE_JITTER_MS;
 // The one loose reach shared by mining, building and demolishing. "Whatever is on screen" is
 // unknowable server-side, so — like ATTACK_POS_TOLERANCE — this is an anti-teleport bound, not
 // an exact reach.
