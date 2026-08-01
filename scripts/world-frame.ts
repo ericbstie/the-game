@@ -114,7 +114,7 @@ export function entrySource(request: FrameRequest, modules = MODULES): string {
 import { drawWorld } from ${JSON.stringify(modules.draw)};
 import { createSpriteCache } from ${JSON.stringify(modules.cache)};
 import { SPRITES } from ${JSON.stringify(modules.registry)};
-import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBursts, demoFloats, demoPuffs, demoShots, demoWorld } from ${JSON.stringify(modules.world)};
+import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBlood, demoBursts, demoFloats, demoPuffs, demoShots, demoWorld } from ${JSON.stringify(modules.world)};
 
 const dpr = ${request.dpr};
 // How far the blow threw the view off the camera (#142). Applied to the camera the world is painted
@@ -164,6 +164,11 @@ drawWorld(ctx, world, {
   // On bare paper where spiders have died, because that is the only place the game ever puts one —
   // a puff replaces a sprite rather than annotating it (#116).
   puffs: demoPuffs(DEMO_NOW),
+  // The floor's blood (#140): a trail behind the bloodling that is still running and a stain where
+  // one went off. The only colour in the frame, and the only mark that is filled rather than struck,
+  // so this picture is the whole channel for whether it reads against white paper at every step of
+  // its fade — no sprite sheet carries it and no spy says how red is red.
+  blood: demoBlood(world, DEMO_NOW),
   // How black the blow left the screen this frame (#142). Zero — the default — is a frame nobody
   // was hit on, and lays nothing at all.
   damageFlash: ${fx.flash},

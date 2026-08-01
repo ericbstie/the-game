@@ -6,6 +6,7 @@ import reconnectingIcon from "../sprite/reconnecting";
 import { SPRITES } from "../sprite/registry";
 import { SpriteIcon } from "../sprite/SpriteIcon";
 import warningIcon from "../sprite/warning";
+import { freshBlood, stepBlood } from "./blood";
 import {
   BUILD_CADENCE_MS,
   BUILD_SLOTS,
@@ -156,6 +157,10 @@ export function GameScreen({
   // set, so it lives with the loop that draws it rather than on the wire or in `ClientWorld` — the
   // beat is the same one the bank is paid on, but which miners *emit* is a question about the camera.
   const floatsRef = useRef(freshMetalFloats());
+  // The blood the bloodlings are leaving on the floor (#140). Here for the reason the floats are,
+  // and one more of its own: a decal is spawned by *motion*, which only a drawn frame can see, and
+  // it is culled and capped against the camera this loop already holds.
+  const bloodRef = useRef(freshBlood());
   // How much of whatever is under the cursor this player has dug out or pulled down (#130). One
   // pair, client-local: it never rides the wire, so a teammate on the same tile is digging their
   // own, and it is dropped the moment the button comes up.
@@ -506,6 +511,10 @@ export function GameScreen({
               clock,
               mined,
             ),
+            // The floor's blood (#140), accrued off the very enemies this frame is about to draw.
+            // Handed the true camera for the same reason the floats are: this cull decides whether
+            // a mark is ever spawned, and a swing of `SHAKE_REACH` may not decide that.
+            blood: stepBlood(bloodRef.current, snapshot.enemies, camera, viewport, clock),
             // Aged to the burst's own lifetime, on the same frame clock the snapshot above was
             // taken on — `impactMarks` is what puts the enemy render delay between the two, so a
             // burst and the spider it was struck on come out of one instant (#115).

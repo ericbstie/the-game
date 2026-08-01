@@ -32,6 +32,8 @@ import {
   slidePos,
 } from "./build";
 import {
+  BLAST_DAMAGE,
+  BLAST_RADIUS,
   enemyContactCadenceMs,
   enemyContactDamage,
   enemyRadius,
@@ -273,6 +275,22 @@ export class ClientWorld {
     }
   }
 
+  // One bloodling going off at `at` (#140). The owner takes `BLAST_DAMAGE` if it is standing inside
+  // the blast — measured from its body's centre, like every other reach in this class — and a dead
+  // owner takes nothing, exactly as it takes no further bite.
+  //
+  // No cadence and no per-enemy stamp, unlike contact damage: a blast happens once because the
+  // thing that dealt it is gone, and `applyMapDelta` drops a stale delta before it reaches here, so
+  // there is no repeat for a cadence to hold off.
+  private blast(at: Vec2, now: number): void {
+    if (this.selfHp <= 0) return;
+    const self = this.avatars.get(this.selfId);
+    if (!self) return;
+    if (Math.hypot(at.x - self.pos.x, at.y - self.pos.y) > BLAST_RADIUS) return;
+    this.selfHp = Math.max(0, this.selfHp - BLAST_DAMAGE);
+    this.lastDamageAt = now;
+  }
+
   hp(): number {
     return this.selfHp;
   }
@@ -347,10 +365,15 @@ export class ClientWorld {
       // it goes where that drawing was. An enemy killed before its first move sample falls back to
       // the spawn position, which is what its sprite was showing.
       if (enemy) {
-        this.deaths.push({
-          pos: interpolateAt(enemy.buffer, now - ENEMY_RENDER_DELAY_MS) ?? { ...enemy.pos },
-          at: now,
-        });
+        const where = interpolateAt(enemy.buffer, now - ENEMY_RENDER_DELAY_MS) ?? { ...enemy.pos };
+        this.deaths.push({ pos: where, at: now });
+        // A bloodling's death *is* its blast (#140), so the blow lands here — off the death the
+        // client is already streamed, with nothing added to the wire to carry it. That the sim
+        // kills it by arriving and that a squadmate shoots it are the same event to this class,
+        // and deliberately: a bloodling that bursts point-blank because somebody shot it still
+        // bursts. The owner owns its health, so it judges the blow itself, on the same terms it
+        // judges a bite — its own true position, against the point the spider was drawn at.
+        if (enemy.kind === "bloodling") this.blast(where, now);
       }
       this.enemies.delete(id);
     }
