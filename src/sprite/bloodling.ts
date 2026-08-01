@@ -7,29 +7,32 @@ import type { SpriteSubject } from "./sheet";
 // **It is the one drawing in the set that is not black ink, and the break is a decision** — dark
 // purple carapace, vibrant green sack (README.md, #140). What the break buys is colour and nothing
 // else. The drawing stays in the house idiom: bold contour, solid fill, no interior detail, no
-// gradient and no shading. Every coloured mass is a black contour laid down first with one flat
-// fill inside it, and the legs, claws and jaws are pure ink like every other creature's. The
+// gradient and no shading. Each coloured mass is a black contour laid down as an outset with one
+// flat fill inside it, and the legs, claws and jaws are pure ink like every other creature's. The
 // carapace is the colour the fallback disc already used before this sprite landed
 // (`src/game/draw.ts:322`), so the shape being replaced and the one replacing it are one animal.
 //
-// The projection is the hybrid #76 fixes for the creatures: **the body is upright**, seen head-on,
-// while **the legs splay flat around it**, seen from above. Four things follow, and they are what
-// the sprite is made of.
+// The projection is the hybrid #76 fixes for the creatures: **the masses are upright**, seen
+// head-on, while **everything that says where the creature is pointing lies flat**, seen from
+// above. Four things follow, and they are what the sprite is made of.
 //
-// - **Three masses, stacked rather than strung out.** A carapace low and wide, the sack riding on
-//   its back, a small head nosing out of the front. The first cut drew two lobes side by side the
-//   way the elite does and came out a peanut: two circles of equal weight with nothing under them.
-//   Stacking is what makes the sack read as *carried* — the purple is the base at every facing, and
-//   the green is what sits on it.
-// - **It turns by overlap.** An upright body cannot slide up or down the screen as it turns, so the
-//   turn is carried by the masses trading places: the head leads, drops and swells as the creature
-//   comes at you, and the sack takes the front and covers it as the creature runs away. Nothing is
-//   drawn per facing, so nothing can drift between facings.
-// - **The sack is the threat, so it is the silhouette.** Wider than the carapace it sits on, so it
-//   overhangs; and lumpy rather than elliptical, because a taut skin under pressure is what "about
-//   to burst" looks like in one outline.
-// - **The legs are short, so they are what says *squat*.** They leave a hip buried in the carapace,
-//   arch once, and land on a flattened ring that only just escapes the overhang.
+// - **The carapace is one path, not two masses.** A body ellipse and a snout ellipse are added to
+//   the same path and filled once, so what comes out is their union under a single contour. Drawing
+//   the snout as its own mass on top of the body put a closed ink ring *inside* the purple, and a
+//   blind reviewer read that ring — correctly, against this style — as interior shading. A union
+//   has no interior line to misread.
+// - **The snout is what turns, and it turns the outline with it.** It hangs off the body on the
+//   flattened plan, so the purple silhouette is a teardrop that points where the creature is going:
+//   out to the side in profile, down at the viewer in the charge, hidden behind the sack in the
+//   rear views. That is the whole of the facing signal, and it had to move into the silhouette —
+//   the same reviewer, told there were eight facings, could not tell them apart while the thing
+//   that moved most was buried inside another mass.
+// - **The sack trails on that same plan**, so it swings vertically between the charge and the
+//   retreat as well as laterally between the two profiles. An earlier cut froze its height on the
+//   grounds that perspective and elevation cancel; they do, and the cost was that facing 2 and
+//   facing 6 came out the same drawing.
+// - **The legs are short, so they are what says *squat*.** They leave a hip buried in the body,
+//   arch once, and land on a flattened ring that only just escapes the sack's overhang.
 //
 // Six legs, not eight: the two spiders own eight, and at 32 px a player reads a silhouette rather
 // than counting limbs. Six also walk the alternating tripod an insect actually walks — front and
@@ -42,7 +45,7 @@ const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
 
 // #73 fixed the convention: `angle = facing / 8 × 2π` on a canvas whose y points down, so 0 = E,
-// 2 = S with the face turned at the player, 4 = W, 6 = N showing the sack.
+// 2 = S with the snout turned at the player, 4 = W, 6 = N showing the sack.
 const heading = (facing: number) => (facing / FACINGS) * TAU;
 
 const INK = "#000000";
@@ -60,70 +63,66 @@ const SACK_SKIN = "#5ec71a";
 // the line still has a solid device pixel in it on an ordinary monitor.
 const LINE = 1.7;
 
+// How much of a plan-space offset survives into screen y. Everything that says *where the creature
+// points* — the snout, the sack's trail, the jaws, the ring of feet — is laid out on this one
+// flattened plan, so they all turn together and none of them can disagree about the heading.
+const PLAN = 0.68;
+
 // Enemies are blitted **centred** on their position, not stood on it (`draw.ts` `paintEnemy`): the
 // flat ring of feet is the floor contact, so that ring sits near the middle of the box and the mass
 // rises out of it.
-const FLOOR = { x: 15.9, y: 20.8 }; // the centre of the ring of feet
-const CORE = { x: 15.9, y: 16.5 }; // what the three masses hang off
+const FLOOR = { x: 15.9, y: 20.9 }; // the centre of the ring of feet
+const CORE = { x: 15.9, y: 16.6 }; // what the masses hang off
 
-// Low and wide, and the base of the silhouette at every facing: it is the only mass the legs can
-// plausibly leave from, and the only purple that survives the rear views.
-const SHELL = { rx: 6.8, ry: 5 };
-const SHELL_DROP = 2;
-const SHELL_DEPTH = 0.6; // it barely moves; it is the middle of the animal
-const SHELL_LEAD = 1.2; // but it leans the way the creature is going, which is what parts the rear facings
+const BODY = { rx: 6.2, ry: 4.9 };
+const BODY_DROP = 1.2;
+const BODY_LEAN = 0.8; // it leans the way it is going, which parts the two rear quarters
 
-// Bigger than the shell in both axes, so it overhangs on every side — and it rides high enough that
-// its underside never reaches the shell's, or the purple base disappears at the rear facings.
-//
-// It also barely moves up or down as the creature turns, and that is a choice against perspective:
-// being *behind* the body would drop it down the screen as the creature runs away, while being
-// *above* it would raise it, and at this size the two cancel into a mass that swims. Height wins,
-// the lateral slide carries the turn, and the sack stays where a sack on a back belongs.
-const SACK = { rx: 9, ry: 7.4 };
-const SACK_RIDE = 4.4;
-const SACK_DEPTH = 0.4;
-const SACK_TRAIL = 2; // how far it slides off the back as the creature turns side-on
+// Reach is generous on purpose: this lobe has to break the body's outline at every facing it is
+// visible in, or it stops being a silhouette and goes back to being a ring inside a fill.
+const SNOUT = { rx: 3.9, ry: 3.2 };
+const SNOUT_REACH = 5.6;
+const SNOUT_DROP = 0.7;
 
-const HEAD = { rx: 4.3, ry: 2.9 };
-const HEAD_LEAD = 5.6;
-const HEAD_DROP = 3.3;
-const HEAD_DEPTH = 2; // it noses down toward the floor as the creature comes at you
+// Bigger than the body in both axes, so it overhangs on every side.
+const SACK = { rx: 8.4, ry: 6.4 };
+const SACK_RIDE = 4.2;
+const SACK_TRAIL = 3;
 
 const SWELL = 0.07; // the near mass grows this much, the far one shrinks by it
 
-// Seven radii, odd so no rotation of them can come out mirror-symmetric, held fixed in the sack's
+// Nine radii, odd so no rotation of them can come out mirror-symmetric, held fixed in the sack's
 // own frame: the lumps belong to the sack and travel with it rather than crawling as it turns.
-const LUMPS = [1, 1.09, 0.945, 1.07, 0.96, 1.085, 0.985];
+// Shallow, because a constant added to a varying radius is not a constant-width offset — the ink
+// thins where the outline bends out, and past about a twentieth that unevenness reads as a traced
+// line rather than an inked one.
+const LUMPS = [1, 1.05, 0.965, 1.04, 0.975, 1.045, 0.97, 1.035, 0.98];
 const LUMP_TURN = 0.55;
 
-// The plan the legs radiate over, squashed toward the horizon: a true circle of feet would put the
-// front pair a third of the box below the creature and the back pair inside the sack.
-const FLATTEN = 0.33;
 const HIP_R = 3;
-const HIP_LIFT = 3.5; // the hip starts up inside the shell, so the two fills meet with no seam
-const KNEE_LIFT = 3.2;
+const HIP_LIFT = 3.5; // the hip starts up inside the body, so the two fills meet with no seam
+const KNEE_LIFT = 3;
 const LEG_HIP_W = 3;
-const LEG_TIP_W = 1.6; // a leg thinner than a logical px is an intermittent grey smear at real size
-const LEG_BELLY = 0.35; // a rubber hose swells at the belly of its curve; constant width reads as pipe
+const LEG_TIP_W = 1.9; // a leg thinner than a logical px is an intermittent grey smear at real size
+const LEG_BELLY = 0.12; // a hose swells at the belly of its curve — but only just, or it reads as scribble
+const LEG_PLAN = 0.33; // the feet ring is flatter than everything else: they all have to land clear
 
 const CLAW_LEN = 1.8;
 const CLAW_SPLAY = 30 * DEG; // the two tines, off the leg's own outward direction
 const CLAW_W = 1.2;
 
-// The jaws: two ink tines off the front of the head, and the creature's whole face.
+// The jaws: two ink tines off the front of the snout, and the creature's whole face.
 //
-// **There are no eyes, and that is the decision the head's size forces.** The spiders wear paper
+// **There are no eyes, and that is the decision the snout's size forces.** The spiders wear paper
 // eyes because they are one black mass that needs a face, and they have the pixels for a pair — the
-// elite's head is 14 px across in a 48 px box. This head is 8, which puts an eye at three device
+// elite's head is 14 px across in a 48 px box. This one is 8, which puts an eye at three device
 // pixels, and at three pixels a paper round on a dark curve is indistinguishable from the specular
 // highlight that nothing else in this game has. Jaws are silhouette rather than interior detail, so
 // they hold their shape at real size the way the claws do, and a mindless bomb with a biting end
 // and no eyes is closer to what this creature is than a face would be.
-const JAW_LEN = 3.1;
+const JAW_LEN = 2.8;
 const JAW_SPLAY = 24 * DEG;
 const JAW_W = 1;
-const JAW_PLAN = 0.55; // the flattening the forward direction takes, matching the legs' plan
 
 // Neither frame is the neutral pose. The walk cycle parks on frame 0 whenever an enemy is not
 // moving (#81), but a cycle that returns to symmetry every other frame reads as a pulse rather than
@@ -134,15 +133,20 @@ const STRIDE = 20; // degrees a swinging leg carries fore or aft
 const LIFT = 2; // how far a swinging foot comes off the floor
 const GATHER = 0.86; // and how far it is pulled in toward the body
 
-// The mass drops as the planted tripod takes the weight, and the sack does not keep up with it: it
-// falls a third as far and stretches as it goes, so the gap between it and the shell closes and
-// opens. That lag is the whole of "full of liquid" — the legs say walk, and the sack settling a beat
-// behind them says what is inside it.
-const BOB = 0.9;
-const SACK_LAG = 0.35;
-const SACK_STRETCH = 0.04;
+// What the body does between the two frames, and it has to be *relative* motion or a fresh eye sees
+// none of it: a first cut moved every mass down together by a whole pixel and read, to a reviewer
+// who had not been told, as scratchy legs flickering under a body that never moved.
+//
+// So the carapace drops as the planted tripod takes the weight and **the sack rises against it**,
+// stretching as it goes — a mass with liquid in it does not follow the frame it is carried on. And
+// the whole creature sways across its own heading, which is what a six-legged walk does and what
+// makes the second frame a different pose rather than the first one lower down.
+const BOB = 1.3;
+const SACK_LAG = -0.35;
+const SACK_STRETCH = 0.06;
+const SWAY = 0.55;
 
-// Past here the head is turned away, and the sack — nearer now — laps over it and takes the box.
+// Past here the snout is turned away, and the sack — nearer now — laps over it and takes the box.
 const FACE_HORIZON = -0.12;
 
 interface Point {
@@ -169,9 +173,9 @@ interface Leg {
 }
 
 const LEGS: Leg[] = [
-  { spread: 40, reach: 12.9, bow: 13, hook: -9, tripod: true, skew: 3, slack: 0.96 },
-  { spread: 95, reach: 12.6, bow: 3, hook: 5, tripod: false, skew: -2.5, slack: 1.03 },
-  { spread: 155, reach: 13, bow: -13, hook: 12, tripod: true, skew: 3.5, slack: 0.955 },
+  { spread: 40, reach: 11.9, bow: 13, hook: -9, tripod: true, skew: 3, slack: 0.96 },
+  { spread: 95, reach: 11.7, bow: 3, hook: 5, tripod: false, skew: -2.5, slack: 1.03 },
+  { spread: 155, reach: 12.1, bow: -13, hook: 12, tripod: true, skew: 3.5, slack: 0.955 },
 ];
 
 const bloodling: SpriteSubject = {
@@ -184,18 +188,21 @@ const bloodling: SpriteSubject = {
     const toward = Math.sin(theta); // +1 running at the player, -1 running away
     const across = Math.cos(theta);
     const bob = frame === 0 ? 0 : BOB;
+    // Across the heading, on the same flattened plan, so the sway is a gait and not a slide.
+    const sway = (frame === 0 ? -SWAY : SWAY) / 2;
+    const rock = { x: -toward * sway, y: across * sway * PLAN };
 
-    const shell = lobe(SHELL, across * SHELL_LEAD, SHELL_DROP + toward * SHELL_DEPTH + bob, 1);
-    const head = lobe(
-      HEAD,
-      across * HEAD_LEAD,
-      HEAD_DROP + toward * HEAD_DEPTH + bob,
+    const body = at(BODY, across * BODY_LEAN + rock.x, BODY_DROP + bob + rock.y, 1);
+    const snout = at(
+      SNOUT,
+      across * SNOUT_REACH + rock.x,
+      toward * SNOUT_REACH * PLAN + SNOUT_DROP + bob + rock.y,
       1 + toward * SWELL,
     );
-    const sack = lobe(
+    const sack = at(
       SACK,
-      -across * SACK_TRAIL,
-      -SACK_RIDE - toward * SACK_DEPTH + bob * SACK_LAG,
+      -across * SACK_TRAIL + rock.x,
+      -toward * SACK_TRAIL * PLAN - SACK_RIDE + bob * SACK_LAG + rock.y,
       1 - toward * SWELL,
     );
     const stretch = frame === 1 ? 1 + SACK_STRETCH : 1;
@@ -209,35 +216,41 @@ const bloodling: SpriteSubject = {
     }
 
     // Whichever mass is nearer goes on top, and each one's own contour is what parts the colours.
-    // The jaws are gated on the head being turned at the viewer, so the three rear facings lose the
+    // The jaws are gated on the snout being turned at the viewer, so the three rear facings lose the
     // face without a special case — and there the sack, being nearest, laps over everything and
     // takes the box, which is what a player chasing one sees.
     if (toward < FACE_HORIZON) {
-      drawMass(ctx, head, CARAPACE);
-      drawMass(ctx, shell, CARAPACE);
+      drawCarapace(ctx, body, snout);
       drawSack(ctx, sack);
       return;
     }
     drawSack(ctx, sack);
-    drawMass(ctx, shell, CARAPACE);
-    drawMass(ctx, head, CARAPACE);
-    drawJaws(ctx, head, theta);
+    drawCarapace(ctx, body, snout);
+    drawJaws(ctx, snout, theta);
   },
 };
 
-function lobe(r: { rx: number; ry: number }, dx: number, dy: number, scale: number): Mass {
+function at(r: { rx: number; ry: number }, dx: number, dy: number, scale: number): Mass {
   return { x: CORE.x + dx, y: CORE.y + dy, rx: r.rx * scale, ry: r.ry * scale };
 }
 
-function drawMass(ctx: CanvasRenderingContext2D, m: Mass, fill: string): void {
+// Both ellipses go into one path and are filled once, so the nonzero rule takes their union and the
+// waist between them closes over. Outsetting each lobe rather than the union thickens the ink a
+// little where they meet — which is what a pen does at a joint, and the alternative is a notch.
+function drawCarapace(ctx: CanvasRenderingContext2D, body: Mass, snout: Mass): void {
   ctx.fillStyle = INK;
-  ctx.beginPath();
-  ctx.ellipse(m.x, m.y, m.rx + LINE, m.ry + LINE, 0, 0, TAU);
+  carapacePath(ctx, body, snout, LINE);
   ctx.fill();
-  ctx.fillStyle = fill;
-  ctx.beginPath();
-  ctx.ellipse(m.x, m.y, m.rx, m.ry, 0, 0, TAU);
+  ctx.fillStyle = CARAPACE;
+  carapacePath(ctx, body, snout, 0);
   ctx.fill();
+}
+
+function carapacePath(ctx: CanvasRenderingContext2D, body: Mass, snout: Mass, out: number): void {
+  ctx.beginPath();
+  for (const m of [body, snout]) {
+    ctx.ellipse(m.x, m.y, m.rx + out, m.ry + out, 0, 0, TAU);
+  }
 }
 
 function drawSack(ctx: CanvasRenderingContext2D, m: Mass): void {
@@ -249,8 +262,8 @@ function drawSack(ctx: CanvasRenderingContext2D, m: Mass): void {
   ctx.fill();
 }
 
-// The sack's outline: quadratics through the midpoints of seven jittered radial samples, so the
-// corners round off into lobes instead of reading as a heptagon at eighteen pixels across. `out` is
+// The sack's outline: quadratics through the midpoints of nine jittered radial samples, so the
+// corners round off into lobes instead of reading as a polygon at seventeen pixels across. `out` is
 // the contour's weight, laid down before the fill rather than stroked around it.
 function lumpy(ctx: CanvasRenderingContext2D, m: Mass, out: number): void {
   const n = LUMPS.length;
@@ -282,7 +295,7 @@ function floorPoint(radius: number, degrees: number, height: number): Point {
   const a = degrees * DEG;
   return {
     x: FLOOR.x + Math.cos(a) * radius,
-    y: FLOOR.y + Math.sin(a) * radius * FLATTEN - height,
+    y: FLOOR.y + Math.sin(a) * radius * LEG_PLAN - height,
   };
 }
 
@@ -319,17 +332,17 @@ function drawLeg(
   tines(ctx, knee, foot, CLAW_LEN, CLAW_W, CLAW_SPLAY);
 }
 
-// Where the heading leaves the head's outline, on the same flattened plan the legs splay over — so
-// the jaws lie along the floor when the creature runs across the screen and swing down toward the
-// viewer as it turns to charge.
-function drawJaws(ctx: CanvasRenderingContext2D, head: Mass, theta: number): void {
+// Where the heading leaves the snout's outline, on the same flattened plan everything else turns
+// on — so the jaws lie along the floor when the creature runs across the screen and swing down at
+// the viewer as it turns to charge.
+function drawJaws(ctx: CanvasRenderingContext2D, snout: Mass, theta: number): void {
   const dx = Math.cos(theta);
-  const dy = Math.sin(theta) * JAW_PLAN;
+  const dy = Math.sin(theta) * PLAN;
   // Off the *contour* rather than the fill, so the tines stand clear of the ink that closes the
-  // head instead of being swallowed by it.
-  const t = 1 / Math.hypot(dx / (head.rx + LINE), dy / (head.ry + LINE));
+  // snout instead of being swallowed by it.
+  const t = 1 / Math.hypot(dx / (snout.rx + LINE), dy / (snout.ry + LINE));
   ctx.fillStyle = INK;
-  tines(ctx, head, { x: head.x + dx * t, y: head.y + dy * t }, JAW_LEN, JAW_W, JAW_SPLAY);
+  tines(ctx, snout, { x: snout.x + dx * t, y: snout.y + dy * t }, JAW_LEN, JAW_W, JAW_SPLAY);
 }
 
 const CURVE_STEPS = 14;
