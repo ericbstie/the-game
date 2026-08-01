@@ -58,7 +58,7 @@ import {
   WANDERER_CHANCE_OUTER,
   waveSize,
 } from "./enemies";
-import { ARENA } from "./world";
+import { ARENA, PLAYER_RADIUS } from "./world";
 import { DEFAULT_WORLD_SETTINGS as DEFAULTS } from "./worldSettings";
 
 const C = { x: ARENA.width / 2, y: ARENA.height / 2 };
@@ -726,6 +726,94 @@ describe("stepEnemies AI (ENGAGED / HUNTING / WANDER)", () => {
     const snapshot = player({ x: C.x + 1200, y: C.y });
     stepEnemies(s, players, [], 100);
     expect(players).toEqual(snapshot);
+  });
+});
+
+// #131. An enemy steers at the *lead point* — where the player ends up if they hold the heading
+// their last two position samples describe, half the current gap ahead of them — rather than at the
+// body itself. The lead is navigation only: aggro, the lock and contact all still read the body.
+describe("#131: an enemy chases the lead point, not the player", () => {
+  const DT = 100;
+  const TRAVEL = (GRUNT_SPEED * DT) / 1000;
+  // A lead is a place the player could be, so it is bounded exactly where `stepPos` bounds them.
+  const WALL = ARENA.width - PLAYER_RADIUS;
+
+  // Where an enemy at `from` lands after one step straight at `to`.
+  const stepped = (from: Vec2, to: Vec2): Vec2 => {
+    const len = Math.hypot(to.x - from.x, to.y - from.y);
+    return {
+      x: from.x + ((to.x - from.x) / len) * TRAVEL,
+      y: from.y + ((to.y - from.y) / len) * TRAVEL,
+    };
+  };
+  const landsOn = (at: Vec2, expected: Vec2) => {
+    expect(at.x).toBeCloseTo(expected.x, 6);
+    expect(at.y).toBeCloseTo(expected.y, 6);
+  };
+
+  test("the chase point is half the gap ahead of the player, along their heading", () => {
+    const from = { ...C };
+    const s = stateWith([grunt("e1", { ...from })]);
+    const pos = { x: C.x + 1_000, y: C.y };
+    const running = { id: "p1", pos, prev: { x: pos.x, y: pos.y - 10 } }; // due south
+    stepEnemies(s, [running], [], DT);
+    landsOn(only(s).pos, stepped(from, { x: pos.x, y: pos.y + 500 })); // gap 1,000 → led by 500
+  });
+
+  test("and it is half of *this* gap, so a nearer player is led less", () => {
+    const from = { ...C };
+    const s = stateWith([grunt("e1", { ...from })]);
+    const pos = { x: C.x + 200, y: C.y };
+    const running = { id: "p1", pos, prev: { x: pos.x, y: pos.y - 10 } };
+    stepEnemies(s, [running], [], DT);
+    landsOn(only(s).pos, stepped(from, { x: pos.x, y: pos.y + 100 })); // gap 200 → led by 100
+  });
+
+  test("a lead that would fall outside the arena is clamped to its bounds", () => {
+    const from = { x: C.x, y: C.y - 3_000 }; // off his line, so the clamped heading is visible
+    const hunter: Enemy = { ...grunt("e1", { ...from }), hunt: "p1" }; // no aggro radius at all
+    const s = stateWith([hunter]);
+    const pos = { x: WALL - 5, y: C.y }; // running south-east, a stride short of the east wall
+    const running = { id: "p1", pos, prev: { x: pos.x - 10, y: pos.y - 10 } };
+    stepEnemies(s, [running], [], DT); // chased from ~15,900 u back: the lead runs 5,600 u of wall
+    const lead = (Math.hypot(pos.x - from.x, pos.y - from.y) / 2) * Math.SQRT1_2; // split evenly
+    landsOn(only(s).pos, stepped(from, { x: WALL, y: pos.y + lead })); // x clamped, y untouched
+  });
+
+  test("a stationary player is chased at their raw position", () => {
+    const from = { ...C };
+    const s = stateWith([grunt("e1", { ...from })]);
+    const standing = { x: C.x + 800, y: C.y + 600 };
+    stepEnemies(s, [{ id: "p1", pos: standing, prev: { ...standing } }], [], DT);
+    landsOn(only(s).pos, stepped(from, standing));
+  });
+
+  test("and so is one the sim has seen only once — there is no earlier sample to lead from", () => {
+    const from = { ...C };
+    const s = stateWith([grunt("e1", { ...from })]);
+    const first = { x: C.x + 800, y: C.y + 600 };
+    stepEnemies(s, [{ id: "p1", pos: first }], [], DT);
+    landsOn(only(s).pos, stepped(from, first));
+  });
+
+  // The lead is a phantom, and a phantom cannot be noticed or lost: a fleeing player is led to a
+  // point ~2,550 u out, well past AGGRO_RADIUS, while his body stands 1,700 u away.
+  const fleeing = () => {
+    const pos = { x: C.x + AGGRO_RADIUS - 100, y: C.y };
+    return { id: "p1", pos, prev: { x: pos.x - 10, y: pos.y } };
+  };
+
+  test("aggro is acquired on the player: one inside AGGRO_RADIUS whose lead is outside it is seen", () => {
+    const s = stateWith([grunt("e1", { ...C })]);
+    stepEnemies(s, [fleeing()], [], DT);
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
+  });
+
+  test("and the lock breaks on the player leaving AGGRO_RADIUS, never on the lead leaving it", () => {
+    const locked: Enemy = { ...grunt("e1", { ...C }), target: { kind: "player", id: "p1" } };
+    const s = stateWith([locked]);
+    for (let i = 0; i < 10; i++) stepEnemies(s, [fleeing()], [], DT);
+    expect(only(s).target).toEqual({ kind: "player", id: "p1" });
   });
 });
 

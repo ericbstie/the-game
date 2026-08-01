@@ -244,9 +244,13 @@ export interface Nest {
 }
 
 // A read-only player position the sim chases. The sim never mutates these.
+//
+// `prev` is the sample `pos` replaced — the two together are the only heading the sim has, and what
+// it leads a chase by (#131). Absent for a player the hub has heard from exactly once.
 export interface PlayerRef {
   id: PlayerId;
   pos: Vec2;
+  prev?: Vec2;
 }
 
 // A server-validated shot the sim resolves against enemy HP. `pos` is the shot origin,
@@ -826,7 +830,7 @@ function stepEnemy(enemy: Enemy, context: StepContext): void {
   const speed = enemySpeed(enemy.kind) * (context.dtMs / 1000);
   const engaged = acquire(enemy, context);
   // ENGAGED and HUNTING differ only in what `acquire` returned, never in how the step is taken.
-  if (engaged) stepToward(enemy, engaged.pos, speed, context);
+  if (engaged) stepToward(enemy, engaged.lead, speed, context);
   else wander(enemy, speed, context);
 }
 
@@ -855,10 +859,52 @@ function wander(enemy: Enemy, speed: number, context: StepContext): void {
   stepToward(enemy, to, speed, context);
 }
 
+// What an enemy is engaged with: where it is, and where the enemy steers for it. The two differ
+// only for a moving player (#131) — `pos` is the body, which aggro and the lock are judged on, and
+// `lead` is the phantom point ahead of it that navigation aims at.
 interface Engagement {
   pos: Vec2;
+  lead: Vec2;
   radius: number;
   structure?: Structure;
+}
+
+// The lead point, and the one place it is worked out. An enemy steers at where the player is going
+// rather than where they are: `prev` and `pos` are the last two samples the hub accepted, so their
+// difference is the heading, and the lead sits half the current gap along it.
+//
+// Half of *this* gap and no more is what makes the rule self-cancelling: the chase point is never
+// more than 30° off the straight line to the player (sin θ = ½), so an enemy always closes at ≥ 86%
+// of its speed, and the lead shrinks to nothing at contact.
+//
+// A player standing still reports the same point twice, so the delta is exactly zero and the lead
+// collapses onto the raw position — as it does for a player the hub has only one sample of.
+//
+// Clamped into the arena rather than capped in length: a hunter chasing from across the box leads by
+// thousands of units, and a point out past the wall would steer it at a corner nobody can stand in.
+// The bound is the player's own — a lead is a place the player could be, so it is bounded exactly
+// where `stepPos` bounds them.
+function engagePlayer(player: PlayerRef, from: Vec2, arena: Arena): Engagement {
+  const prev = player.prev ?? player.pos;
+  const dx = player.pos.x - prev.x;
+  const dy = player.pos.y - prev.y;
+  const heading = Math.hypot(dx, dy);
+  if (heading === 0) return { pos: player.pos, lead: player.pos, radius: PLAYER_RADIUS };
+  const reach = Math.hypot(player.pos.x - from.x, player.pos.y - from.y) / 2;
+  return {
+    pos: player.pos,
+    lead: {
+      x: clamp(player.pos.x + (dx / heading) * reach, PLAYER_RADIUS, arena.width - PLAYER_RADIUS),
+      y: clamp(player.pos.y + (dy / heading) * reach, PLAYER_RADIUS, arena.height - PLAYER_RADIUS),
+    },
+    radius: PLAYER_RADIUS,
+  };
+}
+
+// A structure does not move, so there is nothing to lead: the enemy steers at it.
+function engageStructure(structure: Structure): Engagement {
+  const pos = structureCenter(structure);
+  return { pos, lead: pos, radius: structureRadius(structure), structure };
 }
 
 // Decide what this enemy is chasing, and set `enemy.target` to match.
@@ -877,14 +923,14 @@ function acquire(enemy: Enemy, context: StepContext): Engagement | null {
   const player = nearestWithin(context.players, enemy.pos, AGGRO_RADIUS);
   if (player) {
     enemy.target = { kind: "player", id: player.id };
-    return { pos: player.pos, radius: PLAYER_RADIUS };
+    return engagePlayer(player, enemy.pos, context.arena);
   }
   if (held) return held; // still locked on its structure; no player has shown up to outrank it
 
   const structure = nearestStructureWithin(context.build, enemy.pos, AGGRO_RADIUS);
   if (structure) {
     enemy.target = { kind: "structure", id: structure.id };
-    return { pos: structureCenter(structure), radius: structureRadius(structure), structure };
+    return engageStructure(structure);
   }
   enemy.target = undefined;
   return hunted(enemy, context);
@@ -896,7 +942,7 @@ function acquire(enemy: Enemy, context: StepContext): Engagement | null {
 function hunted(enemy: Enemy, context: StepContext): Engagement | null {
   if (enemy.hunt === undefined) return null;
   const player = context.players.find((p) => p.id === enemy.hunt);
-  return player ? { pos: player.pos, radius: PLAYER_RADIUS } : null;
+  return player ? engagePlayer(player, enemy.pos, context.arena) : null;
 }
 
 // Where a held target is now, or null if it has died, disconnected, or left the aggro radius —
@@ -910,14 +956,16 @@ function resolveTarget(
   const engagement = (): Engagement | null => {
     if (target.kind === "player") {
       const player = context.players.find((p) => p.id === target.id);
-      return player ? { pos: player.pos, radius: PLAYER_RADIUS } : null;
+      return player ? engagePlayer(player, from, context.arena) : null;
     }
     const structure = context.build?.structures.get(target.id);
     if (!structure) return null;
-    return { pos: structureCenter(structure), radius: structureRadius(structure), structure };
+    return engageStructure(structure);
   };
   const held = engagement();
   if (!held) return null;
+  // The body, never the lead: a phantom point that wandered out of range would break a lock on a
+  // player standing right next to the enemy (#131).
   const dist = Math.hypot(held.pos.x - from.x, held.pos.y - from.y);
   return dist <= AGGRO_RADIUS ? held : null;
 }
