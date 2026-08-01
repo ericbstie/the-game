@@ -888,14 +888,14 @@ function engagePlayer(player: PlayerRef, from: Vec2, arena: Arena): Engagement {
   const prev = player.prev ?? player.pos;
   const dx = player.pos.x - prev.x;
   const dy = player.pos.y - prev.y;
-  const heading = Math.hypot(dx, dy);
-  if (heading === 0) return { pos: player.pos, lead: player.pos, radius: PLAYER_RADIUS };
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return { pos: player.pos, lead: player.pos, radius: PLAYER_RADIUS };
   const reach = Math.hypot(player.pos.x - from.x, player.pos.y - from.y) / 2;
   return {
     pos: player.pos,
     lead: {
-      x: clamp(player.pos.x + (dx / heading) * reach, PLAYER_RADIUS, arena.width - PLAYER_RADIUS),
-      y: clamp(player.pos.y + (dy / heading) * reach, PLAYER_RADIUS, arena.height - PLAYER_RADIUS),
+      x: clamp(player.pos.x + (dx / len) * reach, PLAYER_RADIUS, arena.width - PLAYER_RADIUS),
+      y: clamp(player.pos.y + (dy / len) * reach, PLAYER_RADIUS, arena.height - PLAYER_RADIUS),
     },
     radius: PLAYER_RADIUS,
   };

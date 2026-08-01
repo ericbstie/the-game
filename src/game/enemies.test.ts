@@ -815,6 +815,20 @@ describe("#131: an enemy chases the lead point, not the player", () => {
     for (let i = 0; i < 10; i++) stepEnemies(s, [fleeing()], [], DT);
     expect(only(s).target).toEqual({ kind: "player", id: "p1" });
   });
+
+  // The mirror of `fleeing`, and the half the lock is actually decided on: a body 2,000 u out —
+  // past AGGRO_RADIUS — charging straight in, so its lead sits 1,000 u out, well inside.
+  const charging = () => {
+    const pos = { x: C.x + AGGRO_RADIUS + 200, y: C.y };
+    return { id: "p1", pos, prev: { x: pos.x + 10, y: pos.y } };
+  };
+
+  test("a lead back inside AGGRO_RADIUS does not hold a lock the player has run out of", () => {
+    const locked: Enemy = { ...grunt("e1", { ...C }), target: { kind: "player", id: "p1" } };
+    const s = stateWith([locked]);
+    stepEnemies(s, [charging()], [], DT);
+    expect(only(s).target).toBeUndefined();
+  });
 });
 
 // #125. What removing the hold edge is for: the arena reads as a gradient — hunter waves early,
