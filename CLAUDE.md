@@ -25,9 +25,11 @@ is the root — it is not nested under anything. **Every issue created in this r
 a sub-issue of the current version's tracking issue** — feature tickets, investigations
 and bugs alike. The one exception is a deferred issue, below.
 
-- **No version is open.** Version 2.0 shipped and closed on 2026-07-30, so there is no
-  root to file under. Open the next version's tracking issue — and label it with its
-  version — before creating any issue that is not `deferred`.
+- [#141](https://github.com/ericbstie/the-game/issues/141) is the **current version's
+  root** — Version 3.0. New issues file under it unless deliberately scheduled further
+  out (below) or `deferred`.
+- [#143](https://github.com/ericbstie/the-game/issues/143) is the **next-version
+  tracker** — Version 4.0, open alongside the current one.
 - [#91](https://github.com/ericbstie/the-game/issues/91) is the **historical record for
   v2.0** — 37 sub-issues, closed and complete, released as v2.28.0. Its closing note
   carries what shipped, what was dropped, and what was left unmeasured.
@@ -35,9 +37,15 @@ and bugs alike. The one exception is a deferred issue, below.
   v1** — milestones 1–5, closed and complete. Read both for how the game got here; never
   file new work under either. A closed tracker cannot carry open work.
 
-When a version ships, close its tracking issue and open the next one. That new issue
-becomes the root for everything after it. Fold anything deliberately left behind into
-the new tracker, saying why it was left.
+**One next-version tracker may be open alongside the current one.** It holds work that
+is committed but scheduled after the current version — a real charter, not a parking
+lot; an idea with no commitment stays `deferred`. Work on the current version first;
+its tree is what ships next. Two open trackers is the ceiling — anything further out
+than next has no business being scheduled yet.
+
+When a version ships, close its tracking issue. The next-version tracker — opened then,
+or already open — becomes the current root. Fold anything deliberately left behind into
+it, saying why it was left.
 
 ### Writing an issue — the author's stance, and nothing else
 
