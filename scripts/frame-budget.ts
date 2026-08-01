@@ -30,6 +30,7 @@ const BUILD_MODULE = join(import.meta.dir, "../src/game/build.ts");
 const SETTINGS_MODULE = join(import.meta.dir, "../src/game/worldSettings.ts");
 const FLOATS_MODULE = join(import.meta.dir, "../src/game/floats.ts");
 const FX_MODULE = join(import.meta.dir, "../src/game/fx.ts");
+const DAMAGE_MODULE = join(import.meta.dir, "../src/game/damageFx.ts");
 
 export interface BudgetRequest {
   sprites: Record<string, string>;
@@ -91,6 +92,7 @@ export interface BudgetResult {
   burstsMs: Record<string, number>;
   puffsMs: Record<string, number>;
   letteringMs: Record<string, number>;
+  veilMs: number;
 }
 
 export function entrySource(request: BudgetRequest): string {
@@ -109,6 +111,7 @@ import { DEFAULT_WORLD_SETTINGS } from ${JSON.stringify(SETTINGS_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
 import { inkPuff, speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
 import { letteringAt } from ${JSON.stringify(DRAW_MODULE)};
+import { FLASH_ALPHA } from ${JSON.stringify(DAMAGE_MODULE)};
 
 const VIEW = { width: 800, height: 600 };
 const DPR = ${request.dpr};
@@ -392,6 +395,16 @@ try {
     });
   };
 
+  // The veil (#142), laid the way drawWorld lays it: one rgba fill over the whole viewport, at the
+  // alpha the blow itself puts up. Standalone for the reason every mark under a millisecond on this
+  // page is — the whole-frame ladder cannot resolve one — and it is also the figure rule 2 has been
+  // missing since #72, which prices full-screen *mechanisms* and never a single pass on its own.
+  const veilMs = measure(() => {
+    setup();
+    ctx.fillStyle = "rgba(0, 0, 0, " + FLASH_ALPHA + ")";
+    ctx.fillRect(CAM.x, CAM.y, VIEW.width, VIEW.height);
+  });
+
   const result = {
     standing: full.enemies.length + STRUCTURES + full.players.length + full.nests.length,
     blits,
@@ -417,6 +430,7 @@ try {
     burstsMs: { [BURSTS]: +bursts(BURSTS).toFixed(3), 25: +bursts(25).toFixed(3), 50: +bursts(50).toFixed(3), 150: +bursts(150).toFixed(3) },
     puffsMs: { [PUFFS]: +puffs(PUFFS).toFixed(3), 25: +puffs(25).toFixed(3), 50: +puffs(50).toFixed(3), 150: +puffs(150).toFixed(3) },
     letteringMs: { [LETTERING]: +words(LETTERING).toFixed(3), 25: +words(25).toFixed(3), 50: +words(50).toFixed(3), 150: +words(150).toFixed(3) },
+    veilMs: +veilMs.toFixed(3),
   };
 
   // Drawn last so the screenshot is the frame that was measured, not the final probe.
@@ -478,6 +492,9 @@ if (import.meta.main) {
   console.log(`  bursts (150)        ${r.burstsMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log(`  puffs (150)         ${r.puffsMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log(`  lettering (150)     ${r.letteringMs[150].toFixed(3)} ms   standalone, for scale`);
+  console.log(
+    `  the damage veil     ${r.veilMs.toFixed(3)} ms   standalone, one full-viewport fill`,
+  );
   console.log("");
   console.log(`Worst case, measured through the shipped drawWorld`);
   console.log(

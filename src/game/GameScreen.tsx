@@ -23,6 +23,7 @@ import {
 } from "./build";
 import { type Camera, computeCamera } from "./camera";
 import { type ClientWorld, RESPAWN_DELAY_MS } from "./clientWorld";
+import { damageFx } from "./damageFx";
 import { BURST_MS, type BuildGhost, drawWorld, type OwnShot, PUFF_MS, SHOT_LINE_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { freshMetalFloats, stepMetalFloats } from "./floats";
@@ -428,7 +429,22 @@ export function GameScreen({
           const viewport = { width: w, height: h };
           const camera = computeCamera(self, viewport, world.arena);
           aimRef.current = { camera, self }; // feed the attack handlers the live origin + camera
-          ctx.setTransform(dpr, 0, 0, dpr, -camera.x * dpr, -camera.y * dpr);
+          // What a blow you took does to the screen (#142). The swing is applied to the camera the
+          // world is *painted* from and to nothing else: `aimRef` above keeps the true one, so a
+          // shaking screen never moves where a click lands or which tile the cursor is over. Every
+          // consumer inside `drawWorld` — the clear, the paper, the cull, the pixel snap and the
+          // corner map — follows the swing, or the frame would be painted through one camera and
+          // bounded by another.
+          //
+          // `stepMetalFloats` below is the one consumer outside it, and it is handed the true
+          // camera deliberately: its cull decides whether a `+1` is ever *spawned*, and a crossing
+          // it drops is dropped for good (`floats.ts`). A swing of `SHAKE_REACH` may not decide
+          // that — and it has nothing to decide, being well inside the 15-unit pad the cull already
+          // carries for a miner's own footprint. A float that is spawned is then painted through
+          // `view` with everything else.
+          const fx = damageFx(clock - world.damagedAt());
+          const view = { x: camera.x + fx.shake.x, y: camera.y + fx.shake.y };
+          ctx.setTransform(dpr, 0, 0, dpr, -view.x * dpr, -view.y * dpr);
           const kind = selectedRef.current;
           const ghost: BuildGhost | undefined = kind
             ? {
@@ -451,10 +467,11 @@ export function GameScreen({
           // resolution, and the cache empties itself rather than being told to.
           drawWorld(ctx, snapshot, {
             selfId: selfIdRef.current,
-            camera,
+            camera: view,
             viewport,
             ghost,
             dpr,
+            damageFlash: fx.flash,
             minimapCoverage: minimapCoverageRef.current,
             connected: connectedRef.current,
             now: clock,

@@ -400,6 +400,55 @@ describe("ClientWorld self-health (client-authoritative contact damage)", () => 
   });
 });
 
+// #142: the instant the screen's shake and its black veil are timed off. It is the player-side twin
+// of an enemy's `lastHitAt` (#107), and the whole of what makes "a teammate taking damage does not
+// shake your screen" true is *where* it is stamped: `updateHealth` judges the owner's contact damage
+// and nothing else in the class writes it.
+describe("#142: when the owner last took damage", () => {
+  test("a player who has never been hit carries no blow at all", () => {
+    expect(new ClientWorld(init(), "self").damagedAt()).toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  test("contact damage stamps the instant it landed", () => {
+    const w = new ClientWorld(init(), "self");
+    spawnOnSelf(w, { x: 405, y: 300 });
+    w.updateHealth(1000);
+    expect(w.damagedAt()).toBe(1000);
+  });
+
+  test("a frame that takes no damage leaves the stamp where it was", () => {
+    const w = new ClientWorld(init(), "self");
+    spawnOnSelf(w, { x: 405, y: 300 });
+    w.updateHealth(1000);
+    w.updateHealth(1100); // inside the grunt's cadence — in contact, but no blow lands
+    expect(w.damagedAt()).toBe(1000);
+    w.updateHealth(1600); // the cadence has elapsed
+    expect(w.damagedAt()).toBe(1600);
+  });
+
+  test("an enemy out of contact never stamps it", () => {
+    const w = new ClientWorld(init(), "self");
+    spawnOnSelf(w, { x: 900, y: 900 });
+    w.updateHealth(1000);
+    expect(w.damagedAt()).toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  test("a teammate losing health never stamps it", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyPeerHealth("peer", 10, 1);
+    expect(w.damagedAt()).toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  // The reconnect burst carries the owner's own HP and can bring it down, which is a value being
+  // restored rather than a blow being struck. Nothing was hit, so nothing flashes.
+  test("the reconnect burst reseeding the owner's own HP never stamps it", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyPeerHealth("self", 20, 1);
+    expect(w.hp()).toBe(20);
+    expect(w.damagedAt()).toBe(Number.NEGATIVE_INFINITY);
+  });
+});
+
 describe("M4-T4: a wall clamps your own avatar", () => {
   const WALL = BUILDABLES.wall as BuildableSpec;
   const held = (dir: "up" | "down" | "left" | "right") => ({ ...STILL, [dir]: true });

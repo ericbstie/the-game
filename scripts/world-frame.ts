@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { damageFx } from "../src/game/damageFx";
 import { MINIMAP_COVERAGE_U } from "../src/game/minimap";
 import { DEMO_VIEWPORT } from "./demo-world";
 import { capture, measurementsIn } from "./headless";
@@ -9,6 +10,7 @@ import { capture, measurementsIn } from "./headless";
 //   bun run sprite:frame                                     # the calibration pattern as the player
 //   bun run sprite:frame --sprite grunt=src/sprite/grunt.ts   # a real sprite, in a real frame
 //   bun run sprite:frame --map 15600                          # the corner map at its widest level
+//   bun run sprite:frame --damage 0                           # the frame a blow lands on (#142)
 //
 // #77 §6 proved this needs no server, no lobby, no socket and no play-through. It is the only
 // channel that shows a sprite at the size and against the background a player actually sees it,
@@ -36,6 +38,10 @@ export interface FrameRequest {
   // cycled to (#110). In the same units `drawWorld` takes it, so `MINIMAP_COVERAGES` names the
   // three the key steps through and nothing here has to re-list them.
   map: number;
+  // How long ago the blow landed, in ms — the one number the screen's swing and its black veil are
+  // a function of (#142). Infinity is a frame with no blow behind it, which is what a player who
+  // has never been hit carries and what every other frame this script renders has always been.
+  damage: number;
 }
 
 export interface Blit {
@@ -58,6 +64,7 @@ export function parseArgs(argv: string[]): FrameRequest {
   let dpr = DEFAULT_DPR;
   let at: { x: number; y: number } | null = null;
   let map = MINIMAP_COVERAGE_U;
+  let damage = Number.POSITIVE_INFINITY;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--out") out = argv[++i] ?? "";
@@ -67,6 +74,11 @@ export function parseArgs(argv: string[]): FrameRequest {
     } else if (arg === "--map") {
       map = Number(argv[++i]);
       if (!Number.isFinite(map) || map <= 0) throw new Error("--map must be a positive number");
+    } else if (arg === "--damage") {
+      damage = Number(argv[++i]);
+      if (!Number.isFinite(damage) || damage < 0) {
+        throw new Error("--damage wants ms since the blow");
+      }
     } else if (arg === "--at") {
       const pair = (argv[++i] ?? "").split(",").map(Number);
       if (pair.length !== 2 || pair.some((n) => !Number.isFinite(n))) {
@@ -83,10 +95,15 @@ export function parseArgs(argv: string[]): FrameRequest {
   // With nothing asked for, the frame is simply the game as the registry has it. `--sprite` layers
   // a module over that: art under review, or a name nothing has drawn yet. `calibration` is the
   // harness's own test pattern and is never art — pass it explicitly to check the machinery.
-  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr, at, map };
+  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr, at, map, damage };
 }
 
+// The screen's swing and its veil are worked out here rather than in the page, because both are a
+// pure function of one number this script already holds — so the entry states the frame it draws
+// instead of re-deriving it, and a frame with no blow behind it emits the very numbers (a zero
+// offset, no veil) that make it the frame this script has always rendered.
 export function entrySource(request: FrameRequest, modules = MODULES): string {
+  const fx = damageFx(request.damage);
   const imports = Object.keys(request.sprites)
     .map((name, i) => `import s${i} from ${JSON.stringify(request.sprites[name])};`)
     .join("\n");
@@ -100,7 +117,11 @@ import { SPRITES } from ${JSON.stringify(modules.registry)};
 import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBursts, demoFloats, demoPuffs, demoShots, demoWorld } from ${JSON.stringify(modules.world)};
 
 const dpr = ${request.dpr};
-const camera = ${JSON.stringify(request.at)} ?? DEMO_CAMERA;
+// How far the blow threw the view off the camera (#142). Applied to the camera the world is painted
+// from and to nothing else, exactly as \`GameScreen\` applies it.
+const shake = ${JSON.stringify(fx.shake)};
+const at = ${JSON.stringify(request.at)} ?? DEMO_CAMERA;
+const camera = { x: at.x + shake.x, y: at.y + shake.y };
 const viewport = DEMO_VIEWPORT;
 const canvas = document.getElementById("sheet");
 canvas.width = Math.round(viewport.width * dpr);
@@ -143,6 +164,9 @@ drawWorld(ctx, world, {
   // On bare paper where spiders have died, because that is the only place the game ever puts one —
   // a puff replaces a sprite rather than annotating it (#116).
   puffs: demoPuffs(DEMO_NOW),
+  // How black the blow left the screen this frame (#142). Zero — the default — is a frame nobody
+  // was hit on, and lays nothing at all.
+  damageFlash: ${fx.flash},
   // The real registry, so the frame is the game as it actually stands. Anything named on the
   // command line is layered over it — a sprite under review, or one nobody has wired yet.
   sprites: createSpriteCache({ ...SPRITES, ${table} }).source(dpr),
@@ -182,6 +206,7 @@ if (import.meta.main) {
     `frame   ${result.viewport.width}×${result.viewport.height} css at dpr ${result.dpr}`,
   );
   console.log(`map     ${request.map} u across`);
+  console.log(`damage  ${request.damage} ms since the blow`);
   console.log(`sprites ${Object.keys(request.sprites).join(", ") || "none"}`);
   console.log(`blits   ${result.blits.length}`);
   for (const blit of result.blits) {
