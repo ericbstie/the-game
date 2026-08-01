@@ -1736,3 +1736,48 @@ describe("#142: taking damage shakes the screen and flashes it black", () => {
     expect(fired).toEqual([aimDir({ x: 0, y: 0 }, SPAWN, { x: 0, y: 0 })]);
   });
 });
+
+// #136: a Metal dug out by hand floats the same `+1` a miner does, over the tile it came out of.
+// Nothing about it reaches the DOM — it is a client-derived mark inside the render loop, off #130's
+// at-zero event — so what was drawn is the only place it is visible, as the map's zoom and the
+// screen's swing are.
+describe("#136: hand-mining a whole Metal floats a +1 over the ore tile", () => {
+  let drawn: { calls: DrawnCall[]; restore: () => void };
+
+  beforeEach(() => {
+    drawn = recordFrames();
+  });
+  afterEach(() => drawn.restore());
+
+  // Every `+1` painted into the arena so far. No miner stands in either world below, so a number in
+  // the log can only have come out of the hand.
+  const plusOnes = (canvas: HTMLElement) =>
+    drawn.calls.filter((c) => c.into === canvas && c.fn === "fillText" && c.args[0] === "+1");
+
+  const overMetal = () => {
+    const world = armed();
+    world.ore.set(tileKey(CURSOR_TILE), "metal");
+    return world;
+  };
+
+  test("none floats until a whole Metal is out of the ground, and then one does", async () => {
+    const canvas = renderMatch({}, overMetal());
+    fireEvent.mouseDown(canvas, { button: 0 }); // the gun starts stowed, so left-click mines (#120)
+    await nextFrames();
+    expect(plusOnes(canvas)).toEqual([]); // mid-harvest: nothing is banked, so nothing is floated
+    await settle(HARVEST_WINDOW);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(plusOnes(canvas).length).toBeGreaterThan(0);
+  });
+
+  test("it rises from the ore tile, not from the player standing off it", async () => {
+    const canvas = renderMatch({}, overMetal());
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(HARVEST_WINDOW);
+    fireEvent.mouseUp(window, { button: 0 });
+    const [first] = plusOnes(canvas);
+    expect(first.args[1]).toBe(CURSOR_TILE.tx * TILE + TILE / 2); // centred on the tile...
+    expect(first.args[2] as number).toBeLessThanOrEqual(CURSOR_TILE.ty * TILE); // ...off its top edge
+    expect(first.args[1]).not.toBe(SPAWN.x); // and not over the player, who is a screen away from it
+  });
+});

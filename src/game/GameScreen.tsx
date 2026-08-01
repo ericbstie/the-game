@@ -432,6 +432,11 @@ export function GameScreen({
         const harvested = stepHarvest(harvestRef.current, target, dt);
         if (harvested?.kind === "mine") onMineRef.current(harvested.tile);
         if (harvested?.kind === "demolish") onDemolishRef.current(harvested.id);
+        // The third reader, and the whole of #136: the tile goes to `stepMetalFloats` below, which
+        // is where a miner's `+1` is born too, so the two sources share one list, one lifetime and
+        // one drawing. A frame that never gets as far as drawing floats nothing — the same terms a
+        // miner's number is dropped on when nobody is looking.
+        const mined = harvested?.kind === "mine" ? harvested.tile : null;
         // Held left-click is one of three things and never two of them at once: a run of buildables
         // when the bar has one selected (#104), a shot with the gun up (#103), a mine with it stowed
         // (#120) — that last one already spent, above, out of the same frame the other two are
@@ -455,11 +460,11 @@ export function GameScreen({
           // bounded by another.
           //
           // `stepMetalFloats` below is the one consumer outside it, and it is handed the true
-          // camera deliberately: its cull decides whether a `+1` is ever *spawned*, and a crossing
-          // it drops is dropped for good (`floats.ts`). A swing of `SHAKE_REACH` may not decide
-          // that — and it has nothing to decide, being well inside the 15-unit pad the cull already
-          // carries for a miner's own footprint. A float that is spawned is then painted through
-          // `view` with everything else.
+          // camera deliberately: its cull decides whether a miner's `+1` is ever *spawned*, and a
+          // crossing it drops is dropped for good (`floats.ts`). A swing of `SHAKE_REACH` may not
+          // decide that — and it has nothing to decide, being well inside the 15-unit pad the cull
+          // already carries for a miner's own footprint. A float that is spawned is then painted
+          // through `view` with everything else.
           const fx = damageFx(clock - world.damagedAt());
           const view = { x: camera.x + fx.shake.x, y: camera.y + fx.shake.y };
           ctx.setTransform(dpr, 0, 0, dpr, -view.x * dpr, -view.y * dpr);
@@ -499,6 +504,7 @@ export function GameScreen({
               camera,
               viewport,
               clock,
+              mined,
             ),
             // Aged to the burst's own lifetime, on the same frame clock the snapshot above was
             // taken on — `impactMarks` is what puts the enemy render delay between the two, so a

@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { INTERACT_REACH, resolveHarvest, tileCenter, tileKey } from "../src/game/build";
+import { FLOAT_RISE, oreFloatOrigin } from "../src/game/floats";
 import { PUFF_REACH } from "../src/game/fx";
 import { MINIMAP_COVERAGES, minimapWindow, oreCells, oreDensity } from "../src/game/minimap";
 import {
   DEMO_CAMERA,
+  DEMO_MINED,
   DEMO_NOW,
   DEMO_SELF,
   DEMO_VIEWPORT,
   demoBursts,
+  demoFloats,
   demoPuffs,
   demoWorld,
 } from "./demo-world";
@@ -55,6 +59,43 @@ describe("the scene the harness paints", () => {
         expect(apart).toBeGreaterThan(PUFF_REACH + enemy.radius);
       }
     }
+  });
+
+  // A hand's `+1` (#136) goes over the tile it was dug out of, so the one way this drawing can be
+  // wrong is a number over a tile nobody could be mining. Checked rather than derived, as the puffs
+  // are: the game's own `resolveHarvest` is what says the tile is a mine, and the scene has no
+  // player-held button for the picture to read.
+  test("floats its hand-mined +1 over a tile the scene's own player could be digging", () => {
+    const world = demoWorld();
+    const self = world.players.find((p) => p.id === DEMO_SELF);
+    if (!self) throw new Error(`the scene has no ${DEMO_SELF} to be doing the digging`);
+    expect(resolveHarvest(DEMO_MINED, world.ore, null)).toEqual({ kind: "mine", tile: DEMO_MINED });
+    expect(world.structures.some((s) => tileKey(s.tile) === tileKey(DEMO_MINED))).toBe(false);
+    const centre = tileCenter(DEMO_MINED);
+    expect(Math.hypot(centre.x - self.pos.x, centre.y - self.pos.y)).toBeLessThan(INTERACT_REACH);
+  });
+
+  // Inside the frame the harness paints, with room above it for the whole rise, or the picture
+  // answers nothing about a mark that leaves the top of it half way through its life.
+  test("floats its hand-mined +1 inside the viewport the harness captures", () => {
+    const origin = oreFloatOrigin(DEMO_MINED);
+    expect(origin.x).toBeGreaterThan(DEMO_CAMERA.x);
+    expect(origin.x).toBeLessThan(DEMO_CAMERA.x + DEMO_VIEWPORT.width);
+    expect(origin.y).toBeGreaterThan(DEMO_CAMERA.y + FLOAT_RISE);
+    expect(origin.y).toBeLessThan(DEMO_CAMERA.y + DEMO_VIEWPORT.height);
+  });
+
+  // One number per miner and exactly one more for the hand, so the frame carries both sources at
+  // once — a mark that reads over a building says nothing about one that reads over bare ore.
+  test("floats a number for every miner standing and one the hand earned", () => {
+    const world = demoWorld();
+    const floats = demoFloats(world, DEMO_NOW);
+    const miners = world.structures.filter((s) => s.kind === "miner");
+    expect(miners.length).toBeGreaterThan(1);
+    expect(floats.filter((f) => f.id !== null).map((f) => f.id)).toEqual(miners.map((m) => m.id));
+    expect(floats.filter((f) => f.id === null).map((f) => f.pos)).toEqual([
+      oreFloatOrigin(DEMO_MINED),
+    ]);
   });
 
   // Inside the frame the harness paints, or the picture answers nothing about a mark nobody sees.

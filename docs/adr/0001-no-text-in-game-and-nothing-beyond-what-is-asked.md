@@ -71,6 +71,7 @@ that is its actual authority.
 | In match | `metal / s` on the Metal-per-second box | [#105](https://github.com/ericbstie/the-game/issues/105) |
 | In match | On each build slot, its Metal cost as a numeral and its one-word name — `mine` · `generator` · `wall` · `turret` | [#98](https://github.com/ericbstie/the-game/issues/98) |
 | In match | The `+1` a miner floats as it mines | [#99](https://github.com/ericbstie/the-game/issues/99) |
+| In match | The same `+1` over an ore tile mined by hand | [#136](https://github.com/ericbstie/the-game/issues/136) |
 | In match | On the ammo box, its spendable bullet count and the number queued in the corner circle | [#102](https://github.com/ericbstie/the-game/issues/102) |
 | In match | The lettered sound effect struck where a shot connects and where an enemy dies — `POW` · `ZAP` · `BAM` · `BOP` | [#79](https://github.com/ericbstie/the-game/issues/79) |
 
