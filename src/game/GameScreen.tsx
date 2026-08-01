@@ -10,10 +10,9 @@ import {
   BUILD_CADENCE_MS,
   BUILD_SLOTS,
   BUILDABLES,
-  DEMOLISH_HOLD_MS,
   FORGE_MS,
+  type HarvestTarget,
   INTERACT_REACH,
-  MINE_CADENCE_MS,
   placementError,
   resolveHarvest,
   tileCenter,
@@ -27,6 +26,7 @@ import { damageFx } from "./damageFx";
 import { BURST_MS, type BuildGhost, drawWorld, type OwnShot, PUFF_MS, SHOT_LINE_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { freshMetalFloats, stepMetalFloats } from "./floats";
+import { freshHarvest, stepHarvest } from "./harvest";
 import {
   aimDir,
   isGunToggleKey,
@@ -129,9 +129,9 @@ export function GameScreen({
   const onMineRef = useRef(onMine);
   const onBuildRef = useRef(onBuild);
   const onDemolishRef = useRef(onDemolish);
-  // When right-click went down, or null if it is up. A timestamp rather than a flag because
-  // demolish only fires once the button has been held a while.
-  const demolishingRef = useRef<number | null>(null);
+  // Whether right-click is down. A plain flag: how long it has been held is no longer this ref's
+  // business — the building's own harvest progress is what the hold is spent on (#130).
+  const demolishingRef = useRef(false);
   // Whether left-click is down on an empty build bar. What that *does* is not latched here: the gun
   // decides, and it is read live every tick, so `g` mid-hold switches the hold between the trigger
   // (#103) and the pick without the button being let go (#120). A flag rather than the demolish
@@ -156,6 +156,10 @@ export function GameScreen({
   // set, so it lives with the loop that draws it rather than on the wire or in `ClientWorld` — the
   // beat is the same one the bank is paid on, but which miners *emit* is a question about the camera.
   const floatsRef = useRef(freshMetalFloats());
+  // How much of whatever is under the cursor this player has dug out or pulled down (#130). One
+  // pair, client-local: it never rides the wire, so a teammate on the same tile is digging their
+  // own, and it is dropped the moment the button comes up.
+  const harvestRef = useRef(freshHarvest());
   // How much world the corner map is showing (#110). A ref and not state: it is read by the frame
   // that draws it and by nothing else, so a re-render per press would buy the HUD nothing.
   const minimapCoverageRef = useRef(MINIMAP_COVERAGE_U);
@@ -304,7 +308,7 @@ export function GameScreen({
     // discrete click.
     //
     // This is the only thing that drops the left hold on a death, so it drops it only while the gun
-    // is up. A stowed hold stays armed and is merely refused — `liveMine` answers null for a corpse
+    // is up. A stowed hold stays armed and is merely refused — `liveHarvest` answers null for a corpse
     // — and that is observable, not theoretical: `reviveSelf` respawns at arena centre
     // (clientWorld.ts:244) and `BOOTSTRAP_PATCHES` seeds metal patches there (build.ts:110), well
     // inside `INTERACT_REACH`, so a button held through a death can be mining again the moment you
@@ -399,26 +403,40 @@ export function GameScreen({
         // given, and the shot lines resolve their targets against the same interpolation it renders
         // on — reading the clock twice would split that step and land a line off its own sprite.
         const clock = Date.now();
-        // Hand-mining pins you where you stand (#109). The pin is the mine itself, read fresh every
-        // frame rather than latched, so it takes hold on the very frame the button goes down and is
-        // gone on the frame it comes up — with no stale flag for a blur, a death or the gun coming
-        // up to strand.
-        const pinned =
-          liveMine(
-            world,
-            leftHeldRef.current && !equippedRef.current,
-            selectedRef.current,
-            pointerRef.current,
-            aimRef.current.camera,
-          ) !== null;
-        const move = pinned ? NO_MOVE : heldRef.current;
+        // What the held buttons are harvesting this frame, or null. One answer for both of them,
+        // because one tile is never two things: a structure under the cursor is a demolish and the
+        // ore beneath it is unreachable until it is gone (`resolveHarvest`). Read fresh every frame
+        // rather than latched, so it takes hold on the very frame a button goes down and is gone on
+        // the frame it comes up — with no stale flag for a blur, a death or the gun coming up to
+        // strand.
+        const target = liveHarvest(
+          world,
+          leftHeldRef.current && !equippedRef.current,
+          demolishingRef.current,
+          selectedRef.current,
+          pointerRef.current,
+          aimRef.current.camera,
+        );
+        // Hand-mining pins you where you stand (#109); pulling a building down does not.
+        const move = target?.kind === "mine" ? NO_MOVE : heldRef.current;
         if (!world.isDead()) world.stepSelf(dt, move, clock); // a downed player holds still
         world.updateHealth(clock); // judge contact damage at the owner's true position
+        // The frame's own delta is what the harvest is spent from, so progress runs at the rate the
+        // button was held for rather than at whatever cadence a message stream happened to have. It
+        // is the avatar's clamped `dt`, deliberately and not by accident: below 10 fps you harvest
+        // slower than the wall clock, which is the price of the alternative being a stalled tab
+        // coming back and paying out every harvest it slept through at once. The server hears
+        // nothing until one completes, and `harvested` is where anything else that wants to know
+        // hangs off: a `+1` on the crossing (#136), sparks on the ore (#107, #78). It is a value, so
+        // a second consumer is a second reader of it and costs the harvest nothing.
+        const harvested = stepHarvest(harvestRef.current, target, dt);
+        if (harvested?.kind === "mine") onMineRef.current(harvested.tile);
+        if (harvested?.kind === "demolish") onDemolishRef.current(harvested.id);
         // Held left-click is one of three things and never two of them at once: a run of buildables
         // when the bar has one selected (#104), a shot with the gun up (#103), a mine with it stowed
-        // (#120) — that last one paced by the harvest interval rather than here. The two spent here
-        // are charged against the same frame clock the pin above is read on, and outside the draw,
-        // so a frame that renders nothing still keeps their rates honest.
+        // (#120) — that last one already spent, above, out of the same frame the other two are
+        // charged against. All three are outside the draw, so a frame that renders nothing still
+        // keeps their rates honest.
         if (leftHeldRef.current && equippedRef.current) fireIfDue(clock);
         if (dragRef.current) placeIfDue(clock);
         const { w, h } = viewRef.current;
@@ -567,56 +585,20 @@ export function GameScreen({
     return () => clearInterval(timer);
   }, []);
 
-  // The two held requests for whatever is under the cursor, streamed at a fixed cadence. The server
-  // decides what either is worth — the client only ever asks.
-  //
-  // They read their buttons live rather than latching a mode at the press, and that is the whole of
-  // #120's mid-hold switch: `g` pressed under a held left button changes what the very next tick
-  // asks for, with nothing to re-arm. A cursor over nothing minable simply asks for nothing, and
-  // starts asking the moment it is over ore — the same way a released button stops without being
-  // told.
-  //
-  // The switch does not land at the same speed in both directions, and nothing here claims it does.
-  // Toggling *to* the gun fires on the next frame, because the trigger is spent in the render loop;
-  // toggling *off* waits out up to a whole `MINE_CADENCE_MS` for this fixed poll, which no toggle
-  // restarts. That is exactly what a fresh press has always cost a mine, so it is the poll's lag
-  // rather than the toggle's.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const world = worldRef.current;
-      const mine = liveMine(
-        world,
-        leftHeldRef.current && !equippedRef.current,
-        selectedRef.current,
-        pointerRef.current,
-        aimRef.current.camera,
-      );
-      if (mine) onMineRef.current(mine);
-      const heldSince = demolishingRef.current;
-      if (heldSince === null) return;
-      // Demolish waits out a hold: a stray right-click while running over your own wall must not
-      // delete it. Mining needs no such guard — a single mine tick is harmless.
-      if (Date.now() - heldSince < DEMOLISH_HOLD_MS) return;
-      const doomed = liveDemolish(world, pointerRef.current, aimRef.current.camera);
-      if (doomed !== null) onDemolishRef.current(doomed);
-    }, MINE_CADENCE_MS);
-    return () => clearInterval(timer);
-  }, []);
-
   // A button released outside the canvas (or with the tab hidden) must still stop its hold, or that
   // hold would continue with a stale cursor. The two buttons are independent — a demolish and
   // whatever left-click is doing read the pointer without contending — so a release drops only the
   // button that came up. A blur has no button and no way to learn one, so it drops both.
   useEffect(() => {
     const release = (e: MouseEvent) => {
-      if (e.button === 2) demolishingRef.current = null;
+      if (e.button === 2) demolishingRef.current = false;
       if (e.button === 0) {
         leftHeldRef.current = false;
         dragRef.current = null; // the path still queued behind the cursor goes with the button
       }
     };
     const releaseAll = () => {
-      demolishingRef.current = null;
+      demolishingRef.current = false;
       leftHeldRef.current = false;
       dragRef.current = null;
     };
@@ -666,8 +648,8 @@ export function GameScreen({
       } else {
         leftHeldRef.current = true;
         // A shot leaves in the same breath as the press — waiting for the next frame would put a
-        // click's worth of lag on a single tap. The mine is left to its poll instead, which picks
-        // the hold up within `MINE_CADENCE_MS`, as it did when mining was on the other button.
+        // click's worth of lag on a single tap. A mine has nothing to send yet: the next frame
+        // starts its progress, and the press is worth exactly the frame it happened on.
         if (equippedRef.current) fireIfDue(Date.now());
       }
     } else if (e.button === 2) {
@@ -679,7 +661,7 @@ export function GameScreen({
         selectedRef.current = null; // the ghost must go this frame, not on the next render
         setSelected(null);
       } else {
-        demolishingRef.current = Date.now(); // right-click demolishes for as long as it is held
+        demolishingRef.current = true; // right-click demolishes for as long as it is held
       }
     }
   };
@@ -857,45 +839,36 @@ function applyBackingStore(canvas: HTMLCanvasElement, w: number, h: number, dpr:
   if (canvas.height !== bh) canvas.height = bh;
 }
 
-// The tile left-click is mining this instant, or null if it is mining nothing — the gun up, a
-// released button, a buildable on the bar, a world not up yet, a corpse, or a cursor over anything
-// that yields Metal to a hand. The request loop and the mining pin both read this one answer, so
-// the pin can never outlast the mine it follows.
+// What this player is harvesting this instant, or null if it is harvesting nothing — both buttons
+// up, a world not up yet, a corpse, or a cursor over bare ground. `resolveHarvest` is what decides
+// which of the two it is, so a tile with a structure on it is a demolish and never a mine: a miner
+// sits on metal ore by definition, and left-click must not dig out from under one just because the
+// button that pulls it down is the other one.
 //
-// The build bar is judged here rather than only at the press, mirroring `fireIfDue`: the bar
-// outranks the gun in both its states, so the bar taken *under* a held button must end a mine the
-// way it already ends a shot, and no future re-arming of the hold can reach past it.
-//
-// `resolveHarvest` is what decides the rest, so a tile with a structure on it is still a demolish
-// and still not minable — a miner sits on metal ore by definition, and left-click must not dig out
-// from under one just because the button that pulls it down is now the other one.
-function liveMine(
+// The harvest, the mining pin and the requests all read this one answer, so none of them can outlast
+// another. Buttons are read live rather than latched at the press, and that is the whole of #120's
+// mid-hold switch: `g` under a held left button changes what the very next frame works on, with
+// nothing to re-arm. The build bar is judged here for the same reason and mirrors `fireIfDue` — it
+// outranks the gun in both its states, so the bar taken *under* a held button ends a mine the way
+// it already ends a shot.
+function liveHarvest(
   world: ClientWorld | undefined,
   mining: boolean,
+  demolishing: boolean,
   selected: BuildableKind | null,
   pointer: Vec2,
   camera: Camera,
-): Tile | null {
-  if (!world || !mining || selected || world.isDead()) return null;
+): HarvestTarget {
+  if (!world || world.isDead()) return null;
   const target = resolveHarvest(cursorTile(pointer, camera), world.ore, world.build);
-  if (target?.kind !== "mine") return null;
+  if (target === null) return null;
+  if (target.kind === "demolish") return demolishing ? target : null;
+  if (!mining || selected) return null;
   // `admitMine` refuses a report from further off than INTERACT_REACH (build.ts:209). Nothing here
   // reads that as the player's true reach — it is an anti-teleport bound — but a mine it provably
   // refuses is not a live mine, and pinning on one would hold the player still banking nothing.
   const self = world.selfPos();
-  return self && !withinReach(tileCenter(target.tile), self, INTERACT_REACH) ? null : target.tile;
-}
-
-// The structure held right-click would pull down this instant, or null if the cursor is over none.
-// The hold's own length is the caller's to check — this answers only what is under the pointer.
-function liveDemolish(
-  world: ClientWorld | undefined,
-  pointer: Vec2,
-  camera: Camera,
-): string | null {
-  if (!world || world.isDead()) return null;
-  const target = resolveHarvest(cursorTile(pointer, camera), world.ore, world.build);
-  return target?.kind === "demolish" ? target.id : null;
+  return self && !withinReach(tileCenter(target.tile), self, INTERACT_REACH) ? null : target;
 }
 
 // The tile under the pointer. The camera maps CSS pixels to world units 1:1, so the pointer's

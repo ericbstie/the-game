@@ -5,8 +5,6 @@ import {
   FORGE_MS,
   footprintCenter,
   generateOre,
-  HAND_MINE_RATE,
-  MINE_CADENCE_MS,
   type OreGrid,
   TILE,
   TURRET_CADENCE_MS,
@@ -1116,21 +1114,13 @@ describe("M4-T1: hand-mining fills the squad's shared Metal bank", () => {
     return best;
   }
 
-  // Hold right-click on `tile` long enough to accrue whole Metal, since the bank only rides a
-  // delta when its whole-number readout actually moves. The count is derived from the rate rather
-  // than fixed, so a retune of `HAND_MINE_RATE` cannot leave this quietly banking fractions.
-  const MINE_GAP_MS = MINE_CADENCE_MS + 20; // clear of the server's floor, under its accrual cap
-  const REPORTS_FOR_ONE_METAL = Math.ceil(1_000 / (MINE_GAP_MS * HAND_MINE_RATE)) + 1;
-  async function holdMine(
-    client: TestClient,
-    tile: Tile,
-    reports = REPORTS_FOR_ONE_METAL,
-  ): Promise<void> {
+  // Report `tile` harvested. Progress is client-local now (#130), so a `game/mine` is no longer a
+  // tick of holding but a whole tile taken to zero: one message, worth one whole Metal — which is
+  // also the smallest amount the bank can ride a delta for, so nothing here has to hold a button
+  // down long enough to cross a whole number.
+  function reportHarvest(client: TestClient, tile: Tile): void {
     client.send({ type: "game/pos", pos: tileCenter(tile), seq: 1 });
-    for (let seq = 1; seq <= reports; seq++) {
-      client.send({ type: "game/mine", tile, seq });
-      await new Promise((r) => setTimeout(r, MINE_GAP_MS));
-    }
+    client.send({ type: "game/mine", tile, seq: 1 });
   }
 
   test("one player mining raises the Metal readout on every client", async () => {
@@ -1147,13 +1137,37 @@ describe("M4-T1: hand-mining fills the squad's shared Metal bank", () => {
 
     // Stand on the ore first: admission measures reach from the last relayed position.
     const tile = nearestMetalTile(init.oreSeed, { x: ARENA.width / 2, y: ARENA.height / 2 });
-    await holdMine(hostClient, tile);
+    reportHarvest(hostClient, tile);
 
     const banked = (m: ServerMessage) => m.type === "game/map-delta" && (m.bank?.metal ?? 0) > 0;
     const onHost = expectMessage(await hostClient.waitFor(banked), "game/map-delta");
     const onBen = expectMessage(await ben.waitFor(banked), "game/map-delta");
-    expect(onHost.bank?.metal).toBeGreaterThan(0);
+    expect(onHost.bank?.metal).toBe(1); // one tile harvested to zero, one whole Metal
     expect(onBen.bank?.metal).toBe(onHost.bank?.metal); // one shared bank, not a per-player purse
+  });
+
+  // Two reports of one tile from two players are independent claims — one guard each, and no race
+  // between them — so the bank is paid for both rather than deduplicating them down to one. That
+  // each of those reports stood for its own client-local progress is `harvest.ts`'s to say; from
+  // here they are simply two admissions.
+  test("two players reporting the same tile are each paid a whole Metal", async () => {
+    const server = spawn();
+    const { client: ana, code } = await host(server, "Ana");
+    const { client: ben } = await joinLobby(server, code, "Ben");
+    await ana.waitFor((m) => m.type === "lobby/player-joined");
+
+    ana.send({ type: "game/start" });
+    const init = expectMessage(
+      await ana.waitFor((m) => m.type === "game/world-init"),
+      "game/world-init",
+    ).init;
+
+    const tile = nearestMetalTile(init.oreSeed, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    reportHarvest(ana, tile);
+    reportHarvest(ben, tile);
+
+    const both = (m: ServerMessage) => m.type === "game/map-delta" && (m.bank?.metal ?? 0) >= 2;
+    expect(expectMessage(await ana.waitFor(both), "game/map-delta").bank?.metal).toBe(2);
   });
 
   test("mining bare ground banks nothing", async () => {
@@ -1185,7 +1199,7 @@ describe("M4-T1: hand-mining fills the squad's shared Metal bank", () => {
     ).init;
 
     const tile = nearestMetalTile(init.oreSeed, { x: ARENA.width / 2, y: ARENA.height / 2 });
-    await holdMine(hostClient, tile);
+    reportHarvest(hostClient, tile);
     await hostClient.waitFor((m) => m.type === "game/map-delta" && (m.bank?.metal ?? 0) > 0);
 
     const back = await connect(server);
