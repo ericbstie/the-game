@@ -39,6 +39,12 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > which is a second correction to rule 1. See [What a lettered word
 > costs](#what-a-lettered-word-costs-79).
 >
+> [#142](https://github.com/ericbstie/the-game/issues/142) has added a fifth mark — a black veil over
+> the whole viewport on every blow *you* take — at **0.61 ms**, and it is the first one that is
+> neither a stroke nor a blit but a **full-viewport composite**, which is the one thing rule 2 says
+> nothing new gets. It is the dearest single mark this page has measured, and it was spent anyway.
+> See [What the damage veil costs](#what-the-damage-veil-costs-142).
+>
 > [#125](https://github.com/ericbstie/the-game/issues/125) has raised `ENEMY_CAP` from 240 to 500, so
 > **the enemy count in every figure below is no longer the cap**. It is worth **+2.40 ms** measured on
 > an isolated probe — the largest single addition to this frame since the page was written, and the
@@ -116,6 +122,7 @@ difference from the row above.
 | + the impact bursts | — | ≈0 | 4 starbursts, one path (#115). Not in the run above; 0.09 ms isolated |
 | + the death puffs | — | ≈0 | 1 ink puff, one path (#116). Not in the run above; 0.05 ms isolated |
 | + the lettered words | — | ≈0 | 5 words, one blit each (#79) — 4 on hits, 1 on deaths. Not in the run above; 0.04 ms isolated |
+| + the damage veil | — | 0.61 | one rgba fill over the whole viewport (#142), laid only by the client of the player who was hit. Not in the run above; 0.61 ms isolated |
 | **Total** | **6.3** | | **38% of a 16.67 ms frame** |
 
 **The script's printed labels for the first two rows are wrong, and the names in brackets above are
@@ -585,6 +592,38 @@ taken on. Both numbers are honest; neither may be added to the other. Re-run
 `bun run sprite:frame` was run too and is unaffected: it draws the demo world, reports **349 blits**
 and no timing at all, so it cannot price a cap and is not a substitute for the probe above.
 
+## What the damage veil costs (#142)
+
+**One full-viewport fill is 0.61 ms — 3.6% of a 16.67 ms frame, and the dearest single mark this page
+has measured.** [#142](https://github.com/ericbstie/the-game/issues/142) lays one over the whole
+screen on every blow the player takes (`src/game/draw.ts:550`), which is exactly the pass rule 2 says
+nothing new gets. It was spent anyway; this section is what it costs, not a case that it is cheap.
+
+**It is the first mark in the frame that is a composite rather than a mark on the paper.** A stroke
+is charged by its pieces and a blit by its box, so rule 1 prices neither this nor anything else that
+covers the viewport: a full-screen fill is charged for all 1.92 M device pixels whatever is under it,
+and nothing about how the effect is drawn can move that. The two levers are its lifetime
+(`FLASH_MS`, 120 — about seven frames at 60 Hz) and that only the hit player's own client lays one.
+
+Medians of five runs on one container, dpr 2, at the governor's cap as it stands, through the
+standalone probe `bun run frame:budget` now prints as `the damage veil`. It fills at `FLASH_ALPHA`,
+because a blend at alpha is not the same operation as an opaque fill and the veil is never opaque.
+
+| | median of 5 | spread |
+| --- | ---: | ---: |
+| the veil, one fill | **0.607 ms** | 0.573–0.632 |
+| the whole frame it is laid over | 9.42 ms | 8.93–9.99 |
+
+**Standalone for the reason every sub-millisecond mark on this page is.** Over those same five runs
+the veil moved 0.06 ms and the cumulative ladder beside it moved 1.06 ms, so the whole-frame
+instrument could not have resolved a 0.6 ms layer — the failure the floats table warns about and
+every section since has reproduced, and the reason no cumulative row for the veil is quoted. The
+probe holds to about ±5% because a fill over a fixed rectangle is the same work every iteration.
+
+**Do not add 0.61 ms to the 6.3 ms headline.** This container reads 9.4 ms for the whole frame at the
+cap the governor now stands at, where that headline reads 6.3 ms at a cap the game no longer has.
+Both are honest; neither may be added to the other.
+
 ## The rules
 
 1. **Shot lines are the most expensive thing in the frame, per unit** — and one effect has already
@@ -635,6 +674,16 @@ and no timing at all, so it cannot price a cap and is not a substitute for the p
    player's own client draws it, and only while they are down. That also means the worst case above
    is **not** the worst case for a player who is dead — add a full-viewport fill to it, and they are
    looking at a screen with nothing happening on it.
+
+   **#142 took one anyway, and it is the first thing on this page to.** The damage veil is a
+   full-viewport fill on every blow the player takes, measured at **0.61 ms** — see [What the damage
+   veil costs](#what-the-damage-veil-costs-142), which is also the single-pass figure this rule has
+   been quoting #72's grass mechanisms for. **None of what makes the darkening affordable covers
+   it**: half of that reasoning is that a downed player's frame is otherwise empty, and the veil
+   fires while the player is alive and being bitten — the busiest frame the game draws. What holds
+   it is its own brevity and that only the hit player's client lays one. **The worst case is now four
+   full-viewport passes on the frame you die** — the clear, the paper fill, `DOWNED_DIM` and the
+   veil — which `src/game/draw.test.ts:2659` pins as intentional.
 3. **Cost stays independent of world size.** Every floor pass is bounded to visible tiles, and
    everything else is culled by the camera. A 31,200² arena costs what an 800 px one does. Anything
    added to the floor keeps that property.

@@ -432,9 +432,16 @@ export function GameScreen({
           // What a blow you took does to the screen (#142). The swing is applied to the camera the
           // world is *painted* from and to nothing else: `aimRef` above keeps the true one, so a
           // shaking screen never moves where a click lands or which tile the cursor is over. Every
-          // other consumer of the camera is inside `drawWorld` — the clear, the paper, the cull,
-          // the pixel snap and the corner map — and each of them has to follow the swing or the
-          // frame would be painted through one camera and bounded by another.
+          // consumer inside `drawWorld` — the clear, the paper, the cull, the pixel snap and the
+          // corner map — follows the swing, or the frame would be painted through one camera and
+          // bounded by another.
+          //
+          // `stepMetalFloats` below is the one consumer outside it, and it is handed the true
+          // camera deliberately: its cull decides whether a `+1` is ever *spawned*, and a crossing
+          // it drops is dropped for good (`floats.ts`). A swing of `SHAKE_REACH` may not decide
+          // that — and it has nothing to decide, being well inside the 15-unit pad the cull already
+          // carries for a miner's own footprint. A float that is spawned is then painted through
+          // `view` with everything else.
           const fx = damageFx(clock - world.damagedAt());
           const view = { x: camera.x + fx.shake.x, y: camera.y + fx.shake.y };
           ctx.setTransform(dpr, 0, 0, dpr, -view.x * dpr, -view.y * dpr);

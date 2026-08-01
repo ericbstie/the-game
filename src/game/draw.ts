@@ -540,10 +540,12 @@ export function drawWorld(
   // The blow's own veil (#142), last of everything — the darkening above included, because a hit
   // taken on the frame you go down on is still a hit.
   //
-  // This is exactly the full-viewport pass `docs/frame-budget.md` rule 2 says nothing new gets, and
-  // it is drawn on the one exemption that rule grants and already spends on the darkening: only the
-  // player who was hit lays it, and only for the fraction of a second `damageFx` allows. A screen
-  // flashing black is a full-screen mark or it is nothing, so there is no cheaper drawing of it.
+  // A second full-viewport composite, and `docs/frame-budget.md` rule 2 grants it nothing: what
+  // makes the darkening above affordable is half that a downed player's frame is otherwise empty,
+  // and this one fires while you are alive and being bitten — the busiest frame the game draws. It
+  // is spent anyway because it is brief (`FLASH_MS`), laid only by the client of the player who was
+  // hit, and asked for (#142). A screen flashing black is a full-screen mark or it is nothing, so
+  // there is no cheaper drawing of it.
   //
   // The alpha rides the colour rather than `globalAlpha`, so the frame ends in the drawing state it
   // began in and there is nothing for the next one to inherit.

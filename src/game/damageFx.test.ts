@@ -27,6 +27,12 @@ describe("#142: the veil the blow lays over the screen", () => {
     }
   });
 
+  test("thins out rather than sitting as black at the end as at the start", () => {
+    const blackest = (from: number, to: number) =>
+      Math.max(...sweep(to - from).map((t) => damageFx(from + t).flash));
+    expect(blackest(FLASH_MS / 2, FLASH_MS)).toBeLessThan(blackest(0, FLASH_MS / 2));
+  });
+
   test("is exactly nothing once its life has run out, and stays there", () => {
     expect(damageFx(FLASH_MS).flash).toBe(0);
     for (const t of sweep(FLASH_MS * 4, 7)) {
