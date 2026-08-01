@@ -64,6 +64,9 @@ Score is your escape time.
   moment it spawns and comes for them from any distance. Anything else **wanders** — an undirected
   walk with no leash to its nest, which is why the far arena fills up with drifting spiders and the
   middle only slowly does. Either one turns on you the moment you are close enough.
+- **A chase leads you.** An enemy steers at where you are going rather than where you are — half the
+  current gap ahead, along the way you are running — so it cuts the corner instead of trailing you.
+  The further back it is the harder it cuts, and the lead shrinks to nothing as it closes.
 - **Roster:** mostly a single grunt type in numbers, with the occasional **elite**. Readable, easy to expand later.
 
 ## Weapons & combat

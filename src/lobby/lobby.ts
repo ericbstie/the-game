@@ -136,7 +136,9 @@ interface SessionRecord {
   // squad is sent so they can see the choice before Start (#129).
   settings: WorldSettings;
   worldInit?: WorldInit; // generated once at start; re-sent verbatim on reconnect
-  positions: Map<PlayerId, { pos: Vec2; seq: number }>; // last-known relayed position per player
+  // Last-known relayed position per player, plus the sample it replaced — together they are the
+  // only heading the server has, and the enemy sim leads its chases by it (#131).
+  positions: Map<PlayerId, { pos: Vec2; seq: number; prev?: Vec2 }>;
   health: Map<PlayerId, { hp: number; seq: number }>; // last-reported HP per player (aggro-gating + fan-out)
   sim?: EnemyState; // server-authoritative enemy simulation, live only in-game
   simTimer?: Cancellable; // the 20 Hz tick driving `sim`; cancelled on teardown
@@ -765,6 +767,10 @@ export class LobbyHub {
 
   // Relay a client's own position to the rest of the squad, dropping a stale/out-of-order
   // frame by its per-player seq and retaining the newest as the reconnect source-of-truth.
+  //
+  // The sample this one replaces is kept beside it, and only ever an accepted one: two accepted
+  // samples are the heading the enemy sim leads a chase by (#131), and a dropped frame must not be
+  // able to steer it. Nothing new crosses the wire — this is derived from the stream already here.
   private gamePos(socketId: string, pos: Vec2, seq: number): void {
     const bind = this.sockets.get(socketId);
     if (!bind) return;
@@ -774,7 +780,7 @@ export class LobbyHub {
     if (!this.inPlay(session) || !session.worldInit) return; // only during a match
     const last = session.positions.get(player.id);
     if (last && seq <= last.seq) return; // stale or duplicate — drop it
-    session.positions.set(player.id, { pos, seq });
+    session.positions.set(player.id, { pos, seq, prev: last?.pos });
     this.broadcast(session, { type: "game/peer-pos", id: player.id, pos, seq }, socketId);
   }
 
@@ -990,14 +996,15 @@ function isAlive(session: SessionRecord, id: PlayerId): boolean {
 // them here also breaks any existing lock, because `resolveTarget` cannot find a player who is
 // not in this list.
 export function livePlayers(
-  positions: Map<PlayerId, { pos: Vec2; seq: number }>,
+  positions: Map<PlayerId, { pos: Vec2; seq: number; prev?: Vec2 }>,
   health: Map<PlayerId, { hp: number; seq: number }>,
   connected: ReadonlySet<PlayerId>,
 ): PlayerRef[] {
   const alive: PlayerRef[] = [];
   for (const [id, sample] of positions) {
     if (!connected.has(id)) continue;
-    if ((health.get(id)?.hp ?? PLAYER_MAX_HP) > 0) alive.push({ id, pos: sample.pos });
+    if ((health.get(id)?.hp ?? PLAYER_MAX_HP) > 0)
+      alive.push({ id, pos: sample.pos, prev: sample.prev });
   }
   return alive;
 }
