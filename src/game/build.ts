@@ -231,17 +231,19 @@ export function mulberry32(seed: number): () => number {
 // Holding left-click on a metal-ore tile, with the gun stowed (#120), mines it straight into the
 // shared bank. Power ore has no hand-mine path at all: Energy is a live rate with nowhere to store
 // what you'd dig up.
+//
+// A report is one *harvested* tile, not a tick of holding (#130): the client takes the tile's
+// harvest progress to zero — client-local, at HAND_MINE_RATE, `harvest.ts` — and asks once, for
+// the one whole Metal it just earned.
 
 export const HAND_MINE_RATE = 1; // metal per second held
 export const MINE_CADENCE_MS = 100; // server-side floor on how often a client may report mining
-export const MINE_WINDOW_MAX_MS = 250; // caps the accrual after a pause, so idling banks nothing
 // The one loose reach shared by mining, building and demolishing. "Whatever is on screen" is
 // unknowable server-side, so — like ATTACK_POS_TOLERANCE — this is an anti-teleport bound, not
 // an exact reach.
 export const INTERACT_REACH = 2_000;
 
-// Per-player hand-mine admission state. `seq` guards apply-if-newer; `lastAt` is both the cadence
-// floor and the accrual clock.
+// Per-player hand-mine admission state. `seq` guards apply-if-newer; `lastAt` is the cadence floor.
 export interface MineGuard {
   seq: number;
   lastAt: number;
@@ -252,8 +254,13 @@ export function freshMineGuard(): MineGuard {
 }
 
 // How much Metal a reported hand-mine earns, or 0 if it is not admitted. Mutating `guard` as a
-// side effect mirrors `admitAttack`. Yield is time-based rather than per-message, so a client
-// that spams `game/mine` earns exactly what one mining at the honest cadence does.
+// side effect mirrors `admitAttack`.
+//
+// One admitted report is one whole Metal, because one report is one tile taken to zero harvest
+// progress. That progress is client-local and unverifiable from here, so the yield is what the
+// client is trusted on — deliberately, and the only such figure in the game. What is still checked
+// is everything the server *can* see: the ore under the tile, the reporter's distance from it, the
+// sequence, and the cadence floor that bounds how fast a liar could repeat.
 export function admitMine(
   guard: MineGuard,
   report: { tile: Tile; seq: number },
@@ -264,12 +271,10 @@ export function admitMine(
   if (report.seq <= guard.seq) return 0; // stale or duplicate
   guard.seq = report.seq;
   if (oreAt(ore, report.tile) !== "metal") return 0;
-  const elapsed = now - guard.lastAt;
-  if (elapsed < MINE_CADENCE_MS) return 0; // too soon; the accrual clock is left untouched
+  if (now - guard.lastAt < MINE_CADENCE_MS) return 0; // too soon
   if (lastPos && !withinReach(tileCenter(report.tile), lastPos, INTERACT_REACH)) return 0;
   guard.lastAt = now;
-  if (!Number.isFinite(elapsed)) return 0; // the very first report only starts the clock
-  return (Math.min(elapsed, MINE_WINDOW_MAX_MS) / 1000) * HAND_MINE_RATE;
+  return 1;
 }
 
 export function withinReach(target: Vec2, from: Vec2, reach: number): boolean {
@@ -745,9 +750,9 @@ function circleTouchesTile(pos: Vec2, radius: number, tx: number, ty: number): b
 
 export const DEMOLISH_REFUND = 0.2;
 export const DEMOLISH_CADENCE_MS = 100;
-// Holding is what makes demolish safe: a stray right-click while running over your own wall must
-// not delete it. The client withholds the request until the button has been down this long.
-export const DEMOLISH_HOLD_MS = 350;
+// How long the pulling-down itself takes is not here: it is the building's harvest progress, which
+// is client-local and lives with the ore's in `harvest.ts` (#130). A request reaching this file is
+// one that has already been earned.
 
 export interface DemolishGuard {
   seq: number;

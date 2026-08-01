@@ -13,7 +13,6 @@ import {
   buildCost,
   creditMetal,
   DEMOLISH_CADENCE_MS,
-  DEMOLISH_HOLD_MS,
   demolishStructure,
   drainForge,
   enqueueForge,
@@ -30,7 +29,6 @@ import {
   INTERACT_REACH,
   MAX_ARENA_SIDE,
   MINE_CADENCE_MS,
-  MINE_WINDOW_MAX_MS,
   MINER_TRICKLE,
   metalRate,
   mulberry32,
@@ -53,6 +51,7 @@ import {
   tileOrigin,
   tilesBetween,
 } from "./build";
+import { ORE_HARVEST_MS } from "./harvest";
 import { ARENA } from "./world";
 
 const SEED = 12_345;
@@ -240,24 +239,14 @@ describe("admitMine", () => {
   const power = untileKey(powerTile);
   const atTile = (tile: Tile) => tileOrigin(tile);
 
-  test("grants metal proportional to the elapsed time, at the hand-mine rate", () => {
+  // A report is now a *completed* harvest rather than a tick of one (#130): the client takes an ore
+  // tile's progress to zero and asks once, so the whole Metal it earned is granted on that one
+  // report — the first as much as any other. The progress it is claiming is client-local and
+  // unverifiable, which is the stance this ticket takes: the server trusts what it is told and keeps
+  // only the cadence floor below to bound it.
+  test("grants one whole Metal for a harvested tile, on the very first report", () => {
     const guard = freshMineGuard();
-    admitMine(guard, { tile: metal, seq: 1 }, atTile(metal), grid, 1_000); // starts the clock
-    const granted = admitMine(guard, { tile: metal, seq: 2 }, atTile(metal), grid, 1_200);
-    expect(granted).toBeCloseTo(HAND_MINE_RATE * 0.2, 6);
-  });
-
-  test("a full second of holding banks exactly the hand-mine rate, however often it reports", () => {
-    const total = (stepMs: number) => {
-      const guard = freshMineGuard();
-      let metalMined = 0;
-      for (let t = 0; t <= 1_000; t += stepMs) {
-        metalMined += admitMine(guard, { tile: metal, seq: t + 1 }, atTile(metal), grid, t);
-      }
-      return metalMined;
-    };
-    expect(total(100)).toBeCloseTo(HAND_MINE_RATE, 6);
-    expect(total(20)).toBeCloseTo(HAND_MINE_RATE, 6); // a spammer earns no more than an honest client
+    expect(admitMine(guard, { tile: metal, seq: 1 }, atTile(metal), grid, 1_000)).toBe(1);
   });
 
   test("rejects a tile that is not metal ore", () => {
@@ -297,29 +286,21 @@ describe("admitMine", () => {
     expect(tooSoon).toBe(0);
   });
 
-  test("a rejected too-soon request does not cost the player its accrual", () => {
+  test("a rejected too-soon request does not cost the next one its Metal", () => {
     const guard = freshMineGuard();
     admitMine(guard, { tile: metal, seq: 1 }, atTile(metal), grid, 1_000);
     admitMine(guard, { tile: metal, seq: 2 }, atTile(metal), grid, 1_010); // dropped
-    const granted = admitMine(guard, { tile: metal, seq: 3 }, atTile(metal), grid, 1_200);
-    expect(granted).toBeCloseTo(HAND_MINE_RATE * 0.2, 6);
+    expect(admitMine(guard, { tile: metal, seq: 3 }, atTile(metal), grid, 1_200)).toBe(1);
   });
 
-  test("caps a burst after a long pause, so idling banks nothing", () => {
-    const guard = freshMineGuard();
-    admitMine(guard, { tile: metal, seq: 1 }, atTile(metal), grid, 1_000);
-    const afterPause = admitMine(guard, { tile: metal, seq: 2 }, atTile(metal), grid, 60_000);
-    expect(afterPause).toBeCloseTo((MINE_WINDOW_MAX_MS / 1000) * HAND_MINE_RATE, 6);
-  });
-
-  // #109 drops the hand rate to 1: through `creditMetal` that is one whole Metal banked per
-  // second held, so a ten-second dig is worth exactly ten — a fifth of a miner.
+  // #109 drops the hand rate to 1, and #130 spends it as one harvested tile a second: through
+  // `creditMetal` a ten-second dig is worth exactly ten Metal — a fifth of a miner, as before.
   test("mines one metal a second, so a ten-second hold banks ten whole Metal", () => {
     expect(HAND_MINE_RATE).toBe(1);
     const guard = freshMineGuard();
     const build = freshBuildState(ARENA);
-    for (let t = 0; t <= 10_000; t += MINE_CADENCE_MS) {
-      creditMetal(build, admitMine(guard, { tile: metal, seq: t + 1 }, atTile(metal), grid, t));
+    for (let t = ORE_HARVEST_MS; t <= 10_000; t += ORE_HARVEST_MS) {
+      creditMetal(build, admitMine(guard, { tile: metal, seq: t }, atTile(metal), grid, t));
     }
     expect(build.bank.metal).toBe(10);
   });
@@ -335,12 +316,12 @@ describe("#96: a standing miner out-earns a hand-miner two to one", () => {
   const HELD_MS = 10_000;
   const TICK_MS = 50; // the sim's own 20 Hz tick
 
-  // One player holding the button for the whole stretch, reporting at the honest cadence.
+  // One player holding the button for the whole stretch, reporting each tile it harvests to zero.
   function byHand(): number {
     const guard = freshMineGuard();
     const build = freshBuildState(ARENA);
-    for (let t = 0; t <= HELD_MS; t += MINE_CADENCE_MS) {
-      creditMetal(build, admitMine(guard, { tile: metal, seq: t + 1 }, tileOrigin(metal), ore, t));
+    for (let t = ORE_HARVEST_MS; t <= HELD_MS; t += ORE_HARVEST_MS) {
+      creditMetal(build, admitMine(guard, { tile: metal, seq: t }, tileOrigin(metal), ore, t));
     }
     return build.bank.metal;
   }
@@ -1037,8 +1018,15 @@ describe("demolish", () => {
     expect(admitDemolish(freshDemolishGuard(), { id: a.id, seq: 1 }, far, build, 1_000)).toBeNull();
   });
 
-  test("a single click cannot destroy anything — demolish is a hold", () => {
-    expect(DEMOLISH_HOLD_MS).toBeGreaterThan(MINE_CADENCE_MS);
+  // The two ways a building leaves, and only one of them pays. Harvest progress is what the player
+  // spends to be paid (#130) and HP is what an enemy takes, so the sim's own removal must stay the
+  // silent one however close the two statistics look from outside.
+  test("an enemy chewing a building down refunds nothing", () => {
+    const build = funded();
+    const wall = placeStructure(build, "wall", { tx: 500, ty: 500 }, WALL);
+    const spent = build.bank.metal;
+    expect(removeStructure(build, wall.id)).toBe(wall);
+    expect(build.bank.metal).toBe(spent);
   });
 });
 
