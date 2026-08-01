@@ -2,7 +2,7 @@ import { mulberry32, type OreGrid, TILE, tileKey } from "../src/game/build";
 import type { Mark } from "../src/game/clientWorld";
 import type { BuildGhost, ShotSource } from "../src/game/draw";
 import { ELITE_HP } from "../src/game/enemies";
-import { FLOAT_MS, type MetalFloat, minerFloatOrigin } from "../src/game/floats";
+import { FLOAT_MS, type MetalFloat, minerFloatOrigin, oreFloatOrigin } from "../src/game/floats";
 import type { Tile, Vec2, WorldSnapshot } from "../src/lobby/protocol";
 
 // A hand-built world for `sprite:frame` to paint. Not a fixture for `bun test` and not the real
@@ -240,16 +240,33 @@ export function demoPuffs(now: number): Mark[] {
   return DEMO_DEATHS.map((pos) => ({ pos: { ...pos }, at: now }));
 }
 
-// A `+1` over every miner in the scene, spread across the life of a float so the frame carries the
-// whole fade at once. Derived from the structures rather than hand-placed, so a number can never end
-// up over a miner that is not there — which is the one way this drawing can be wrong.
+// The ore tile the scene's own player is digging by hand (#136). Placed rather than derived, and
+// that is the mirror of the miners below: a miner carries the tile it stands on, while a hand
+// carries nothing the snapshot can be asked about — the button is held on a client and this scene
+// has no client. What keeps it honest is a check instead, in `demo-world.test`: metal ore, nothing
+// standing on it, and inside `INTERACT_REACH` of `DEMO_SELF`, which is exactly the tile the game
+// would fire the event for.
+export const DEMO_MINED: Tile = { tx: 1057, ty: 1049 };
+
+// A `+1` over every miner in the scene, and one more over the tile a hand is digging — the same
+// number from the game's two sources, in one picture, over the two backgrounds it has to read on:
+// a building's ink, and bare ore. Spread across the life of a float so the frame carries the whole
+// fade at once.
+//
+// The miners' are derived from the structures rather than hand-placed, so a number can never end up
+// over a miner that is not there — which is the one way that half of this drawing can be wrong.
 export function demoFloats(world: WorldSnapshot, now: number): MetalFloat[] {
   const miners = world.structures.filter((s) => s.kind === "miner");
-  return miners.map((s, i) => ({
-    id: s.id,
-    pos: minerFloatOrigin(s.tile),
-    at: now - Math.round((i / miners.length) * FLOAT_MS),
-  }));
+  return [
+    ...miners.map((s, i) => ({
+      id: s.id,
+      pos: minerFloatOrigin(s.tile),
+      at: now - Math.round((i / miners.length) * FLOAT_MS),
+    })),
+    // Half way through its life: the fade is what the miners' spread already shows, so the hand's
+    // is the one that has to be legible mid-rise over the ore it came out of.
+    { id: null, pos: oreFloatOrigin(DEMO_MINED), at: now - Math.round(FLOAT_MS / 2) },
+  ];
 }
 
 function unit(from: Vec2, to: Vec2): Vec2 {
