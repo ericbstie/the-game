@@ -74,6 +74,7 @@ that is its actual authority.
 | In match | The same `+1` over an ore tile mined by hand | [#136](https://github.com/ericbstie/the-game/issues/136) |
 | In match | On the ammo box, its spendable bullet count and the number queued in the corner circle | [#102](https://github.com/ericbstie/the-game/issues/102) |
 | In match | The lettered sound effect struck where a shot connects and where an enemy dies — `POW` · `ZAP` · `BAM` · `BOP` | [#79](https://github.com/ericbstie/the-game/issues/79) |
+| In match | The mini-tutorial's six prompts — the two ore tooltips, the words beside the ore and ammo highlights, the turret's sentence and the gun's line. Each is up only while its lesson is owed, and the strings are the ask's own, verbatim | [#134](https://github.com/ericbstie/the-game/issues/134) |
 
 The controls hint, the HP label, the downed countdown and the in-match lobby-code header were
 removed under the original ADR because nobody had asked for any of them. That reasoning is

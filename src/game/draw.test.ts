@@ -11,7 +11,7 @@ import type {
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import lettering from "../sprite/lettering";
 import type { SpriteName } from "../sprite/registry";
-import { tileKey, tileOf } from "./build";
+import { TILE, tileKey, tileOf } from "./build";
 import type { Camera, Viewport } from "./camera";
 import {
   ClientWorld,
@@ -42,6 +42,7 @@ import {
   nextMinimapCoverage,
   projectRect,
 } from "./minimap";
+import { METAL_WORDS, MINE_WORDS, TURRET_WORDS, type TutorialMarks } from "./tutorial";
 import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
 
 // happy-dom returns null from getContext('2d'), so the draw path is exercised against a
@@ -57,6 +58,8 @@ interface Call {
   stroke: unknown;
   composite: unknown;
 }
+const SPY_CHAR_WIDTH = 6;
+
 function spyCtx() {
   const calls: Call[] = [];
   let ctx: Record<string, unknown>;
@@ -94,6 +97,10 @@ function spyCtx() {
     restore: record("restore"),
     rect: record("rect"),
     clip: record("clip"),
+    // The tutorial's sentences wrap (#134), so the draw path asks the context how wide a word is.
+    // A fixed width per character rather than a real font metric: the layout under test is which
+    // words land on which line, and a spy that measured nothing could not have any.
+    measureText: (text: string) => ({ width: text.length * SPY_CHAR_WIDTH }),
   };
   return ctx as unknown as CanvasRenderingContext2D & { calls: Call[] };
 }
@@ -2672,5 +2679,128 @@ describe("the damage veil", () => {
     const laid = fullScreen(ctx);
     expect(laid.length).toBe(3); // paper, the darkening, the veil
     expect(laid[2].fill).toBe("rgba(0, 0, 0, 0.5)");
+  });
+});
+
+// #134: the mini-tutorial's world-anchored half. Three of its six prompts are about things standing
+// in the world — an ore tile, the tile under the cursor, the turret you just put up — so they move
+// with the camera and are drawn here. The other two are the HUD's.
+describe("#134: the tutorial's marks", () => {
+  const ORE_TILE: Tile = { tx: 70, ty: 70 }; // (1050, 1050): inside the camera above
+  const TURRET_TILE: Tile = { tx: 74, ty: 70 };
+  const oreCentre = { x: ORE_TILE.tx * TILE + TILE / 2, y: ORE_TILE.ty * TILE + TILE / 2 };
+  const CURSOR = { x: 1300, y: 1250 };
+
+  const tutorial = (marks: Partial<TutorialMarks> = {}): TutorialMarks => ({
+    ore: null,
+    cursor: null,
+    turret: null,
+    ...marks,
+  });
+
+  const drawn = (marks: Partial<TutorialMarks>, sprites?: SpriteSource) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport, sprites, tutorial: tutorial(marks) });
+    return ctx;
+  };
+
+  // Every word the frame wrote, in order, so a wrapped sentence can be read back whole.
+  const written = (ctx: { calls: Call[] }) =>
+    ctx.calls.filter((c) => c.fn === "fillText").map((c) => c.args[0] as string);
+
+  test("marks the ore tile with the highlight sprite, centred on it", () => {
+    const ctx = drawn(
+      { ore: { tile: ORE_TILE, words: MINE_WORDS } },
+      stubSprites({ highlight: 30 }),
+    );
+    const mark = blits(ctx).find((b) => b.tag.startsWith("highlight/"));
+    // An overlay hangs off its centre, like the halo and the turret's lightning — it marks the tile
+    // rather than standing on it. Within the device-pixel snap every blit in this file lands on.
+    expect(mark?.width).toBe(30);
+    expect(mark?.height).toBe(30);
+    expect(Math.abs((mark?.x ?? 0) + 15 - oreCentre.x)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs((mark?.y ?? 0) + 15 - oreCentre.y)).toBeLessThanOrEqual(0.5);
+  });
+
+  // The seam a sprite drops into is one lookup, exactly as every other entity's is: until
+  // `src/sprite/highlight.ts` lands the mark falls back to a plain ink ring, so the tutorial is
+  // legible from the day it ships rather than from the day the art does.
+  test("falls back to a ring where the highlight art has not landed", () => {
+    const ctx = drawn({ ore: { tile: ORE_TILE, words: MINE_WORDS } });
+    expect(blits(ctx).some((b) => b.tag.startsWith("highlight/"))).toBe(false);
+    const rings = ctx.calls.filter(
+      (c) => c.fn === "arc" && c.args[0] === oreCentre.x && c.args[1] === oreCentre.y,
+    );
+    expect(rings.length).toBe(1);
+  });
+
+  test("writes prompt 1 over the tile it marked, cut out of paper like every other word", () => {
+    const ctx = drawn({ ore: { tile: ORE_TILE, words: MINE_WORDS } });
+    const filled = ctx.calls.find((c) => c.fn === "fillText" && c.args[0] === MINE_WORDS);
+    const stroked = ctx.calls.find((c) => c.fn === "strokeText" && c.args[0] === MINE_WORDS);
+    expect(filled?.fill).toBe("#000");
+    expect(stroked?.stroke).toBe("#ffffff"); // paper, so it reads over a spider standing on the ore
+    expect(filled?.args[2] as number).toBeLessThan(ORE_TILE.ty * TILE); // above the tile, not on it
+  });
+
+  test("writes the hover tooltip at the cursor", () => {
+    const ctx = drawn({ cursor: { at: CURSOR, words: METAL_WORDS.taught } });
+    const at = ctx.calls.find((c) => c.fn === "fillText" && c.args[0] === METAL_WORDS.taught);
+    expect(at).toBeDefined();
+    expect(at?.args[2] as number).toBeLessThan(CURSOR.y); // clear of the pointer itself
+  });
+
+  test("writes prompt 5 over the turret, whole, however many lines it takes", () => {
+    const ctx = drawn(
+      { turret: { tile: TURRET_TILE, words: TURRET_WORDS } },
+      stubSprites({ generator: 75, "ore-power": 15 }),
+    );
+    const sentence = written(ctx)
+      .filter((word) => !["Ana", "Ben"].includes(word))
+      .join(" ");
+    expect(sentence).toBe(
+      "Turrets require energy. Build a generator on top of power ore in order to generate electricity",
+    );
+    // The sentence wraps rather than running off the screen in one line.
+    expect(written(ctx).length).toBeGreaterThan(3);
+  });
+
+  test("blits prompt 5's two icons inline, one per placeholder, at one size", () => {
+    const ctx = drawn(
+      { turret: { tile: TURRET_TILE, words: TURRET_WORDS } },
+      stubSprites({ generator: 75, "ore-power": 15 }),
+    );
+    const inline = blits(ctx).filter(
+      (b) => b.tag.startsWith("generator/") || b.tag.startsWith("ore-power/"),
+    );
+    expect(inline.map((b) => b.tag)).toEqual(["generator/0/0", "ore-power/0/0"]);
+    // Sized to the line rather than to the sprite's own box: a 75 px generator and a 15 px ore tile
+    // have to sit as one thing inside a sentence.
+    expect(inline[0].width).toBe(inline[1].width);
+    expect(inline[0].width).toBe(inline[0].height);
+  });
+
+  test("says the sentence without its icons where that art has not landed", () => {
+    const ctx = drawn({ turret: { tile: TURRET_TILE, words: TURRET_WORDS } });
+    expect(
+      written(ctx)
+        .filter((word) => !["Ana", "Ben"].includes(word))
+        .join(" "),
+    ).toBe(
+      "Turrets require energy. Build a generator on top of power ore in order to generate electricity",
+    );
+  });
+
+  test("paints over the world, so nothing standing in it can bury a prompt", () => {
+    const ctx = drawn({ ore: { tile: ORE_TILE, words: MINE_WORDS } });
+    const words = written(ctx);
+    expect(words.indexOf(MINE_WORDS)).toBeGreaterThan(words.indexOf("Ana"));
+    expect(words.indexOf(MINE_WORDS)).toBeGreaterThan(words.indexOf("Ben"));
+  });
+
+  test("a frame with no tutorial in it draws none of this", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport });
+    expect(written(ctx)).toEqual(["Ana", "Ben"]);
   });
 });

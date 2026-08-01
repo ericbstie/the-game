@@ -45,6 +45,13 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > nothing new gets. It is the dearest single mark this page has measured, and it was spent anyway.
 > See [What the damage veil costs](#what-the-damage-veil-costs-142).
 >
+> [#134](https://github.com/ericbstie/the-game/issues/134) has added a sixth mark — the mini-tutorial's
+> three world-anchored prompts — at **0.20 ms** with all three up at once, which is the ceiling rather
+> than a rate: every one of them is gone for good the moment its lesson lands, so on almost every frame
+> of almost every match this layer is not drawn at all. It is the first mark in the frame that is
+> **written** rather than struck or blitted. See [What the tutorial's prompts
+> cost](#what-the-tutorials-prompts-cost-134).
+>
 > [#125](https://github.com/ericbstie/the-game/issues/125) has raised `ENEMY_CAP` from 240 to 500, so
 > **the enemy count in every figure below is no longer the cap**. It is worth **+2.40 ms** measured on
 > an isolated probe — the largest single addition to this frame since the page was written, and the
@@ -623,6 +630,53 @@ probe holds to about ±5% because a fill over a fixed rectangle is the same work
 **Do not add 0.61 ms to the 6.3 ms headline.** This container reads 9.4 ms for the whole frame at the
 cap the governor now stands at, where that headline reads 6.3 ms at a cap the game no longer has.
 Both are honest; neither may be added to the other.
+
+## What the tutorial's prompts cost (#134)
+
+**All three of the mini-tutorial's world-anchored prompts, up at the same time, are 0.20 ms — and on
+almost every frame of almost every match they cost nothing, because they are not drawn.**
+[#134](https://github.com/ericbstie/the-game/issues/134) marks an ore tile and writes over it, writes
+a tooltip at the cursor, and writes a wrapped three-line sentence with two inline icons over a
+turret. Each is up only while its lesson is still owed, and a lesson that has landed is written to
+`localStorage` and never taught again on that browser.
+
+**It is the first mark in this frame that is *written*.** #114's speed lines, #115's burst and #116's
+puff are strokes, priced by their pieces; #79's word is a blit, priced by its box; #142's veil is a
+composite, priced by the viewport. A prompt is `strokeText` + `fillText` per run of words — the house
+style every name and `+1` already uses — and rule 1 has nothing to say about what one of those costs.
+At its worst the layer is **seven runs of words** (one for prompt 1, two for a wrapped tooltip, four
+for prompt 5's sentence broken around its two icons), **fourteen text calls**, one ring and two icon
+blits.
+
+Medians of seven runs, one container, dpr 2, at the governor's cap as it stands, through the probe
+`bun run frame:budget` prints as `the tutorial`.
+
+| | median of 7 | spread |
+| --- | ---: | ---: |
+| the tutorial, all three prompts | **0.200 ms** | 0.133–0.321 |
+
+**This is the loosest figure on this page, and it is a difference rather than a reading.** The probe
+draws the same empty world twice in the same session — once with the prompts and once without — so
+the noise on a ~1.8 ms baseline is of the same order as the layer being weighed. It is measured at
+**four times** the iterations every other layer gets for exactly that reason, and at 60 it produced a
+negative reading. Read it as *a couple of tenths of a millisecond at the ceiling*, not as a constant.
+
+**The ceiling is not a rate, and that is the whole of why it is affordable.** Prompts 3 and 4 are one
+tooltip and one tile is ever under the cursor, so the worst case above already assumes a frame in
+which a first-time player is hovering ore, has never mined, and has a turret up with no generator.
+The second match on that browser draws none of it.
+
+**`bun run sprite:frame` reports 355 blits, up from #79's 353.** The two it gained are prompt 5's
+inline generator and power-ore icons. They are the one place in the frame a bake is drawn at a size
+other than the one it was baked at, so `imageSmoothingEnabled` is turned back on around those two
+calls and off again immediately — nearest-neighbour would shatter a 150 device-px generator squeezed
+into 18. It cannot price a layer and is not a substitute for the probe above; what it is good for is
+the picture, and it is the only instrument that shows a prompt and the highlight together.
+
+**The highlight mark is a ring in the frame above, not art.** Its sprite ships under ADR 0002 with an
+agent of its own; until then `drawWorld` falls back to one stroked circle, exactly as every entity in
+this file falls back to its M2 shape. A baked mark replaces one stroked path with one blit, which
+rule 1 says is the cheaper of the two — this figure will not go up when the art lands.
 
 ## The rules
 

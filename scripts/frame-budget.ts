@@ -31,6 +31,7 @@ const SETTINGS_MODULE = join(import.meta.dir, "../src/game/worldSettings.ts");
 const FLOATS_MODULE = join(import.meta.dir, "../src/game/floats.ts");
 const FX_MODULE = join(import.meta.dir, "../src/game/fx.ts");
 const DAMAGE_MODULE = join(import.meta.dir, "../src/game/damageFx.ts");
+const TUTORIAL_MODULE = join(import.meta.dir, "../src/game/tutorial.ts");
 
 export interface BudgetRequest {
   sprites: Record<string, string>;
@@ -93,6 +94,7 @@ export interface BudgetResult {
   puffsMs: Record<string, number>;
   letteringMs: Record<string, number>;
   veilMs: number;
+  tutorialMs: number; // the mini-tutorial's three world-anchored prompts, all up at once (#134)
 }
 
 export function entrySource(request: BudgetRequest): string {
@@ -112,6 +114,7 @@ import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
 import { inkPuff, speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
 import { letteringAt } from ${JSON.stringify(DRAW_MODULE)};
 import { FLASH_ALPHA } from ${JSON.stringify(DAMAGE_MODULE)};
+import { MINE_WORDS, POWER_WORDS, TURRET_WORDS } from ${JSON.stringify(TUTORIAL_MODULE)};
 
 const VIEW = { width: 800, height: 600 };
 const DPR = ${request.dpr};
@@ -405,6 +408,28 @@ try {
     ctx.fillRect(CAM.x, CAM.y, VIEW.width, VIEW.height);
   });
 
+  // The mini-tutorial's marks (#134), through the shipped path and at the worst frame it can draw:
+  // all three of its world-anchored prompts up at once — the highlight and its words on an ore tile,
+  // a two-line hover tooltip at the cursor, and the three-line sentence with its two inline icons
+  // over a turret. That is the ceiling and not an average: prompts 3 and 4 are the same tooltip and
+  // only one tile is ever under the cursor, and every one of the three is gone for good once its
+  // lesson lands.
+  //
+  // Isolated as a *pair* rather than as a row of the ladder above, because it is far under what the
+  // whole-frame instrument can resolve: the same empty world is drawn immediately before it, in the
+  // same session, so the difference is the layer and nothing else.
+  const tutorialMarks = {
+    ore: { tile: { tx: Math.floor(CAM.x / TILE) + 12, ty: Math.floor(CAM.y / TILE) + 20 }, words: MINE_WORDS },
+    cursor: { at: { x: CAM.x + 300, y: CAM.y + 220 }, words: POWER_WORDS },
+    turret: { tile: { tx: Math.floor(CAM.x / TILE) + 34, ty: Math.floor(CAM.y / TILE) + 26 }, words: TURRET_WORDS },
+  };
+  //
+  // Four times the iterations every other layer gets, and it needs them: the difference is between
+  // two readings of a whole frame, so at 60 the noise on the baseline is wider than the layer being
+  // weighed. It is still the loosest figure on this page.
+  const bareMs = measure(() => { setup(); drawWorld(ctx, empty, opts); }, ITERS * 4);
+  const taughtMs = measure(() => { setup(); drawWorld(ctx, empty, { ...opts, tutorial: tutorialMarks }); }, ITERS * 4);
+
   const result = {
     standing: full.enemies.length + STRUCTURES + full.players.length + full.nests.length,
     blits,
@@ -431,6 +456,7 @@ try {
     puffsMs: { [PUFFS]: +puffs(PUFFS).toFixed(3), 25: +puffs(25).toFixed(3), 50: +puffs(50).toFixed(3), 150: +puffs(150).toFixed(3) },
     letteringMs: { [LETTERING]: +words(LETTERING).toFixed(3), 25: +words(25).toFixed(3), 50: +words(50).toFixed(3), 150: +words(150).toFixed(3) },
     veilMs: +veilMs.toFixed(3),
+    tutorialMs: +(taughtMs - bareMs).toFixed(3),
   };
 
   // Drawn last so the screenshot is the frame that was measured, not the final probe.
@@ -494,6 +520,9 @@ if (import.meta.main) {
   console.log(`  lettering (150)     ${r.letteringMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log(
     `  the damage veil     ${r.veilMs.toFixed(3)} ms   standalone, one full-viewport fill`,
+  );
+  console.log(
+    `  the tutorial        ${r.tutorialMs.toFixed(3)} ms   standalone, all three prompts at once`,
   );
   console.log("");
   console.log(`Worst case, measured through the shipped drawWorld`);

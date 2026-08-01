@@ -237,6 +237,23 @@ describe("ClientWorld enemy stream (applyMapDelta)", () => {
     expect(e?.pos).toEqual({ x: 900, y: 800 });
   });
 
+  // What the tutorial's "an enemy has appeared" reads (#134), and the whole of what it needs.
+  test("the enemy count is zero until one is streamed, and follows the deaths back down", () => {
+    const w = new ClientWorld(init(), "self");
+    expect(w.enemyCount()).toBe(0);
+    w.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: 900, y: 800 }, hp: GRUNT_HP }],
+      },
+      1000,
+    );
+    expect(w.enemyCount()).toBe(1);
+    w.applyMapDelta({ tick: 2, moves: [], deaths: ["e1"] }, 1050);
+    expect(w.enemyCount()).toBe(0);
+  });
+
   test("a move buffers position, rendered ENEMY_RENDER_DELAY_MS behind the stream", () => {
     const w = new ClientWorld(init(), "self");
     w.applyMapDelta(

@@ -523,6 +523,14 @@ export class ClientWorld {
     return this.build.bank.metal;
   }
 
+  // How many enemies this client is tracking. Read for one thing only — whether an enemy has ever
+  // *appeared* on this client, which is what raises the tutorial's gun prompt (#134) — so it is a
+  // count rather than a list: nothing about that question needs a position, and the alternative is
+  // taking a whole `snapshot` for it.
+  enemyCount(): number {
+    return this.enemies.size;
+  }
+
   // The squad's spendable bullets (#102). Mirrored, never computed: the pool is server-owned and
   // the forge queue behind it never crosses the wire. This is what the trigger is gated on, so a
   // shot the server would refuse for want of a bullet is never drawn (#85).

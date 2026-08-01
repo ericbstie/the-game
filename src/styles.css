@@ -591,6 +591,8 @@ button:disabled {
    of `.banks` and becomes the bottom of a column. Right-aligned: the box is narrower than the
    readout, and hanging both off the same rule is what makes them read as one stack. */
 .bank-stack {
+  /* The tutorial's prompt 2 hangs off this column, over the ammo box at the top of it (#134). */
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -820,4 +822,75 @@ button:disabled {
 .end[data-outcome="wiped"] button:hover:not(:disabled) {
   background: var(--ink);
   color: var(--paper);
+}
+
+/* The mini-tutorial's two screen-fixed prompts (#134). The other four are drawn on the canvas,
+   because they are about things standing in the world; these two are chrome — one beside the ammo
+   box, one over the arena — and chrome is the DOM's.
+
+   Neither takes a pointer event. A prompt is words, and words that intercepted a click would be
+   fighting the very thing they are asking the player to do. */
+
+/* The prompt spans the ammo box exactly, so the mark and the words are both placed against the
+   thing they are about rather than against the column it sits in. */
+.tutorial-ammo {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 3.5rem;
+  height: 3.5rem;
+  pointer-events: none;
+}
+
+.tutorial-mark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+/* Until `src/sprite/highlight.ts` lands, the mark is a plain ink ring — the same fallback the
+   canvas keeps, so both hosts show the same thing on the day this ships. */
+.tutorial-ring {
+  width: 4rem;
+  height: 4rem;
+  border: var(--rule);
+  border-radius: 50%;
+}
+
+/* To the left of the box, because the box is already against the right edge of the screen. Cut out
+   of paper exactly as the canvas cuts its own words out: the HUD is transparent over a white floor,
+   and a plate is what keeps a sentence readable wherever it falls. */
+.tutorial-words {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 1rem);
+  transform: translateY(-50%);
+  width: max-content;
+  max-width: 12rem;
+  padding: 0.35rem 0.6rem;
+  border: var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 0.8rem;
+  line-height: 1.25;
+  text-align: right;
+}
+
+/* Prompt 6's line. Over the arena and above the build bar, which is the one band of the screen
+   nothing else in the HUD occupies. */
+.tutorial-banner {
+  position: absolute;
+  bottom: 7.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  margin: 0;
+  padding: 0.4rem 0.9rem;
+  border: var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 0.95rem;
+  white-space: nowrap;
+  pointer-events: none;
 }

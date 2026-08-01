@@ -114,7 +114,7 @@ export function entrySource(request: FrameRequest, modules = MODULES): string {
 import { drawWorld } from ${JSON.stringify(modules.draw)};
 import { createSpriteCache } from ${JSON.stringify(modules.cache)};
 import { SPRITES } from ${JSON.stringify(modules.registry)};
-import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBursts, demoFloats, demoPuffs, demoShots, demoWorld } from ${JSON.stringify(modules.world)};
+import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBursts, demoFloats, demoPuffs, demoShots, demoTutorial, demoWorld } from ${JSON.stringify(modules.world)};
 
 const dpr = ${request.dpr};
 // How far the blow threw the view off the camera (#142). Applied to the camera the world is painted
@@ -167,6 +167,11 @@ drawWorld(ctx, world, {
   // How black the blow left the screen this frame (#142). Zero — the default — is a frame nobody
   // was hit on, and lays nothing at all.
   damageFlash: ${fx.flash},
+  // Three of the mini-tutorial's six prompts (#134), off the shipped state machine rather than
+  // hand-placed: the highlight and its words on an ore tile, a hover tooltip at the cursor, and the
+  // sentence with its two inline icons over a turret. The other three are the HUD's, and the HUD is
+  // not in this frame.
+  tutorial: demoTutorial(world),
   // The real registry, so the frame is the game as it actually stands. Anything named on the
   // command line is layered over it — a sprite under review, or one nobody has wired yet.
   sprites: createSpriteCache({ ...SPRITES, ${table} }).source(dpr),
