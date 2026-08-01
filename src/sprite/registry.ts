@@ -3,6 +3,7 @@ import { BLOODLING_RADIUS, ELITE_RADIUS, GRUNT_RADIUS, NEST_RADIUS } from "../ga
 import { PLAYER_RADIUS } from "../game/world";
 import type { BuildableKind } from "../lobby/protocol";
 import ammo from "./ammo";
+import bloodling from "./bloodling";
 import elite from "./elite";
 import generator from "./generator";
 import grass from "./grass";
@@ -99,6 +100,7 @@ export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
 // `registry.test.ts` fails on one rather than letting it pass for art that has not landed yet.
 export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
   ammo,
+  bloodling,
   grass,
   elite,
   generator,
