@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { BLOOD_FADE_MS, DROP_RADIUS, STAIN_RADIUS } from "../src/game/blood";
+import { BLOODLING_HP } from "../src/game/enemies";
 import { PUFF_REACH } from "../src/game/fx";
 import { MINIMAP_COVERAGES, minimapWindow, oreCells, oreDensity } from "../src/game/minimap";
 import {
@@ -6,6 +8,7 @@ import {
   DEMO_NOW,
   DEMO_SELF,
   DEMO_VIEWPORT,
+  demoBlood,
   demoBursts,
   demoPuffs,
   demoWorld,
@@ -64,6 +67,57 @@ describe("the scene the harness paints", () => {
       expect(puff.pos.x).toBeLessThan(DEMO_CAMERA.x + DEMO_VIEWPORT.width - PUFF_REACH);
       expect(puff.pos.y).toBeGreaterThan(DEMO_CAMERA.y + PUFF_REACH);
       expect(puff.pos.y).toBeLessThan(DEMO_CAMERA.y + DEMO_VIEWPORT.height - PUFF_REACH);
+    }
+  });
+});
+
+// #140. The blood is the first thing the game leaves on the ground, and the only colour in a frame
+// that is otherwise black ink on white paper — so what this scene has to show is a trail with the
+// creature that laid it at the head, a stain standing where nothing is, and the whole of the fade in
+// one picture. None of that can be judged by a spy; the frame is the channel (ADR 0002 §5).
+describe("the blood the scene lays", () => {
+  const world = demoWorld();
+  const marks = demoBlood(world, DEMO_NOW);
+  const runner = world.enemies.find((e) => e.kind === "bloodling");
+
+  test("puts a bloodling in the frame for the trail to belong to", () => {
+    expect(runner).toBeDefined();
+    expect(runner?.hp).toBe(BLOODLING_HP); // unbarred, so its art is judged at real size
+  });
+
+  test("lays the trail behind the creature, at the spacing the game drips at", () => {
+    const drips = marks.filter((m) => m.radius === DROP_RADIUS);
+    expect(drips.length).toBeGreaterThan(4);
+    for (const drip of drips) {
+      expect(drip.pos.x).toBeGreaterThan(runner?.pos.x ?? 0); // behind it, never under it
+      expect(drip.pos.x).toBeLessThan(DEMO_CAMERA.x + DEMO_VIEWPORT.width);
+      expect(drip.pos.y).toBeGreaterThan(DEMO_CAMERA.y);
+      expect(drip.pos.y).toBeLessThan(DEMO_CAMERA.y + DEMO_VIEWPORT.height);
+    }
+  });
+
+  // A single age would put every drip in one of the four bands and answer nothing about the other
+  // three — and the faintest is where a red decal on white paper is at risk of vanishing.
+  test("spreads the trail across the whole fade, so every band of it is in the picture", () => {
+    const ages = marks.filter((m) => m.radius === DROP_RADIUS).map((m) => DEMO_NOW - m.at);
+    expect(Math.min(...ages)).toBe(0);
+    expect(Math.max(...ages)).toBeGreaterThan(BLOOD_FADE_MS * 0.8);
+  });
+
+  test("stands its stain clear of everything still standing, and inside the frame", () => {
+    // Every lobe of it, laid by the game's own `stainMarks` rather than a disc of the fixture's —
+    // a hand-built splat here would be a picture of a mark the game does not draw.
+    const stains = marks.filter((m) => m.radius > DROP_RADIUS);
+    expect(stains.length).toBeGreaterThan(1);
+    for (const stain of stains) {
+      for (const enemy of world.enemies) {
+        const apart = Math.hypot(stain.pos.x - enemy.pos.x, stain.pos.y - enemy.pos.y);
+        expect(apart).toBeGreaterThan(STAIN_RADIUS + enemy.radius);
+      }
+      expect(stain.pos.x).toBeGreaterThan(DEMO_CAMERA.x + STAIN_RADIUS);
+      expect(stain.pos.x).toBeLessThan(DEMO_CAMERA.x + DEMO_VIEWPORT.width - STAIN_RADIUS);
+      expect(stain.pos.y).toBeGreaterThan(DEMO_CAMERA.y + STAIN_RADIUS);
+      expect(stain.pos.y).toBeLessThan(DEMO_CAMERA.y + DEMO_VIEWPORT.height - STAIN_RADIUS);
     }
   });
 });

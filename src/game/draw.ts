@@ -19,6 +19,7 @@ import {
   SOUTH as TILE_SOUTH,
   WEST as TILE_WEST,
 } from "../sprite/tiled";
+import { BLOOD_FADE_MS, type BloodMark } from "./blood";
 import {
   BUILDABLES,
   footprintCenter,
@@ -32,7 +33,7 @@ import {
 import { type Camera, isVisible, type Viewport } from "./camera";
 import { HIT_FLASH_MS, type Mark, type ShotEvent } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
-import { ELITE_HP, GRUNT_HP, RANGED_RANGE } from "./enemies";
+import { BLOODLING_HP, ELITE_HP, GRUNT_HP, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
 import { BURST_REACH, inkPuff, PUFF_REACH, speedLines, starburst } from "./fx";
 import {
@@ -43,7 +44,7 @@ import {
   project,
   projectRect,
 } from "./minimap";
-import { PLAYER_MAX_HP } from "./world";
+import { clamp, PLAYER_MAX_HP } from "./world";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
 // caller pre-translates the context to the camera (so 1 world unit = 1 CSS px), so this
@@ -181,6 +182,10 @@ export interface DrawOptions {
   // is nothing in the snapshot that tells them apart from a teammate standing still — so without
   // the roster the only honest arrow is none (#75).
   connected?: ReadonlySet<PlayerId>;
+  // The blood on the floor this frame (#140) — `stepBlood`, already culled at spawn, already
+  // bounded and already aged. Handed in for the reason the bursts and the puffs are: the list is
+  // the caller's, and this layer only says where the ink goes.
+  blood?: readonly BloodMark[];
   // How black the screen goes this frame from a blow *you* took (#142) — `damageFx(…).flash`, an
   // alpha in [0, 1]. Absent or zero, nothing is laid at all. Handed in rather than aged here for
   // the reason a burst's lifetime is: the instant it is measured from is `ClientWorld`'s, and this
@@ -258,6 +263,17 @@ const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for n
 // `scripts/shot-ink.ts`, which cannot measure the mark's coverage against a width of its own.
 export const SHOT_WIDTH = 2;
 
+// Blood (#140), and the one place the black-and-white theme is broken on purpose. #76 grants the
+// game two colours and this is neither of them — it is a stated exception, and it earns it by being
+// the only red on a white floor covered in black ink: a decal has to read as substance on the
+// ground at a glance, from a creature the player has to identify and shoot before it arrives.
+export const BLOOD = "#d81324";
+// How many steps a mark dries in. The fade is carried in bands rather than per mark because the
+// alpha cannot ride one path, and this is what the layer's cost is held to: four paths for the
+// whole floor's worth of blood, whatever the count. Four steps over `BLOOD_FADE_MS` is a step
+// every 750 ms — slow enough to read as drying rather than as a flicker.
+export const BLOOD_BANDS = 4;
+
 // The damage readout, and the only thing that carries it: structures deliberately do not change
 // appearance as they are damaged (#81). Four px tall, which is a one-px ink frame around two px of
 // signal — the frame is what keeps the bar legible over a sprite as well as over bare paper.
@@ -297,13 +313,23 @@ const MAP_ORE_FILL = 0.8;
 // would fade out exactly as the squad zoomed out to look for it.
 const MAP_DOOR_MIN = 2;
 
-// One colour per enemy kind; the elite reads darker and, with its larger radius, distinct.
-const ENEMY_COLORS: Record<EnemyKind, string> = { grunt: "#e8643c", elite: "#a01f1f" };
+// One colour per enemy kind; the elite reads darker and, with its larger radius, distinct. The
+// bloodling's is the dark purple of the carapace it is drawn with (#140), so the fallback shape and
+// the sprite that replaces it are the same creature.
+const ENEMY_COLORS: Record<EnemyKind, string> = {
+  grunt: "#e8643c",
+  elite: "#a01f1f",
+  bloodling: "#4b2569",
+};
 
 // What "full health" means for each kind, so a bar can be withheld from anything undamaged. Read
 // from the simulation rather than restated, or an HP rebalance would leave every enemy permanently
 // showing a bar that never fills.
-const ENEMY_MAX_HP: Record<EnemyKind, number> = { grunt: GRUNT_HP, elite: ELITE_HP };
+const ENEMY_MAX_HP: Record<EnemyKind, number> = {
+  grunt: GRUNT_HP,
+  elite: ELITE_HP,
+  bloodling: BLOODLING_HP,
+};
 
 // Ore reads as ground texture, not as an entity: muted enough to sit under everything drawn on
 // top of it, distinct enough to spot a patch while running past.
@@ -372,6 +398,12 @@ export function drawWorld(
   // and muddling to read.
   drawGrass(camera, viewport, sprites, blit);
   drawOre(ctx, world, camera, viewport, sprites, blit);
+  // And the blood over both of them, because it is *on* the floor rather than part of it: a
+  // bloodling bleeds over whatever it ran across, ore included. Under the sorted pass, and that is
+  // the one thing that tells this layer apart from every other mark in the frame — a burst, a puff
+  // and a word are events between things and paint over the bodies; this is ground, and everything
+  // standing on the ground walks over it.
+  drawBlood(ctx, options);
 
   const standing: Standing[] = [];
 
@@ -692,6 +724,51 @@ function drawBursts(
     struck++;
   }
   if (struck > 0) ctx.stroke();
+}
+
+// The blood this frame lays on the floor (#140): a filled disc at each mark `stepBlood` is holding.
+//
+// **Filled, and the only thing in the frame that is** — every other mark the game strikes is an
+// outline. That is not a style choice: a drip and a stain are *substance* on the ground rather than
+// a cartoon annotation of an event, and an outlined drop reads as a bubble. It is affordable
+// because a disc of 4–32 u is a handful of device pixels where a shot line is a diagonal across the
+// viewport, and because the list it draws from is capped (`BLOOD_CAP`) instead of riding the
+// spawn rate.
+//
+// **Bundled per fade band, not per mark.** `docs/frame-budget.md` rule 1 charges a mark by the
+// pieces it is struck in, and this is the longest list in the frame, so the count of paths is held
+// to `BLOOD_BANDS` however many decals are up — the same reason #115 and #116 bundle theirs, taken
+// one step further because the alpha cannot ride a single path.
+//
+// A `moveTo` before every disc, unlike the puff's chained lobes: without it the path runs a
+// straight line from the end of one circle to the start of the next, and a *filled* path turns that
+// line into a wedge between them.
+function drawBlood(ctx: CanvasRenderingContext2D, options: DrawOptions): void {
+  const { blood, camera, viewport, now = 0 } = options;
+  if (!blood || blood.length === 0) return;
+  // One pass per band, and a band with nothing in it opens no path at all — so a frame carrying
+  // three fresh drips pays for one path, not four.
+  const banded: BloodMark[][] = Array.from({ length: BLOOD_BANDS }, () => []);
+  for (const mark of blood) {
+    // A trail is laid wherever a bloodling ran, which is anywhere in the arena; culled before the
+    // geometry is built, so a mark nobody can see costs no arcs (rule 3).
+    if (!isVisible(mark.pos, mark.radius, camera, viewport)) continue;
+    const left = 1 - (now - mark.at) / BLOOD_FADE_MS;
+    banded[clamp(Math.floor(left * BLOOD_BANDS), 0, BLOOD_BANDS - 1)].push(mark);
+  }
+  ctx.fillStyle = BLOOD;
+  for (let band = 0; band < BLOOD_BANDS; band++) {
+    const marks = banded[band];
+    if (marks.length === 0) continue;
+    ctx.globalAlpha = (band + 1) / BLOOD_BANDS;
+    ctx.beginPath();
+    for (const mark of marks) {
+      ctx.moveTo(mark.pos.x + mark.radius, mark.pos.y);
+      ctx.arc(mark.pos.x, mark.pos.y, mark.radius, 0, Math.PI * 2);
+    }
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 }
 
 // The ink puffs this frame strikes, one where each enemy died (#116).

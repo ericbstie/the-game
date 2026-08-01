@@ -53,6 +53,37 @@ export const ELITE_HP = 200;
 export const ELITE_SPEED = 234; // 0.9× player — nearly un-outrunnable
 export const ELITE_RADIUS = 24;
 
+// Bloodling (#140) — the third kind, and the only one that cannot be kited: it runs at you and goes
+// off when it arrives. Every figure below is **provisional** — only a played match can judge one,
+// and a later change to any of them is a retune rather than a correction — but each is derived off
+// a number the game already fixes rather than picked out of the air.
+//
+// Half a grunt's HP: five shots at RANGED_DAMAGE where a grunt takes ten. That is the price of the
+// speed, and it is what makes a wave of them a shooting problem rather than a wall of HP.
+export const BLOODLING_HP = GRUNT_HP / 2;
+export const BLOODLING_SPEED = 286; // 1.1× player — the one thing in the game you cannot outrun
+export const BLOODLING_RADIUS = GRUNT_RADIUS; // a squat body, in the grunt's own box
+// How near a player it gets before it goes off. Twice the distance it would have to close to bite
+// one (PLAYER_RADIUS + BLOODLING_RADIUS), so it bursts a body's length short of touching you
+// rather than arriving and chewing.
+export const BLAST_TRIGGER = 2 * (PLAYER_RADIUS + BLOODLING_RADIUS);
+// How far the blast reaches. Twice the fuse, and it has to be more than the fuse by *some* margin:
+// this sim triggers on the position the hub relayed while the client judges the damage on its own
+// true one (it owns its health), and a player sprinting for 200 ms covers 52 u between the two. At
+// twice the fuse the margin is 60 u, and the burst is a threat to anyone standing near whoever set
+// it off rather than to that player alone.
+export const BLAST_RADIUS = 2 * BLAST_TRIGGER;
+// What the blast takes off a player inside it. Twice the elite's bite — the largest single blow in
+// the game until now — which is two fifths of PLAYER_MAX_HP: four of them kill you from full, and
+// none of them alone does.
+export const BLAST_DAMAGE = 40;
+// The share of a nest's wave that comes out as bloodlings. Drawn off the same roll as the elite
+// share and from the far end of it, so the two are independent bands of one uniform draw and a
+// wave still costs exactly one number per enemy (which is what keeps this sim's rng sequence, and
+// every test pinned to it, where it was). A third of `eliteShare.max`, and flat rather than
+// escalating, because nothing asked for a fourth curve.
+export const BLOODLING_SHARE = 0.1;
+
 // Contact damage: an enemy touching a player deals `contactDamage` on its own `contactCadenceMs`.
 interface EnemyStats {
   hp: number;
@@ -75,6 +106,16 @@ const STATS: Record<EnemyKind, EnemyStats> = {
     radius: ELITE_RADIUS,
     contactDamage: 20,
     contactCadenceMs: 800,
+  },
+  // A bloodling's blow is `BLAST_DAMAGE`, and a player never sees these two: the fuse fires a body's
+  // length before contact. They are what it chews a *structure* with, which the ask says nothing
+  // about — so it takes the grunt's rate rather than a number of its own.
+  bloodling: {
+    hp: BLOODLING_HP,
+    speed: BLOODLING_SPEED,
+    radius: BLOODLING_RADIUS,
+    contactDamage: 6,
+    contactCadenceMs: 500,
   },
 };
 
@@ -459,8 +500,17 @@ export function stepEnemies(
     rng: state.rng,
     dtMs,
     damaged: new Set<string>(),
+    blasts: new Set<string>(),
   };
   for (const enemy of state.enemies.values()) stepEnemy(enemy, context);
+  // A bloodling that reached a player is taken off the field here, before `moves` is built, so it
+  // is reported once — as a death — exactly as an enemy killed by a shot is. Its own kind is the
+  // only thing that kills it this way, and the blast it deals is not this module's to apply: the
+  // client owns its health and judges the blow at its own true position (`lobby.ts:743`).
+  for (const id of context.blasts) {
+    state.enemies.delete(id);
+    deaths.push(id);
+  }
 
   const moves: EnemyMove[] = [];
   // Whole world units on the wire. 1 unit = 1 CSS px at the fixed M4 zoom, so the discarded
@@ -485,6 +535,7 @@ interface StepContext {
   rng: () => number;
   dtMs: number;
   damaged: Set<string>; // structure ids bitten this tick, resolved into hits/removals at the end
+  blasts: Set<string>; // bloodlings that went off this tick, resolved into deaths at the end
 }
 
 // Turn this tick's structure damage into wire events. A structure at 0 HP is simply removed —
@@ -555,7 +606,12 @@ function fireNestWave(
   const spawns: EnemySpawn[] = [];
   for (let i = 0; i < size; i++) {
     if (state.enemies.size >= state.settings.enemyCap) break; // cap governor holds the remainder
-    const kind: EnemyKind = state.rng() < share ? "elite" : "grunt";
+    // One draw decides the kind, read as three bands: the elite share at the bottom, the bloodling
+    // share at the top, and a grunt for everything between them. One number per enemy rather than
+    // two, so a wave costs the sim's rng exactly what it always has.
+    const roll = state.rng();
+    const kind: EnemyKind =
+      roll < share ? "elite" : roll >= 1 - BLOODLING_SHARE ? "bloodling" : "grunt";
     // A nest walled in is a legitimate strategy, so a wave that lands inside a footprint still
     // spawns — the overlapping enemy is simply pushed clear.
     const at = pushOutOfSolids(build, jitter(nest.pos, state.rng), enemyRadius(kind));
@@ -832,6 +888,22 @@ function stepEnemy(enemy: Enemy, context: StepContext): void {
   // ENGAGED and HUNTING differ only in what `acquire` returned, never in how the step is taken.
   if (engaged) stepToward(enemy, engaged.lead, speed, context);
   else wander(enemy, speed, context);
+  if (enemy.kind === "bloodling") fuse(enemy, context);
+}
+
+// A bloodling's proximity fuse (#140): a player this close and it goes off, wherever it was headed.
+//
+// Judged after the step, so one that closes the last of the gap this tick bursts on arrival rather
+// than a tick later — and on a *player*, never on a structure, so a squad's base is safe from
+// something that will kill them for standing next to it.
+//
+// Deliberately not read off `acquire`: that answers what the enemy is *chasing*, and lock-and-commit
+// means a bloodling chasing you across the arena will run straight past your teammate. A fuse is not
+// a target — anyone near enough sets it off. It is the body it is measured against and never the
+// lead point navigation steers at, on #131's own reasoning: a phantom point ahead of a sprinting
+// player is not a place anybody is standing.
+function fuse(enemy: Enemy, context: StepContext): void {
+  if (nearestWithin(context.players, enemy.pos, BLAST_TRIGGER)) context.blasts.add(enemy.id);
 }
 
 // One step of an undirected walk: hold a heading for WANDER_LEG_MS, then draw another. The heading

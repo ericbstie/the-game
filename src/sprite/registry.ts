@@ -1,5 +1,5 @@
 import { BUILDABLES, TILE } from "../game/build";
-import { ELITE_RADIUS, GRUNT_RADIUS, NEST_RADIUS } from "../game/enemies";
+import { BLOODLING_RADIUS, ELITE_RADIUS, GRUNT_RADIUS, NEST_RADIUS } from "../game/enemies";
 import { PLAYER_RADIUS } from "../game/world";
 import type { BuildableKind } from "../lobby/protocol";
 import ammo from "./ammo";
@@ -38,6 +38,7 @@ export type SpriteName =
   | "player"
   | "grunt"
   | "elite"
+  | "bloodling" // the one that runs at you and goes off (#140)
   | "nest" // the egg sac: facing 0 intact, facing 1 destroyed
   | "miner"
   | "wall"
@@ -70,6 +71,7 @@ export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
   player: PLAYER_RADIUS * 2, // 28
   grunt: GRUNT_RADIUS * 2, // 32
   elite: ELITE_RADIUS * 2, // 48
+  bloodling: BLOODLING_RADIUS * 2, // 32
   nest: NEST_RADIUS * 2, // 96
   miner: footprintBox("miner"), // 30
   wall: footprintBox("wall"), // 30

@@ -13,6 +13,7 @@ describe("SPRITE_BOX", () => {
       player: 28, // PLAYER_RADIUS × 2
       grunt: 32, // GRUNT_RADIUS × 2
       elite: 48, // ELITE_RADIUS × 2
+      bloodling: 32, // BLOODLING_RADIUS × 2
       nest: 96, // NEST_RADIUS × 2
       miner: 30, // footprint 2 × TILE
       wall: 30,

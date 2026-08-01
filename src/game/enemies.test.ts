@@ -26,6 +26,12 @@ import {
   ATTACK_POS_TOLERANCE,
   type Attack,
   admitAttack,
+  BLAST_RADIUS,
+  BLAST_TRIGGER,
+  BLOODLING_HP,
+  BLOODLING_RADIUS,
+  BLOODLING_SHARE,
+  BLOODLING_SPEED,
   ELITE_HP,
   type Enemy,
   type EnemyState,
@@ -58,7 +64,7 @@ import {
   WANDERER_CHANCE_OUTER,
   waveSize,
 } from "./enemies";
-import { ARENA, PLAYER_RADIUS } from "./world";
+import { ARENA, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
 import { DEFAULT_WORLD_SETTINGS as DEFAULTS } from "./worldSettings";
 
 const C = { x: ARENA.width / 2, y: ARENA.height / 2 };
@@ -1714,5 +1720,106 @@ describe("M5-I5: a turret's aim streams as a transition, a player's shot as an e
     const events = step(s, [shot({ ...C }, { x: 1, y: 0 })]);
     expect(events.shots).toEqual([{ id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }]);
     expect(events.deaths).toEqual(["e1"]);
+  });
+});
+
+// #140. The Bloodling: it runs at you and goes off when it gets there. The blast itself is the
+// client's to apply — it owns its health — so what the sim owes is the trigger and the death.
+describe("the bloodling (#140)", () => {
+  const DT = 50;
+  const bloodling = (id: string, pos: Vec2, hp = BLOODLING_HP): Enemy => ({
+    id,
+    kind: "bloodling",
+    pos,
+    hp,
+    biteMs: 0,
+  });
+  const stepWith = (s: EnemyState, players: PlayerRef[], build: BuildState | null = null) =>
+    stepEnemies(s, players, [], DT, build).events;
+
+  test("it is the one enemy a player cannot outrun", () => {
+    expect(BLOODLING_SPEED).toBeGreaterThan(PLAYER_SPEED);
+    expect(GRUNT_SPEED).toBeLessThan(PLAYER_SPEED); // and the other two still can be
+  });
+
+  test("the blast reaches wider than the fuse, so whoever set it off is inside it", () => {
+    // The sim triggers on the position the hub relayed; the client judges the blast on its own
+    // true one. The gap between them is a round trip — 52 u at 200 ms of sprinting — and the
+    // blast has to cover it, or a player could set one off and stand outside it.
+    expect(BLAST_RADIUS).toBeGreaterThan(BLAST_TRIGGER + PLAYER_SPEED * 0.2);
+  });
+
+  test("one within the fuse of a player goes off: it dies, and the death rides `deaths`", () => {
+    const s = stateWith([bloodling("e1", { x: C.x + BLAST_TRIGGER - 1, y: C.y })]);
+    const events = stepWith(s, player({ ...C }));
+    expect(events.deaths).toEqual(["e1"]);
+    expect(s.enemies.size).toBe(0);
+    expect(events.moves).toEqual([]); // gone before the tick reports where anything is
+  });
+
+  test("it goes off on arrival, in the tick it closes the last of the gap", () => {
+    const travel = (BLOODLING_SPEED * DT) / 1_000;
+    const s = stateWith([bloodling("e1", { x: C.x + BLAST_TRIGGER + travel - 1, y: C.y })]);
+    expect(stepWith(s, player({ ...C })).deaths).toEqual(["e1"]);
+  });
+
+  test("out of range it closes like anything else, and reports its move", () => {
+    const from = { x: C.x + 400, y: C.y };
+    const s = stateWith([bloodling("e1", { ...from })]);
+    const events = stepWith(s, player({ ...C }));
+    expect(events.deaths).toEqual([]);
+    expect(only(s).pos.x).toBeLessThan(from.x);
+    expect(events.moves).toHaveLength(1);
+  });
+
+  test("the fuse is the player's body, never the lead it is steered at (#131)", () => {
+    // A player sprinting away: the lead sits half the gap ahead of them, well outside the fuse,
+    // while the body is inside it. The blast is about the body.
+    const s = stateWith([bloodling("e1", { x: C.x + BLAST_TRIGGER - 1, y: C.y })]);
+    const running: PlayerRef[] = [{ id: "p1", pos: { ...C }, prev: { x: C.x + 500, y: C.y } }];
+    expect(stepWith(s, running).deaths).toEqual(["e1"]);
+  });
+
+  test("a fuse is not a lock: any player near enough sets it off, chased or not", () => {
+    const far = { x: C.x + 1_500, y: C.y };
+    const s = stateWith([bloodling("e1", { x: C.x + 900, y: C.y })]);
+    stepWith(s, [{ id: "chased", pos: far }]); // locks on the far one
+    expect(only(s).target).toEqual({ kind: "player", id: "chased" });
+    const events = stepWith(s, [
+      { id: "chased", pos: far },
+      { id: "bystander", pos: { x: only(s).pos.x + BLAST_TRIGGER - 1, y: C.y } },
+    ]);
+    expect(events.deaths).toEqual(["e1"]);
+  });
+
+  test("nothing but a player sets it off — it chews a structure like any other enemy", () => {
+    const MINER = BUILDABLES.miner as BuildableSpec;
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 10_000;
+    const at = { x: C.x + 5_000, y: C.y };
+    const miner = placeStructure(build, "miner", tileOf({ x: at.x - TILE, y: at.y - TILE }), MINER);
+    const s = stateWith([bloodling("e1", { x: at.x + 30, y: at.y })]);
+    for (let i = 0; i < 20; i++) stepWith(s, [], build);
+    expect(s.enemies.size).toBe(1);
+    expect(build.structures.get(miner.id)?.hp).toBeLessThan(MINER.hp);
+  });
+
+  test("a nest's wave carries them, drawn off the same roll the elite share is", () => {
+    const mix = (roll: number) => {
+      const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => roll)), 6);
+      return stepEnemies(s, [], [], DT).events.spawns.map((sp) => sp.kind);
+    };
+    // The bloodling share sits at the top of the draw and the elite share at the bottom, so the
+    // two are independent bands of one uniform and the grunt is what is left between them.
+    expect(mix(0.99)).toEqual(Array(DEFAULTS.waveSize.max).fill("bloodling"));
+    expect(mix(1 - BLOODLING_SHARE - 0.01)).toEqual(Array(DEFAULTS.waveSize.max).fill("grunt"));
+    expect(mix(0.29)).toEqual(Array(DEFAULTS.waveSize.max).fill("elite"));
+  });
+
+  test("one spawns at BLOODLING_HP, and its radius rides the same record as the rest", () => {
+    const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => 0.99)), 6);
+    const spawns = stepEnemies(s, [], [], DT).events.spawns;
+    expect(spawns[0]).toMatchObject({ kind: "bloodling", hp: BLOODLING_HP });
+    expect(enemyRadius("bloodling")).toBe(BLOODLING_RADIUS);
   });
 });

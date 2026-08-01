@@ -20,7 +20,16 @@ import {
   RESPAWN_DELAY_MS,
   SHOT_RETENTION_MS,
 } from "./clientWorld";
-import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, nestLayout, spawnEnemyState } from "./enemies";
+import {
+  BLAST_DAMAGE,
+  BLAST_RADIUS,
+  BLOODLING_HP,
+  enemyContactDamage,
+  GRUNT_HP,
+  GRUNT_RADIUS,
+  nestLayout,
+  spawnEnemyState,
+} from "./enemies";
 import { SEED_FACING } from "./facing";
 import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
 import { DEFAULT_WORLD_SETTINGS, type WorldSettings } from "./worldSettings";
@@ -1376,5 +1385,78 @@ describe("the door's reveal is mirrored, never decided here", () => {
     const w = new ClientWorld(init(), "self");
     w.initEnemies(keyframe(40));
     expect(revealed(w)).toBe(false);
+  });
+});
+
+// #140. A bloodling's death *is* its blast, so the owner judges the blow off the death it is already
+// streamed — the same client-owned-health stance contact damage is judged on, and nothing added to
+// the wire to carry it.
+describe("#140: a bloodling's blast lands on the client that was near it", () => {
+  const bloodlingAt = (w: ClientWorld, pos: Vec2, tick = 1) =>
+    w.applyMapDelta(
+      { tick, moves: [], spawns: [{ id: "b1", kind: "bloodling", pos, hp: BLOODLING_HP }] },
+      0,
+    );
+  const dies = (w: ClientWorld, now: number, tick = 2) =>
+    w.applyMapDelta({ tick, moves: [], deaths: ["b1"] }, now);
+
+  test("one that goes off inside the blast takes BLAST_DAMAGE off the owner", () => {
+    const w = new ClientWorld(init(), "self");
+    bloodlingAt(w, { x: 400 + BLAST_RADIUS - 1, y: 300 });
+    dies(w, 1000);
+    expect(w.hp()).toBe(PLAYER_MAX_HP - BLAST_DAMAGE);
+  });
+
+  test("one that goes off outside it takes nothing", () => {
+    const w = new ClientWorld(init(), "self");
+    bloodlingAt(w, { x: 400 + BLAST_RADIUS + 1, y: 300 });
+    dies(w, 1000);
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
+  });
+
+  test("the blast shakes the owner's screen exactly as a bite does (#142)", () => {
+    const w = new ClientWorld(init(), "self");
+    bloodlingAt(w, { x: 400, y: 300 });
+    dies(w, 1000);
+    expect(w.damagedAt()).toBe(1000);
+  });
+
+  test("a grunt dying on top of you is a kill, not a blast", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      { tick: 1, moves: [], spawns: [{ id: "b1", kind: "grunt", pos: { x: 400, y: 300 }, hp: 1 }] },
+      0,
+    );
+    dies(w, 1000);
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
+    expect(w.damagedAt()).toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  test("a dead player takes no blast, exactly as they take no bite", () => {
+    const w = new ClientWorld(init(), "self", 0);
+    bloodlingAt(w, { x: 400, y: 300 });
+    dies(w, 1000);
+    expect(w.hp()).toBe(0);
+  });
+
+  test("HP floors at zero: two blasts on a player with one blast left in them", () => {
+    const w = new ClientWorld(init(), "self", BLAST_DAMAGE - 1);
+    bloodlingAt(w, { x: 400, y: 300 });
+    dies(w, 1000);
+    expect(w.hp()).toBe(0);
+    expect(w.isDead()).toBe(true);
+  });
+
+  // The blast is judged where the *sprite* was, not where the stream had got to: the death is the
+  // tick the drawing came off the screen, and the delayed clock is what the player was looking at.
+  test("the blast is measured from the position the spider was drawn at", () => {
+    const w = new ClientWorld(init(), "self");
+    bloodlingAt(w, { x: 400 + BLAST_RADIUS * 2, y: 300 });
+    // Two samples a render delay apart: by `now` the stream has it on top of the owner, but the
+    // drawing is still a delay behind, out past the blast.
+    w.applyMapDelta({ tick: 2, moves: [["b1", 400 + BLAST_RADIUS * 2, 300]] }, 1000);
+    w.applyMapDelta({ tick: 3, moves: [["b1", 400, 300]] }, 1000 + ENEMY_RENDER_DELAY_MS);
+    dies(w, 1000 + ENEMY_RENDER_DELAY_MS, 4);
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
   });
 });

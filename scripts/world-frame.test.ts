@@ -114,4 +114,13 @@ describe("entrySource", () => {
     expect(source).toContain("demoPuffs");
     expect(source).toContain("puffs: demoPuffs(DEMO_NOW)");
   });
+
+  // The blood is the only *colour* the game draws and the only mark that is filled rather than
+  // struck, so it is the mark this channel is most needed for: a spy records that a disc was filled,
+  // never whether red on white paper still reads as blood at the faintest band of its fade (#140).
+  test("carries the blood, so the trail and the stain can be looked at (#140)", () => {
+    const source = entrySource(parseArgs([]), modules);
+    expect(source).toContain("demoBlood");
+    expect(source).toContain("blood: demoBlood(world, DEMO_NOW)");
+  });
 });

@@ -1,7 +1,14 @@
+import {
+  BLOOD_FADE_MS,
+  type BloodMark,
+  DRIP_SPACING,
+  DROP_RADIUS,
+  stainMarks,
+} from "../src/game/blood";
 import { mulberry32, type OreGrid, TILE, tileKey } from "../src/game/build";
 import type { Mark } from "../src/game/clientWorld";
 import type { BuildGhost, ShotSource } from "../src/game/draw";
-import { ELITE_HP } from "../src/game/enemies";
+import { BLOODLING_HP, BLOODLING_RADIUS, ELITE_HP } from "../src/game/enemies";
 import { FLOAT_MS, type MetalFloat, minerFloatOrigin } from "../src/game/floats";
 import type { Tile, Vec2, WorldSnapshot } from "../src/lobby/protocol";
 
@@ -124,6 +131,20 @@ export function demoWorld(): WorldSnapshot {
         hp: 30,
         flashing: false,
       },
+      {
+        // One bloodling running at the squad from the east (#140), unflashed and at full health so
+        // the frame is the channel for judging its art at real size (ADR 0002 §5) — and so the trail
+        // `demoBlood` lays behind it has a creature at the head of it. Everything else in this scene
+        // is drawn in ink; this one thing and its blood are the theme's stated exception.
+        id: "e6",
+        kind: "bloodling",
+        pos: { x: 15_760, y: 15_700 },
+        facing: 4,
+        frame: 0,
+        radius: BLOODLING_RADIUS,
+        hp: BLOODLING_HP,
+        flashing: false,
+      },
     ],
     nests: [
       { id: "n1", pos: { x: 15_500, y: 15_470 }, radius: 48, maxHp: 600, hp: 600, alive: true },
@@ -238,6 +259,35 @@ const DEMO_DEATHS: Vec2[] = [
 
 export function demoPuffs(now: number): Mark[] {
   return DEMO_DEATHS.map((pos) => ({ pos: { ...pos }, at: now }));
+}
+
+// The blood on the floor (#140): the trail behind the bloodling that is still running, and the
+// stain where one that got there went off.
+//
+// The trail is *derived* from the creature, for `demoFloats`'s reason — a trail with nothing at the
+// head of it is the one way this drawing can be wrong — and laid behind it at the spacing the game
+// drips at, so the frame shows the real grain rather than a decorative dotted line. Its drips are
+// spread across the whole of `BLOOD_FADE_MS`, because the fade is banded and a single age would show
+// one band of the four: whether blood still reads as blood at a quarter alpha over white paper is
+// exactly what this picture is for.
+//
+// The stain is placed rather than derived, the mirror of `demoPuffs`: it stands where a bloodling
+// *no longer is*, and `demo-world.test` holds it clear of everything standing and inside the frame.
+const DEMO_STAIN: Vec2 = { x: 15_780, y: 15_560 };
+const DEMO_DRIPS = 8;
+
+export function demoBlood(world: WorldSnapshot, now: number): BloodMark[] {
+  const marks: BloodMark[] = stainMarks(DEMO_STAIN, now);
+  const runner = world.enemies.find((e) => e.kind === "bloodling");
+  if (!runner) return marks;
+  for (let i = 1; i <= DEMO_DRIPS; i++) {
+    marks.push({
+      pos: { x: runner.pos.x + i * DRIP_SPACING, y: runner.pos.y },
+      at: now - Math.round(((i - 1) / DEMO_DRIPS) * BLOOD_FADE_MS),
+      radius: DROP_RADIUS,
+    });
+  }
+  return marks;
 }
 
 // A `+1` over every miner in the scene, spread across the life of a float so the frame carries the

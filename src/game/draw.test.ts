@@ -11,6 +11,7 @@ import type {
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import lettering from "../sprite/lettering";
 import type { SpriteName } from "../sprite/registry";
+import { BLOOD_FADE_MS, type BloodMark } from "./blood";
 import { tileKey, tileOf } from "./build";
 import type { Camera, Viewport } from "./camera";
 import {
@@ -21,6 +22,8 @@ import {
   type Mark,
 } from "./clientWorld";
 import {
+  BLOOD,
+  BLOOD_BANDS,
   BURST_MS,
   type DrawOptions,
   drawWorld,
@@ -2672,5 +2675,100 @@ describe("the damage veil", () => {
     const laid = fullScreen(ctx);
     expect(laid.length).toBe(3); // paper, the darkening, the veil
     expect(laid[2].fill).toBe("rgba(0, 0, 0, 0.5)");
+  });
+});
+
+// #140: the blood a bloodling leaves on the floor. The render layer holds none of it — `stepBlood`
+// accrues the marks, culls them at spawn and bounds the list, and this layer is handed what is left.
+// What is pinned here is the ink: red, on the floor rather than among the bodies, one path a band
+// however many marks are up, fading with age, and nothing at all struck for a mark off camera.
+describe("blood on the floor", () => {
+  const ON: Vec2 = { x: 1_200, y: 1_200 };
+  const sprites = stubSprites({ player: 28, bloodling: 32 });
+  const bleeding: WorldSnapshot = {
+    ...world,
+    nests: [],
+    enemies: [
+      { ...POSE, id: "b1", kind: "bloodling", pos: { x: 1_300, y: 1_300 }, radius: 16, hp: 15 },
+    ],
+  };
+  const bled = (marks: readonly BloodMark[], now = 1_000) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, bleeding, { camera, viewport, now, sprites, blood: marks });
+    return ctx;
+  };
+  // Every filled disc the frame laid, as the numbers `ctx.arc` was handed plus the alpha it went
+  // out under — which is the whole of what a decal is.
+  const discs = (ctx: { calls: Call[] }) =>
+    ctx.calls
+      .filter((c) => c.fn === "arc")
+      .map((c) => ({ args: c.args as number[], alpha: c.alpha, fill: c.fill }));
+
+  test("lays one disc per mark, in vibrant red", () => {
+    const marks = [
+      { pos: ON, at: 1_000, radius: 4 },
+      { pos: { x: 1_250, y: 1_250 }, at: 1_000, radius: 32 },
+    ];
+    const laid = discs(bled(marks));
+    expect(laid.map((d) => d.args.slice(0, 3))).toEqual([
+      [ON.x, ON.y, 4],
+      [1_250, 1_250, 32],
+    ]);
+    // The one place the black-and-white theme is broken on purpose (#140), so it may not be ink.
+    expect(new Set(laid.map((d) => d.fill))).toEqual(new Set([BLOOD]));
+  });
+
+  test("costs the frame nothing at all when nothing has bled", () => {
+    const bare = spyCtx();
+    drawWorld(bare, bleeding, { camera, viewport, now: 1_000, sprites });
+    expect(bled([]).calls.map((c) => c.fn)).toEqual(bare.calls.map((c) => c.fn));
+  });
+
+  // It is on the ground, so everything that stands on the ground has to paint over it — the
+  // opposite of the burst and the puff, which are events and go over the sort.
+  test("is laid under everything standing on it", () => {
+    const ctx = bled([{ pos: ON, at: 1_000, radius: 4 }]);
+    const bodyCall = ctx.calls.findIndex(
+      (c) => c.fn === "drawImage" && (c.args[0] as { tag: string }).tag.startsWith("bloodling/"),
+    );
+    const laid = ctx.calls.findIndex((c) => c.fn === "fill");
+    expect(bodyCall).toBeGreaterThan(0); // the spider is in this frame, or the order says nothing
+    expect(laid).toBeGreaterThan(0);
+    expect(laid).toBeLessThan(bodyCall);
+  });
+
+  // The floor is the layer most exposed to the count, and a decal list is the longest one in the
+  // frame: `docs/frame-budget.md` rule 1 charges a mark by the pieces it is struck in, so the paths
+  // are held to the bands and only the discs ride the count.
+  test("bundles the whole layer into one path per fade band, not one per mark", () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      pos: { x: 1_050 + i * 10, y: 1_400 },
+      at: 1_000 - i * 40,
+      radius: 4,
+    }));
+    const ctx = bled(many);
+    expect(discs(ctx)).toHaveLength(60);
+    expect(ctx.calls.filter((c) => c.fn === "fill")).toHaveLength(BLOOD_BANDS);
+  });
+
+  test("a mark dries as it ages: the older it is the fainter it goes", () => {
+    const fresh = { pos: ON, at: 1_000, radius: 4 };
+    const old = { pos: { x: 1_100, y: 1_200 }, at: 1_000 - BLOOD_FADE_MS * 0.9, radius: 4 };
+    const laid = discs(bled([fresh, old]));
+    const alphaAt = (x: number) => laid.find((d) => d.args[0] === x)?.alpha ?? 0;
+    expect(alphaAt(ON.x)).toBe(1);
+    expect(alphaAt(1_100)).toBeGreaterThan(0);
+    expect(alphaAt(1_100)).toBeLessThan(1);
+  });
+
+  test("leaves the drawing state as it found it, so nothing after it inherits an alpha", () => {
+    const ctx = bled([{ pos: ON, at: 1_000 - BLOOD_FADE_MS * 0.9, radius: 4 }]);
+    expect(ctx.calls[ctx.calls.length - 1].alpha).toBe(1);
+  });
+
+  // A trail is laid where a bloodling ran, which is anywhere in a 31,200² arena; the camera is over
+  // 800 × 600 of it. Culled before the geometry is built, so a mark nobody can see costs no arcs.
+  test("lays nothing for a mark the camera cannot see", () => {
+    expect(discs(bled([{ pos: { x: 9_000, y: 9_000 }, at: 1_000, radius: 32 }]))).toEqual([]);
   });
 });

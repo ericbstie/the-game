@@ -160,7 +160,9 @@ export interface WorldInit {
 // The server owns all enemy state; the client only renders it. Enemy motion, spawns, and
 // deaths stream as `game/map-delta` on the same INV-5 envelope at ~20 Hz.
 
-export type EnemyKind = "grunt" | "elite";
+// A bloodling (#140) is the third: it runs at the squad and goes off, so it reaches the client as
+// a kind like any other and everything it does differently is in `enemies.ts`'s record.
+export type EnemyKind = "grunt" | "elite" | "bloodling";
 
 // A newly-spawned enemy, announced once so the client can create its render record (kind +
 // hp) before per-tick position deltas start flowing for it.

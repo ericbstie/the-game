@@ -45,6 +45,15 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > nothing new gets. It is the dearest single mark this page has measured, and it was spent anyway.
 > See [What the damage veil costs](#what-the-damage-veil-costs-142).
 >
+> [#140](https://github.com/ericbstie/the-game/issues/140) has added a sixth — blood on the floor,
+> where a bloodling ran and where one went off — at **1.82 ms** at the ceiling its list is capped to.
+> It is the **largest mark on this page by a factor of three**, the first one that is *filled* rather
+> than stroked, the first that is **under** the sorted pass rather than over it, and the only one
+> whose count is a **ceiling rather than a rate** — every other mark rides a cadence, so its worst
+> case is arithmetic; a decal rides how many bloodlings are on screen. It is also the first layer the
+> whole-frame instrument could actually resolve. See [What the blood on the floor
+> costs](#what-the-blood-on-the-floor-costs-140).
+>
 > [#125](https://github.com/ericbstie/the-game/issues/125) has raised `ENEMY_CAP` from 240 to 500, so
 > **the enemy count in every figure below is no longer the cap**. It is worth **+2.40 ms** measured on
 > an isolated probe — the largest single addition to this frame since the page was written, and the
@@ -123,6 +132,7 @@ difference from the row above.
 | + the death puffs | — | ≈0 | 1 ink puff, one path (#116). Not in the run above; 0.05 ms isolated |
 | + the lettered words | — | ≈0 | 5 words, one blit each (#79) — 4 on hits, 1 on deaths. Not in the run above; 0.04 ms isolated |
 | + the damage veil | — | 0.61 | one rgba fill over the whole viewport (#142), laid only by the client of the player who was hit. Not in the run above; 0.61 ms isolated |
+| + the blood | — | 1.82 | 300 filled discs under the sorted pass (#140) — the cap `BLOOD_CAP` holds the list to. Not in the run above; 1.82 ms isolated |
 | **Total** | **6.3** | | **38% of a 16.67 ms frame** |
 
 **The script's printed labels for the first two rows are wrong, and the names in brackets above are
@@ -624,6 +634,66 @@ probe holds to about ±5% because a fill over a fixed rectangle is the same work
 cap the governor now stands at, where that headline reads 6.3 ms at a cap the game no longer has.
 Both are honest; neither may be added to the other.
 
+## What the blood on the floor costs (#140)
+
+**300 decals cost 1.82 ms — 11% of a 16.67 ms frame, and about 6 µs each.** That makes a single decal
+one of the cheapest marks the game draws, roughly a sprite blit, and the layer the dearest on this
+page: [#140](https://github.com/ericbstie/the-game/issues/140) is the first thing that stays on the
+ground after the thing that made it has gone, so the count is the whole story.
+
+**The count is a ceiling, not a rate, and that is what makes this mark different from every other one
+here.** A shot line, a burst, a puff and a word all ride a cadence, so their worst case is arithmetic
+on constants the game already fixes. A decal rides how many bloodlings are on screen: at `ENEMY_CAP`
+500 a screen of them would owe **~13,000 marks inside one `BLOOD_FADE_MS`**, and nothing culled per
+frame saves a list that size. `src/game/blood.ts` caps it at **`BLOOD_CAP` 300** and drops the oldest
+instead, and because nothing off screen is ever admitted to the list, that cap is a bound on what is
+*drawn* rather than on what is held. **The cap is therefore the only lever this layer has, and the
+figure below is what it buys.**
+
+Medians of five runs, one container, dpr 2, at the governor's cap, through the standalone probe
+`bun run frame:budget` prints as `blood`.
+
+| Concurrent decals | ms | per decal |
+| ---: | ---: | ---: |
+| 25 | 0.097 ms | 3.9 µs |
+| 50 | 0.213 ms | 4.3 µs |
+| 150 — six bloodlings' trails, near what a squad's worth lays | 0.812 ms | 5.4 µs |
+| 300 — **`BLOOD_CAP`, the ceiling** | 1.822 ms | 6.1 µs |
+
+**Linear in the count, as a layer of independent discs has to be**, with a slow drift upward that is
+the path length rather than the discs. At the cap it costs about two thirds of what fifty shot lines
+do and half what fifty puffs do, while being an order of magnitude more marks.
+
+**It is the first layer on this page the whole-frame instrument could see, and it agreed.** Over the
+same five runs the cumulative `+ the blood` row came in **1.62 ms** above the `+ the lettering` row it
+contains, against the probe's 1.82 — and **all five runs ordered correctly**, which no sub-millisecond
+layer on this page has managed. That is not a new instrument; it is a layer finally larger than the
+noise. The whole-frame totals on this container — **9.0 ms without the blood, 10.5–11.4 ms with it**
+— are a different machine from the 6.3 ms headline and are not comparable to it.
+
+**A filled mark, and the first one.** Every other mark in the frame is stroked, so rule 1 prices it by
+the pieces it is struck in; a decal is a `ctx.arc` closed and filled, and at 4–32 u it covers a
+handful of device pixels where a shot line covers a diagonal across the viewport. The layer is
+bundled into **one path per fade band** — four, because the alpha cannot ride a single path — so the
+count of paths is fixed and only the discs ride the count.
+
+**It is also the only mark that paints *under* the sorted pass.** A burst, a puff and a word are
+events between things and go over the bodies; blood is ground, and everything standing on the ground
+walks over it. That costs nothing extra and is stated because it is the property a future mark on the
+floor should copy.
+
+**`bun run frame:budget` reports 1,055 blits where #114's cap-500 run reported 1,107, and the
+difference is not a saving.** Every seventh enemy in the fixture is now a bloodling and the bloodling
+sprite has not landed yet (ADR 0002 — the harness is built before the art), so ~57 of them fall back
+to the M2 circle, which is a `fill` and not a blit. When that sprite lands the blit count returns and
+the standing layer costs what it always did.
+
+**`bun run sprite:frame` still reports 353 blits and no timing at all.** It draws the demo world, not
+`ENEMY_CAP`, so it cannot price this layer and is not a substitute for the ladder above — what it is
+good for is the picture, and for this mark that is the whole point: it is the only instrument that
+shows the trail behind a running bloodling and the splat where one went off, in colour, at the four
+steps of its fade, on the white floor they have to read against.
+
 ## The rules
 
 1. **Shot lines are the most expensive thing in the frame, per unit** — and one effect has already
@@ -655,6 +725,13 @@ Both are honest; neither may be added to the other.
    is charged for those rather than for the one call. **Count segments for a polyline; for anything
    curved, measure it.** The lever on a curved mark is how many arcs it has, and that is all this
    rule can still say.
+
+   **#140 is the first mark the rule prices correctly and the first whose *count* is the problem.** A
+   blood decal is one filled arc, ~6 µs — a stroke's-worth of pieces and a blit's-worth of cost, so
+   nothing about the rule is surprised by it. What is new is that its count is a **ceiling rather
+   than a rate**: every mark above rides a cadence, and this one rides how many bloodlings are on
+   screen. **Price a mark by its pieces; bound it by whatever sets its count, and if that is not a
+   cadence, cap it.** See [What the blood on the floor costs](#what-the-blood-on-the-floor-costs-140).
 
    **#79 is the mark this rule does not apply to at all, and that is the cheapest place to be.** A
    lettered word is a **blit**, not a stroke: seven hand-built letterforms, sixteen jittered rays and
@@ -779,7 +856,10 @@ be priced at a density before the simulation is raised to it. Without it the wor
 the governor says today, which is what every unlabelled figure on this page was measured at.
 
 `frame:budget` prints the layer breakdown and the projected worst case, and writes the frame it
-measured to a PNG so the numbers can be checked against the picture that produced them.
+measured to a PNG so the numbers can be checked against the picture that produced them. #140's blood
+needs no flag of its own: the fixture puts a bloodling in every seventh enemy and fills the decal
+list to `BLOOD_CAP`, which is the ceiling and so is already the worst case — retune that constant and
+the ladder re-prices itself.
 
 `shot:ink`, `burst:ink`, `puff:ink` and `lettering:ink` answer the other axis and only that one — how much ink a mark lays, never
 what it costs. Both take `--dpr` as often as you like (the default is the three above) and `--json`
