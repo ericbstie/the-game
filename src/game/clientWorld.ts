@@ -9,11 +9,12 @@ import type {
   MapDelta,
   MoveInput,
   NestSnapshot,
-  PeerShot,
   PlayerId,
   Power,
+  ProjectileSpawn,
   RenderedEnemy,
   RenderedNest,
+  RenderedProjectile,
   StructureSpawn,
   TurretAim,
   Vec2,
@@ -40,6 +41,9 @@ import {
   NEST_RADIUS,
   type Nest,
   nestLayout,
+  PROJECTILE_FLIGHT_MS,
+  PROJECTILE_RANGE,
+  PROJECTILE_SPEED,
 } from "./enemies";
 import { freshGait, type Gait, updateFacing } from "./facing";
 import { interpolateAt, type PosSample } from "./interpolate";
@@ -56,10 +60,6 @@ import { type Body, PLAYER_MAX_HP, PLAYER_RADIUS, pushOutOfBodies, stepPos } fro
 
 export const RENDER_DELAY_MS = 100; // render peers this far behind real time to smooth the relay
 export const BUFFER_MS = 500; // keep this much peer history; older samples are pruned
-// How long a squadmate's shot is kept before it is pruned. A memory bound, not the line's
-// lifetime — the render layer owns that (#74 §5) and passes it to `peerShots`, which is what stops
-// anything drawing for the full window. Must stay clear of any lifetime a caller might ask for.
-export const SHOT_RETENTION_MS = 250;
 export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their 20 Hz stream
 // How long a spider stays white after it is hit (#107). Three frames at 60 Hz — enough to register
 // — and well under `RANGED_CADENCE_MS`, so consecutive hits read as separate flashes instead
@@ -109,12 +109,23 @@ interface EnemyRecord {
   gait: Gait; // dies with the record, so a capful of enemies costs nothing to track
 }
 
-// A squadmate's shot as the client holds it: the wire event plus the client-clock instant it
-// landed. How long the line then stays up is the render layer's call — no duration ever rides the
-// wire and the server holds no line state.
-export interface ShotEvent {
-  shot: PeerShot;
+// A shot in flight as the client holds it (#80): where the server launched it, the heading it is
+// travelling on, and the two client-clock instants that bound its life.
+//
+// **The flight between them is derived, not streamed.** `PROJECTILE_SPEED` is a constant both
+// sides compile against, so how far a shot has come is arithmetic on `at` — the same
+// derive-don't-stream bet the ore grid and the nest layout already make (ADR 0007).
+//
+// `endAt` starts at the furthest a shot could possibly still be in the air and is brought forward
+// by the `spent` that ends it. Both halves of that matter: the `spent` is what stops a bullet
+// flying through the body the server stopped it on, and the initial bound is what stops a lost or
+// dropped one hanging in the sky for the rest of the match.
+interface ProjectileRecord {
+  id: string;
+  from: Vec2;
+  dir: Vec2;
   at: number;
+  endAt: number;
 }
 
 // Where something happened to an enemy, and the client instant the delta carrying it arrived. This
@@ -141,7 +152,9 @@ export class ClientWorld {
   private readonly nests: Nest[]; // layout derived from the world's seed; hp/alive track the stream
   private readonly avatars = new Map<PlayerId, AvatarRecord>();
   private readonly enemies = new Map<string, EnemyRecord>();
-  private readonly shots: ShotEvent[] = []; // squadmates' shots; the render layer ages them itself
+  // Every shot the server has in the air, the owner's own included (#80). There is no local,
+  // optimistic entry in here and no way to make one: `applyMapDelta` is the only writer.
+  private readonly projectiles = new Map<string, ProjectileRecord>();
   private readonly impacts: Mark[] = []; // where shots have connected (#115); aged the same way
   private readonly deaths: Mark[] = []; // where enemies have died (#116); the death-side twin
   readonly build: BuildState; // server-owned; mirrored here so the ghost tests placement locally
@@ -413,16 +426,21 @@ export class ClientWorld {
     // After `builds`: a turret placed this tick can already be holding a target in the same delta.
     this.applyAims(delta.aims ?? []);
     for (const id of delta.removals ?? []) removeStructure(this.build, id);
-    // The delta goes to the whole squad, shooter included, but an owner's line is drawn locally at
-    // fire time from its own live position — buffering the round-trip too would double it, a tick
-    // late and from the wrong origin.
-    for (const shot of delta.shots ?? []) {
-      if (shot.id !== this.selfId) this.shots.push({ shot, at: now });
+    // Every shot the server put in the air this tick, and every shot it took out of one. The
+    // owner's own are adopted like anybody else's — since #80 a client draws no shot of its own
+    // accord, which is what makes "a refused shot draws nothing" (#85) a property of where
+    // projectiles come from rather than a set of gates that have to agree with the server's.
+    this.launch(delta.projectiles ?? [], now);
+    for (const id of delta.spent ?? []) {
+      const shot = this.projectiles.get(id);
+      if (shot) shot.endAt = now;
     }
-    // Pruned every tick rather than only on arrival, so a squad that stops firing does not leave
-    // stale events sitting in the buffer.
-    const cutoff = now - SHOT_RETENTION_MS;
-    while (this.shots.length > 0 && this.shots[0].at < cutoff) this.shots.shift();
+    // Pruned off the stream rather than off the frame, on the delayed clock they are drawn against:
+    // a record whose flight has ended for the *renderer* is the one there is nothing left to draw.
+    const flown = now - ENEMY_RENDER_DELAY_MS;
+    for (const shot of this.projectiles.values()) {
+      if (flown > shot.endAt) this.projectiles.delete(shot.id);
+    }
     // Pruned off the stream rather than off the frame, because a tab that has stopped drawing is
     // still taking every delta — and at the rate hits arrive, a match nobody is looking at would
     // otherwise hold every mark it ever laid.
@@ -430,6 +448,22 @@ export class ClientWorld {
     while (this.impacts.length > 0 && this.impacts[0].at < marked) this.impacts.shift();
     const buried = now - DEATH_RETENTION_MS;
     while (this.deaths.length > 0 && this.deaths[0].at < buried) this.deaths.shift();
+  }
+
+  // Take up the shots the server launched this tick. The arrival stamp is the flight's origin in
+  // time, exactly as an impact mark's is: the delay the renderer owes the spiders is applied once,
+  // in `renderProjectiles`, rather than baked into every stamp here.
+  private launch(spawns: ProjectileSpawn[], now: number): void {
+    for (const [id, x, y, dx, dy] of spawns) {
+      this.projectiles.set(id, {
+        id,
+        from: { x, y },
+        dir: { x: dx, y: dy },
+        at: now,
+        // Until a `spent` says otherwise: the longest any shot in the game can be in the air.
+        endAt: now + PROJECTILE_FLIGHT_MS,
+      });
+    }
   }
 
   // Adopt streamed turret aims. Only turrets carry a runtime, and an id for a structure this
@@ -441,20 +475,6 @@ export class ClientWorld {
       turret.targetId = target;
       turret.powered = powered === 1;
     }
-  }
-
-  // Where a shot line ends, or null if it must not be drawn at all.
-  //
-  // This is the authority guard: a line may only depict damage the server applied, and a target id
-  // outlives its target by one tick in two places — a turret still names the enemy it just killed
-  // until it re-targets, and a killing `PeerShot` rides the same delta as the death it caused.
-  // Resolving against live state closes both windows to zero, with nothing added to the wire.
-  // Enemies resolve on the delayed interpolation they render on, so the line lands on the sprite.
-  shotTargetPos(id: string, now: number): Vec2 | null {
-    const enemy = this.enemies.get(id);
-    if (enemy) return interpolateAt(enemy.buffer, now - ENEMY_RENDER_DELAY_MS) ?? { ...enemy.pos };
-    const nest = this.nests.find((n) => n.id === id);
-    return nest?.alive ? { ...nest.pos } : null;
   }
 
   // Whether something the squad built has been bitten within the last `windowMs`.
@@ -469,16 +489,6 @@ export class ClientWorld {
   // player tidying up their own base.
   structureUnderAttack(now: number, windowMs: number): boolean {
     return now - this.lastStructHitAt < windowMs;
-  }
-
-  // The squad's shots from the last `maxAgeMs`, oldest first.
-  //
-  // The caller passes its own line lifetime rather than reading the buffer whole, so a line can
-  // never outlive it by borrowing the retention window — which is longer on purpose, and is a
-  // memory bound rather than a statement about how long anything is drawn (#74 §5).
-  peerShots(now: number, maxAgeMs: number): ShotEvent[] {
-    const from = now - maxAgeMs;
-    return this.shots.filter((s) => s.at >= from);
   }
 
   // The marks whose sprites have caught up with them and that are still up — the starbursts this
@@ -651,6 +661,7 @@ export class ClientWorld {
         .sort((a, b) => a.slot - b.slot)
         .map((a) => this.render(a, now)),
       enemies: this.renderEnemies(now),
+      projectiles: this.renderProjectiles(now),
       nests: this.nests.map(renderNest),
       exit: this.exit,
       exitRevealed: this.exitRevealed,
@@ -677,6 +688,35 @@ export class ClientWorld {
       facing: a.gait.facing,
       frame: a.gait.frame,
     };
+  }
+
+  // Where every shot in the air has got to this frame (#80), integrated here rather than received.
+  //
+  // **Judged on the delayed clock the spiders render on, and that is the whole of why it is judged
+  // at all.** The server applies the blow on the tick a shot arrives; the body it arrived at is
+  // drawn `ENEMY_RENDER_DELAY_MS` behind that stream. A bullet flown on the live clock would reach
+  // the spider a render delay before the spider was drawn taking it — the same off-by-a-delay
+  // #107's flash and #115's burst are both already corrected for.
+  //
+  // A shot the delayed clock has not reached yet is not drawn, and neither is one it has flown
+  // past: `endAt` is the `spent` the server sent, or the furthest it could be if none has come.
+  // Clamped to `PROJECTILE_RANGE` as well, which is belt and braces — a flight that has run past
+  // its reach has already been pruned — and cheap enough to keep as the one thing standing between
+  // a stalled tab and a bullet halfway across the arena.
+  private renderProjectiles(now: number): RenderedProjectile[] {
+    const renderTime = now - ENEMY_RENDER_DELAY_MS;
+    const flying: RenderedProjectile[] = [];
+    for (const shot of this.projectiles.values()) {
+      const since = renderTime - shot.at;
+      if (since < 0 || renderTime > shot.endAt) continue;
+      const flown = Math.min((PROJECTILE_SPEED * since) / 1000, PROJECTILE_RANGE);
+      flying.push({
+        id: shot.id,
+        from: { ...shot.from },
+        pos: { x: shot.from.x + shot.dir.x * flown, y: shot.from.y + shot.dir.y * flown },
+      });
+    }
+    return flying;
   }
 
   private renderEnemies(now: number): RenderedEnemy[] {

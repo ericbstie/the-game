@@ -59,6 +59,12 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > an isolated probe — the largest single addition to this frame since the page was written, and the
 > only one set by a constant rather than by a cadence. See
 > [What ENEMY_CAP 500 costs](#what-enemy_cap-500-costs-125).
+>
+> [#80](https://github.com/ericbstie/the-game/issues/80) has replaced the shot line with a **bullet in
+> flight**, and it is the first thing on this page to make the frame **cheaper**. The stroked-path
+> count fell from **63 to 14** and the shot layer from 50 marks of ~14 strokes each to **20 of one
+> stroke each, in one path**. See [What a shot costs since #80](#what-a-shot-costs-since-80), which
+> supersedes [What a shot costs since #114](#what-a-shot-costs-since-114) for what the game now draws.
 
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
 6.3 ms — 38% of it, leaving 10.4 ms of headroom.**
@@ -74,12 +80,14 @@ floor, everything standing passing through the Y-sort — and every one of them 
 of them carries a bar. The script reports it as **290 standing entities, 847 blits, 286 health bars,
 63 stroked paths, 10 miner floats, 4 impact bursts, 1 death puff**.
 
-**63 is a count of stroked paths, not of shot lines.** Fifty are shot lines — 45 relayed squadmate
-shots and 5 generated turret pulses, which is the `SHOT_LINES` the fixture asks for. Eleven are the
-minimap's marks: four nest rings, six squad dots and the self ring. The last two are **every impact
-burst in the frame** and **every death puff in it**, however many there are: #115 and #116 each
-bundle their own into a single path on purpose, so the mark count moves the segments in those paths
-and never the count of paths.
+**63 was a count of stroked paths, not of shot lines**, and [#80](https://github.com/ericbstie/the-game/issues/80)
+has taken it to **14**. Fifty of the sixty-three were shot lines — 45 relayed squadmate shots and 5
+generated turret pulses, one stroked path each. A bullet in flight is one *stroke* inside a single
+shared path, like a burst or a puff, so the whole shot layer is now one path however many are up.
+Eleven of the fourteen are the minimap's marks: four nest rings, six squad dots and the self ring.
+The last three are **every shot in the air**, **every impact burst in the frame** and **every death
+puff in it**, however many there are — each bundled into one path on purpose, so the mark count
+moves the segments in those paths and never the count of paths.
 
 **The minimap is inside every figure on this page, the paper baseline included.** `drawWorld` draws
 it whenever the frame's `selfId` names one of the players (`src/game/draw.ts:471`), and the fixture
@@ -126,14 +134,14 @@ difference from the row above.
 | Paper, grass, the squad and the map (`paper only`) | 1.7 | 1.7 | `clearRect` + the white `fillRect`, over 1.92 M device pixels, twice; 217 grass tufts; the 6 avatars with their names and bars; the 4 nests; the whole minimap |
 | + ore (`+ grass and ore`) | 3.0 | 1.3 | 334 ore tiles, one blit each, and the 27 density cells the field puts on the map at 1× |
 | + everything standing | 4.8 | 1.9 | 240 enemies and 40 structures join the sort: 285 more blits, 280 more health bars, 40 more marks on the map |
-| + the shot lines | 6.3 | 1.4 | 50 concurrent — 5 generated turret pulses, 45 relayed squadmate shots |
+| + the shots in the air | — | ≈0 | 20 bullets, one path (#80). Not in the run above; **0.26 ms** isolated. It replaced a row that read 1.4 ms for 50 shot lines |
 | + the miner floats | 6.3 | ≈0 | 10 `+1`s, each stroked and filled — see below |
 | + the impact bursts | — | ≈0 | 4 starbursts, one path (#115). Not in the run above; 0.09 ms isolated |
 | + the death puffs | — | ≈0 | 1 ink puff, one path (#116). Not in the run above; 0.05 ms isolated |
 | + the lettered words | — | ≈0 | 5 words, one blit each (#79) — 4 on hits, 1 on deaths. Not in the run above; 0.04 ms isolated |
 | + the damage veil | — | 0.61 | one rgba fill over the whole viewport (#142), laid only by the client of the player who was hit. Not in the run above; 0.61 ms isolated |
 | + the blood | — | 1.82 | 300 filled discs under the sorted pass (#140) — the cap `BLOOD_CAP` holds the list to. Not in the run above; 1.82 ms isolated |
-| **Total** | **6.3** | | **38% of a 16.67 ms frame** |
+| **Total** | **6.3** | | **38% of a 16.67 ms frame** — and the shot row it contains has since been replaced by one an order of magnitude cheaper |
 
 **The script's printed labels for the first two rows are wrong, and the names in brackets above are
 what it prints.** `drawWorld` draws the grass unconditionally (`src/game/draw.ts:329`) while the
@@ -232,6 +240,76 @@ stand on the floor, so raising the cap moves the standing layer and leaves this 
 paths now carries about nine segments instead of one. The break is struck as geometry rather than
 left to `setLineDash`, which measured dearer for the identical pattern — 5.55 ms against 4.88 at
 fifty — and would leave a dash in force over every name, arrow and map rule drawn after it.
+
+## What a shot costs since #80
+
+**A bullet in flight is 0.26 ms of the frame at the count the game's own cadences put up, and
+14.1 µs each — and it took the shot layer from the dearest thing in the frame per unit to one of the
+cheapest.** [#80](https://github.com/ericbstie/the-game/issues/80) replaced the hitscan line with a
+projectile the server flies, so what the frame draws for a shot changed in three ways at once:
+
+- **A shot is a streak, not a line.** `SHOT_STREAK` is one `SHOT_DASH` (52 u), at which `speedLines`
+  fits a **single unbroken stroke** — the mark a point-blank shot has always drawn. #114's breaks
+  and trails were what made an *instantaneous* line read as fast; a shot that genuinely travels
+  needs neither, and both were charged for. A shot went from ~14 strokes to 1.
+- **Every shot in the frame is one path.** A hitscan line was a path each, because the cull was
+  spent per line; a bullet is bundled like #115's bursts and #116's puffs. **63 stroked paths → 14.**
+- **The count is derived, and it fell.** 50 concurrent came off a lifetime somebody picked
+  (`SHOT_LINE_MS`, 100). A flight's count comes off `PROJECTILE_FLIGHT_MS` — the weapon's reach over
+  its speed, 389 ms — against the same shooters every derived count on this page uses:
+  `concurrentShots()` in `scripts/shot-ink.ts` is 6 players at `RANGED_CADENCE_MS` plus 5 powered
+  turrets at `TURRET_CADENCE_MS`, times that flight. **20.**
+
+**It is a ceiling and not a rate, which is new for a shot.** A bullet that connects is spent where it
+lands, and at `ENEMY_CAP` almost every shot meets something on its first tick — `bun run delta:size`
+measures **nine** in the air with thirty turrets engaged. Twenty is the sky a squad that misses
+everything puts up.
+
+Medians of five runs, one container, dpr 2, at the governor's cap, through the standalone probe
+`bun run frame:budget` prints as `shots`. The other three marks are re-measured in the same runs so
+they are comparable to each other rather than quoted across sessions.
+
+| Concurrent | Shots in flight (#80) | Impact bursts (#115) | Death puffs (#116) | Lettered words (#79) |
+| ---: | ---: | ---: | ---: | ---: |
+| what the cadences put up | **0.257 ms** at 20 | 0.140 ms at 4 | 0.068 ms at 1 | 0.042 ms at 5 |
+| 25 | 0.335 ms | 1.037 ms | 2.207 ms | 0.215 ms |
+| 50 | 0.707 ms | 2.367 ms | 4.735 ms | 0.390 ms |
+| 150 — a wave clear, in one tick | 2.698 ms | 8.580 ms | 15.520 ms | 1.170 ms |
+
+**At fifty concurrent a bullet is 14.1 µs against a burst's 47.3 and a puff's 94.7** — a third of a
+burst and a seventh of a puff, where the line it replaced cost *more* than either. It is still
+dearer than a lettered word (7.8 µs), which is a blit; among the strokes it is now the cheapest
+thing in the frame, and rule 1 predicts it exactly. One stroke.
+
+**Held against #114's own ladder, the layer is worth about a fifth of what it was.** That table read
+2.73 ms at 50 concurrent on a different machine; this one reads 0.707 ms at 50 on this one, and the
+bursts and puffs beside it are within a few percent of the figures the #79 section measured on this
+same container. Read the ratio, not the difference.
+
+**The whole-frame instrument could not see the change, which is the seventh reproduction of the
+warning under the floats table.** Across those five runs the `+ the shots in the air` row came in
+0.007 ms above the `+ everything up` row it contains — medians 14.500 against 14.493 — while the
+isolated probe resolved the same layer at 0.257 ms consistently, and the `+ the bursts` row again
+read *cheaper* than the `+ the miner floats` row above it. **The whole-frame totals on this
+container — 14.5 ms bare, 20.9 ms with every mark including `BLOOD_CAP` decals — are a different
+machine from the 6.3 ms headline and are not comparable to it.**
+
+### What a bullet lays
+
+`bun run shot:ink` was not changed by #80 and does not need to be — it prices `speedLines` over a
+range of lengths, and the row that matters simply moved. **The mark every shot now draws is the
+`52 u (no trail)` row**, which the probe reports as *identical* to the plain line at every dpr
+(+0.0% ink, +0.0% length, 100% solid on the axis): at one dash the fit puts a single unbroken stroke
+across the whole mark, so a bullet is the plainest thing the game strikes.
+
+The rows above it — 700 u, 350 u, 173 u — were what an own shot and a peer's line drew, and **no
+shot is drawn at those lengths any more.** They are kept because they are what `fx.ts` still does
+for any caller that asks, and because #114's claim about the trail is about that geometry.
+
+At dpr 2 a bullet lays **416 device px** on the axis and 427 on the diagonal, so twenty of them ink
+**0.44%** of the 800 × 600 viewport this page measures — beside #79's 0.27% for five words and
+#115's 0.21% for four bursts. It is not a wall of ink, and nothing was narrowed to get there: the
+count is what the cadences and the flight time produce.
 
 ## What an impact burst costs (#115)
 
@@ -733,6 +811,16 @@ steps of its fade, on the white floor they have to read against.
    screen. **Price a mark by its pieces; bound it by whatever sets its count, and if that is not a
    cadence, cap it.** See [What the blood on the floor costs](#what-the-blood-on-the-floor-costs-140).
 
+   **#80 is the rule applied in reverse, and the first time it has bought anything back.** A shot's
+   mark went from ~14 strokes to **one** — `SHOT_STREAK` is one `SHOT_DASH`, at which `speedLines`
+   fits a single unbroken stroke — and every shot in the frame went into **one path** instead of one
+   each. It costs **14.1 µs** at fifty concurrent where the line it replaced cost ~51, and the count
+   the cadences put up fell from 50 to 20 because a flight's lifetime is derived
+   (`PROJECTILE_FLIGHT_MS`) where a line's was picked. **The stroked-path count in the worst frame
+   fell from 63 to 14.** Everything this rule has ever said about subdividing a mark, it says here
+   backwards: un-subdividing one is the cheapest thing anyone has done to this frame. See
+   [What a shot costs since #80](#what-a-shot-costs-since-80).
+
    **#79 is the mark this rule does not apply to at all, and that is the cheapest place to be.** A
    lettered word is a **blit**, not a stroke: seven hand-built letterforms, sixteen jittered rays and
    two stroke passes, for **7.9 µs** — a sixth of a burst and an eleventh of a puff, at a count larger
@@ -842,7 +930,7 @@ bun run frame:budget --sprite grass=src/sprite/grass.ts  # layer in art that has
 bun run frame:budget --dpr 1                             # an ordinary, non-retina monitor
 bun run frame:budget --map 15600                         # the corner map at its widest level
 bun run frame:budget --enemies 500                       # a cap the governor has not reached (#111)
-bun run shot:ink                                         # what a shot's mark lays, at dpr 1, 2 and 3
+bun run shot:ink                                         # what a shot's mark lays, at dpr 1, 2 and 3 — the 52 u row is what #80 draws
 bun run burst:ink                                        # what an impact burst lays, and its share of a screen
 bun run burst:ink --bursts 40                            # a density the cadences cannot reach today
 bun run puff:ink                                         # what a death puff lays, at dpr 1, 2 and 3

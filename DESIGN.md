@@ -71,12 +71,14 @@ Score is your escape time.
 
 ## Weapons & combat
 
-- **One attack: shoot** (left click, gun equipped), a ranged hitscan. Melee was tried and cut — a
-  single weapon keeps the fight readable.
+- **One attack: shoot** (left click, gun equipped). The bullet **travels** and the server flies it,
+  so a shot can miss — a target crossing your line at the far end of your reach outruns it. Melee was
+  tried and cut — a single weapon keeps the fight readable.
 - **`g` equips and stows the gun**, and that is what left-click means: the trigger with it up, the
   pick with it down, and never both. You spawn with it stowed. Right-click cancels a selected
   buildable, or demolishes what is under the cursor.
-- Turrets shoot the nearest enemy through walls, so a forward line can siege a nest unattended.
+- Turrets shoot the nearest enemy through walls, so a forward line can siege a nest unattended. They
+  fire the same travelling bullet and never lead it, so a turret misses where the squad rarely does.
 - *(A wider weapon roster stays open — see the TODO below.)*
 
 ## Win / lose & the clock

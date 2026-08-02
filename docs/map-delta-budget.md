@@ -10,23 +10,28 @@ the game's bandwidth.
 
 ## The number
 
-**At the caps the game supports, one client receives 3,855 B/tick — 75.3 KiB/s. Before
+**At the caps the game supports, one client receives 3,834 B/tick — 74.9 KiB/s. Before
 [#84](https://github.com/ericbstie/the-game/issues/84) it was 11,369 B/tick, 222.1 KiB/s.**
 
 The worst case is not hypothetical: 500 enemies (`WorldSettings.enemyCap`, the hard governor), a
-full squad of 6, 30 turrets, and every player firing on the measured tick so `shots` is at its
-per-tick maximum. It is produced by driving a real `stepEnemies` sim to the cap and assembling the
-delta exactly as `LobbyHub.tick` assembles it, not by a hand-written fixture.
+full squad of 6, 30 turrets, and every player firing on the measured tick so the launches are at
+their per-tick maximum. It is produced by driving a real `stepEnemies` sim to the cap and assembling
+the delta exactly as `LobbyHub.tick` assembles it, not by a hand-written fixture.
+
+Since [#80](https://github.com/ericbstie/the-game/issues/80) the measured tick is also taken **after
+thirty ticks of firing**, so it carries shots already in the air rather than only the ones fired on
+it. That is why it reports 499 enemies rather than 500: the warm-up's own fire kills at about the
+rate the nests refill, so the population sits against the governor instead of pinned to it.
 
 | | per tick | per client |
 |---|---:|---:|
-| float64 coordinates, uncompressed | 21,363 B | 417.2 KiB/s |
-| trimmed coordinates, uncompressed | 10,501 B | 205.1 KiB/s |
-| float64 coordinates, deflate | 9,540 B | 186.3 KiB/s |
-| **trimmed coordinates, deflate — what ships** | **3,855 B** | **75.3 KiB/s** |
+| float64 coordinates, uncompressed | 21,476 B | 419.5 KiB/s |
+| trimmed coordinates, uncompressed | 10,359 B | 202.3 KiB/s |
+| float64 coordinates, deflate | 9,649 B | 188.5 KiB/s |
+| **trimmed coordinates, deflate — what ships** | **3,834 B** | **74.9 KiB/s** |
 
-Trimming alone takes **50.8%** off. Deflate takes **63.3%** off what remains. Together they are
-**82.0%** against the old wire.
+Trimming alone takes **51.8%** off. Deflate takes **63.0%** off what remains. Together they are
+**82.1%** against the old wire.
 
 ### What #123 moved, and why it is not a leak
 
@@ -111,11 +116,50 @@ there is no cheaper encoding of "not sending them". A packed positional encoding
 would be smaller than the keyed object and was not built: nobody asked, and 298 B once per connection
 against 3,855 B twenty times a second is not where this game's bandwidth is.
 
-**Is 75.3 KiB/s per client acceptable? Yes, and the comparison that settles it is on this page.** The
+### What #80 moved, and it is the first field added since #102
+
+[#80](https://github.com/ericbstie/the-game/issues/80) turned the shot into a body that travels, so
+a shot is on the wire for its whole life instead of for the instant it resolved. `MapDelta.shots`
+is gone; `projectiles` (a launch) and `spent` (an end) are in its place.
+
+**They cost 208 B/tick raw and 67 B deflate**, measured against the identical tick with no shot on
+it at all — 1.7% of the payload, on a tick where every one of six players fires and thirty turrets
+are engaged.
+
+**The flight between those two events is not on the wire at all.** A shot is a straight line at
+`PROJECTILE_SPEED`, which both sides compile against, so where it has got to is arithmetic on the
+launch — the derive-don't-stream idiom the ore grid and the nest layout already use
+([ADR 0007](adr/0007-a-projectile-is-derived-from-its-launch.md)).
+
+The alternative was measured on the same tick rather than argued about, because #80 explicitly
+reopened [#74](https://github.com/ericbstie/the-game/issues/74)'s turret-wire decision:
+
+| | raw | deflate |
+|---|---:|---:|
+| the same tick with no shot on it at all | 10,151 B | 3,767 B |
+| **derived — a launch and a `spent`, what ships** | **10,359 B** | **3,834 B** |
+| streamed — a position each, at the 9 in the air | 10,331 B | 3,819 B |
+| streamed, at the 68 the cadences allow | 11,511 B | — |
+
+**At the density the game actually reaches the two are the same size, and that is not the finding.**
+Only nine shots were in the air on the measured tick — at `ENEMY_CAP` almost every shot meets
+something on its first tick, so a flight is over before it is long. The finding is what each shape
+is *charged by*: **deriving is charged per shot fired, streaming per shot in the air.** The first is
+bounded by `RANGED_CADENCE_MS` and `TURRET_CADENCE_MS`, which a balance change moves; the second by
+`PROJECTILE_RANGE / PROJECTILE_SPEED`, and that speed is **provisional**. Halving it doubles the
+streamed cost and leaves the derived cost exactly where it is.
+
+The ceiling row is the other half, and it is arithmetic on the cadences rather than a fixture: 6
+players at 4 shots/s plus 30 turrets at 5 shots/s is 174 launches a second, a shot lives 389 ms, so
+**68 in the air is the most that can ever exist** — and only if every one of them misses. One
+streamed shot measures **20.0 B**, so streaming there is **+1,152 B/tick, 11.1%** on this message.
+Deriving is unchanged at 68 as it is at 9.
+
+**Is 74.9 KiB/s per client acceptable? Yes, and the comparison that settles it is on this page.** The
 game shipped at **222.1 KiB/s** before #84, and #84's own untrimmed float64 tick *at cap 240* was
 **95.2 KiB/s**. So the arena at more than twice the population is cheaper per client than the same
-arena was before coordinates were trimmed. Server egress for a full squad is 6 × 20 × 3,855 B =
-**452 KiB/s**, and the compressor bill for that squad is **2.7% of one core** (up from 1.3%).
+arena was before coordinates were trimmed. Server egress for a full squad is 6 × 20 × 3,834 B =
+**449 KiB/s**, and the compressor bill for that squad is **3.0% of one core** (up from 1.3%).
 
 ## Where it went
 
@@ -130,13 +174,15 @@ digit of it. But **1 world unit = 1 CSS px** at the fixed M4 zoom, so all of tha
 strictly sub-pixel — and not even sub-pixel *motion*, because the client interpolates between
 samples anyway. Rounding on the way out costs nothing anyone can see.
 
-`PeerShot.dir` had the same problem in miniature: a full-precision unit vector, where three
-decimals is under half a world unit of lateral drift at `RANGED_RANGE` (700).
+A launch's heading has the same problem in miniature — it was `PeerShot.dir` before #80 and it is
+`ProjectileSpawn`'s last two numbers now: a full-precision unit vector, where three decimals is
+under half a world unit of lateral drift over the whole `RANGED_RANGE` (700). Its origin rides as
+whole units on the same terms as a `moves` entry.
 
 Both are **serialisation only**. The sim keeps every bit it had — `stepEnemies` still integrates in
-float64, and `nearestRayHit` still resolves against the exact aim vector it was given, not the
-rounded one. Rounding the authoritative input would have been a gameplay change wearing a
-bandwidth ticket's clothes; there are tests pinning both halves.
+float64, and a `Projectile` still flies the exact heading it was launched on, not the rounded one.
+Rounding the authoritative input would have been a gameplay change wearing a bandwidth ticket's
+clothes; there are tests pinning both halves.
 
 ## Compression
 
@@ -145,12 +191,12 @@ compressed.
 
 It is worth it by a wide margin, and the cost side is the half that bytes alone cannot show:
 
-- **63.3% smaller**, even after the trim — the payload is repetitive JSON, with ids and key names
+- **63.0% smaller**, even after the trim — the payload is repetitive JSON, with ids and key names
   recurring 500 times a tick.
-- **0.22 ms per tick per client**, which is **2.7% of one core** for a full squad of 6.
+- **0.25 ms per tick per client**, which is **3.0% of one core** for a full squad of 6.
 
 Trimming and compressing are not alternatives. Trimming also makes the stream *more* compressible:
-the trimmed delta deflates to 3,855 B where the float64 one deflates to 9,540 B, so the trim is
+the trimmed delta deflates to 3,834 B where the float64 one deflates to 9,649 B, so the trim is
 still worth 60% after the compressor has had its turn.
 
 ## Re-measuring

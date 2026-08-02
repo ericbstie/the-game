@@ -20,22 +20,13 @@ import {
   WEST as TILE_WEST,
 } from "../sprite/tiled";
 import { BLOOD_FADE_MS, type BloodMark } from "./blood";
-import {
-  BUILDABLES,
-  footprintCenter,
-  type OreGrid,
-  oreAt,
-  TILE,
-  TURRET_CADENCE_MS,
-  tileKey,
-  tileOf,
-} from "./build";
+import { BUILDABLES, footprintCenter, type OreGrid, oreAt, TILE, tileKey, tileOf } from "./build";
 import { type Camera, isVisible, type Viewport } from "./camera";
-import { HIT_FLASH_MS, type Mark, type ShotEvent } from "./clientWorld";
+import { HIT_FLASH_MS, type Mark } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
-import { BLOODLING_HP, ELITE_HP, GRUNT_HP, RANGED_RANGE } from "./enemies";
+import { BLOODLING_HP, ELITE_HP, GRUNT_HP } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
-import { BURST_REACH, inkPuff, PUFF_REACH, speedLines, starburst } from "./fx";
+import { BURST_REACH, inkPuff, PUFF_REACH, SHOT_DASH, speedLines, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_U,
   minimapWindow,
@@ -71,21 +62,23 @@ import { clamp, PLAYER_MAX_HP } from "./world";
 //
 // - **A health bar on anything damaged**, and on nothing at full health. It is the *only* damage
 //   readout, because a structure deliberately does not change appearance as it is worn down.
-// - **A shot line**, for your own shots, your squadmates' and your turrets' alike — broken into
-//   speed lines since #114. It is the most expensive thing in the frame per unit, so its 100 ms
-//   lifetime is a budget and not a look.
+// - **A shot**, for your own, your squadmates' and your turrets' alike. M5 drew it as a line from
+//   the shooter to what it hit and #114 broke that into speed lines; since #80 it is a bullet in
+//   flight, streaked with the same pen, and every one of them comes off the world stream.
 // - **Death by vanishing** — no corpse — plus a screen darkening drawn only on the dying player's
 //   own client, for as long as they are down.
 
-// How long one shot's line stays on screen, client-side. No duration ever rides the wire and the
-// server holds no line state (#74 §5). Half `TURRET_CADENCE_MS`, so a turret's pulse train reads as
-// discrete shots rather than as a continuous beam, and ~6 frames at 60 Hz, so one shot is visible.
+// How long a shot's mark is, in world units — the streak behind the point the bullet has reached
+// (#80). **Exactly one `SHOT_DASH`, derived rather than picked**: at that length `speedLines` fits
+// a single unbroken stroke across the whole mark, which is the drawing a point-blank shot has
+// always had. #114's breaks and trails were what made an *instantaneous* line read as fast, and
+// they are what a mark is charged for; a shot that genuinely travels needs neither.
 //
-// It is also the whole cost control. A stroked line across the viewport is the most expensive thing
-// in the frame per unit — ~34 µs, sixteen sprite blits — because it covers far more pixels than a
-// 32 px sprite. At 150 shot events a second a 1-second lifetime would put ~150 lines on screen for
-// 5.7 ms; 100 ms holds it near the budgeted 50 (`docs/frame-budget.md`).
-export const SHOT_LINE_MS = 100;
+// It is also the cost control, in the place the line's own lifetime used to hold — and the layer got
+// *cheaper*. A hitscan line lived 100 ms and the frame carried ~50 of them at ~14 strokes each, one
+// path apiece; a flight lives `PROJECTILE_FLIGHT_MS` (389), so the frame carries 20, each one stroke
+// inside one shared path. Stroked paths in the worst frame: 63 → 14 (`docs/frame-budget.md`).
+export const SHOT_STREAK = SHOT_DASH;
 
 // How long the starburst at an impact stays up (#115). Exactly `HIT_FLASH_MS`, and derived rather
 // than picked: #107 already turns the spider white for that long, off the same `EnemyHit` and judged
@@ -106,33 +99,6 @@ export const BURST_MS = HIT_FLASH_MS;
 // re-run `bun run puff:ink` and the puff ladder in `bun run frame:budget` if it moves.
 export const PUFF_MS = 180;
 
-// The owner's own shot, recorded where it is fired rather than round-tripped: the server relays it
-// to the squad, but drawing the relay would put a second line up a tick late and from the position
-// the shooter had then. `from` is the origin the attack was actually sent with.
-export interface OwnShot {
-  at: number;
-  from: Vec2;
-  dir: Vec2;
-}
-
-// Everything the render layer needs to put this frame's shot lines up, kept as one bag because a
-// line is meaningless without all three parts.
-//
-// `resolve` is the authority guard, and it is the reason the render layer cannot assemble these on
-// its own: a target id outlives its target by one tick in two places — a turret still names the
-// enemy it just killed until it re-targets, and a killing `PeerShot` rides the same delta as the
-// death it caused. `ClientWorld.shotTargetPos` answers null for both, which is what stops a line
-// depicting damage the server did not apply (#74 §7).
-export interface ShotSource {
-  peers: ShotEvent[]; // `ClientWorld.peerShots(now, SHOT_LINE_MS)` — already aged
-  own: OwnShot | null;
-  resolve: (targetId: string) => Vec2 | null;
-  // The squad's spendable bullets, mirrored from the server (#102). Only the turret train reads
-  // it, and only to stop: a turret's shots are generated here rather than sent, so an empty pool
-  // is the one refusal this layer has to know about to keep from drawing shots nobody took.
-  ammo: number;
-}
-
 // The tile-snapped preview under the cursor while a buildable is selected. `valid` drives the
 // opacity — full when it can be placed, semi-transparent when it cannot (#81) — so the player
 // learns a placement is refused before spending the click.
@@ -147,8 +113,6 @@ export interface DrawOptions {
   viewport: Viewport;
   selfId?: PlayerId; // ringed so you can find yourself
   ghost?: BuildGhost;
-  // This frame's shot lines. Absent — in a test, or before the first shot — nothing is drawn.
-  shots?: ShotSource;
   // The `+1`s currently in the air — one per whole Metal, off a miner (#99) or off the player's own
   // hand (#136), both handed over by `stepMetalFloats`. Aged here, like a shot line: the render
   // layer owns how long one is up, and nothing about it rides the wire.
@@ -503,11 +467,11 @@ export function drawWorld(
   standing.sort((a, b) => a.y - b.y);
   for (const entry of standing) entry.paint();
 
-  // Over the sort, not in it: a shot is an event between two things rather than a thing standing on
-  // the floor, and a line half-hidden behind the spider it ends at says nothing.
-  drawShots(ctx, world, options);
+  // Over the sort, not in it: a shot is in the air rather than standing on the floor, and one
+  // half-hidden behind the spider it is about to strike says nothing.
+  drawProjectiles(ctx, world, options);
 
-  // Straight after the lines, and over the sort for the same reason they are: a burst marks the
+  // Straight after the shots, and over the sort for the same reason they are: a burst marks the
   // point a shot connected, and one sorted in behind the spider it belongs to would be hidden by the
   // very thing it is about.
   drawBursts(ctx, options);
@@ -590,106 +554,55 @@ export function drawWorld(
   }
 }
 
-// The frame's shots: your own, your squadmates' and your turrets' (#81), all struck the same way —
-// the shot's own line with speed lines trailing it (#114), which `fx.ts` lays out.
+// The shots in the air this frame (#80): every one the server has launched, the owner's own
+// included. There is no second source and no local, optimistic mark — a bullet is drawn because
+// the sim has one, which is what makes "a refused shot draws nothing" (#85) structural rather than
+// a set of client-side gates that have to keep agreeing with the server's.
 //
-// Aged here rather than upstream. `ClientWorld` keeps shots for `SHOT_RETENTION_MS` (250) as a
-// memory bound, which is deliberately longer than any lifetime a caller might ask for; drawing
-// everything it holds would put two and a half times the budgeted lines on screen.
+// **A streak behind a moving point, struck by the same `speedLines` a hitscan line was.** At
+// `SHOT_STREAK` the fit puts a single unbroken stroke across the whole mark, which is exactly what
+// a point-blank shot has always drawn — #114's breaks and trails were what made an *instantaneous*
+// line read as fast, and a shot that genuinely travels needs none of it.
 //
-// Turret shots have no per-shot event to age, because none is sent: a turret's `(target, powered)`
-// pair is streamed as a transition, so the client generates the pulse train itself — one pulse
-// every `TURRET_CADENCE_MS` for as long as that state holds, each lasting `SHOT_LINE_MS` (#74 §5).
-// The generated phase can sit up to a cadence out of step with the server's real cooldown, which is
-// invisible at 200 ms and cannot misrepresent damage: while the squad has bullets, the server is
-// applying `TURRET_DAMAGE` on exactly that cadence for as long as that state holds.
+// **Bundled into one path for the whole frame**, like #115's bursts and #116's puffs and unlike the
+// line it replaces: a mark is charged per stroke (`docs/frame-budget.md` rule 1), and a path was
+// charged per line. One stroke each and one path for all of them is what takes the worst frame's
+// stroked-path count from 63 to 14.
 //
-// Ammo is the one firing precondition the transition does not carry, so the pool gates the train
-// here instead — see `ShotSource.ammo` and the amendment to ADR 0003 (#102).
-function drawShots(
+// Nothing is aged here and nothing is resolved. `ClientWorld.renderProjectiles` has already dropped
+// every shot the server has taken out of the air and integrated the rest on the delayed clock the
+// spiders are drawn against, because that clock is that class's and this layer has never seen it.
+function drawProjectiles(
   ctx: CanvasRenderingContext2D,
   world: WorldSnapshot,
-  { shots, camera, viewport, now = 0 }: DrawOptions,
+  { camera, viewport }: DrawOptions,
 ): void {
-  if (!shots) return;
+  if (world.projectiles.length === 0) return;
   ctx.strokeStyle = INK;
   ctx.lineWidth = SHOT_WIDTH;
-
-  const strike = (from: Vec2, to: Vec2): void => {
-    // A shot can be long enough to cross the whole viewport, so it is culled on the box it spans
-    // rather than on either end: a turret off the left edge firing at a nest off the right one is
-    // still drawn across the middle of the screen. Spent before the mark is built, so a shot with
-    // nothing of it on screen costs no geometry at all.
-    if (Math.max(from.x, to.x) < camera.x || Math.min(from.x, to.x) > camera.x + viewport.width) {
-      return;
-    }
-    if (Math.max(from.y, to.y) < camera.y || Math.min(from.y, to.y) > camera.y + viewport.height) {
-      return;
-    }
-    // One path for the whole mark, so a shot still costs the frame the single stroke
-    // `docs/frame-budget.md` prices it at — the trail and the breaks are more geometry, not more
-    // paths. The break is struck as segments rather than left to `setLineDash`, which measured
-    // dearer for the identical pattern (5.55 ms against 4.88 at 50 shots, dpr 2) and would leave a
-    // dash in force over every name, arrow and map rule drawn after it.
-    ctx.beginPath();
-    for (const strand of speedLines(from, to)) {
+  ctx.beginPath();
+  let struck = 0;
+  for (const shot of world.projectiles) {
+    // Shots stream for the whole arena rather than for the part of it the camera is over, so most
+    // bullets in a wave belong to a fight nobody is watching. Culled before the geometry is built
+    // (rule 3), on the streak's own reach rather than on the whole flight: a bullet is a short mark
+    // travelling, not a line spanning the two ends of an engagement.
+    if (!isVisible(shot.pos, SHOT_STREAK, camera, viewport)) continue;
+    const dx = shot.pos.x - shot.from.x;
+    const dy = shot.pos.y - shot.from.y;
+    const flown = Math.hypot(dx, dy);
+    if (flown === 0) continue; // a bullet still on the muzzle has no mark to strike
+    // Clipped at the launch point, so a shot just out of the barrel is a stub that grows rather
+    // than a full streak sticking out behind the gun that fired it.
+    const back = Math.min(SHOT_STREAK, flown);
+    const tail = { x: shot.pos.x - (dx / flown) * back, y: shot.pos.y - (dy / flown) * back };
+    for (const strand of speedLines(tail, shot.pos)) {
       ctx.moveTo(strand.from.x, strand.from.y);
       ctx.lineTo(strand.to.x, strand.to.y);
     }
-    ctx.stroke();
-  };
-
-  if (shots.own && now - shots.own.at < SHOT_LINE_MS) {
-    strike(shots.own.from, reach(shots.own.from, shots.own.dir));
+    struck++;
   }
-
-  for (const { shot, at } of shots.peers) {
-    if (now - at >= SHOT_LINE_MS) continue;
-    // The origin is not on the wire: the shooter's own rendered position is already within a
-    // player-diameter of where the server saw it (#74 §3). A peer who has since left has none.
-    const from = world.players.find((p) => p.id === shot.id)?.pos;
-    if (!from) continue;
-    // A ray that hit nothing still draws, out to full range — a squadmate firing into empty air
-    // with no line looks broken (#74 §6). A ray that hit something the client cannot resolve draws
-    // nothing at all: that is the death window, and it is the one case a mark would be a lie.
-    const to = shot.hit === undefined ? reach(from, shot.dir) : shots.resolve(shot.hit);
-    if (to) strike(from, to);
-  }
-
-  drawTurretTrains(world, shots, now, strike);
-}
-
-// The turret pulses this frame, handed the same strike the other two shooters get.
-//
-// Turrets spend the squad's bullets, so the pool bounds how many of them can have fired: an empty
-// one is the server holding every turret's fire, and one bullet across five ready turrets is four
-// trains nobody took. The mirror lags the pool by at most one tick, which under-draws (a bullet
-// forged and fired on the same tick never shows as spendable) rather than over-draws — the
-// direction ADR 0003 cares about.
-//
-// *Which* turret got a scarce bullet is not knowable here and is not claimed: the pool is spent
-// down `world.structures`, which is a map's insertion order and so names the same winners frame
-// after frame. A rule that reshuffled — nearest, or newest — would flicker the train between
-// turrets while the count stayed right, which is worse to look at than being wrong about one.
-// Spent before the cull for the same reason: a bullet goes to a turret that fired, not to one the
-// camera happens to be pointing at, so panning cannot hand it to somebody else.
-function drawTurretTrains(
-  world: WorldSnapshot,
-  shots: ShotSource,
-  now: number,
-  strike: (from: Vec2, to: Vec2) => void,
-): void {
-  if (now % TURRET_CADENCE_MS >= SHOT_LINE_MS) return;
-  let spent = 0;
-  for (const s of world.structures) {
-    if (spent >= shots.ammo) return;
-    if (!s.turret?.powered || s.turret.targetId === null) continue;
-    const spec = BUILDABLES[s.kind];
-    const to = spec && shots.resolve(s.turret.targetId);
-    if (!to) continue;
-    spent++;
-    strike(footprintCenter(s.tile, spec.footprint), to);
-  }
+  if (struck > 0) ctx.stroke();
 }
 
 // The starbursts this frame strikes, one where each shot connected (#115).
@@ -1056,16 +969,6 @@ function drawMinimap(
   ctx.lineWidth = MAP_RULE;
   ctx.strokeStyle = INK;
   ctx.strokeRect(win.x, win.y, win.size, win.size);
-}
-
-// Where a shot that hit nothing ends: full range along the aim vector, which the server admitted as
-// a unit vector. Never clipped shorter, and #114's trail now depends on that as well as ADR 0003 §3
-// does: the strands close onto the line 28–70 u short of the head at full reach, so an own line that
-// stopped on a target would close them onto it and make the bundle read as the hit marker the ADR
-// forbids. Pinned in `draw.test.ts`, "your own shot's trail closes clear of anything standing at its
-// head".
-function reach(from: Vec2, dir: Vec2): Vec2 {
-  return { x: from.x + dir.x * RANGED_RANGE, y: from.y + dir.y * RANGED_RANGE };
 }
 
 // The damage readout for one entity, sitting above whatever was drawn for it. Nothing at full
