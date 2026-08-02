@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { MAX_ARENA_SIDE } from "../game/build";
+import { MIN_ARENA_SIDE } from "../game/enemies";
 import {
   knobValue,
   parseWorldSettings,
@@ -104,11 +105,16 @@ const LABELS: Record<string, string> = {
   "eliteShare.max": "Elite share, cap",
 };
 
-// The knobs as this form offers them: `worldKnobs()`'s own bounds, plus the one limit the settings
-// parser deliberately does not carry. Past `MAX_ARENA_SIDE` the packed tile key collides — identically
-// on both sides, so it desyncs nobody, but it is not a world worth offering (ADR 0006).
+// The knobs as this form offers them: `worldKnobs()`'s own bounds, plus the two limits the settings
+// parser deliberately does not carry, both of them the arena's. Past `MAX_ARENA_SIDE` the packed tile
+// key collides; below `MIN_ARENA_SIDE` the nest band inverts and nests are placed outside the walls,
+// where the squad cannot reach them (#153). Each is degenerate identically on both sides, so neither
+// desyncs anyone — they are simply not worlds worth offering (ADR 0006).
+//
+// Both bounds go on each side rather than on the box: the nest band is read off the shorter side, so
+// a floor on the width alone would still admit a 20,000 × 5,000 world.
 const OFFERED: WorldKnob[] = worldKnobs().map((knob) =>
-  knob.path.startsWith("arena.") ? { ...knob, max: MAX_ARENA_SIDE } : knob,
+  knob.path.startsWith("arena.") ? { ...knob, min: MIN_ARENA_SIDE, max: MAX_ARENA_SIDE } : knob,
 );
 
 // A dotted knob is one number of several describing one thing, and the group is what a reader needs
@@ -227,10 +233,11 @@ function runs(knobs: WorldKnob[]): { group: string | null; knobs: WorldKnob[] }[
 // The world this field would choose, or null if it would not choose one.
 //
 // Both the offered range and `parseWorldSettings`, because the two are not the same set: the arena's
-// ceiling is this form's alone, and every floor is the parser's alone — "greater than zero" has no
-// least value a form field can print. Gating the send on it is what keeps ADR 0006's refusal off the
-// wire: the server never clamps, so a field that could emit an inadmissible world would be a field
-// the lobby silently ignores.
+// floor and its ceiling are this form's alone, and every other floor is the parser's — the two
+// strictly-positive knobs left print none, since "greater than zero" has no least value a form field
+// can print. Gating the send on it is what keeps
+// ADR 0006's refusal off the wire: the server never clamps, so a field that could emit an
+// inadmissible world would be a field the lobby silently ignores.
 function admit(knob: WorldKnob, settings: WorldSettings, raw: string): WorldSettings | null {
   if (raw.trim() === "") return null;
   const value = Number(raw);
