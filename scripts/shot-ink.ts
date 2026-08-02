@@ -1,4 +1,6 @@
 import { join } from "node:path";
+import { TURRET_CADENCE_MS } from "../src/game/build";
+import { PROJECTILE_FLIGHT_MS, RANGED_CADENCE_MS } from "../src/game/enemies";
 import { capture, measurementsIn } from "./headless";
 
 // Measure how much ink a shot's mark lays, #114's speed lines against the plain continuous line
@@ -32,6 +34,26 @@ import { capture, measurementsIn } from "./headless";
 const DRAW_MODULE = join(import.meta.dir, "../src/game/draw.ts");
 const FX_MODULE = join(import.meta.dir, "../src/game/fx.ts");
 const ENEMIES_MODULE = join(import.meta.dir, "../src/game/enemies.ts");
+
+// The squad, all six of them holding the trigger, and the powered turrets the frame budget's own
+// fixture stands (`scripts/frame-budget.ts`). Both are that fixture's worst case rather than a
+// typical match — the same pair `scripts/burst-ink.ts` derives its own count from.
+const SQUAD = 6;
+const POWERED_TURRETS = 5;
+
+// How many shots stand on one screen at once since #80, derived rather than budgeted — which is the
+// change: a hitscan line's count came off a *lifetime* somebody picked (`SHOT_LINE_MS`), and a
+// flight's comes off `PROJECTILE_FLIGHT_MS`, which is the weapon's own reach over its own speed.
+//
+// **It is a ceiling and not a rate.** A shot that connects is spent where it lands, and at
+// `enemyCap` almost every shot meets something on its first tick — `bun run delta:size` measures
+// nine in the air with thirty turrets engaged. This is the sky a squad that misses everything puts
+// up, which is the honest thing for a frame budget to price.
+export function concurrentShots(): number {
+  const perSecond =
+    (SQUAD * 1_000) / RANGED_CADENCE_MS + (POWERED_TURRETS * 1_000) / TURRET_CADENCE_MS;
+  return Math.ceil((perSecond * PROJECTILE_FLIGHT_MS) / 1_000);
+}
 
 export interface InkRequest {
   dprs: number[];

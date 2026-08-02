@@ -6,6 +6,7 @@ import reconnectingIcon from "../sprite/reconnecting";
 import { SPRITES } from "../sprite/registry";
 import { SpriteIcon } from "../sprite/SpriteIcon";
 import warningIcon from "../sprite/warning";
+import { freshBlood, stepBlood } from "./blood";
 import {
   BUILD_CADENCE_MS,
   BUILD_SLOTS,
@@ -24,7 +25,7 @@ import {
 import { type Camera, computeCamera } from "./camera";
 import { type ClientWorld, RESPAWN_DELAY_MS } from "./clientWorld";
 import { damageFx } from "./damageFx";
-import { BURST_MS, type BuildGhost, drawWorld, type OwnShot, PUFF_MS, SHOT_LINE_MS } from "./draw";
+import { BURST_MS, type BuildGhost, drawWorld, PUFF_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { freshMetalFloats, stepMetalFloats } from "./floats";
 import { freshHarvest, stepHarvest } from "./harvest";
@@ -55,6 +56,12 @@ const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the a
 // spider's bite cadence, so a base being chewed holds the warning steady rather than strobing it
 // between bites, and short enough that the bell stops soon after the last spider is off it.
 const UNDER_ATTACK_MS = 2000;
+// The floor between two acknowledgements of a refused trigger (#150). A hold refuses on every frame,
+// so without one the mark would be remounted sixty times a second and never get to play; with one, a
+// held dry trigger simply renews the strike and every click of a mashed trigger still lands its own.
+// Provisional — well under the interval between two clicks a hand can make, and that is all it has
+// to clear.
+export const REFUSAL_MS = 80;
 const BUILD_ICON_PX = 26; // the buildable's own sprite, shrunk to fit a slot
 const AMMO_ICON_PX = 26; // the ammo box's icon, sized as a build slot's so the two squares agree
 const GUN_ICON_PX = 26; // and the gun's, so every icon plate on the HUD is one square
@@ -170,13 +177,14 @@ export function GameScreen({
   // negative jitter and be refused. Widening the gate here would cut the sustained rate of fire.
   // The boundary case is accepted.
   const lastAttackRef = useRef(Number.NEGATIVE_INFINITY);
-  // Your own last shot, kept so its line can be drawn from here rather than from the relay the
-  // server sends back to the whole squad. `drawWorld` ages it; nothing has to clear it.
-  const ownShotRef = useRef<OwnShot | null>(null);
   // The `+1`s the squad's miners are throwing up (#99). Client-derived from the mirrored structure
   // set, so it lives with the loop that draws it rather than on the wire or in `ClientWorld` — the
   // beat is the same one the bank is paid on, but which miners *emit* is a question about the camera.
   const floatsRef = useRef(freshMetalFloats());
+  // The blood the bloodlings are leaving on the floor (#140). Here for the reason the floats are,
+  // and one more of its own: a decal is spawned by *motion*, which only a drawn frame can see, and
+  // it is culled and capped against the camera this loop already holds.
+  const bloodRef = useRef(freshBlood());
   // How much of whatever is under the cursor this player has dug out or pulled down (#130). One
   // pair, client-local: it never rides the wire, so a teammate on the same tile is digging their
   // own, and it is dropped the moment the button comes up.
@@ -219,6 +227,11 @@ export function GameScreen({
   const [ammo, setAmmo] = useState({ bullets: 0, queued: 0, forgeAt: null as number | null }); // #102
   const [underAttack, setUnderAttack] = useState(false); // drives the HUD's warning bell
   const [prompts, setPrompts] = useState(NO_PROMPTS); // the tutorial's two screen-fixed words (#134)
+  // When the last acknowledged dry pull was, or 0 before there has been one (#150). A timestamp
+  // rather than a tally so `REFUSAL_MS` can be applied in the updater itself: a pull inside the floor
+  // returns the value already held, and React bails out of the re-render — the same way every other
+  // mirror in this component keeps an unmoved reading off the render path.
+  const [refusedAt, setRefusedAt] = useState(0);
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
   const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
   const aimRef = useRef<{ camera: Camera; self: Vec2 }>({
@@ -347,7 +360,13 @@ export function GameScreen({
   // The gap is measured shot-to-shot off the clock rather than counted in ticks: a long frame
   // delays the next shot instead of letting two through, and no accumulator survives a stall to
   // pay its backlog out as a burst. Two shots are therefore never closer than the floor
-  // `admitAttack` enforces — the property that keeps a drawn line from outrunning admission (#85).
+  // `admitAttack` enforces.
+  //
+  // **None of the gates below stands between a refusal and a drawing any more (#80).** Nothing this
+  // client believes about its own trigger puts a bullet on screen — every projectile it draws came
+  // off the world stream, so #85 is closed by where shots come from rather than by these agreeing
+  // with the server's rules. What they still do is keep the socket from carrying reports the hub
+  // would only throw away, and keep a held trigger from pacing itself into refusals.
   const fireIfDue = useCallback(
     (now: number) => {
       const world = worldRef.current;
@@ -374,15 +393,23 @@ export function GameScreen({
       // A shot spends a bullet from the squad's pool, and the server refuses one it cannot pay for
       // (#102). Read before the cadence for the same reason the build bar is: an empty pool must not
       // cost the first shot after a bullet lands. The mirror is at worst one tick behind the pool it
-      // is gating on, so two players racing for the last bullet can still both draw — the same
-      // boundary the cadence gate already accepts, and the only case a round-trip could close.
-      if (world.ammo() <= 0) return;
+      // is gating on, so two players racing for the last bullet can both still send — and only one of
+      // them gets a projectile back.
+      if (world.ammo() <= 0) {
+        // The pull is refused, and the box says so (#150). Nothing else here does: the shot is the
+        // server's to fly since #80, so a refusal that returns quietly is a click with no trace on
+        // screen at all beyond the `0` that was already sitting there.
+        setRefusedAt((last) => (now - last < REFUSAL_MS ? last : now));
+        return;
+      }
       if (now - lastAttackRef.current < RANGED_CADENCE_MS) return;
       lastAttackRef.current = now;
       const { camera, self } = aimRef.current;
       const dir = aimDir(pointerRef.current, self, camera);
-      ownShotRef.current = { at: now, from: { ...self }, dir };
       onAttackRef.current({ ...self }, dir);
+      // Prompt 6's second half is taught by the pull, not by the bullet that comes back (#134). The
+      // report has gone; whether the server flies a projectile from it is its business, and a lesson
+      // that waited on the round trip would be owed on a shot the player has plainly already fired.
       teach({ did: "shoot" });
     },
     [teach],
@@ -464,8 +491,9 @@ export function GameScreen({
         const dpr = window.devicePixelRatio || 1;
         if (dpr !== viewRef.current.dpr) resizeForDpr(canvas, viewRef, dpr);
         // One clock for the whole frame. `snapshot` advances each entity's gait on the `now` it is
-        // given, and the shot lines resolve their targets against the same interpolation it renders
-        // on — reading the clock twice would split that step and land a line off its own sprite.
+        // given, and since #80 flies every shot in the air against the same delayed instant it
+        // interpolates the spiders to — reading the clock twice would split that step and land a
+        // bullet off the body it is about to strike.
         const clock = Date.now();
         // What the held buttons are harvesting this frame, or null. One answer for both of them,
         // because one tile is never two things: a structure under the cursor is a demolish and the
@@ -594,6 +622,10 @@ export function GameScreen({
               clock,
               mined,
             ),
+            // The floor's blood (#140), accrued off the very enemies this frame is about to draw.
+            // Handed the true camera for the same reason the floats are: this cull decides whether
+            // a mark is ever spawned, and a swing of `SHAKE_REACH` may not decide that.
+            blood: stepBlood(bloodRef.current, snapshot.enemies, camera, viewport, clock),
             // Aged to the burst's own lifetime, on the same frame clock the snapshot above was
             // taken on — `impactMarks` is what puts the enemy render delay between the two, so a
             // burst and the spider it was struck on come out of one instant (#115).
@@ -602,17 +634,10 @@ export function GameScreen({
             // takes its spider off this very snapshot, so the puff has nothing to wait for (#116).
             puffs: world.deathMarks(clock, PUFF_MS),
             sprites: spriteCache.source(dpr),
-            // The tutorial's world-anchored half, straight off the step above (#134). The screen
-            // -fixed two travel no further than this component: they are chrome, and the HUD is
-            // where chrome lives.
+            // The tutorial's world-anchored half, straight off the step above (#134). The other
+            // two prompts travel no further than this component: they are screen-fixed chrome, and
+            // the HUD is where chrome lives.
             tutorial: promptsRef.current,
-            shots: {
-              // Aged to the line's own lifetime, never to the buffer's longer retention window.
-              peers: world.peerShots(clock, SHOT_LINE_MS),
-              own: ownShotRef.current,
-              resolve: (id) => world.shotTargetPos(id, clock),
-              ammo: world.ammo(),
-            },
           });
         }
       }
@@ -888,6 +913,11 @@ export function GameScreen({
                 style={{ animationDuration: `${FORGE_MS}ms` }}
               />
             )}
+            {/* The strike a refused trigger leaves (#150), keyed on the pull it acknowledges so each
+                one restarts the mark rather than letting a spent animation sit there — the same
+                remount the forge overlay is restarted by. Over the veil: a pool can be empty and
+                forging at once, and the refusal is the newer of the two things to say. */}
+            {refusedAt > 0 && <span key={refusedAt} className="ammo-refused" />}
             {/* After the veil, so the circle stays legible through it without a stacking context. */}
             {ammo.queued > 0 && <span className="ammo-queued">{ammo.queued}</span>}
           </button>

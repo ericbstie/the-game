@@ -552,7 +552,8 @@ export class LobbyHub {
     if (events.nests.length > 0) delta.nests = events.nests;
     if (events.structHits.length > 0) delta.structHits = events.structHits;
     if (events.aims.length > 0) delta.aims = events.aims;
-    if (events.shots.length > 0) delta.shots = events.shots;
+    if (events.projectiles.length > 0) delta.projectiles = events.projectiles;
+    if (events.spent.length > 0) delta.spent = events.spent;
     const removals = [...events.removals, ...session.pendingRemovals];
     session.pendingRemovals = [];
     if (removals.length > 0) delta.removals = removals;
@@ -626,6 +627,14 @@ export class LobbyHub {
 
   // A reported attack: admit it (cadence + loose range + seq, all server-side) and queue the
   // valid ones for the next tick. The client never writes enemy HP — the sim resolves it.
+  //
+  // **What the client is trusted for here is a heading, and nothing else (#80).** A shot now
+  // travels, so its origin is no longer just where a line starts: it is the head of a flight whose
+  // *length in time* the server owes the squad. A reported origin 500 u along the aim — inside
+  // `ATTACK_POS_TOLERANCE`, so admitted — would take 278 ms off that flight and hand a forged
+  // client a shot nothing could outrun. The origin is therefore taken from `session.positions`,
+  // the same sample every other client is relayed and the sim already chases, and the reported one
+  // is only ever an admission input.
   private gameAttack(socketId: string, pos: Vec2, dir: Vec2, seq: number): void {
     const bind = this.sockets.get(socketId);
     if (!bind) return;
@@ -642,17 +651,23 @@ export class LobbyHub {
       guard = freshGuard();
       session.attackGuards.set(player.id, guard);
     }
-    const lastPos = session.positions.get(player.id)?.pos ?? null;
-    // Nothing is broadcast here. The line that depicts this shot is emitted a tick later by the
-    // sim, beside the HP it writes — so a refused attack has no path to the wire at all (#74 §4).
-    // The aim that rides on is the normalized one admission returned, never the reported vector.
-    const aim = admitAttack(guard, { pos, dir, seq }, lastPos, Date.now());
+    // A player the hub has never had a position for cannot shoot: there is nowhere for the bullet
+    // to leave from. In a live match this is only the window before the first `game/pos`, which the
+    // client sends on the same interval it reports health on.
+    const last = session.positions.get(player.id);
+    if (!last) return;
+    // Nothing is broadcast here. The projectile that depicts this shot is launched a tick later by
+    // the sim, beside the flight it creates — so a refused attack has no path to the wire at all
+    // (#74 §4). The aim that rides on is the normalized one admission returned, never the reported
+    // vector.
+    const aim = admitAttack(guard, { pos, dir, seq }, last.pos, Date.now());
     if (!aim) return;
     // A shot costs a bullet from the squad's pool (#102). Taken after admission, so a shot the
     // cadence already refused never spends one — and a shot refused here reaches neither
     // `pendingAttacks` nor the sim, which is what keeps it off the wire entirely.
     if (!session.build || !spendBullet(session.build.ammo)) return;
-    session.pendingAttacks.push({ pos, dir: aim, by: player.id });
+    // The relayed position, copied so a later `game/pos` cannot move a shot already queued.
+    session.pendingAttacks.push({ pos: { ...last.pos }, dir: aim, by: player.id });
   }
 
   // An order for a bullet: charge the shared bank now and queue the forging. Deliberately no seq

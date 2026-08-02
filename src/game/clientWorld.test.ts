@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { MapDelta, Vec2, WorldInit } from "../lobby/protocol";
+import type { MapDelta, ProjectileSpawn, Vec2, WorldInit } from "../lobby/protocol";
 import {
   BUILDABLES,
   type BuildableSpec,
@@ -18,9 +18,20 @@ import {
   IMPACT_RETENTION_MS,
   RENDER_DELAY_MS,
   RESPAWN_DELAY_MS,
-  SHOT_RETENTION_MS,
 } from "./clientWorld";
-import { enemyContactDamage, GRUNT_HP, GRUNT_RADIUS, nestLayout, spawnEnemyState } from "./enemies";
+import {
+  BLAST_DAMAGE,
+  BLAST_RADIUS,
+  BLOODLING_HP,
+  enemyContactDamage,
+  GRUNT_HP,
+  GRUNT_RADIUS,
+  nestLayout,
+  PROJECTILE_FLIGHT_MS,
+  PROJECTILE_SPEED,
+  spawnEnemyState,
+  stepEnemies,
+} from "./enemies";
 import { SEED_FACING } from "./facing";
 import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
 import { DEFAULT_WORLD_SETTINGS, type WorldSettings } from "./worldSettings";
@@ -663,14 +674,9 @@ describe("M5-I4: facing and the walk cycle ride the snapshot, never the wire", (
   });
 });
 
-describe("M5-I5: the client adopts streamed aims and shots, and refuses to draw what died", () => {
+describe("M5-I5: the client adopts the turret aims it is streamed", () => {
   const TURRET = BUILDABLES.turret as BuildableSpec;
   const TILE_AT = { tx: 100, ty: 100 };
-  const spawned = (id: string, pos: Vec2): MapDelta => ({
-    tick: 1,
-    moves: [],
-    spawns: [{ id, kind: "grunt", pos, hp: GRUNT_HP }],
-  });
   // The aim as the render layer reads it, off the snapshot rather than out of the world's guts.
   const aimOf = (w: ClientWorld, id: string) => {
     const turret = w.snapshot(0).structures.find((s) => s.id === id)?.turret;
@@ -717,83 +723,127 @@ describe("M5-I5: the client adopts streamed aims and shots, and refuses to draw 
     });
     expect(aimOf(w, "b1")).toEqual({ powered: false, targetId: "n3" });
   });
+});
 
-  test("peer shots buffer with the instant they landed", () => {
-    const w = new ClientWorld(init(), "self");
-    const shot = { id: "peer", dir: { x: 1, y: 0 }, hit: "e1" };
-    w.applyMapDelta({ tick: 1, moves: [], shots: [shot] }, 4_000);
-    expect(w.peerShots(4_000, SHOT_RETENTION_MS)).toEqual([{ shot, at: 4_000 }]);
-  });
+// #80. A shot travels, and the client works out where it is rather than being told: a launch, a
+// constant speed, and a `spent` that ends the flight where the sim ended it.
+describe("#80: a projectile's flight is derived from its launch", () => {
+  const fired = (id: string, from: Vec2, dir: Vec2): ProjectileSpawn => [
+    id,
+    from.x,
+    from.y,
+    dir.x,
+    dir.y,
+  ];
+  // The flight is drawn on the delayed clock the spiders render on, so every assertion below is
+  // taken a render delay after the arrival it is about.
+  const seen = (w: ClientWorld, sinceArrival: number) =>
+    w.snapshot(ENEMY_RENDER_DELAY_MS + sinceArrival).projectiles;
 
-  test("the owner's own shot is not buffered — it is drawn locally at fire time instead", () => {
+  test("a launch puts a shot in the frame, at the origin the server sent", () => {
     const w = new ClientWorld(init(), "self");
-    w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "self", dir: { x: 1, y: 0 } }] }, 0);
-    expect(w.peerShots(0, SHOT_RETENTION_MS)).toEqual([]);
-  });
-
-  test("a caller's own lifetime bounds what it gets back, not the retention window", () => {
-    const w = new ClientWorld(init(), "self");
-    w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "peer", dir: { x: 1, y: 0 } }] }, 0);
-    const lineMs = 100; // whatever the render layer picks, well inside SHOT_RETENTION_MS
-    expect(w.peerShots(lineMs - 1, lineMs)).toHaveLength(1);
-    expect(w.peerShots(lineMs + 1, lineMs)).toEqual([]); // still retained, but too old to draw
-    expect(w.peerShots(lineMs + 1, SHOT_RETENTION_MS)).toHaveLength(1);
-  });
-
-  test("a shot older than the retention window is dropped, even on a tick with no shots", () => {
-    const w = new ClientWorld(init(), "self");
-    w.applyMapDelta({ tick: 1, moves: [], shots: [{ id: "peer", dir: { x: 1, y: 0 } }] }, 0);
-    w.applyMapDelta({ tick: 2, moves: [] }, SHOT_RETENTION_MS - 1);
-    expect(w.peerShots(0, SHOT_RETENTION_MS)).toHaveLength(1); // still inside the window
-    w.applyMapDelta({ tick: 3, moves: [] }, SHOT_RETENTION_MS + 1);
-    expect(w.peerShots(0, SHOT_RETENTION_MS)).toEqual([]);
-  });
-
-  test("a live enemy's target id resolves to where it is rendered", () => {
-    const w = new ClientWorld(init(), "self");
-    w.applyMapDelta(spawned("e1", { x: 900, y: 800 }), 0);
-    expect(w.shotTargetPos("e1", 0)).toEqual({ x: 900, y: 800 });
-  });
-
-  test("an enemy killed in the same delta that named it resolves to nothing", () => {
-    const w = new ClientWorld(init(), "self");
-    w.applyMapDelta(spawned("e1", { x: 900, y: 800 }), 0);
-    // The one-tick death window: the sim reports the shot and the death it caused together.
     w.applyMapDelta(
-      {
-        tick: 2,
-        moves: [],
-        deaths: ["e1"],
-        shots: [{ id: "peer", dir: { x: 1, y: 0 }, hit: "e1" }],
-      },
+      { tick: 1, moves: [], projectiles: [fired("s1", { x: 900, y: 800 }, { x: 1, y: 0 })] },
       0,
     );
-    expect(w.shotTargetPos("e1", 0)).toBeNull();
+    expect(seen(w, 0)).toEqual([{ id: "s1", from: { x: 900, y: 800 }, pos: { x: 900, y: 800 } }]);
   });
 
-  test("a turret still naming the enemy it just killed resolves to nothing", () => {
+  test("and it is where PROJECTILE_SPEED says, with nothing further sent", () => {
     const w = new ClientWorld(init(), "self");
-    w.applyMapDelta(spawned("e1", { x: 900, y: 800 }), 0);
-    w.applyMapDelta({ tick: 2, moves: [], builds: [placed("b1")], aims: [["b1", "e1", 1]] }, 0);
-    w.applyMapDelta({ tick: 3, moves: [], deaths: ["e1"] }, 0);
-    expect(aimOf(w, "b1")?.targetId).toBe("e1"); // the sim re-targets next tick, not this one
-    expect(w.shotTargetPos("e1", 0)).toBeNull(); // so the line is refused here instead
+    w.applyMapDelta(
+      { tick: 1, moves: [], projectiles: [fired("s1", { x: 900, y: 800 }, { x: 1, y: 0 })] },
+      0,
+    );
+    const [shot] = seen(w, 100);
+    expect(shot.pos).toEqual({ x: 900 + PROJECTILE_SPEED * 0.1, y: 800 });
   });
 
-  test("a standing nest resolves, and a silenced one does not", () => {
+  test("the owner's own shot is adopted like anyone else's — there is no local one to double it", () => {
     const w = new ClientWorld(init(), "self");
-    const nest = w.snapshot(0).nests[0];
-    expect(w.shotTargetPos(nest.id, 0)).toEqual(nest.pos);
-    w.applyMapDelta({ tick: 1, moves: [], nests: [{ id: nest.id, hp: 0, alive: false }] }, 0);
-    expect(w.shotTargetPos(nest.id, 0)).toBeNull();
+    w.applyMapDelta(
+      { tick: 1, moves: [], projectiles: [fired("s1", { x: 900, y: 800 }, { x: 1, y: 0 })] },
+      0,
+    );
+    expect(seen(w, 0)).toHaveLength(1);
   });
 
-  test("an id this client has never heard of resolves to nothing", () => {
-    expect(new ClientWorld(init(), "self").shotTargetPos("nobody", 0)).toBeNull();
+  test("a `spent` ends the flight — a bullet the sim stopped is not drawn past that instant", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      { tick: 1, moves: [], projectiles: [fired("s1", { x: 900, y: 800 }, { x: 1, y: 0 })] },
+      0,
+    );
+    w.applyMapDelta({ tick: 2, moves: [], spent: ["s1"] }, 100);
+    expect(seen(w, 100)).toHaveLength(1); // the render clock has only just reached the impact
+    expect(seen(w, 101)).toEqual([]);
+  });
+
+  test("a flight nothing ever spends is dropped at the furthest a shot can reach", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      { tick: 1, moves: [], projectiles: [fired("s1", { x: 900, y: 800 }, { x: 1, y: 0 })] },
+      0,
+    );
+    expect(seen(w, PROJECTILE_FLIGHT_MS)).toHaveLength(1);
+    expect(seen(w, PROJECTILE_FLIGHT_MS + 1)).toEqual([]);
+  });
+
+  test("a shot is not drawn before the delayed clock has reached its launch", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      { tick: 1, moves: [], projectiles: [fired("s1", { x: 900, y: 800 }, { x: 1, y: 0 })] },
+      0,
+    );
+    expect(w.snapshot(ENEMY_RENDER_DELAY_MS - 1).projectiles).toEqual([]);
+  });
+
+  test("a stale delta cannot launch anything — the tick guard covers shots like everything else", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 5, moves: [] }, 0);
+    w.applyMapDelta(
+      { tick: 4, moves: [], projectiles: [fired("s1", { x: 900, y: 800 }, { x: 1, y: 0 })] },
+      0,
+    );
+    expect(seen(w, 0)).toEqual([]);
+  });
+
+  // The whole of the derive-don't-stream bet (ADR 0007), asserted the way ADR 0004's nest layout is:
+  // the two sides are run against each other rather than trusted. The sim flies a real projectile
+  // and the client is given only the launch it streamed.
+  test("the client's own flight lands where the sim's did, with nothing else on the wire", () => {
+    const sim = spawnEnemyState(
+      { ...init(), settings: DEFAULT_WORLD_SETTINGS },
+      () => 0.5,
+      DEFAULT_WORLD_SETTINGS,
+    );
+    for (const nest of sim.nests) sim.nestTimers.set(nest.id, Number.POSITIVE_INFINITY);
+    const from = { x: 4_000, y: 4_000 };
+    const dir = { x: 0.6, y: 0.8 };
+    const launch = stepEnemies(sim, [], [{ pos: from, dir, by: "self" }], 50).events.projectiles;
+
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [], projectiles: launch }, 0);
+    // Six whole ticks of flight, stepped on the server and integrated on the client, with not one
+    // further byte between them.
+    for (let i = 0; i < 6; i++) stepEnemies(sim, [], [], 50);
+    const flown = [...sim.projectiles.values()][0];
+    const [drawn] = w.snapshot(ENEMY_RENDER_DELAY_MS + 6 * 50).projectiles;
+    // Within the whole-unit origin and three-decimal heading the wire carries, and nothing more.
+    expect(Math.hypot(drawn.pos.x - flown.pos.x, drawn.pos.y - flown.pos.y)).toBeLessThan(1);
+  });
+
+  // The #85 property, restated for a shot that is in the air for 389 ms rather than one frame:
+  // there is no client-side path to a projectile at all, so a refused attack cannot draw one.
+  test("a delta with no `projectiles` draws no shot, however the client's own trigger was pulled", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta({ tick: 1, moves: [] }, 0);
+    expect(seen(w, 0)).toEqual([]);
+    expect(seen(w, 200)).toEqual([]);
   });
 });
 
-// The state behind the HUD's warning bell (#76 §5). The wire reports damage, an edge; the icon
+// The state behind the HUD's warning bell (#76 §5).// The state behind the HUD's warning bell (#76 §5). The wire reports damage, an edge; the icon
 // reports being under attack, a condition. These pin the translation between the two.
 describe("ClientWorld structure-under-attack window", () => {
   const WINDOW = 2000;
@@ -1393,5 +1443,78 @@ describe("the door's reveal is mirrored, never decided here", () => {
     const w = new ClientWorld(init(), "self");
     w.initEnemies(keyframe(40));
     expect(revealed(w)).toBe(false);
+  });
+});
+
+// #140. A bloodling's death *is* its blast, so the owner judges the blow off the death it is already
+// streamed — the same client-owned-health stance contact damage is judged on, and nothing added to
+// the wire to carry it.
+describe("#140: a bloodling's blast lands on the client that was near it", () => {
+  const bloodlingAt = (w: ClientWorld, pos: Vec2, tick = 1) =>
+    w.applyMapDelta(
+      { tick, moves: [], spawns: [{ id: "b1", kind: "bloodling", pos, hp: BLOODLING_HP }] },
+      0,
+    );
+  const dies = (w: ClientWorld, now: number, tick = 2) =>
+    w.applyMapDelta({ tick, moves: [], deaths: ["b1"] }, now);
+
+  test("one that goes off inside the blast takes BLAST_DAMAGE off the owner", () => {
+    const w = new ClientWorld(init(), "self");
+    bloodlingAt(w, { x: 400 + BLAST_RADIUS - 1, y: 300 });
+    dies(w, 1000);
+    expect(w.hp()).toBe(PLAYER_MAX_HP - BLAST_DAMAGE);
+  });
+
+  test("one that goes off outside it takes nothing", () => {
+    const w = new ClientWorld(init(), "self");
+    bloodlingAt(w, { x: 400 + BLAST_RADIUS + 1, y: 300 });
+    dies(w, 1000);
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
+  });
+
+  test("the blast shakes the owner's screen exactly as a bite does (#142)", () => {
+    const w = new ClientWorld(init(), "self");
+    bloodlingAt(w, { x: 400, y: 300 });
+    dies(w, 1000);
+    expect(w.damagedAt()).toBe(1000);
+  });
+
+  test("a grunt dying on top of you is a kill, not a blast", () => {
+    const w = new ClientWorld(init(), "self");
+    w.applyMapDelta(
+      { tick: 1, moves: [], spawns: [{ id: "b1", kind: "grunt", pos: { x: 400, y: 300 }, hp: 1 }] },
+      0,
+    );
+    dies(w, 1000);
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
+    expect(w.damagedAt()).toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  test("a dead player takes no blast, exactly as they take no bite", () => {
+    const w = new ClientWorld(init(), "self", 0);
+    bloodlingAt(w, { x: 400, y: 300 });
+    dies(w, 1000);
+    expect(w.hp()).toBe(0);
+  });
+
+  test("HP floors at zero: two blasts on a player with one blast left in them", () => {
+    const w = new ClientWorld(init(), "self", BLAST_DAMAGE - 1);
+    bloodlingAt(w, { x: 400, y: 300 });
+    dies(w, 1000);
+    expect(w.hp()).toBe(0);
+    expect(w.isDead()).toBe(true);
+  });
+
+  // The blast is judged where the *sprite* was, not where the stream had got to: the death is the
+  // tick the drawing came off the screen, and the delayed clock is what the player was looking at.
+  test("the blast is measured from the position the spider was drawn at", () => {
+    const w = new ClientWorld(init(), "self");
+    bloodlingAt(w, { x: 400 + BLAST_RADIUS * 2, y: 300 });
+    // Two samples a render delay apart: by `now` the stream has it on top of the owner, but the
+    // drawing is still a delay behind, out past the blast.
+    w.applyMapDelta({ tick: 2, moves: [["b1", 400 + BLAST_RADIUS * 2, 300]] }, 1000);
+    w.applyMapDelta({ tick: 3, moves: [["b1", 400, 300]] }, 1000 + ENEMY_RENDER_DELAY_MS);
+    dies(w, 1000 + ENEMY_RENDER_DELAY_MS, 4);
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
   });
 });

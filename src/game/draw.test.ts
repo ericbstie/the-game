@@ -4,6 +4,7 @@ import type {
   BuildableKind,
   OreKind,
   RenderedEnemy,
+  RenderedProjectile,
   Tile,
   Vec2,
   WorldSnapshot,
@@ -11,6 +12,7 @@ import type {
 import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import lettering from "../sprite/lettering";
 import type { SpriteName } from "../sprite/registry";
+import { BLOOD_FADE_MS, type BloodMark } from "./blood";
 import { TILE, tileKey, tileOf } from "./build";
 import type { Camera, Viewport } from "./camera";
 import {
@@ -21,17 +23,18 @@ import {
   type Mark,
 } from "./clientWorld";
 import {
+  BLOOD,
+  BLOOD_BANDS,
   BURST_MS,
   type DrawOptions,
   drawWorld,
   grassAt,
   letteringAt,
   PUFF_MS,
-  type ShotSource,
+  SHOT_STREAK,
 } from "./draw";
-import { ELITE_RADIUS, RANGED_RANGE } from "./enemies";
 import { FLOAT_MS, type MetalFloat } from "./floats";
-import { inkPuff, speedLines, starburst } from "./fx";
+import { inkPuff, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_CLOSE_U,
   MINIMAP_COVERAGE_U,
@@ -124,20 +127,6 @@ const paths = (ctx: { calls: Call[] }) => {
   return drawn;
 };
 
-// The line each shot was fired along, read back off the mark it was struck as: from where the first
-// stroke begins to the furthest point the mark reaches. The run along the shot's own line is
-// anchored at both ends and the trail closes onto it before the head, so those two points are the
-// shooter and the target exactly. Every claim about where a shot goes is about this line, which is
-// what keeps the assertions below saying the same thing they said when a shot was one stroke.
-const shotLines = (ctx: { calls: Call[] }) =>
-  paths(ctx).map((strokes) => {
-    const from = strokes[0].from;
-    const reach = (p: [number, number]) => Math.hypot(p[0] - from[0], p[1] - from[1]);
-    let to = strokes[0].to;
-    for (const s of strokes) if (reach(s.to) > reach(to)) to = s.to;
-    return { from, to };
-  });
-
 // The filled polygons in a frame, in world coordinates, with the state each went out under. An
 // off-screen teammate's arrow is the only multi-point path `drawWorld` fills — a circle is an `arc`
 // and a shot line is two points and never filled — so this reads the arrows off the log.
@@ -209,6 +198,7 @@ const POSE = { facing: 2, frame: 0, flashing: false };
 
 const world: WorldSnapshot = {
   arena: { width: 31_200, height: 31_200 },
+  projectiles: [],
   players: [
     { ...POSE, id: "p1", slot: 1, name: "Ana", pos: { x: 1100, y: 1100 }, radius: 14, hp: 100 },
     { ...POSE, id: "p2", slot: 2, name: "Ben", pos: { x: 1200, y: 1150 }, radius: 14, hp: 100 },
@@ -1205,24 +1195,15 @@ describe("the build ghost", () => {
   });
 });
 
-// A shot struck from a shooter to what it hit, for your own shots, your squadmates' and your
-// turrets' alike (#81) — broken ink with speed lines trailing it since #114, one continuous line
-// before that. Two constraints shape every test here: the mark may never depict damage the server
-// did not apply (#74 §7), and a shot is the most expensive thing in the frame per unit, so its
-// 100 ms lifetime is enforced rather than assumed.
+// A shot in the air, for your own, your squadmates' and your turrets' alike (#80). M5 struck a line
+// from the shooter to what it hit and #114 broke that into speed lines; a projectile is a streak
+// behind a moving point, struck by the same pen.
 //
-// Everything below reads the shot's own line out of its bundle, so what each test claims is
-// unchanged by the treatment: where a shot goes, and whether it is drawn at all.
-describe("shot lines", () => {
-  const shooter = {
-    ...POSE,
-    id: "p1",
-    slot: 1,
-    name: "Ana",
-    pos: { x: 1100, y: 1100 },
-    radius: 14,
-    hp: 100,
-  };
+// Two constraints shape every test here. The frame may draw no shot the server did not put in the
+// air — which after #80 is a property of `WorldSnapshot.projectiles` having one source rather than
+// of any gate in this file — and hundreds of them are in flight at once, so what a bullet costs the
+// frame is pinned rather than assumed.
+describe("shots in flight", () => {
   const grunt = {
     ...POSE,
     id: "e1",
@@ -1232,280 +1213,60 @@ describe("shot lines", () => {
   };
   const field: WorldSnapshot = {
     ...world,
-    players: [shooter],
+    players: [],
     enemies: [{ ...grunt, hp: 30 }],
     nests: [],
     structures: [],
   };
-  const live = (id: string) => (id === "e1" ? grunt.pos : null);
-  const struck = (patch: Partial<WorldSnapshot>, shots: ShotSource, now = 1000) => {
+  const flying = (projectiles: RenderedProjectile[], patch: Partial<WorldSnapshot> = {}) => {
     const ctx = spyCtx();
-    drawWorld(ctx, { ...field, ...patch }, { camera, viewport, now, shots });
+    drawWorld(ctx, { ...field, ...patch, projectiles }, { camera, viewport, now: 1000 });
     return ctx;
   };
-  const fire = (patch: Partial<WorldSnapshot>, shots: ShotSource, now = 1000) =>
-    shotLines(struck(patch, shots, now));
-  const none = { peers: [], own: null, resolve: live, ammo: 9 };
+  // One stroke is one bullet: at `SHOT_STREAK` the fit puts a single unbroken stroke across the
+  // whole mark, so the frame's one bundled path reads straight back as its list of shots.
+  const streaks = (ctx: { calls: Call[] }) => paths(ctx)[0] ?? [];
+  const inFlight = (id: string, from: Vec2, pos: Vec2): RenderedProjectile => ({ id, from, pos });
 
-  test("draws your own shot where you fired it, without waiting for the relay", () => {
-    const drawn = fire({}, { ...none, own: { at: 960, from: shooter.pos, dir: { x: 1, y: 0 } } });
-    expect(drawn.length).toBe(1);
-    expect(drawn[0].from).toEqual([1100, 1100]);
-    expect(drawn[0].to[0]).toBeGreaterThan(1100); // out along the aim, to the weapon's full reach
-    expect(drawn[0].to[1]).toBe(1100);
+  test("a bullet is struck as a streak behind the point it has reached", () => {
+    const head = { x: 1400, y: 1100 };
+    const [mark] = streaks(flying([inFlight("s1", { x: 1100, y: 1100 }, head)]));
+    expect(mark.to).toEqual([head.x, head.y]);
+    expect(mark.from).toEqual([head.x - SHOT_STREAK, head.y]);
   });
 
-  test("retires a line after its 100 ms, whoever fired it", () => {
-    const own = { at: 900, from: shooter.pos, dir: { x: 1, y: 0 } };
-    expect(fire({}, { ...none, own }, 999).length).toBe(1);
-    expect(fire({}, { ...none, own }, 1000).length).toBe(0);
-    const peer = { shot: { id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }, at: 900 };
-    expect(fire({}, { ...none, peers: [peer] }, 999).length).toBe(1);
-    expect(fire({}, { ...none, peers: [peer] }, 1000).length).toBe(0);
+  test("and clipped at its launch point, so nothing sticks out behind the gun that fired it", () => {
+    const head = { x: 1110, y: 1100 };
+    const [mark] = streaks(flying([inFlight("s1", { x: 1100, y: 1100 }, head)]));
+    expect(mark.from).toEqual([1100, 1100]);
+    expect(mark.to).toEqual([head.x, head.y]);
   });
 
-  test("ends a squadmate's shot on what the server says it hit", () => {
-    const drawn = fire(
-      {},
-      { ...none, peers: [{ shot: { id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }, at: 1000 }] },
+  test("a bullet still on the muzzle strikes nothing at all", () => {
+    const at = { x: 1100, y: 1100 };
+    expect(paths(flying([inFlight("s1", at, { ...at })]))).toEqual([]);
+  });
+
+  // The cost control. A hitscan line lived 100 ms and the frame carried ~50; a flight lives 389 ms
+  // and it carries several hundred, so the count of paths has to stay at one however many are up.
+  test("every shot in the frame goes out in one path, however many are in the air", () => {
+    const many = Array.from({ length: 40 }, (_, i) =>
+      inFlight(`s${i}`, { x: 1000 + i, y: 1000 }, { x: 1200 + i, y: 1000 }),
     );
-    expect(drawn).toEqual([{ from: [1100, 1100], to: [1300, 1200] }]);
+    const drawn = paths(flying(many));
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]).toHaveLength(40);
   });
 
-  // The authority invariant. A target id outlives its target by one tick in two places — a turret
-  // still names the enemy it just killed until it re-targets, and a killing shot rides the same
-  // delta as the death it caused — so a line drawn on an unresolvable id would be damage nobody
-  // applied. `shotTargetPos` answers null for both, and that is where the line stops.
-  test("draws nothing at all when the target no longer resolves", () => {
-    const gone = { ...none, resolve: () => null };
-    expect(
-      fire(
-        {},
-        { ...gone, peers: [{ shot: { id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }, at: 1000 }] },
-      ),
-    ).toEqual([]);
-    expect(
-      fire(
-        {
-          structures: [
-            {
-              id: "b1",
-              kind: "turret",
-              tile: { tx: 74, ty: 74 },
-              hp: 250,
-              turret: { powered: true, targetId: "e1" },
-            },
-          ],
-        },
-        gone,
-      ),
-    ).toEqual([]);
+  test("a shot the camera cannot see strikes nothing — the cull is spent before the geometry", () => {
+    expect(paths(flying([inFlight("s1", { x: 9000, y: 9000 }, { x: 9200, y: 9000 })]))).toEqual([]);
   });
 
-  // A hitscan ray at 24 half-width over 700 units misses often, and a squadmate firing into empty
-  // air with no line looks broken (#74 §6). A miss names no target, so there is nothing to falsify.
-  test("still draws a shot that hit nothing, out to full range", () => {
-    const drawn = fire(
-      {},
-      { ...none, peers: [{ shot: { id: "p1", dir: { x: 0, y: 1 } }, at: 1000 }] },
-    );
-    expect(drawn.length).toBe(1);
-    expect(drawn[0].to[1]).toBeGreaterThan(1100);
-  });
-
-  test("ignores a shot from a peer who is no longer in the world", () => {
-    expect(
-      fire(
-        {},
-        { ...none, peers: [{ shot: { id: "p9", dir: { x: 1, y: 0 }, hit: "e1" }, at: 1000 }] },
-      ),
-    ).toEqual([]);
-  });
-
-  // No per-shot event arrives for a turret — only its `(target, powered)` transition does — so the
-  // client generates the pulse train itself: one pulse per 200 ms cadence, each lasting 100 ms.
-  describe("a turret's generated pulse train", () => {
-    const turreted = (turret: { powered: boolean; targetId: string | null }) => ({
-      structures: [
-        { id: "b1", kind: "turret" as const, tile: { tx: 74, ty: 74 }, hp: 250, turret },
-      ],
-    });
-
-    test("pulses for half of each cadence, so it reads as shots and not as a beam", () => {
-      const engaged = turreted({ powered: true, targetId: "e1" });
-      expect(fire(engaged, none, 1000).length).toBe(1);
-      expect(fire(engaged, none, 1099).length).toBe(1);
-      expect(fire(engaged, none, 1100).length).toBe(0);
-      expect(fire(engaged, none, 1200).length).toBe(1);
-    });
-
-    test("fires from the middle of the turret's own footprint", () => {
-      expect(fire(turreted({ powered: true, targetId: "e1" }), none, 1000)).toEqual([
-        { from: [1125, 1125], to: [1300, 1200] },
-      ]);
-    });
-
-    test("draws nothing for a turret with no target or no power", () => {
-      expect(fire(turreted({ powered: true, targetId: null }), none, 1000)).toEqual([]);
-      expect(fire(turreted({ powered: false, targetId: "e1" }), none, 1000)).toEqual([]);
-    });
-
-    // #102 stage 4: a turret shoots the squad's bullets, and the server holds its fire when there
-    // are none. Nothing else would stop the train — it is generated from a state that says nothing
-    // about ammo — so an empty pool would otherwise draw shots nobody took (ADR 0003).
-    test("draws nothing while the squad's pool is empty and its fire is held", () => {
-      const engaged = turreted({ powered: true, targetId: "e1" });
-      expect(fire(engaged, { ...none, ammo: 0 }, 1000)).toEqual([]);
-      expect(fire(engaged, { ...none, ammo: 1 }, 1000)).toHaveLength(1);
-    });
-
-    // A pool too small to arm every ready turret is the server firing only some of them, so only
-    // that many trains draw. *Which* ones cannot be known here — the trade #74 §5 made was to send
-    // no per-shot event — so the pool is spent down the structure list, whose order holds between
-    // frames because it is a map's insertion order (`clientWorld.ts:523`).
-    test("draws no more trains than the squad has bullets", () => {
-      const ready = (i: number) => ({
-        id: `b${i}`,
-        kind: "turret" as const,
-        tile: { tx: 74 + i * 2, ty: 74 },
-        hp: 250,
-        turret: { powered: true, targetId: "e1" },
-      });
-      const five = { structures: [0, 1, 2, 3, 4].map(ready) };
-      expect(fire(five, { ...none, ammo: 1 }, 1000)).toEqual([
-        { from: [1125, 1125], to: [1300, 1200] },
-      ]);
-      expect(fire(five, { ...none, ammo: 3 }, 1000)).toHaveLength(3);
-      expect(fire(five, { ...none, ammo: 9 }, 1000)).toHaveLength(5);
-    });
-
-    // The gate is the turret's alone. Your own line is optimistic by decision and drawn at the
-    // click; a squadmate's is a shot the server has already admitted and already paid for.
-    test("an empty pool withholds no line the server has already resolved", () => {
-      const dry = { ...none, ammo: 0 };
-      expect(
-        fire({}, { ...dry, own: { at: 960, from: shooter.pos, dir: { x: 1, y: 0 } } }),
-      ).toHaveLength(1);
-      const peer = { shot: { id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }, at: 1000 };
-      expect(fire({}, { ...dry, peers: [peer] })).toHaveLength(1);
-    });
-  });
-
-  // #114 replaces M5's plain continuous line with speed lines. What a shot *claims* is unchanged —
-  // every test above still holds — so what is left to pin is that the mark is broken ink rather than
-  // a rule, that all three shooters get the identical treatment, and that neither the dash nor the
-  // extra strands escape the shot they belong to.
-  describe("the speed lines it trails", () => {
-    const bundle = (patch: Partial<WorldSnapshot>, shots: ShotSource, now = 1000) =>
-      paths(struck(patch, shots, now))[0];
-    const trail = (from: Vec2, to: Vec2) =>
-      speedLines(from, to).map((s) => ({
-        from: [s.from.x, s.from.y] as [number, number],
-        to: [s.to.x, s.to.y] as [number, number],
-      }));
-    const own = { at: 960, from: shooter.pos, dir: { x: 1, y: 0 } };
-    const peer = { shot: { id: "p1", dir: { x: 1, y: 0 }, hit: "e1" }, at: 1000 };
-    const turret = {
-      structures: [
-        {
-          id: "b1",
-          kind: "turret" as const,
-          tile: { tx: 74, ty: 74 },
-          hp: 250,
-          turret: { powered: true, targetId: "e1" },
-        },
-      ],
-    };
-
-    test("a shot is struck as broken ink, not as a rule", () => {
-      const marks = bundle({}, { ...none, own });
-      expect(marks.length).toBeGreaterThan(1);
-      // Nothing in the mark runs the shot's whole length, which is what "no longer a rule" means.
-      const reach = Math.hypot(1800 - shooter.pos.x, 1100 - shooter.pos.y);
-      for (const m of marks) {
-        expect(Math.hypot(m.to[0] - m.from[0], m.to[1] - m.from[1])).toBeLessThan(reach);
-      }
-    });
-
-    test("your own shot, a squadmate's and a turret's are struck identically", () => {
-      expect(bundle({}, { ...none, own })).toEqual(trail(shooter.pos, { x: 1800, y: 1100 }));
-      expect(bundle({}, { ...none, peers: [peer] })).toEqual(trail(shooter.pos, grunt.pos));
-      expect(bundle(turret, none)).toEqual(trail({ x: 1125, y: 1125 }, grunt.pos));
-    });
-
-    // The trail is extra ink, not an extra path: it rides in the shot's own so the frame still pays
-    // for one stroked path per shot, which is the unit `docs/frame-budget.md` prices a shot in.
-    test("the whole bundle goes out in the shot's one stroke", () => {
-      const strokes = (shots: ShotSource, patch: Partial<WorldSnapshot> = {}) =>
-        struck(patch, shots).calls.filter((c) => c.fn === "stroke").length;
-      expect(strokes({ ...none, own })).toBe(strokes(none) + 1);
-      expect(strokes({ ...none, own, peers: [peer] })).toBe(strokes(none) + 2);
-    });
-
-    // The one thing that keeps the trail clear of ADR 0003 §3: where the line stops is all a shot is
-    // allowed to say, and a bundle narrowing onto a sprite would say it was hit. It stays clear only
-    // because your own line is fixed-length — `reach` never clips it onto a target — so the strands
-    // close short of the head by more than anything standing there is wide. Clip an own shot and the
-    // tension reopens without a word, which is what this catches.
-    test("your own shot's trail closes clear of anything standing at its head", () => {
-      const head = { x: shooter.pos.x + RANGED_RANGE, y: shooter.pos.y };
-      const gaps = bundle({}, { ...none, own }).map((m) =>
-        Math.hypot(m.to[0] - head.x, m.to[1] - head.y),
-      );
-      // The shot's own line reaches the head, and nothing else does — that is the plain end #114
-      // left it (`src/game/fx.ts`).
-      expect(gaps.filter((d) => d < 1e-9).length).toBe(1);
-      expect(Math.min(...gaps.filter((d) => d >= 1e-9))).toBeGreaterThan(ELITE_RADIUS);
-    });
-
-    // The cull is spent on the shot, before its bundle is built, so a shot with nothing of it on
-    // screen costs the frame no path at all rather than an empty one.
-    test("a shot the camera cannot see strikes no trail either", () => {
-      const far = { ...shooter, id: "p2", slot: 2, name: "Ben", pos: { x: 9000, y: 9000 } };
-      const away = {
-        ...none,
-        peers: [{ shot: { id: "p2", dir: { x: 1, y: 0 }, hit: "e2" }, at: 1000 }],
-        resolve: () => ({ x: 9500, y: 9000 }),
-      };
-      expect(paths(struck({ players: [far] }, away))).toEqual([]);
-    });
-  });
-
-  test("costs nothing when the render layer has no shots to draw", () => {
-    const ctx = spyCtx();
-    drawWorld(ctx, field, { camera, viewport, now: 1000 });
-    expect(paths(ctx)).toEqual([]);
-  });
-
-  // A line can be long enough to cross the whole viewport, so it is culled on the box it spans and
-  // not on either end: a turret off one edge firing at a nest off the other still crosses the middle
-  // of the screen. Only a shot with nothing of it on screen is skipped.
-  test("culls a shot the camera cannot see any part of", () => {
-    const far = {
-      ...POSE,
-      id: "p2",
-      slot: 2,
-      name: "Ben",
-      pos: { x: 9000, y: 9000 },
-      radius: 14,
-      hp: 100,
-    };
-    expect(
-      fire(
-        { players: [far] },
-        {
-          ...none,
-          peers: [{ shot: { id: "p2", dir: { x: 1, y: 0 }, hit: "e2" }, at: 1000 }],
-          resolve: () => ({ x: 9500, y: 9000 }),
-        },
-      ),
-    ).toEqual([]);
-    expect(
-      fire(
-        { players: [far] },
-        { ...none, peers: [{ shot: { id: "p2", dir: { x: -1, y: 0 }, hit: "e1" }, at: 1000 }] },
-      ).length,
-    ).toBe(1);
+  // The #85 property at the render layer, and the whole of it: this file has no other source for a
+  // shot. There is no own-shot input, no turret pulse train and no ammo gate left to disagree with
+  // the server about — a bullet is drawn because the world snapshot carries one.
+  test("costs nothing when the world has no shots in the air", () => {
+    expect(paths(flying([]))).toEqual([]);
   });
 });
 
@@ -2679,6 +2440,101 @@ describe("the damage veil", () => {
     const laid = fullScreen(ctx);
     expect(laid.length).toBe(3); // paper, the darkening, the veil
     expect(laid[2].fill).toBe("rgba(0, 0, 0, 0.5)");
+  });
+});
+
+// #140: the blood a bloodling leaves on the floor. The render layer holds none of it — `stepBlood`
+// accrues the marks, culls them at spawn and bounds the list, and this layer is handed what is left.
+// What is pinned here is the ink: red, on the floor rather than among the bodies, one path a band
+// however many marks are up, fading with age, and nothing at all struck for a mark off camera.
+describe("blood on the floor", () => {
+  const ON: Vec2 = { x: 1_200, y: 1_200 };
+  const sprites = stubSprites({ player: 28, bloodling: 32 });
+  const bleeding: WorldSnapshot = {
+    ...world,
+    nests: [],
+    enemies: [
+      { ...POSE, id: "b1", kind: "bloodling", pos: { x: 1_300, y: 1_300 }, radius: 16, hp: 15 },
+    ],
+  };
+  const bled = (marks: readonly BloodMark[], now = 1_000) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, bleeding, { camera, viewport, now, sprites, blood: marks });
+    return ctx;
+  };
+  // Every filled disc the frame laid, as the numbers `ctx.arc` was handed plus the alpha it went
+  // out under — which is the whole of what a decal is.
+  const discs = (ctx: { calls: Call[] }) =>
+    ctx.calls
+      .filter((c) => c.fn === "arc")
+      .map((c) => ({ args: c.args as number[], alpha: c.alpha, fill: c.fill }));
+
+  test("lays one disc per mark, in vibrant red", () => {
+    const marks = [
+      { pos: ON, at: 1_000, radius: 4 },
+      { pos: { x: 1_250, y: 1_250 }, at: 1_000, radius: 32 },
+    ];
+    const laid = discs(bled(marks));
+    expect(laid.map((d) => d.args.slice(0, 3))).toEqual([
+      [ON.x, ON.y, 4],
+      [1_250, 1_250, 32],
+    ]);
+    // The one place the black-and-white theme is broken on purpose (#140), so it may not be ink.
+    expect(new Set(laid.map((d) => d.fill))).toEqual(new Set([BLOOD]));
+  });
+
+  test("costs the frame nothing at all when nothing has bled", () => {
+    const bare = spyCtx();
+    drawWorld(bare, bleeding, { camera, viewport, now: 1_000, sprites });
+    expect(bled([]).calls.map((c) => c.fn)).toEqual(bare.calls.map((c) => c.fn));
+  });
+
+  // It is on the ground, so everything that stands on the ground has to paint over it — the
+  // opposite of the burst and the puff, which are events and go over the sort.
+  test("is laid under everything standing on it", () => {
+    const ctx = bled([{ pos: ON, at: 1_000, radius: 4 }]);
+    const bodyCall = ctx.calls.findIndex(
+      (c) => c.fn === "drawImage" && (c.args[0] as { tag: string }).tag.startsWith("bloodling/"),
+    );
+    const laid = ctx.calls.findIndex((c) => c.fn === "fill");
+    expect(bodyCall).toBeGreaterThan(0); // the spider is in this frame, or the order says nothing
+    expect(laid).toBeGreaterThan(0);
+    expect(laid).toBeLessThan(bodyCall);
+  });
+
+  // The floor is the layer most exposed to the count, and a decal list is the longest one in the
+  // frame: `docs/frame-budget.md` rule 1 charges a mark by the pieces it is struck in, so the paths
+  // are held to the bands and only the discs ride the count.
+  test("bundles the whole layer into one path per fade band, not one per mark", () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      pos: { x: 1_050 + i * 10, y: 1_400 },
+      at: 1_000 - i * 40,
+      radius: 4,
+    }));
+    const ctx = bled(many);
+    expect(discs(ctx)).toHaveLength(60);
+    expect(ctx.calls.filter((c) => c.fn === "fill")).toHaveLength(BLOOD_BANDS);
+  });
+
+  test("a mark dries as it ages: the older it is the fainter it goes", () => {
+    const fresh = { pos: ON, at: 1_000, radius: 4 };
+    const old = { pos: { x: 1_100, y: 1_200 }, at: 1_000 - BLOOD_FADE_MS * 0.9, radius: 4 };
+    const laid = discs(bled([fresh, old]));
+    const alphaAt = (x: number) => laid.find((d) => d.args[0] === x)?.alpha ?? 0;
+    expect(alphaAt(ON.x)).toBe(1);
+    expect(alphaAt(1_100)).toBeGreaterThan(0);
+    expect(alphaAt(1_100)).toBeLessThan(1);
+  });
+
+  test("leaves the drawing state as it found it, so nothing after it inherits an alpha", () => {
+    const ctx = bled([{ pos: ON, at: 1_000 - BLOOD_FADE_MS * 0.9, radius: 4 }]);
+    expect(ctx.calls[ctx.calls.length - 1].alpha).toBe(1);
+  });
+
+  // A trail is laid where a bloodling ran, which is anywhere in a 31,200² arena; the camera is over
+  // 800 × 600 of it. Culled before the geometry is built, so a mark nobody can see costs no arcs.
+  test("lays nothing for a mark the camera cannot see", () => {
+    expect(discs(bled([{ pos: { x: 9_000, y: 9_000 }, at: 1_000, radius: 32 }]))).toEqual([]);
   });
 });
 

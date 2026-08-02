@@ -4,6 +4,7 @@ import { concurrentBursts } from "./burst-ink";
 import { capture, measurementsIn } from "./headless";
 import { concurrentLettering } from "./lettering-ink";
 import { concurrentPuffs } from "./puff-ink";
+import { concurrentShots } from "./shot-ink";
 
 // Measure the worst frame the game can be asked to draw, layer by layer, through the shipped
 // `drawWorld` on a real canvas.
@@ -24,6 +25,7 @@ import { concurrentPuffs } from "./puff-ink";
 // direction to err in.
 
 const DRAW_MODULE = join(import.meta.dir, "../src/game/draw.ts");
+const BLOOD_MODULE = join(import.meta.dir, "../src/game/blood.ts");
 const CACHE_MODULE = join(import.meta.dir, "../src/sprite/cache.ts");
 const REGISTRY_MODULE = join(import.meta.dir, "../src/sprite/registry.ts");
 const BUILD_MODULE = join(import.meta.dir, "../src/game/build.ts");
@@ -82,17 +84,20 @@ export interface BudgetResult {
   blits: number;
   bars: number;
   lines: number;
+  inFlight: number;
   floats: number;
   bursts: number;
   puffs: number;
   lettering: number;
+  decals: number;
   layers: Record<string, number>;
   ySortMs: number;
   healthBarsMs: Record<string, number>;
-  shotLinesMs: Record<string, number>;
+  shotsMs: Record<string, number>;
   burstsMs: Record<string, number>;
   puffsMs: Record<string, number>;
   letteringMs: Record<string, number>;
+  bloodMs: Record<string, number>;
   veilMs: number;
   tutorialMs: number; // the mini-tutorial's three world-anchored prompts, all up at once (#134)
 }
@@ -112,7 +117,9 @@ import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { DEFAULT_WORLD_SETTINGS } from ${JSON.stringify(SETTINGS_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
 import { inkPuff, speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
-import { letteringAt } from ${JSON.stringify(DRAW_MODULE)};
+import { letteringAt, SHOT_STREAK } from ${JSON.stringify(DRAW_MODULE)};
+import { BLOOD_BANDS } from ${JSON.stringify(DRAW_MODULE)};
+import { BLOOD_CAP, BLOOD_FADE_MS, DROP_RADIUS, stainMarks } from ${JSON.stringify(BLOOD_MODULE)};
 import { FLASH_ALPHA } from ${JSON.stringify(DAMAGE_MODULE)};
 import { MINE_WORDS, POWER_WORDS, TURRET_WORDS } from ${JSON.stringify(TUTORIAL_MODULE)};
 
@@ -122,9 +129,13 @@ const ARENA = { width: 31_200, height: 31_200 };
 const CAM = { x: 15_400, y: 15_400 };
 const STRUCTURES = 40;
 const ITERS = 60;
-// The budget's own rule: 50 concurrent lines, which is what a 100 ms lifetime holds a defended
-// base's fire down to. Five come from powered turrets and the rest from relayed squadmate shots.
-const SHOT_LINES = 50;
+// Shots in the air (#80), and this one is *derived* where the line it replaced was budgeted: a
+// hitscan line's 50 came off a lifetime somebody picked, and a flight's count comes off
+// \`PROJECTILE_FLIGHT_MS\` — the weapon's reach over its speed (\`scripts/shot-ink.ts\`). Five of the
+// shooters are powered turrets and six are the squad, the same pair every derived count on this
+// page uses. It is a ceiling: a shot that connects is spent where it lands, and at \`enemyCap\`
+// almost every one does.
+const IN_FLIGHT = ${concurrentShots()};
 // #115's starbursts, and unlike the line above this one is *derived* rather than budgeted: it comes
 // off the cadences that fire and the damage they do (\`scripts/burst-ink.ts\`), because a burst rides
 // the hit rate and the hit rate is arithmetic on constants the game already fixes.
@@ -135,6 +146,12 @@ const PUFFS = ${concurrentPuffs()};
 // #79's lettered words, which ride the two mark lists above rather than a list of their own — so the
 // count is one word per mark of either kind, and it is derived from the same arithmetic they are.
 const LETTERING = ${concurrentLettering()};
+// #140's blood, and this one is neither budgeted nor derived from a cadence: it is the module's own
+// hard ceiling. Every other mark on this page rides a rate, so its count is arithmetic on the
+// cadences; a decal rides how many bloodlings are on screen, which at \`ENEMY_CAP\` is unbounded — so
+// the list is capped instead, and the cap *is* the worst case. Nothing off screen is ever admitted
+// to it, so this is a count of marks drawn and not of marks held.
+const DECALS = BLOOD_CAP;
 
 // Deterministic, so two runs of this script compare to each other.
 function rng(seed) {
@@ -153,11 +170,15 @@ function build(enemyCount, structureCount, withOre) {
   const enemies = [];
   for (let i = 0; i < enemyCount; i++) {
     const elite = i % 5 === 0;
+    // Every seventh is a bloodling (#140), so the kind the budget's decal layer belongs to is in the
+    // frame it is measured on. It shares the grunt's box, so the standing layer is unmoved; its HP
+    // is under BLOODLING_HP for the reason every other enemy here is damaged — a bar apiece.
+    const kind = elite ? "elite" : i % 7 === 3 ? "bloodling" : "grunt";
     enemies.push({
-      id: "e" + i, kind: elite ? "elite" : "grunt",
+      id: "e" + i, kind,
       pos: { x: CAM.x + r() * VIEW.width, y: CAM.y + r() * VIEW.height },
       facing: Math.floor(r() * 8), frame: Math.floor(r() * 2),
-      radius: elite ? 24 : 16, hp: elite ? 119 : 17,
+      radius: elite ? 24 : 16, hp: elite ? 119 : kind === "bloodling" ? 7 : 17,
     });
   }
   const kinds = ["miner", "wall", "turret", "generator"];
@@ -200,7 +221,9 @@ function build(enemyCount, structureCount, withOre) {
     for (let ty = fty + 4; ty < fty + 16; ty++) for (let tx = ftx + 4; tx < ftx + 20; tx++) ore.set(tileKey({ tx, ty }), "metal");
     for (let ty = fty + 24; ty < fty + 34; ty++) for (let tx = ftx + 30; tx < ftx + 44; tx++) ore.set(tileKey({ tx, ty }), "power");
   }
-  return { arena: ARENA, players, enemies, nests, ore, structures,
+  // No shots in the air: they are the layer above (#80), and \`flying\` spreads this world to add
+  // them. A world without the field would throw rather than draw nothing.
+  return { arena: ARENA, players, enemies, nests, ore, structures, projectiles: [],
            exit: { x: 0, y: 15_000, width: 98, height: 936 } };
 }
 
@@ -240,19 +263,30 @@ try {
   const floor = build(0, 0, true);
   const full = build(${request.enemies ?? "DEFAULT_WORLD_SETTINGS.enemyCap"}, STRUCTURES, true);
 
-  // The shot lines, through the shipped path rather than a hand-rolled stroke: the powered turrets
-  // generate their own pulse, and squadmates' relayed shots make the count up to the budgeted 50.
-  const byId = new Map(full.enemies.map((e) => [e.id, e.pos]));
-  const turretLines = full.structures.filter((s) => s.turret && s.turret.powered).length;
-  const peers = [];
-  for (let i = 0; i < SHOT_LINES - turretLines; i++) {
-    peers.push({ shot: { id: "p" + (i % 6), dir: { x: 1, y: 0 }, hit: "e" + i }, at: opts.now });
-  }
-  // A pool that cannot be the thing that caps the turret trains (#102): the budget is the worst
-  // frame, so every powered turret has to draw, and SHOT_LINES is by construction at least as many
-  // as there are.
-  const shots = { peers, own: null, resolve: (id) => byId.get(id) ?? null, ammo: SHOT_LINES };
-  const m5 = { ...opts, shots };
+  // The shots in the air, through the shipped path rather than a hand-rolled stroke (#80). They ride
+  // the *snapshot* now rather than the options — a bullet is server state the client mirrors, like a
+  // spider — so this layer is a different world rather than a different options bag.
+  //
+  // Scattered over the viewport and each at a different point of its flight, because the mark is
+  // clipped at the launch point for the first fifth of a streak's length: a list all of one age
+  // would price the cheapest frame or the dearest one rather than the real mix.
+  const inFlight = (n) => {
+    const r = rng(4242);
+    const shots = [];
+    for (let i = 0; i < n; i++) {
+      const from = { x: CAM.x + r() * VIEW.width, y: CAM.y + r() * VIEW.height };
+      const bearing = r() * Math.PI * 2;
+      const flown = r() * SHOT_STREAK * 2;
+      shots.push({
+        id: "s" + i,
+        from,
+        pos: { x: from.x + Math.cos(bearing) * flown, y: from.y + Math.sin(bearing) * flown },
+      });
+    }
+    return shots;
+  };
+  const flying = { ...full, projectiles: inFlight(IN_FLIGHT) };
+  const m5 = opts;
 
   // #99's floats. STRUCTURES cycles the four kinds, so a quarter of them are miners — ten at 40,
   // which is the count the ticket asks this to be measured at. Each is at a different point of its
@@ -289,19 +323,38 @@ try {
   // frame but the art itself, which is what makes this row the cost of the lettering and nothing else.
   const withLettering = { ...withPuffs, sprites: lettered };
 
+  // #140's blood, scattered over the viewport the way a screen of charging bloodlings lays it: mostly
+  // drips, one splat in every dozen or so marks, and every age across the fade — which matters here
+  // and nowhere else on this page, because the fade is *banded* and the bands are what the layer's
+  // paths are. A list all of one age would open one path and price the cheapest frame rather than
+  // the worst one.
+  const bloodMarks = (n) => {
+    const r = rng(777);
+    const marks = [];
+    while (marks.length < n) {
+      const at = { x: CAM.x + r() * VIEW.width, y: CAM.y + r() * VIEW.height };
+      const laid = opts.now - r() * BLOOD_FADE_MS;
+      if (r() < 0.08) for (const lobe of stainMarks(at, laid)) marks.push(lobe);
+      else marks.push({ pos: at, at: laid, radius: DROP_RADIUS });
+    }
+    return marks.slice(0, n);
+  };
+  const withBlood = { ...withLettering, blood: bloodMarks(DECALS) };
+
   // Whichever layer is measured first otherwise absorbs the canvas's one-time setup and reads two
   // to three times its true cost. Spend it here, on a result nobody reads.
-  measure(() => { setup(); drawWorld(ctx, full, m5); }, 10);
+  measure(() => { setup(); drawWorld(ctx, flying, m5); }, 10);
 
   // Each layer is the whole frame up to that point, so the deltas below are what each one adds.
   const paperMs = measure(() => { setup(); drawWorld(ctx, empty, opts); });
   const floorMs = measure(() => { setup(); drawWorld(ctx, floor, opts); });
   const fullMs = measure(() => { setup(); drawWorld(ctx, full, opts); });
-  const m5Ms = measure(() => { setup(); drawWorld(ctx, full, m5); });
-  const floatsMs = measure(() => { setup(); drawWorld(ctx, full, withFloats); });
-  const burstsMs = measure(() => { setup(); drawWorld(ctx, full, withBursts); });
-  const puffsMs = measure(() => { setup(); drawWorld(ctx, full, withPuffs); });
-  const letteringMs = measure(() => { setup(); drawWorld(ctx, full, withLettering); });
+  const m5Ms = measure(() => { setup(); drawWorld(ctx, flying, m5); });
+  const floatsMs = measure(() => { setup(); drawWorld(ctx, flying, withFloats); });
+  const burstsMs = measure(() => { setup(); drawWorld(ctx, flying, withBursts); });
+  const puffsMs = measure(() => { setup(); drawWorld(ctx, flying, withPuffs); });
+  const letteringMs = measure(() => { setup(); drawWorld(ctx, flying, withLettering); });
+  const bloodMs = measure(() => { setup(); drawWorld(ctx, flying, withBlood); });
 
   let blits = 0;
   let bars = 0;
@@ -313,7 +366,7 @@ try {
   ctx.stroke = (...args) => { lines++; rawStroke(...args); };
   ctx.fillRect = (...args) => { if (args[3] === 4) bars++; rawFill(...args); };
   setup();
-  drawWorld(ctx, full, withLettering);
+  drawWorld(ctx, flying, withBlood);
   ctx.drawImage = raw;
   ctx.stroke = rawStroke;
   ctx.fillRect = rawFill;
@@ -335,20 +388,20 @@ try {
       ctx.fillStyle = "#000"; ctx.fillRect(e.pos.x - 12, e.pos.y - e.radius - 6, 14, 4);
     }
   });
-  // Shot lines (#74), struck the way the game strikes them — the strands and the dash out of fx.ts,
-  // not a plain stroke of this script's own. A shot costs by the pixels it covers, so one across the
-  // viewport is dear; measured at several counts so a lifetime can be priced rather than guessed.
-  const shotLines = (n) => measure(() => {
-    setup();
-    ctx.strokeStyle = "#000"; ctx.lineWidth = 2;
-    for (let i = 0; i < n; i++) {
-      const e = full.enemies[i % full.enemies.length];
-      const p = full.players[i % full.players.length];
+  // The shots in the air (#80), struck the way drawProjectiles strikes them: the whole frame's worth
+  // in one path, each a \`speedLines\` streak of \`SHOT_STREAK\` behind the point it has reached.
+  // Measured at several counts because the count is now a *ceiling* off the cadences rather than a
+  // lifetime somebody picked, and #80's speed is provisional — a retune moves the count.
+  const shots = (n) => {
+    const marks = inFlight(n);
+    return measure(() => {
+      setup();
+      ctx.strokeStyle = "#000"; ctx.lineWidth = 2;
       ctx.beginPath();
-      for (const s of speedLines(p.pos, e.pos)) { ctx.moveTo(s.from.x, s.from.y); ctx.lineTo(s.to.x, s.to.y); }
+      for (const m of marks) for (const s of speedLines(m.from, m.pos)) { ctx.moveTo(s.from.x, s.from.y); ctx.lineTo(s.to.x, s.to.y); }
       ctx.stroke();
-    }
-  });
+    });
+  };
   // The bursts (#115), struck the way drawBursts strikes them: the whole frame's worth in one path,
   // from the shipped starburst. Priced at counts the cadences cannot reach today as well as at the
   // one they do, because the count rides the hit rate and #111 is about to move it.
@@ -398,6 +451,34 @@ try {
     });
   };
 
+  // The blood (#140), laid the way drawBlood lays it: bucketed into the fade's bands, one path and
+  // one fill a band, a disc a mark. **The only filled mark on this page** — every other one is
+  // stroked — and the only one whose count is a ceiling rather than a rate, so the ladder is what
+  // says whether that ceiling is affordable. Priced at counts under it as well as at it, because the
+  // lever if it ever has to get cheaper is \`BLOOD_CAP\` itself.
+  const blood = (n) => {
+    const marks = bloodMarks(n);
+    return measure(() => {
+      setup();
+      ctx.fillStyle = "#d81324";
+      const bands = Array.from({ length: BLOOD_BANDS }, () => []);
+      for (const m of marks) {
+        const left = 1 - (opts.now - m.at) / BLOOD_FADE_MS;
+        bands[Math.min(BLOOD_BANDS - 1, Math.max(0, Math.floor(left * BLOOD_BANDS)))].push(m);
+      }
+      for (const band of bands) {
+        if (band.length === 0) continue;
+        ctx.beginPath();
+        for (const m of band) {
+          ctx.moveTo(m.pos.x + m.radius, m.pos.y);
+          ctx.arc(m.pos.x, m.pos.y, m.radius, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    });
+  };
+
   // The veil (#142), laid the way drawWorld lays it: one rgba fill over the whole viewport, at the
   // alpha the blow itself puts up. Standalone for the reason every mark under a millisecond on this
   // page is — the whole-frame ladder cannot resolve one — and it is also the figure rule 2 has been
@@ -435,10 +516,12 @@ try {
     blits,
     bars,
     lines,
+    inFlight: IN_FLIGHT,
     floats: floats.length,
     bursts: BURSTS,
     puffs: PUFFS,
     lettering: LETTERING,
+    decals: DECALS,
     layers: {
       paper: +paperMs.toFixed(3),
       floor: +floorMs.toFixed(3),
@@ -448,20 +531,22 @@ try {
       bursts: +burstsMs.toFixed(3),
       puffs: +puffsMs.toFixed(3),
       lettering: +letteringMs.toFixed(3),
+      blood: +bloodMs.toFixed(3),
     },
     ySortMs: +ySortMs.toFixed(4),
     healthBarsMs: { 60: +healthBars(60).toFixed(3), 240: +healthBars(240).toFixed(3) },
-    shotLinesMs: { 10: +shotLines(10).toFixed(3), 25: +shotLines(25).toFixed(3), 50: +shotLines(50).toFixed(3), 150: +shotLines(150).toFixed(3) },
+    shotsMs: { [IN_FLIGHT]: +shots(IN_FLIGHT).toFixed(3), 25: +shots(25).toFixed(3), 50: +shots(50).toFixed(3), 150: +shots(150).toFixed(3) },
     burstsMs: { [BURSTS]: +bursts(BURSTS).toFixed(3), 25: +bursts(25).toFixed(3), 50: +bursts(50).toFixed(3), 150: +bursts(150).toFixed(3) },
     puffsMs: { [PUFFS]: +puffs(PUFFS).toFixed(3), 25: +puffs(25).toFixed(3), 50: +puffs(50).toFixed(3), 150: +puffs(150).toFixed(3) },
     letteringMs: { [LETTERING]: +words(LETTERING).toFixed(3), 25: +words(25).toFixed(3), 50: +words(50).toFixed(3), 150: +words(150).toFixed(3) },
+    bloodMs: { [DECALS]: +blood(DECALS).toFixed(3), 25: +blood(25).toFixed(3), 50: +blood(50).toFixed(3), 150: +blood(150).toFixed(3) },
     veilMs: +veilMs.toFixed(3),
     tutorialMs: +(taughtMs - bareMs).toFixed(3),
   };
 
   // Drawn last so the screenshot is the frame that was measured, not the final probe.
   setup();
-  drawWorld(ctx, full, withLettering);
+  drawWorld(ctx, flying, withBlood);
   document.getElementById("measurements").textContent = JSON.stringify(result);
 } catch (e) {
   document.getElementById("measurements").textContent = JSON.stringify({ error: String(e && e.stack || e) });
@@ -492,7 +577,7 @@ if (import.meta.main) {
   const share = (ms: number) => `${((ms / FRAME_MS) * 100).toFixed(1)}%`;
   console.log(request.out);
   console.log(
-    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} stroked paths, ${r.floats} miner floats, ${r.bursts} impact bursts, ${r.puffs} death puffs, ${r.lettering} lettered words, dpr ${request.dpr}`,
+    `worst case  ${r.standing} standing entities, ${r.blits} blits, ${r.bars} health bars, ${r.lines} stroked paths, ${r.floats} miner floats, ${r.bursts} impact bursts, ${r.puffs} death puffs, ${r.lettering} lettered words, ${r.decals} blood decals, dpr ${request.dpr}`,
   );
   console.log(`corner map  ${request.map} u across`);
   console.log(
@@ -505,19 +590,23 @@ if (import.meta.main) {
   console.log(`  paper only          ${r.layers.paper.toFixed(3)} ms`);
   console.log(`  + grass and ore     ${r.layers.floor.toFixed(3)} ms`);
   console.log(`  + everything up     ${r.layers.full.toFixed(3)} ms`);
-  console.log(`  + the shot lines    ${r.layers.m5.toFixed(3)} ms`);
+  console.log(`  + the shots in the air  ${r.layers.m5.toFixed(3)} ms   ${r.inFlight} of them`);
   console.log(`  + the miner floats  ${r.layers.floats.toFixed(3)} ms`);
   console.log(`  + the bursts        ${r.layers.bursts.toFixed(3)} ms`);
   console.log(`  + the puffs         ${r.layers.puffs.toFixed(3)} ms`);
+  console.log(`  + the lettering     ${r.layers.lettering.toFixed(3)} ms`);
   console.log(
-    `  + the lettering     ${r.layers.lettering.toFixed(3)} ms   ${share(r.layers.lettering)} of a 16.67 ms frame`,
+    `  + the blood         ${r.layers.blood.toFixed(3)} ms   ${share(r.layers.blood)} of a 16.67 ms frame`,
   );
   console.log("");
   console.log(`  y-sort alone        ${(r.ySortMs * 1000).toFixed(1)} us`);
-  console.log(`  shot lines (150)    ${r.shotLinesMs[150].toFixed(3)} ms   standalone, for scale`);
+  console.log(`  shots (150)         ${r.shotsMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log(`  bursts (150)        ${r.burstsMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log(`  puffs (150)         ${r.puffsMs[150].toFixed(3)} ms   standalone, for scale`);
   console.log(`  lettering (150)     ${r.letteringMs[150].toFixed(3)} ms   standalone, for scale`);
+  console.log(
+    `  blood (${String(r.decals).padEnd(3)})        ${r.bloodMs[r.decals].toFixed(3)} ms   standalone, the cap the list holds`,
+  );
   console.log(
     `  the damage veil     ${r.veilMs.toFixed(3)} ms   standalone, one full-viewport fill`,
   );
@@ -527,6 +616,6 @@ if (import.meta.main) {
   console.log("");
   console.log(`Worst case, measured through the shipped drawWorld`);
   console.log(
-    `  ${r.layers.lettering.toFixed(2)} ms   ${share(r.layers.lettering)}   headroom ${(FRAME_MS - r.layers.lettering).toFixed(2)} ms`,
+    `  ${r.layers.blood.toFixed(2)} ms   ${share(r.layers.blood)}   headroom ${(FRAME_MS - r.layers.blood).toFixed(2)} ms`,
   );
 }

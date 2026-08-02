@@ -81,7 +81,7 @@ Three rules about `draw`:
 
 ### The facing index — characters only
 
-**This applies to `player`, `grunt` and `elite`, and to nothing else.** If your sprite has
+**This applies to `player`, `grunt`, `elite` and `bloodling`, and to nothing else.** If your sprite has
 `facings: 8` and a body that turns, these are your indices. If it is the egg sac, the ore, the
 grass or the room, your facings are your own variants and the table below does not bind you — see
 the per-sprite meanings in the set table.
@@ -166,6 +166,7 @@ the collision it stands for cannot drift apart. They are in code as `SPRITE_BOX`
 | `player` | the player sprite | **28** | 8 compass | 2 walk | yes |
 | `grunt` | the long-legged spider | **32** | 8 compass | 2 walk | yes |
 | `elite` | the big-bodied spider | **48** | 8 compass | 2 walk | yes |
+| `bloodling` | the one that runs at the squad and bursts (#140): a squat beetle on short clawed legs, dominated by a swollen sack across its back. **The one drawing in the set that is not black ink** — dark purple carapace, vibrant green sack — and the palette break is a decision, not a liberty | **32** | 8 compass | 2 walk | yes |
 | `nest` | the egg sac — **0 intact, 1 destroyed** | **96** | 2 | 1 | yes |
 | `miner` | in elevation | **30** | 1 | 1 | yes |
 | `wall` | the wall top, **from above** — masonry only on the faces a neighbour does not cover. The facing is a **4-bit neighbour mask**: 1 N, 2 E, 4 S, 8 W, so 0 stands alone and 15 is buried in a mass. `drawWorld` derives it | **30** | 16 | 1 | yes |

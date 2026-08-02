@@ -63,7 +63,20 @@ describe("entrySource", () => {
   test("prices a shot through the treatment the game strikes, not a plain line", () => {
     const source = entrySource(parseArgs([]));
     expect(source).toContain("src/game/fx.ts");
-    expect(source).toContain("speedLines(p.pos, e.pos)");
+    // The streak behind a bullet in flight (#80), struck from its launch point to where it has
+    // reached — and bundled into one path, which is how `drawProjectiles` strikes the frame's.
+    expect(source).toContain("speedLines(m.from, m.pos)");
+  });
+
+  // #80 put the shots on the world snapshot rather than in the options bag, so every row from the
+  // shot layer down has to be drawn against *that* world. Draw them against the bare one and every
+  // row below the shots silently loses them, which reads as the shot layer costing nothing.
+  test("draws every layer from the shots down against the world that carries them", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("const flying = { ...full, projectiles: inFlight(IN_FLIGHT) }");
+    expect(source).not.toMatch(
+      /drawWorld\(ctx, full, (m5|withFloats|withBursts|withPuffs|withLettering|withBlood)\)/,
+    );
   });
 
   test("forces a rasterisation per iteration, or it would time queueing rather than painting", () => {
@@ -135,13 +148,40 @@ describe("entrySource", () => {
     // the words, and the layer would then be the puff layer measured twice under another name.
     expect(source).toMatch(/^\s*delete unlettered\.lettering;$/m);
     expect(source).toContain("const withLettering = { ...withPuffs, sprites: lettered }");
-    // Three: the layer is timed lettered, the blits and bars are counted on the lettered frame, and
-    // the screenshot is the lettered frame. Counted, because the timing call alone passing is exactly
-    // how a report comes to quote a word count off a frame that had no words in it.
-    expect(source.split("drawWorld(ctx, full, withLettering)").length - 1).toBe(3);
+    // The frame the blits and bars are counted on, and the frame the screenshot is of, is the one
+    // *above* this row (#140's blood) — and it is built by spreading this one, so it still carries
+    // the art. Counted, because a timing call alone passing is exactly how a report comes to quote a
+    // word count off a frame that had no words in it.
+    expect(source).toContain("const withBlood = { ...withLettering, blood: bloodMarks(DECALS) }");
+    expect(source.split("drawWorld(ctx, flying, withBlood)").length - 1).toBe(3);
     // The count is derived from the cadences that actually fire, not chosen here
     // (`lettering-ink.ts`), and it is the two mark counts added because a word rides both.
     expect(source).toContain(`const LETTERING = ${concurrentLettering()};`);
+  });
+
+  // #140's decals are the first thing the game leaves on the floor, and the only mark on this page
+  // whose count is a *ceiling* rather than a rate: every other one rides a cadence, so its worst case
+  // is arithmetic, while a decal rides how many bloodlings are on screen. The cap is what the budget
+  // has to price, and the frame it is priced on has to carry the kind that lays it.
+  test("puts the blood in the frame it prices, at the ceiling the list holds", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("const DECALS = BLOOD_CAP;");
+    expect(source).toContain("blood: bloodMarks(DECALS)");
+    // The splat comes from the shipped `stainMarks`, so the fixture cannot price a mark the game
+    // does not lay — the trap the ore fixture in `demo-world.ts` documents.
+    expect(source).toContain("stainMarks(at, laid)");
+    // And a bloodling in the worst-case frame, or the layer would be priced over a floor nothing on
+    // it could have bled onto.
+    expect(source).toContain('i % 7 === 3 ? "bloodling"');
+  });
+
+  // Banded, so the layer's paths are the bands and its arcs are the count. A ladder under the cap is
+  // what a retune of `BLOOD_CAP` reads, and the cap is the only lever this mark has.
+  test("prices the blood on its own, at counts under the cap as well as at it", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("bloodMs");
+    expect(source).toContain("150: +blood(150)");
+    expect(source).toContain("BLOOD_BANDS");
   });
 
   // A blit is priced by its pixels where a stroke is priced by its pieces, so the lettering cannot be

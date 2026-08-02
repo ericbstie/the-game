@@ -114,7 +114,7 @@ export function entrySource(request: FrameRequest, modules = MODULES): string {
 import { drawWorld } from ${JSON.stringify(modules.draw)};
 import { createSpriteCache } from ${JSON.stringify(modules.cache)};
 import { SPRITES } from ${JSON.stringify(modules.registry)};
-import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBursts, demoFloats, demoPuffs, demoShots, demoTutorial, demoWorld } from ${JSON.stringify(modules.world)};
+import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBlood, demoBursts, demoFloats, demoProjectiles, demoPuffs, demoTutorial, demoWorld } from ${JSON.stringify(modules.world)};
 
 const dpr = ${request.dpr};
 // How far the blow threw the view off the camera (#142). Applied to the camera the world is painted
@@ -147,6 +147,9 @@ ctx.drawImage = (...args) => {
 // The transform GameScreen paints the world through, unchanged.
 ctx.setTransform(dpr, 0, 0, dpr, -camera.x * dpr, -camera.y * dpr);
 const world = demoWorld();
+// The shots in the air ride the snapshot rather than the options (#80): they are server state the
+// client mirrors, like the spiders, and every client draws the same ones.
+world.projectiles = demoProjectiles(world);
 drawWorld(ctx, world, {
   selfId: DEMO_SELF,
   camera,
@@ -156,7 +159,6 @@ drawWorld(ctx, world, {
   now: DEMO_NOW,
   ghost: DEMO_GHOST,
   minimapCoverage: ${request.map},
-  shots: demoShots(world, DEMO_NOW),
   floats: demoFloats(world, DEMO_NOW),
   // On the spiders the scene has flashing, because that is the only place the game ever puts one:
   // the burst and #107's white spider come off one hit and share one lifetime (#115).
@@ -164,6 +166,11 @@ drawWorld(ctx, world, {
   // On bare paper where spiders have died, because that is the only place the game ever puts one —
   // a puff replaces a sprite rather than annotating it (#116).
   puffs: demoPuffs(DEMO_NOW),
+  // The floor's blood (#140): a trail behind the bloodling that is still running and a stain where
+  // one went off. The only colour in the frame, and the only mark that is filled rather than struck,
+  // so this picture is the whole channel for whether it reads against white paper at every step of
+  // its fade — no sprite sheet carries it and no spy says how red is red.
+  blood: demoBlood(world, DEMO_NOW),
   // How black the blow left the screen this frame (#142). Zero — the default — is a frame nobody
   // was hit on, and lays nothing at all.
   damageFlash: ${fx.flash},

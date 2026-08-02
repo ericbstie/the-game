@@ -20,7 +20,7 @@ import {
 import { ClientWorld } from "./clientWorld";
 import { SHAKE_MS } from "./damageFx";
 import { GRUNT_HP, GRUNT_RADIUS, RANGED_CADENCE_MS } from "./enemies";
-import { GameScreen } from "./GameScreen";
+import { GameScreen, REFUSAL_MS } from "./GameScreen";
 import { ORE_HARVEST_MS, STRUCTURE_HARVEST_MS } from "./harvest";
 import { aimDir, GUN_TOGGLE_KEY, MINIMAP_ZOOM_KEY, movesEqual, NO_MOVE } from "./input";
 import { MINIMAP_COVERAGE_CLOSE_U, MINIMAP_COVERAGE_U, MINIMAP_SIZE } from "./minimap";
@@ -1466,6 +1466,110 @@ describe("#102: the ammo box counts the squad's bullets and orders more", () => 
     world.applyMapDelta({ tick: 2, moves: [], queued: 1, ammo: 1 }, Date.now());
     await mirrored();
     expect(overlay()).not.toBe(first);
+  });
+});
+
+// #150: the refused trigger left no trace at all — eight clicks at a nest with an empty pool put
+// nothing on screen. The acknowledgement goes on the ammo box, which is where the `0` the pull was
+// refused over already sits, so every assertion below reads it off that one element.
+describe("#150: a refused trigger is acknowledged on the ammo box", () => {
+  const box = () => screen.getByLabelText("Forge a bullet");
+  const mark = () => box().querySelector(".ammo-refused");
+  const empty = () => new ClientWorld(init, "me"); // a fresh world's pool is dry
+  const armedWith = (bullets: number): ClientWorld => {
+    const world = empty();
+    world.build.ammo.bullets = bullets;
+    return world;
+  };
+
+  test("a pull on an empty pool is distinguishable from one that was never made", () => {
+    const canvas = inMatch(() => {}, empty());
+    expect(mark()).toBeNull(); // nothing pulled, nothing marked
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(mark()).not.toBeNull();
+  });
+
+  // The ticket's own playtest. A mark that latched would leave clicks 2–8 as unacknowledged as they
+  // are today, so each pull is asserted to have restarted it — a fresh element is a fresh animation,
+  // which is the same thing the forge overlay is restarted by.
+  test("each of eight clicks is its own refusal", async () => {
+    const canvas = inMatch(() => {}, empty());
+    const seen = new Set<Element>();
+    for (let click = 0; click < 8; click++) {
+      fireEvent.mouseDown(canvas, { button: 0 });
+      const struck = mark();
+      expect(struck).not.toBeNull();
+      seen.add(struck as Element);
+      fireEvent.mouseUp(window);
+      await settle(REFUSAL_MS + 20);
+    }
+    expect(seen.size).toBe(8);
+  });
+
+  // The other side of the floor, and the reason there is one: a hold is a trigger pull that never
+  // stops, so it is refused on every frame. Two pulls in the same instant are one acknowledgement,
+  // which is what keeps a held dry trigger from remounting the mark — and re-rendering the HUD —
+  // sixty times a second. The gap the eight clicks above leave clears it; a frame does not.
+  test("two pulls inside the floor share one acknowledgement", () => {
+    const canvas = inMatch(() => {}, empty());
+    fireEvent.mouseDown(canvas, { button: 0 });
+    const first = mark();
+    fireEvent.mouseUp(window);
+    fireEvent.mouseDown(canvas, { button: 0 }); // the same instant, so the floor swallows it
+    expect(mark()).toBe(first);
+    fireEvent.mouseUp(window);
+  });
+
+  test("a held trigger keeps the box struck rather than acknowledging once", async () => {
+    const canvas = inMatch(() => {}, empty());
+    fireEvent.mouseDown(canvas, { button: 0 });
+    const pressed = mark();
+    await settle(REFUSAL_MS * 4);
+    expect(mark()).not.toBeNull(); // still struck: the hold is still being refused
+    expect(mark()).not.toBe(pressed); // and renewed since the press, not left to fade under it
+    fireEvent.mouseUp(window);
+  });
+
+  test("a pull that fires is unchanged and leaves no mark", () => {
+    const onAttack = mock(() => {});
+    const canvas = inMatch(onAttack, armedWith(1));
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(onAttack).toHaveBeenCalledTimes(1);
+    expect(mark()).toBeNull();
+  });
+
+  // The refusal is acknowledged and nothing else: it must not cost the first shot after a bullet
+  // lands, which is the very thing the ammo gate is ordered before the cadence to protect (#102).
+  test("a struck box does not stand between the pool refilling and the next shot", () => {
+    const onAttack = mock(() => {});
+    const world = empty();
+    const canvas = inMatch(onAttack, world);
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(mark()).not.toBeNull();
+    world.applyMapDelta({ tick: 1, moves: [], ammo: 1 }, Date.now());
+    fireEvent.mouseDown(canvas, { button: 0 });
+    expect(onAttack).toHaveBeenCalledTimes(1);
+  });
+
+  // ADR 0001: a mark, not a word — and not a word read out to a screen reader either.
+  test("the mark writes nothing", () => {
+    const canvas = inMatch(() => {}, empty());
+    fireEvent.mouseDown(canvas, { button: 0 });
+    const struck = mark() as HTMLElement;
+    expect(struck.textContent).toBe("");
+    expect(struck.childElementCount).toBe(0);
+    expect(struck.hasAttribute("aria-label")).toBe(false);
+    expect(struck.hasAttribute("title")).toBe(false);
+  });
+
+  // What is acknowledged is a *trigger* pull. With the gun stowed left-click mines (#120), and a
+  // pick that never asked the pool for anything has not been refused by it.
+  test("a stowed gun's left-click marks nothing", async () => {
+    const canvas = renderMatch({}, empty()); // no `equipGun`
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(REFUSAL_MS + 20);
+    expect(mark()).toBeNull();
+    fireEvent.mouseUp(window);
   });
 });
 
