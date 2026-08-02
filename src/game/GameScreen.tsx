@@ -640,7 +640,7 @@ export function GameScreen({
             : undefined;
           // Asking the cache for this frame's scale is also what re-bakes the set when the window
           // moves to a display of a different density: every bake in hand is then the wrong
-          // resolution, and the cache empties itself rather than being told to.
+          // resolution, and each is replaced as the budget reaches it rather than all at once.
           drawWorld(ctx, snapshot, {
             selfId: selfIdRef.current,
             camera: view,
