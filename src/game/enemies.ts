@@ -226,6 +226,20 @@ export const NEST_BAND_INNER = 2 * AGGRO_RADIUS; // 3,600 u
 export function nestBandOuter(arena: Arena): number {
   return (Math.min(arena.width, arena.height) / 2) * (1 - DANGER_BAND_FRAC); // 14,352 u at 31,200
 }
+// The narrowest side that band still opens outward at — 7,827 u today (#153). The inner bound is
+// absolute where the outer one scales, so a small enough box turns the band inside out: `nestLayout`
+// draws a negative span and lays the nests *inward* of the inner bound, HP and wanderer share running
+// backwards with them, until below 2 × `NEST_BAND_INNER` the innermost of them land past the
+// perimeter — where an avatar clamped inside the walls cannot reach them and they go on firing waves
+// for the rest of the match.
+//
+// Derived from the two constants that decide it rather than written down, and rounded up to the whole
+// unit a control can print. Like `MAX_ARENA_SIDE` in `build.ts`, it is recorded beside the geometry it
+// is a fact about and offered as the lobby's floor rather than enforced in the settings parser (ADR
+// 0006): `worldSettings.ts` deliberately names nothing in the enemy sim, and importing `AGGRO_RADIUS`
+// there is a module cycle. A smaller box is degenerate *identically* on both sides, so it desyncs
+// nobody — it is simply not a world worth offering.
+export const MIN_ARENA_SIDE = Math.ceil((2 * NEST_BAND_INNER) / (1 - DANGER_BAND_FRAC));
 // The radial fraction is sampled as u ** (1 / nestEdgeBias) — the same curve and the same exponent
 // the ore gradient uses (`WorldSettings.oreEdgeBias`), and deliberately a separate knob from it
 // (`docs/adr/0005`) — which puts ~91% of the nests in the outer half of the band. The squad has to

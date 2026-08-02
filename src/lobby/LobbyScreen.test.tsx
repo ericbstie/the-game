@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MAX_ARENA_SIDE } from "../game/build";
+import { MIN_ARENA_SIDE } from "../game/enemies";
 import {
   DEFAULT_WORLD_SETTINGS,
   knobValue,
@@ -222,15 +223,18 @@ describe("the world controls", () => {
     expect(onSettings).not.toHaveBeenCalled();
   });
 
+  // Every floor but the arena's is the parser's, and offered exactly as the parser states it. The
+  // arena's is this form's own — the next test is where it is asserted.
   test("a knob with a floor offers it, and a strictly-positive knob offers none", () => {
     render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
     for (const knob of worldKnobs()) {
+      if (knob.path.startsWith("arena.")) continue;
       const input = controls().find((i) => i.name === knob.path);
       expect(input?.getAttribute("min")).toBe(knob.min === undefined ? null : String(knob.min));
     }
   });
 
-  // The one bound the parser deliberately does not carry: past `MAX_ARENA_SIDE` the packed tile key
+  // The one ceiling the parser deliberately does not carry: past `MAX_ARENA_SIDE` the packed tile key
   // collides, which desyncs nobody but stops being a world worth offering (ADR 0006).
   test("the arena is not offered past the side the packed tile key survives", () => {
     const onSettings = mock();
@@ -243,6 +247,27 @@ describe("the world controls", () => {
     expect(onSettings).not.toHaveBeenCalled();
     fireEvent.change(width, { target: { value: String(MAX_ARENA_SIDE) } });
     expect(onSettings).toHaveBeenCalledTimes(1);
+  });
+
+  // The other bound the parser does not carry: below `MIN_ARENA_SIDE` the nest band inverts and
+  // nests are placed outside the walls the avatar is clamped inside (#153). Offered on both sides
+  // rather than on the box as a whole, because the band is read off the shorter one — a floor on
+  // the width alone would still let a 20,000 × 5,000 world through.
+  test("the arena is not offered below the side the nest band needs, on either side", () => {
+    const onSettings = mock();
+    render(
+      <LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={onSettings} />,
+    );
+    for (const name of [/arena width/i, /arena height/i]) {
+      const side = screen.getByRole("spinbutton", { name });
+      expect(side.getAttribute("min")).toBe(String(MIN_ARENA_SIDE));
+      fireEvent.change(side, { target: { value: String(MIN_ARENA_SIDE - 1) } });
+      expect(onSettings).not.toHaveBeenCalled();
+      expect(side.getAttribute("aria-invalid")).toBe("true");
+      fireEvent.change(side, { target: { value: String(MIN_ARENA_SIDE) } });
+      expect(onSettings).toHaveBeenCalledTimes(1);
+      onSettings.mockClear();
+    }
   });
 
   // The echo is the source of truth for every knob the host has not typed into — including for a

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { EnemySpawn, Tile, Vec2, WorldInit } from "../lobby/protocol";
+import type { Arena, EnemySpawn, Tile, Vec2, WorldInit } from "../lobby/protocol";
 import {
   BUILDABLES,
   type BuildableSpec,
@@ -45,6 +45,7 @@ import {
   GRUNT_HP,
   GRUNT_RADIUS,
   GRUNT_SPEED,
+  MIN_ARENA_SIDE,
   NEST_BAND_INNER,
   NEST_HP_INNER,
   NEST_HP_OUTER,
@@ -363,6 +364,46 @@ describe("nest layout (#123)", () => {
     expect(s.nests.filter((n) => !n.alive)).toHaveLength(1); // one really was silenced
     expect(spawned).toBeGreaterThan(DEFAULTS.nestCount); // and waves really did fire
     expect(s.nests.map((n) => `${n.id}:${n.kind}`)).toEqual(typed);
+  });
+});
+
+// #153. The arena is a knob, and a small enough box turns the band inside out: `nestBandOuter` falls
+// under `NEST_BAND_INNER`, `nestLayout`'s span goes negative, and small enough, the nests it lays land
+// beyond the walls the avatar is clamped inside — where they cannot be reached and go on firing waves
+// all match. `MIN_ARENA_SIDE` is where that stops being possible, and the floor the lobby's two arena
+// controls offer.
+describe("#153: the smallest arena the nest band survives", () => {
+  const square = (side: number): Arena => ({ width: side, height: side });
+  // Every nest of 200 seeds that lands outside the box — the bug, measured the way #153 measured it.
+  const escaped = (arena: Arena): Nest[] =>
+    Array.from({ length: 200 }, (_, i) => nestLayout(arena, i + 1))
+      .flat()
+      .filter((n) => n.pos.x < 0 || n.pos.x > arena.width || n.pos.y < 0 || n.pos.y > arena.height);
+
+  // Pinned to `nestBandOuter` rather than to 7,827, so the floor and the rule it is derived from
+  // cannot drift apart: a retune of `AGGRO_RADIUS` or `DANGER_BAND_FRAC` moves both or fails here.
+  test("it is the whole unit at which the band stops inverting", () => {
+    expect(nestBandOuter(square(MIN_ARENA_SIDE))).toBeGreaterThan(NEST_BAND_INNER);
+    expect(nestBandOuter(square(MIN_ARENA_SIDE - 1))).toBeLessThanOrEqual(NEST_BAND_INNER);
+  });
+
+  test("every nest is inside the walls at every arena the floor admits", () => {
+    for (const arena of [
+      square(MIN_ARENA_SIDE), // the smallest world a host can ask for
+      square(12_000),
+      ARENA,
+      { width: 20_000, height: MIN_ARENA_SIDE }, // the floor holds on the short side…
+      { width: MIN_ARENA_SIDE, height: 20_000 }, // …whichever side that is
+    ]) {
+      expect(escaped(arena)).toEqual([]);
+    }
+  });
+
+  // Why the floor exists: below it the band is inverted, and #153 measured 21 of 50 nests outside
+  // the walls of a 4,000 u box.
+  test("below it, nests land outside the walls", () => {
+    expect(nestBandOuter(square(4_000))).toBeLessThan(NEST_BAND_INNER);
+    expect(escaped(square(4_000)).length).toBeGreaterThan(0);
   });
 });
 
