@@ -114,8 +114,9 @@ export interface DrawOptions {
   selfId?: PlayerId; // ringed so you can find yourself
   ghost?: BuildGhost;
   // The `+1`s currently in the air — one per whole Metal, off a miner (#99) or off the player's own
-  // hand (#136), both handed over by `stepMetalFloats`. Aged here, like a shot line: the render
-  // layer owns how long one is up, and nothing about it rides the wire.
+  // hand (#136), both handed over by `stepMetalFloats`. Aged here: the render layer owns how long
+  // one is up, and nothing about it rides the wire — unlike a shot, which since #80 is drawn for as
+  // long as the server keeps it in the air and never on a lifetime of this layer's own.
   floats?: readonly MetalFloat[];
   // Where shots have connected and the sprites have caught up (#115) — `ClientWorld.impactMarks`,
   // already aged to `BURST_MS`. Handed in rather than aged here, because the clock a burst is judged
@@ -224,8 +225,9 @@ const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for n
 
 // How thick every stroke of a shot is. Two logical px, so a strand survives being drawn diagonally
 // at dpr 1. #81 asked for continuous ink shooter to target; #114 broke it into speed lines, which is
-// what makes an instantaneous shot read as fast now that #80 has left it with nothing that travels.
-// The weight is shared by the trail so the whole mark reads as one hand. Exported for
+// what made an instantaneous shot read as fast, and #80 gave the shot a body that travels — so the
+// width is now all that mark keeps of either, and it is the only thing that still has to hold at
+// dpr 1. The weight is shared by the trail so the whole mark reads as one hand. Exported for
 // `scripts/shot-ink.ts`, which cannot measure the mark's coverage against a width of its own.
 export const SHOT_WIDTH = 2;
 
@@ -646,9 +648,10 @@ function drawBursts(
 // **Filled, and the only thing in the frame that is** — every other mark the game strikes is an
 // outline. That is not a style choice: a drip and a stain are *substance* on the ground rather than
 // a cartoon annotation of an event, and an outlined drop reads as a bubble. It is affordable
-// because a disc of 4–32 u is a handful of device pixels where a shot line is a diagonal across the
-// viewport, and because the list it draws from is capped (`BLOOD_CAP`) instead of riding the
-// spawn rate.
+// because a disc of 4–32 u is a handful of device pixels — measured against the shot line #80 has
+// since replaced, a diagonal across the viewport, and still under the 52 u streak that took its
+// place — and because the list it draws from is capped (`BLOOD_CAP`) instead of riding the spawn
+// rate.
 //
 // **Bundled per fade band, not per mark.** `docs/frame-budget.md` rule 1 charges a mark by the
 // pieces it is struck in, and this is the longest list in the frame, so the count of paths is held
@@ -693,7 +696,8 @@ function drawBlood(ctx: CanvasRenderingContext2D, options: DrawOptions): void {
 // the clock — #115 measured that — and it is done for the same reason it was there.
 //
 // **The dearest mark in the frame per unit, and its six arcs are why.** A puff costs twice a burst
-// and 1.4 times a shot line at the same count while laying a sixth of a shot's ink, because
+// and — since #80 left a shot one stroke — nearly seven times a bullet in flight at the same count,
+// while laying a sixth of the ink the line it was measured against laid, because
 // `ctx.arc` is not one piece: the rasteriser flattens a swept arc into as many segments as it needs.
 // `docs/frame-budget.md` rule 1 counts pieces and gets this mark wrong; the lobe count is the lever.
 //

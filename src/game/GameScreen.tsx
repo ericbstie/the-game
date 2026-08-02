@@ -407,8 +407,9 @@ export function GameScreen({
         const dpr = window.devicePixelRatio || 1;
         if (dpr !== viewRef.current.dpr) resizeForDpr(canvas, viewRef, dpr);
         // One clock for the whole frame. `snapshot` advances each entity's gait on the `now` it is
-        // given, and the shot lines resolve their targets against the same interpolation it renders
-        // on — reading the clock twice would split that step and land a line off its own sprite.
+        // given, and since #80 flies every shot in the air against the same delayed instant it
+        // interpolates the spiders to — reading the clock twice would split that step and land a
+        // bullet off the body it is about to strike.
         const clock = Date.now();
         // What the held buttons are harvesting this frame, or null. One answer for both of them,
         // because one tile is never two things: a structure under the cursor is a demolish and the

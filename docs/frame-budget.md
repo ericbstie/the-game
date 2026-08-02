@@ -321,10 +321,12 @@ per *connect* rather than per death.
 **Four is the count, and it is derived rather than budgeted.** `concurrentBursts()` in
 `scripts/burst-ink.ts` computes it from constants the game already fixes: six players at
 `RANGED_CADENCE_MS` and the fixture's five powered turrets at `TURRET_CADENCE_MS`, times the share
-of connects that are *not* the killing one, times `BURST_MS`. Two things hold it far under the fifty
-concurrent shot lines the same fire produces — a burst lives 90 ms where a line lives 100, and, much
-the larger, **a connect that kills reports a death and not a hit**, so `reapDamage` drops the last
-shot into every grunt out of `hits` entirely. That connect belongs to
+of connects that are *not* the killing one, times `BURST_MS`. Two things hold it far under the
+concurrent shots the same fire produces — **a connect that kills reports a death and not a hit**, so
+`reapDamage` drops the last shot into every grunt out of `hits` entirely, and a burst lives 90 ms
+where a shot was up for 100 (and, since [#80](https://github.com/ericbstie/the-game/issues/80), is in
+the air for `PROJECTILE_FLIGHT_MS` 389, which makes the lifetime the larger of the two). That connect
+belongs to
 [#116](https://github.com/ericbstie/the-game/issues/116).
 
 Medians of nine runs, one machine, dpr 2, `--enemies 500`, all counts in the same session. Shot
@@ -409,7 +411,9 @@ enemy dies, and a death is what a run of connects ends in rather than what each 
 (`src/game/enemies.ts`), which reports a killing connect as a death and drops it out of `hits`. A
 grunt takes `ceil(GRUNT_HP / damage)` connects, so the death rate is the connect rate divided by
 that: **5.5 deaths a second against 43.5 hits**, which at `PUFF_MS` 180 is one puff on screen. The
-same six players and five powered turrets produce fifty shot lines and four bursts.
+same six players and five powered turrets produce fifty shot lines and four bursts (twenty bullets
+in flight since [#80](https://github.com/ericbstie/the-game/issues/80); the burst and death rates are
+untouched by it).
 
 Medians of five runs, one machine, dpr 2, `--enemies 500`, all three marks in the same session so
 they are comparable rather than quoted across pages.
@@ -436,7 +440,7 @@ would under-deliver. The ink and the geometry are both under the marks it is dea
 prices: 150 deaths landing inside one 180 ms window is 11.65 ms, which does not fit.
 
 **But 150 is not reachable by raising `ENEMY_CAP`, and an earlier draft of this section said it was.**
-A shot is single-target hitscan (`reapDamage`), so at most `SQUAD` 6 + 5 powered turrets = **11
+A shot damages a single target (`reapDamage`), so at most `SQUAD` 6 + 5 powered turrets = **11
 enemies can die per 20 Hz tick** — a ceiling of about 40 deaths inside a 180 ms window however many
 spiders are standing. That is the same argument this section already makes two paragraphs down: the
 count rides the death rate, not the population. `ENEMY_CAP` is a population governor, so #111 raising
@@ -783,6 +787,15 @@ steps of its fade, on the white floor they have to read against.
    screen and a 1-second mark means ~150, which is the difference between under 0.2 ms and 8 ms.
    **`SHOT_LINE_MS` is 100 and the budget is 50 concurrent.** Above ~150 the frame stops being
    comfortable.
+
+   > **The headline above is reversed by [#80](https://github.com/ericbstie/the-game/issues/80), and
+   > the lifetime is no longer the control.** A shot is a bullet in flight, `SHOT_STREAK` leaves it
+   > **one stroke**, and at fifty concurrent it costs **14.1 µs** — a third of a burst, a seventh of
+   > a puff, and among the strokes the *cheapest* thing in the frame. `SHOT_LINE_MS` is deleted;
+   > the concurrent count is derived from `PROJECTILE_FLIGHT_MS`, the weapon's reach over its speed,
+   > which nobody picks. **What survives is the paragraph below** — the per-stroke charge — and that
+   > is what the rest of the repo cites this rule for. See
+   > [What a shot costs since #80](#what-a-shot-costs-since-80).
 
    **A shot is charged by the stroke, not by the pixel** — #114 measured it. Nine short segments
    costing twice one long one is not what "covers far more pixels" predicts, and the treatment that

@@ -32,8 +32,8 @@ import type { RenderedProjectile, Tile, Vec2, WorldSnapshot } from "../src/lobby
 //   rather than just order within one.
 //
 // It also carries one of everything the render layer draws *over* the world rather than in it, for
-// the same reason: a health bar, a shot line from each of the three shooters, a turret's unpowered
-// lightning and a refused build ghost either appear in the picture or they do not.
+// the same reason: a health bar, a shot in flight from each of the three shooters, a turret's
+// unpowered lightning and a refused build ghost either appear in the picture or they do not.
 //
 // Browser-safe on purpose: it is bundled into the page, so it touches no filesystem and no DOM.
 

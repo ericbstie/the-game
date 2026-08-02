@@ -403,9 +403,10 @@ export function freshGuard(): AttackGuard {
 // resists teleport-aim; the seq drops stale/duplicate reports (the `game/pos` idiom).
 //
 // The aim is normalized here rather than trusted. `asVec2` only rejects non-finite numbers, so a
-// hostile client can report `{x: 1e300, y: 0}` or a zero vector — and this vector is rebroadcast
-// to the whole squad as `PeerShot.dir`, where it would blow up or NaN out every other client's
-// canvas path. Normalizing at admission is what makes the protocol's "unit aim vector" true.
+// hostile client can report `{x: 1e300, y: 0}` or a zero vector — and since #80 this vector is what
+// the sim integrates the shot along and what rides the wire as `ProjectileSpawn`'s heading, so a
+// non-unit one flies the bullet at a speed of the shooter's choosing on every client in the squad.
+// Normalizing at admission is what makes the protocol's "unit aim vector" true.
 export function admitAttack(
   guard: AttackGuard,
   report: { pos: Vec2; dir: Vec2; seq: number },

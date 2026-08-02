@@ -67,10 +67,10 @@ export const ENEMY_RENDER_DELAY_MS = 50; // enemies render this far behind their
 // is measured against is this class's: the flash has to be judged on the delayed instant the sprite
 // is interpolated to, not on the instant the event arrived.
 export const HIT_FLASH_MS = 90;
-// How long a mark left where a shot connected is kept before it is pruned. A memory bound, exactly
-// as `SHOT_RETENTION_MS` is, and not the burst's lifetime — the render layer owns that and passes it
-// to `impactMarks` (#74 §5). It has to clear `ENEMY_RENDER_DELAY_MS` on top of any lifetime a caller
-// might ask for, because a mark spends that delay waiting for its sprite before it is drawn at all.
+// How long a mark left where a shot connected is kept before it is pruned. A memory bound, and not
+// the burst's lifetime — the render layer owns that and passes it to `impactMarks` (#74 §5). It has
+// to clear `ENEMY_RENDER_DELAY_MS` on top of any lifetime a caller might ask for, because a mark
+// spends that delay waiting for its sprite before it is drawn at all.
 export const IMPACT_RETENTION_MS = 250;
 // The same memory bound for the marks left where enemies died (#116), and the same rule: it is not
 // the puff's lifetime, which the render layer owns and passes to `deathMarks`. It needs no clearance
@@ -499,8 +499,9 @@ export class ClientWorld {
   // stamped against arrival fires `ENEMY_RENDER_DELAY_MS` ahead of the drawing it belongs to. A mark
   // the sprites have not reached yet is not late — it is early, and it is held back until they do.
   //
-  // The lifetime is the caller's, like a shot line's, so nothing about how long a burst is up lives
-  // in the state that spawns it.
+  // The lifetime is the caller's, so nothing about how long a burst is up lives in the state that
+  // spawns it. A shot has no lifetime to share any more — since #80 it is drawn until the server
+  // says it is spent (`renderProjectiles`).
   impactMarks(now: number, lifeMs: number): Mark[] {
     const renderTime = now - ENEMY_RENDER_DELAY_MS;
     return this.impacts.filter((m) => {
@@ -519,9 +520,9 @@ export class ClientWorld {
   // in the frame. The delay is spent on the mark's *position* instead — see the deaths loop above —
   // so the puff still stands where the drawing was rather than where the stream had got to.
   //
-  // The lifetime is the caller's, like a shot line's and like a burst's. There is no floor under it
-  // as `impactMarks` has, because the floor is what holds a mark back and this one is never held:
-  // the frame that is somehow asking before the delta it is answering has already lost the spider.
+  // The lifetime is the caller's, like a burst's. There is no floor under it as `impactMarks` has,
+  // because the floor is what holds a mark back and this one is never held: the frame that is
+  // somehow asking before the delta it is answering has already lost the spider.
   deathMarks(now: number, lifeMs: number): Mark[] {
     return this.deaths.filter((m) => now - m.at < lifeMs);
   }

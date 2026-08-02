@@ -38,10 +38,11 @@ const POWERED_TURRETS = 5;
 // How many bursts stand on one screen at once, derived rather than picked so a retune of a cadence
 // or a damage figure carries it.
 //
-// Two things hold it far under the shot count the same fire produces. A burst lives `BURST_MS`
-// where a line lives `SHOT_LINE_MS`, and — the larger of the two — **a connect that kills reports a
-// death and not a hit**: `reapDamage` (`src/game/enemies.ts`) drops the killing blow out of `hits`
-// entirely, so the last shot into every grunt lays no burst at all. That connect is #116's.
+// Two things hold it far under the shot count the same fire produces. **A connect that kills reports
+// a death and not a hit**: `reapDamage` (`src/game/enemies.ts`) drops the killing blow out of `hits`
+// entirely, so the last shot into every grunt lays no burst at all — that connect is #116's. And,
+// the larger of the two since #80 put the shot in the air, a burst lives `BURST_MS` (90) where a
+// flight lives `PROJECTILE_FLIGHT_MS` (389).
 export function concurrentBursts(): number {
   // What fraction of the shots into one grunt are not the one that kills it.
   const nonLethal = (damage: number) => 1 - 1 / Math.ceil(GRUNT_HP / damage);
