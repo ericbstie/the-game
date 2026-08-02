@@ -67,11 +67,11 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > supersedes [What a shot costs since #114](#what-a-shot-costs-since-114) for what the game now draws.
 >
 > [#154](https://github.com/ericbstie/the-game/issues/154) has added a seventh mark — the aim mark
-> under the pointer — at **0.027 ms**. It is the **cheapest layer on this page** and the only one whose
+> under the pointer — at **0.032 ms**. It is the **cheapest layer on this page** and the only one whose
 > count is *fixed*: there is exactly one pointer, it is up on every frame the game draws, and nothing
 > about play, a cadence or a cap can put up a second. It is also the first mark that is **struck
-> twice** — paper under ink — which is what carries it over an ore patch. See [What the aim mark
-> costs](#what-the-aim-mark-costs-154).
+> twice** — paper under ink — which is what holds it together over an ore patch. See [What the aim
+> mark costs](#what-the-aim-mark-costs-154).
 
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
 6.3 ms — 38% of it, leaving 10.4 ms of headroom.**
@@ -154,7 +154,7 @@ difference from the row above.
 | + the lettered words | — | ≈0 | 5 words, one blit each (#79) — 4 on hits, 1 on deaths. Not in the run above; 0.04 ms isolated |
 | + the damage veil | — | 0.61 | one rgba fill over the whole viewport (#142), laid only by the client of the player who was hit. Not in the run above; 0.61 ms isolated |
 | + the blood | — | 1.82 | 300 filled discs under the sorted pass (#140) — the cap `BLOOD_CAP` holds the list to. Not in the run above; 1.82 ms isolated |
-| + the aim mark | — | ≈0 | one path of four corners, struck twice (#154). **In every row above**, unlike the six marks before it — it is up on every frame the game draws. 0.027 ms isolated |
+| + the aim mark | — | ≈0 | one path of four corners, struck twice (#154). **In every row above**, unlike the six marks before it — it is up on every frame the game draws. 0.032 ms isolated |
 | **Total** | **6.3** | | **38% of a 16.67 ms frame** — and the shot row it contains has since been replaced by one an order of magnitude cheaper |
 
 **The script's printed labels for the first two rows are wrong, and the names in brackets above are
@@ -792,7 +792,7 @@ steps of its fade, on the white floor they have to read against.
 
 ## What the aim mark costs (#154)
 
-**One mark is 0.027 ms — 0.16% of a 16.67 ms frame, and the cheapest layer on this page by an order
+**One mark is 0.032 ms — 0.19% of a 16.67 ms frame, and the cheapest layer on this page by an order
 of magnitude.** [#154](https://github.com/ericbstie/the-game/issues/154) hides the OS arrow over the
 arena and strikes a mark of its own under the pointer (`src/game/draw.ts` `drawAim`), so this is what
 the game pays for having a cursor at all.
@@ -805,36 +805,38 @@ of counts would be a table of frames the game cannot produce — and the mark is
 of the ladder above**, which no mark before it has been.
 
 One container, dpr 2, at the governor's cap, through the standalone probe `bun run frame:budget`
-prints as `the aim mark`. **Fifteen runs rather than the five every other figure on this page is
-taken over**, because three sets of five disagreed with each other by more than a set disagreed
-with itself — which is the finding below.
+prints as `the aim mark`. **Ten runs rather than the five every other figure on this page is taken
+over**, because sets of five disagreed with each other by more than a set disagreed with itself —
+which is the finding below.
 
 | | median | spread |
 | --- | ---: | ---: |
-| the aim mark, one path struck twice, 15 runs | **0.027 ms** | 0.022–0.033 |
+| the aim mark, one path struck twice, 10 runs | **0.032 ms** | 0.028–0.037 |
+| the aim mark at half this span, 15 runs | 0.027 ms | 0.022–0.033 |
 | the damage veil, in ten of the same runs | 0.664 ms | 0.592–0.907 |
 
-**Widening the mark moved it, and by far less than the widths moved.** The first cut of #154 was
-5 u of paper under 2 u of ink and could not be found on stipple by anyone not told where to look; it
-now stands at 16 u of paper under 4 u of ink and reads. That is 3.2× the paper stroke and 2× the ink
-for **+0.004 ms** — the old widths re-measured at 0.023 ms (0.022–0.027) in this same container, so
-the two figures are comparable. The pass is bounded by the path's 48 u of length and by setup rather
-than by the band swept along it, which is why tripling the band is nearly free. The mark stays the
-cheapest layer on the page by an order of magnitude.
+**Neither widening the mark nor doubling it moved it much, and the second is the interesting one.**
+The widths went 5 u of paper under 2 u of ink → 16 under 4, for **+0.004 ms**. Then the *geometry*
+went from a reach of 13 and an arm of 6 to 26 and 16: the path's total struck length from 48 u to
+128, nearly 2.7×, for **+0.005 ms** — under a fifth more, for 2.7× the ink. Sixteen pieces before and
+sixteen after, and the piece count is what the bill tracks. **Rule 1 read from the other side**: what
+subdivides a mark pays per piece, and what only makes the pieces longer is close to free. It is why
+the mark could be made findable by making it bigger rather than heavier without anyone having to
+open this page first.
 
-**The measurement is looser than it was**: ±20% here against the ±6% the 5 u mark held to, and the
-disagreement is between *sets* rather than within one. The geometry is still fixed and every
-iteration is still identical work, so this is the timer and the container rather than the mark — at
-27 µs a run there is not much above the noise floor left to measure.
+**The measurement is looser than it was**: ±15% here and ±20% at the smaller span, against the ±6%
+the 5 u mark held to, and the disagreement is between *sets* rather than within one. The geometry is
+fixed and every iteration is identical work, so this is the timer and the container rather than the
+mark — at 32 µs a run there is not much above the noise floor left to measure.
 
 **It is struck twice and it is still the cheapest layer in the frame.** Paper at `AIM_PAPER_WIDTH`
 under ink at `AIM_INK_WIDTH`, over one path of eight segments — so rule 1 counts sixteen pieces,
-twice a burst's eight, and it measures at **half of one burst** (47.3 µs each at fifty concurrent).
-**Rule 1 gets the sign wrong here, which is its third correction on this page**, and the reason is
-reach rather than pieces: a burst's spikes span 60 u and this mark spans 26, so the second pass is
-struck over a quarter of the line the comparison assumes. The paper pass is what makes the mark read
-over a dense ore patch, where black on black stipple is not there at all, and it is bought for about
-0.01 ms.
+twice a burst's eight, and it measures at **two thirds of one burst** (47.3 µs each at fifty
+concurrent). **Rule 1 gets the sign wrong here, which is its third correction on this page**, and the
+reason is what the pieces are: a burst's eight spikes are eight `moveTo`/`lineTo` pairs and this
+mark's sixteen are two strokes over one path of eight segments, so the second pass buys its pieces at
+a discount the count does not show. The paper pass is what makes the mark hold together over a dense
+ore patch, where black on black stipple breaks up, and it is bought for about 0.01 ms.
 
 **Eight straight segments and no arc, deliberately.** A ring was the other obvious drawing of a
 reticle, and `ctx.arc` is the dearest piece the frame has: #116 measured a puff's six arcs at 94.7 µs
@@ -843,7 +845,7 @@ this is not a saving worth having on its own. It is picked because the mark has 
 from the burst and the puff struck a few units away from it in the same pen**, and a shape that
 frames the point without radiating from it is what does that. The cost simply follows.
 
-**Do not add 0.027 ms to the 6.3 ms headline.** This container reads about 15 ms for the whole frame
+**Do not add 0.032 ms to the 6.3 ms headline.** This container reads about 15 ms for the whole frame
 at the cap the governor now stands at, where that headline reads 6.3 ms at a cap the game no longer
 has. Both are honest; neither may be added to the other.
 

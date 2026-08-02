@@ -419,6 +419,23 @@ describe("the reticle marking the aim point", () => {
     expect(AIM_REACH).toBeGreaterThan(TILE / 2);
   });
 
+  // Three blind reads of the first two cuts failed to find the mark on ore, and the fault was the
+  // length of the strokes rather than their colour: an arm was 6 u where the floor's own splinters
+  // run longer than that. Ore is generated one `TILE` at a time (`src/sprite/ore-metal.ts`), so a
+  // tile is the scale of the coarsest thing the floor can lay — and an arm shorter than one is a
+  // stroke the stipple can counterfeit, whatever it is rimmed in.
+  test("an arm outruns the floor's own grain, so no splinter can be mistaken for one", () => {
+    expect(AIM_ARM).toBeGreaterThan(TILE);
+  });
+
+  // The mark frames what is aimed at rather than covering it, and an elite is the largest body a
+  // shot can be aimed at (`ELITE_RADIUS`). Its corners stand outside that, so growing the mark to
+  // be findable did not buy legibility with the target's own silhouette.
+  test("its corners stand outside the largest enemy, so the target is framed and not covered", () => {
+    expect(AIM_REACH).toBeGreaterThan(ELITE_RADIUS);
+    expect(AIM_REACH).toBeGreaterThan(GRUNT_RADIUS);
+  });
+
   test("it is the same mark wherever in the arena it is struck", () => {
     const round = (n: number) => +n.toFixed(9) || 0;
     const shape = (struck: Vec2[][], at: Vec2) =>

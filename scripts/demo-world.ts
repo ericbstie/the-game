@@ -318,7 +318,12 @@ export function demoBlood(world: WorldSnapshot, now: number): BloodMark[] {
 // of what carries it. A frame has exactly one pointer, so the paper case is a second render —
 // `bun run sprite:frame --aim x,y` moves it there — and `demo-world.test` is what holds this one
 // over ore, clear of everything else the scene draws, and off the corner map's plate.
-export const DEMO_AIM: Vec2 = { x: 16_020, y: 15_650 };
+//
+// It moved 19 u within its own patch when the mark grew to `AIM_REACH` 26: at 52 u across plus its
+// rim the old point no longer stood clear of the map's plate, and the paper cut a gap in the plate's
+// rule. The gap is correct in the game — the mark is struck over the map on purpose — and wrong
+// here, where the only question the picture is asked is about the floor.
+export const DEMO_AIM: Vec2 = { x: 16_005, y: 15_662 };
 
 // The ore tile the scene's own player is digging by hand (#136). Placed rather than derived, and
 // that is the mirror of the miners below: a miner carries the tile it stands on, while a hand

@@ -259,11 +259,22 @@ export function inkPuff(at: Vec2): Lobe[] {
 // is reading, and a blot on it would be the one drawing that hides the thing it is about.
 
 // Half the square the corners stand on, and how far each arm runs in from its corner, in world
-// units. **Provisional**: at 13 the mark is 26 u across, a little under a grunt's 32 and wider than a
-// 15 u tile, so it frames the cursor's tile without covering the spider standing on it; at 6 the two
-// arms of a corner are unmistakably an L rather than a full box outline.
-export const AIM_REACH = 13;
-export const AIM_ARM = 6;
+// units. Both **provisional**.
+//
+// **The size of the mark is what carries it over stipple, not the weight of its rim.** Two earlier
+// cuts stood at a reach of 13 and an arm of 6 and rimmed the ink ever wider in paper; three blind
+// reads found neither of them on ore. An arm of 6 u is the reason: ore is generated one `TILE` at a
+// time and lays splinters that run longer than that, so the mark was built out of strokes shorter
+// than the floor's own — eight ink dashes each below the grain, which no amount of rim can lift
+// out of a texture made of the same two tones. An arm that outruns a tile is a stroke the stipple
+// cannot counterfeit, and that is the whole of the fix.
+//
+// At 26 the mark is 52 u across and its corners stand outside `ELITE_RADIUS`, the largest body a
+// shot can be aimed at — so the drawing frames its target instead of biting into it, which the
+// reach of 13 did. At 16 the arms are longer than a tile and still shorter than the 20 u gap they
+// leave in the middle of each side, so what is read is four corners and not a box outline.
+export const AIM_REACH = 26;
+export const AIM_ARM = 16;
 
 // One corner as the three points its two arms run through, so `draw.ts` strikes each as a single
 // polyline and the joint mitres shut. Struck as two strands instead, the outer corner comes out

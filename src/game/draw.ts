@@ -243,12 +243,13 @@ export const SHOT_WIDTH = 2;
 // The two weights the aim mark is struck in (#154): its ink, and how far the paper stands clear of
 // that ink on either side. World units, and both **provisional**.
 //
-// The first cut was 2 u of ink under 1.5 u of rim a side. It measured as working — the rim did turn
-// the ore white under it — and could still not be found by anyone shown the frame and not told
-// where to look. Both figures sat inside the ore's own grain: a patch of it leaves white gaps
-// around 3 u across and lays splinters around 3.5 u thick, so the rim read as one more gap and the
-// stroke as one more splinter. These clear that grain on both channels at once, which is what it
-// takes for a mark to be *found* on stipple rather than merely be present in it.
+// The rim keeps the stroke unbroken where it crosses stipple, and that is the whole of its job. Two
+// earlier cuts asked it to do the finding as well — 1.5 u a side, then 6 — each widened against a
+// measurement of the ore's grain, and each still lost on ore by every reader shown the frame and
+// not told where to look. What a rim cannot fix is the length of the thing it rims: a stroke shorter
+// than the floor's own splinters reads as one of them however much white is packed around it. That
+// is `AIM_ARM`'s business and it is settled there, which is why these two numbers did not move
+// again for the cut that was finally found.
 //
 // The ink is therefore the one stroke in the frame that is not `SHOT_WIDTH`. Everything else here
 // is the drawing, struck in one hand; this is the instrument the drawing is aimed with, and it has
@@ -1013,30 +1014,26 @@ function drawMinimap(
 // only thing on screen that says where the pointer is — and since `aimDir` takes a shot's direction
 // from that same point, it is the only thing that says where a shot is aimed.
 //
-// **Struck twice over one path: paper wide, ink narrow.** It is the whole of what makes the mark
-// work, and it is not a style. The floor is white paper and an ore patch is dense black stipple
-// (#106), so a black mark is invisible on the ore and a white one is invisible on the floor — a
-// single colour cannot carry this drawing over both, whichever one is picked. A wider paper stroke
-// under a narrower ink one reads as plain ink on the floor, where the rim is the floor's own colour,
-// and as a paper-rimmed mark on the ore. That is exactly the idiom a player's name and a `+1` are
-// already cut out of the sprites they are read over with (`paintOverhead`, `drawFloats`), moved from
-// `fillText` to a stroke.
+// **Struck twice over one path: paper wide, ink narrow, and it is not a style.** The floor is white
+// paper and an ore patch is dense black stipple (#106), so a black mark comes apart on the ore and a
+// white one comes apart on the floor — a single colour cannot hold this drawing together over both,
+// whichever one is picked. A wider paper stroke under a narrower ink one reads as plain ink on the
+// floor, where the rim is the floor's own colour, and as an unbroken line on the ore. That is
+// exactly the idiom a player's name and a `+1` are already cut out of the sprites they are read over
+// with (`paintOverhead`, `drawFloats`), moved from `fillText` to a stroke.
 //
-// **The rim is wider than the arms are long, and that is what the first cut got wrong.** At
-// `AIM_ARM` 6 a rim of 6 u a side makes each corner's paper footprint a block rather than an outline
-// around the bracket inside it — so on stipple the mark is four clean blocks standing in formation,
-// which is a thing the texture cannot make, with the bracket drawn in the middle of them. On paper
-// the block is the floor's own colour and only the bracket is there to be seen, so the shape the
-// mark is read by does not change with the floor. What the block costs is the ink it clears out of
-// whatever it crosses, and at 16 u that is a nick in a shot line and a bite out of a sprite's
-// edge — the same trade a name already makes over a spider, at the size this mark needs.
+// **Holding together is not the same as being found, and the rim only buys the first.** Two cuts
+// widened it against a measurement of the ore's grain and neither could be found on stipple by
+// anyone not told where to look, because a stroke shorter than the floor's own splinters is a
+// splinter whatever is packed around it. What fixed that is `AIM_ARM`, and this function is
+// unchanged by it: the same eight segments in the same two passes, struck longer.
 //
 // One path for both passes: the current path survives a `stroke()`, so the geometry is built once
 // and the frame pays two strokes rather than two paths. Eight segments struck twice is sixteen
 // pieces by `docs/frame-budget.md` rule 1 — twice a burst's eight — and it still measures at
-// 0.027 ms against a burst's 47 µs, because this mark spans 26 u where a burst spans 60. It is the
-// cheapest layer in the frame, and the only one whose count nothing can move: there is one pointer
-// and it is up on every frame, which is why the mark has no lifetime, no list and no cull.
+// 0.032 ms against a burst's 47 µs, because a stroke's cost is in its ends and not its length. It is
+// the cheapest layer in the frame, and the only one whose count nothing can move: there is one
+// pointer and it is up on every frame, which is why the mark has no lifetime, no list and no cull.
 //
 // Not culled, alone among the marks in this file: every other one is a point in a 31,200² arena and
 // almost always off screen, while this one is under the player's own hand.

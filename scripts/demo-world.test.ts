@@ -8,6 +8,7 @@ import {
   tileKey,
   tileOf,
 } from "../src/game/build";
+import { AIM_PAPER_WIDTH } from "../src/game/draw";
 import { BLOODLING_HP } from "../src/game/enemies";
 import { FLOAT_RISE, oreFloatOrigin } from "../src/game/floats";
 import { AIM_REACH, PUFF_REACH } from "../src/game/fx";
@@ -140,30 +141,36 @@ describe("the scene the harness paints", () => {
   // Clear of everything else the scene draws, the corner map's own plate included, and inside the
   // frame. A mark half behind a spider — or over the map's white plate — says nothing about the
   // floor, which is the only thing this picture is asked about.
+  //
+  // Measured to the paper rather than to the ink: what the mark takes out of whatever it crosses is
+  // its widest stroke, and the rim is that. Held to `AIM_REACH` alone, the pointer could sit a rim's
+  // width onto the map and cut a gap in the plate's rule — which is the drawing behaving correctly
+  // (`drawAim` is struck over the map on purpose) in the one picture that must not show it.
   test("stands its pointer clear of everything else in the scene, and inside the frame", () => {
     const world = demoWorld();
+    const struck = AIM_REACH + AIM_PAPER_WIDTH / 2;
     for (const enemy of world.enemies) {
       expect(Math.hypot(DEMO_AIM.x - enemy.pos.x, DEMO_AIM.y - enemy.pos.y)).toBeGreaterThan(
-        AIM_REACH + enemy.radius,
+        struck + enemy.radius,
       );
     }
     for (const player of world.players) {
       expect(Math.hypot(DEMO_AIM.x - player.pos.x, DEMO_AIM.y - player.pos.y)).toBeGreaterThan(
-        AIM_REACH + player.radius,
+        struck + player.radius,
       );
     }
-    expect(DEMO_AIM.x).toBeGreaterThan(DEMO_CAMERA.x + AIM_REACH);
-    expect(DEMO_AIM.x).toBeLessThan(DEMO_CAMERA.x + DEMO_VIEWPORT.width - AIM_REACH);
-    expect(DEMO_AIM.y).toBeGreaterThan(DEMO_CAMERA.y + AIM_REACH);
-    expect(DEMO_AIM.y).toBeLessThan(DEMO_CAMERA.y + DEMO_VIEWPORT.height - AIM_REACH);
+    expect(DEMO_AIM.x).toBeGreaterThan(DEMO_CAMERA.x + struck);
+    expect(DEMO_AIM.x).toBeLessThan(DEMO_CAMERA.x + DEMO_VIEWPORT.width - struck);
+    expect(DEMO_AIM.y).toBeGreaterThan(DEMO_CAMERA.y + struck);
+    expect(DEMO_AIM.y).toBeLessThan(DEMO_CAMERA.y + DEMO_VIEWPORT.height - struck);
     const self = demoWorld().players.find((p) => p.id === DEMO_SELF);
     if (!self) throw new Error(`the scene has no ${DEMO_SELF} for the map to centre on`);
     const plate = minimapWindow(self.pos, DEMO_CAMERA, DEMO_VIEWPORT, MINIMAP_COVERAGE_U);
     const overPlate =
-      DEMO_AIM.x + AIM_REACH > plate.x &&
-      DEMO_AIM.x - AIM_REACH < plate.x + plate.size &&
-      DEMO_AIM.y + AIM_REACH > plate.y &&
-      DEMO_AIM.y - AIM_REACH < plate.y + plate.size;
+      DEMO_AIM.x + struck > plate.x &&
+      DEMO_AIM.x - struck < plate.x + plate.size &&
+      DEMO_AIM.y + struck > plate.y &&
+      DEMO_AIM.y - struck < plate.y + plate.size;
     expect(overPlate).toBe(false);
   });
 
