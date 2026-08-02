@@ -10,6 +10,7 @@ import grass from "./grass";
 import grunt from "./grunt";
 import gun from "./gun";
 import halo from "./halo";
+import highlight from "./highlight";
 import lettering from "./lettering";
 import miner from "./miner";
 import nest from "./nest";
@@ -113,6 +114,7 @@ export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
   grunt,
   gun,
   halo,
+  highlight,
   lettering,
   miner,
   nest,
