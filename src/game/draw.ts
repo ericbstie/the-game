@@ -240,26 +240,30 @@ const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for n
 // `scripts/shot-ink.ts`, which cannot measure the mark's coverage against a width of its own.
 export const SHOT_WIDTH = 2;
 
-// The two weights the aim mark is struck in (#154): its ink, and how far the paper stands clear of
-// that ink on either side. World units, and both **provisional**.
+// How wide the aim mark is struck (#154). World units, and **provisional**.
 //
-// The rim keeps the stroke unbroken where it crosses stipple, and that is the whole of its job. Two
-// earlier cuts asked it to do the finding as well — 1.5 u a side, then 6 — each widened against a
-// measurement of the ore's grain, and each still lost on ore by every reader shown the frame and
-// not told where to look. What a rim cannot fix is the length of the thing it rims: a stroke shorter
-// than the floor's own splinters reads as one of them however much white is packed around it. That
-// is `AIM_ARM`'s business and it is settled there, which is why these two numbers did not move
-// again for the cut that was finally found.
+// One width, where two earlier cuts had two. Both spent most of the mark on paper standing clear of
+// a narrower ink core, to keep the stroke unbroken where it crossed stipple; `drawAim` now inverts
+// what it crosses instead, so contrast is guaranteed at every pixel and there is nothing left for a
+// rim to buy. It is the same simplification the halo's own comment had been arguing toward: a rim
+// only ever decided whether the stroke stayed whole, never whether it could be found.
 //
-// The ink is therefore the one stroke in the frame that is not `SHOT_WIDTH`. Everything else here
-// is the drawing, struck in one hand; this is the instrument the drawing is aimed with, and it has
-// to hold on any floor the game can put under it rather than belong to one of them.
+// It is nonetheless the one stroke in the frame that is not `SHOT_WIDTH`. Everything else here is
+// the drawing, struck in one hand; this is the instrument the drawing is aimed with, and it has to
+// hold on any floor the game can put under it rather than belong to one of them. Measured against
+// the ore in `scripts/world-frame.ts`'s frame, an inverted band this wide departs from the floor
+// around it by 149 of 255 in mean luminance where the old paper-under-ink mark managed 17; at 6 u it
+// managed 144 and at 12 the corners stop reading as corners and start reading as blocks.
 //
-// Both are exported for `scripts/frame-budget.ts`, which prices the mark and cannot be left to pick
-// widths of its own — the same reason `SHOT_WIDTH` is exported for `scripts/shot-ink.ts`.
-export const AIM_INK_WIDTH = 4;
-const AIM_HALO = 6;
-export const AIM_PAPER_WIDTH = AIM_INK_WIDTH + 2 * AIM_HALO;
+// Halving the mark's widest stroke also took it *off* what it is aimed at. `AIM_REACH` is what holds
+// the mark's corners outside the largest body a shot can be aimed at (`fx.ts`, `fx.test.ts`), but
+// what a body is actually touched by is the band, and the 16 u rim reached 4 u inside an elite where
+// this reaches 0.14 — a fifth of a device pixel at dpr 2. It matters more than it did: the band
+// *flips* what it crosses, so anything under it comes back in negative rather than merely rimmed.
+//
+// Exported for `scripts/frame-budget.ts`, which prices the mark and cannot be left to pick a width
+// of its own — the same reason `SHOT_WIDTH` is exported for `scripts/shot-ink.ts`.
+export const AIM_WIDTH = 8;
 
 // Blood (#140), and the one place the black-and-white theme is broken on purpose. #76 grants the
 // game two colours and this is neither of them — it is a stated exception, and it earns it by being
@@ -1014,26 +1018,46 @@ function drawMinimap(
 // only thing on screen that says where the pointer is — and since `aimDir` takes a shot's direction
 // from that same point, it is the only thing that says where a shot is aimed.
 //
-// **Struck twice over one path: paper wide, ink narrow, and it is not a style.** The floor is white
-// paper and an ore patch is dense black stipple (#106), so a black mark comes apart on the ore and a
-// white one comes apart on the floor — a single colour cannot hold this drawing together over both,
-// whichever one is picked. A wider paper stroke under a narrower ink one reads as plain ink on the
-// floor, where the rim is the floor's own colour, and as an unbroken line on the ore. That is
-// exactly the idiom a player's name and a `+1` are already cut out of the sprites they are read over
-// with (`paintOverhead`, `drawFloats`), moved from `fillText` to a stroke.
+// **The mark has no tone of its own: it is struck as an inversion of whatever is beneath it.** The
+// floor is white paper and an ore patch is dense black stipple (#106), so a black mark comes apart
+// on the ore and a white one comes apart on the floor. Three cuts tried to answer that by choosing
+// tones — ink, then paper under ink, then the same rim twice as wide — and all three were found on
+// paper and lost on stipple by readers told only that a mark existed somewhere in the frame. A
+// black-and-white mark on black-and-white stipple has no channel the texture does not already own,
+// and no width or length settles that: whatever tone is picked, the floor is already wearing it.
 //
-// **Holding together is not the same as being found, and the rim only buys the first.** Two cuts
-// widened it against a measurement of the ore's grain and neither could be found on stipple by
-// anyone not told where to look, because a stroke shorter than the floor's own splinters is a
-// splinter whatever is packed around it. What fixed that is `AIM_ARM`, and this function is
-// unchanged by it: the same eight segments in the same two passes, struck longer.
+// Composited instead, the question does not arise. `difference` against a white source is `1 - c`
+// per channel, so the mark is white where it crosses ink and black where it crosses paper — by
+// construction, at every pixel, on any floor. The measured effect is not marginal: over the ore in
+// `scripts/world-frame.ts`'s frame the band's mean luminance departs from the floor around it by
+// 149 of 255 where paper-under-ink managed 17, because that mark was ink and rim in roughly equal
+// parts and averaged out to the floor it stood on. `exclusion` measured identical on this frame —
+// the two agree wherever the backdrop is black or white — and `xor` is a Porter-Duff operator on
+// alpha rather than a blend, which punches the mark transparent and measured 4.
+//
+// **The grey pass is what makes "no colour" true rather than nearly true.** `difference` puts out
+// the complement of what it crosses, and the complement of #140's blood is cyan — struck exactly
+// where the player is looking, and a colour no ticket grants (#76 grants two and blood is a stated
+// third). `saturation` against a white source sets the backdrop's saturation to the source's, which
+// is none, so the first pass greys the band and the second has only a grey left to flip. Measured
+// over a blood patch that is 1,367 saturated pixels against 92 — the 92 being the blood's own
+// antialiasing at the band's edge, which the mark did not put there.
+//
+// Both passes are white for those two separate reasons, which is why one `strokeStyle` serves both.
+//
+// The mode is drawing state and is put back to what it found: the downed darkening and #142's veil
+// are both struck *after* this mark, and the next frame opens on whatever it left. #142 keeps its
+// alpha off the context for the same reason.
 //
 // One path for both passes: the current path survives a `stroke()`, so the geometry is built once
 // and the frame pays two strokes rather than two paths. Eight segments struck twice is sixteen
-// pieces by `docs/frame-budget.md` rule 1 — twice a burst's eight — and it still measures at
-// 0.032 ms against a burst's 47 µs, because a stroke's cost is in its ends and not its length. It is
-// the cheapest layer in the frame, and the only one whose count nothing can move: there is one
-// pointer and it is up on every frame, which is why the mark has no lifetime, no list and no cull.
+// pieces by `docs/frame-budget.md` rule 1 — twice a burst's eight — and it measures at 0.080 ms
+// against a burst's 47 µs. **The blend modes are 0.050 ms of that**: the same path struck plain
+// measures 0.030, so compositing costs about what the drawing does again, and rule 1 does not price
+// it because the piece count did not move. Worth saying rather than burying; it is still the
+// cheapest layer in the frame by an order of magnitude, and the only one whose count nothing can
+// move — there is one pointer and it is up on every frame, which is why the mark has no lifetime,
+// no list and no cull.
 //
 // Not culled, alone among the marks in this file: every other one is a point in a 31,200² arena and
 // almost always off screen, while this one is under the player's own hand.
@@ -1048,11 +1072,13 @@ function drawAim(ctx: CanvasRenderingContext2D, { aim }: DrawOptions): void {
   // player's name, which rounds it (`paintOverhead`). Rounded, the four points come off the mark.
   ctx.lineJoin = "miter";
   ctx.strokeStyle = PAPER;
-  ctx.lineWidth = AIM_PAPER_WIDTH;
+  ctx.lineWidth = AIM_WIDTH;
+  const under = ctx.globalCompositeOperation;
+  ctx.globalCompositeOperation = "saturation";
   ctx.stroke();
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = AIM_INK_WIDTH;
+  ctx.globalCompositeOperation = "difference";
   ctx.stroke();
+  ctx.globalCompositeOperation = under;
 }
 
 // The damage readout for one entity, sitting above whatever was drawn for it. Nothing at full

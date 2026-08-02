@@ -195,17 +195,20 @@ describe("entrySource", () => {
 
   // The one mark in the frame with no ladder, because it has no count: there is exactly one pointer
   // and it is up on every frame the game draws. It is priced standalone for the reason every
-  // sub-millisecond mark on this page is, and struck through the shipped geometry and both shipped
-  // widths — a probe that picked any of them would be measuring a mark the game does not draw. The
-  // ink width is on that list because the mark's is no longer `SHOT_WIDTH`, and a probe carrying the
-  // old 2 would under-price the pass that grew.
+  // sub-millisecond mark on this page is, and struck through the shipped geometry and the shipped
+  // width — a probe that picked its own would be measuring a mark the game does not draw.
+  //
+  // Both composite passes are pinned too, and they are most of why this figure moved: the mark's
+  // cost is now a blend mode rather than its ink, so a probe that strokes it plain prices a mark
+  // nobody sees.
   test("prices the aim mark on its own, at the one count it can ever have (#154)", () => {
     const source = entrySource(parseArgs([]));
     expect(source).toContain("aimMs");
     expect(source).toContain("aim: AIM"); // in the frame it prices, not only beside it
     expect(source).toContain("reticle(");
-    expect(source).toContain("ctx.lineWidth = AIM_PAPER_WIDTH");
-    expect(source).toContain("ctx.lineWidth = AIM_INK_WIDTH");
+    expect(source).toContain("ctx.lineWidth = AIM_WIDTH");
+    expect(source).toContain('ctx.globalCompositeOperation = "saturation"');
+    expect(source).toContain('ctx.globalCompositeOperation = "difference"');
     expect(source).not.toContain("aimMs: { "); // no ladder: a second pointer is not a case
   });
 });

@@ -23,6 +23,7 @@ import {
   type Mark,
 } from "./clientWorld";
 import {
+  AIM_WIDTH,
   BLOOD,
   BLOOD_BANDS,
   BURST_MS,
@@ -2545,7 +2546,8 @@ describe("blood on the floor", () => {
 //
 // What it has to survive is the floor it is read against: white paper over most of a frame, dense
 // black stipple over an ore patch. That is what the two passes below are, and it is what most of
-// these claims are about.
+// these claims are about — and since #154's third cut the mark carries no tone of its own at all,
+// so several of them are about drawing state rather than about ink.
 describe("the aim point's mark", () => {
   const AIM: Vec2 = { x: 1_300, y: 1_250 };
   const marked = (patch: Partial<DrawOptions> = {}) => {
@@ -2571,38 +2573,45 @@ describe("the aim point's mark", () => {
     );
   });
 
-  // The half of this ticket that cannot be got by picking a colour. Ink alone vanishes into an ore
-  // patch and paper alone vanishes into the floor, so the mark is struck twice — a wider paper pass
-  // under a narrower ink one — the idiom a player's name and a `+1` are already cut out of the
-  // sprites they are read over with. The order carries as much as the colours: paper struck second
-  // would rub the mark out.
-  test("is struck in paper first and ink over it, so it reads on paper and on an ore patch", () => {
+  // The half of this ticket no colour can be picked for, and the third mechanism tried at it. Ink
+  // alone vanishes into an ore patch, paper alone vanishes into the floor, and paper *under* ink —
+  // the idiom a player's name and a `+1` are cut out of their sprites with — held the mark together
+  // over both and was still not *found* on stipple by four readers told only that a mark existed.
+  // What none of those gets past is that a black-and-white mark on black-and-white stipple has no
+  // channel the texture does not already own. So the mark now has no tone of its own: it is struck
+  // as an inversion of whatever is beneath it, white over ink and black over paper by construction,
+  // on any floor the game can put under it.
+  //
+  // Both passes are white, for two different reasons. `saturation` takes the backdrop's saturation
+  // to the *source's*, and white's is none — so the first pass greys what the mark crosses. White is
+  // also the one source `difference` flips a backdrop entire against, so the second inverts it.
+  test("is struck as an inversion of what is under it — greyed, then flipped", () => {
     const struck = passes(marked());
-    expect(struck.map((c) => c.stroke)).toEqual(["#ffffff", "#000"]);
-    expect(struck[0].width as number).toBeGreaterThan(struck[1].width as number);
+    expect(struck.map((c) => c.composite)).toEqual(["saturation", "difference"]);
+    expect(struck.map((c) => c.stroke)).toEqual(["#ffffff", "#ffffff"]);
   });
 
-  // What two blind reads of the first cut turned up: the mechanism was right and the magnitude was
-  // not. A rim of 1.5 u a side is finer than the gaps the ore's own stipple leaves between its
-  // shards, so it read as one more of them and the mark could not be found at all. Over stipple the
-  // rim is the *whole* of what the mark is seen by — the ink is black on black there — so it has to
-  // be the larger half of the drawing rather than a hairline around it.
-  test("stands clear in paper by more than the ink is wide, so the rim carries it on stipple", () => {
-    const [paper, ink] = passes(marked()).map((c) => c.width as number);
-    expect((paper - ink) / 2).toBeGreaterThan(ink);
+  // The grey pass is what keeps "no colour" true rather than nearly true. `difference` alone puts
+  // out the complement of what it crosses, and the complement of #140's blood is cyan — a colour no
+  // ticket grants, struck exactly where the player is looking. Greyed first, the flip only ever has
+  // a grey to work on, so the mark cannot emit a hue whatever it is dragged over.
+  test("carries no colour of its own onto anything it crosses", () => {
+    expect(passes(marked()).every((c) => c.composite !== "source-over")).toBe(true);
   });
 
-  // And the ink is the one stroke in the frame that is not `SHOT_WIDTH`. The same blind read named
-  // the weight: the corners were struck at the weight the ore's own splinters are, so they fused
-  // with them. Every other mark here is part of the drawing; this one is the instrument the drawing
-  // is aimed with, and it is heavier than the hand on purpose.
-  test("is struck heavier than the ink the rest of the frame is drawn in", () => {
-    expect(passes(marked())[1].width as number).toBeGreaterThan(SHOT_WIDTH);
+  // One width, because an inversion has no rim to draw. Two earlier cuts spent most of the mark's
+  // width on paper standing clear of the ink, to keep the stroke unbroken where it crossed stipple;
+  // contrast is now guaranteed at every pixel by the compositing, so the second width was carrying
+  // nothing and is gone. What is left is heavier than `SHOT_WIDTH` on purpose: every other mark in
+  // this file is part of the drawing, and this one is the instrument the drawing is aimed with.
+  test("is struck at one width, and heavier than the ink the rest of the frame is drawn in", () => {
+    expect(passes(marked()).map((c) => c.width)).toEqual([AIM_WIDTH, AIM_WIDTH]);
+    expect(AIM_WIDTH).toBeGreaterThan(SHOT_WIDTH);
   });
 
-  // Both passes run one path, so the paper stands evenly around the ink rather than being a second
-  // drawing beside it — the path survives a `stroke()` and is struck again.
-  test("both passes are the one path, so the paper is a rim and not a second mark", () => {
+  // Both passes run one path, so the flip lands on exactly what the grey pass laid down rather than
+  // on a second drawing beside it — the path survives a `stroke()` and is struck again.
+  test("both passes are the one path, so the flip lands on what was greyed", () => {
     const ctx = marked();
     expect(markCalls(ctx).filter((c) => c.fn === "beginPath")).toHaveLength(1);
     expect(passes(ctx)).toHaveLength(2);
@@ -2638,5 +2647,23 @@ describe("the aim point's mark", () => {
   test("leaves the frame's alpha as it found it", () => {
     expect(marked().calls[0].alpha).toBe(1);
     expect(marked().calls.at(-1)?.alpha).toBe(1);
+  });
+
+  // The whole of "the mark composites and the frame does not". `globalCompositeOperation` is drawing
+  // state like `globalAlpha`, and the veil (#142) is held to leaving none behind for the same
+  // reason: two things are still drawn *after* this mark on the frame it is struck on — the downed
+  // darkening and that veil — and the next frame opens on whatever it left. Left in force, an
+  // inverting mode would flip both of those and then the floor of every frame after.
+  //
+  // Put back to what it found rather than to `"source-over"`, so the mark restores a mode it did not
+  // set instead of overwriting it.
+  test("puts the composite mode back, so nothing drawn after it is flipped", () => {
+    const ctx = marked({ selfId: "p1", damageFlash: 0.5 });
+    expect(
+      (ctx as unknown as { globalCompositeOperation?: string }).globalCompositeOperation ??
+        "source-over",
+    ).toBe("source-over");
+    expect(ctx.calls.filter((c) => c.composite !== "source-over")).toEqual(passes(ctx));
+    expect(ctx.calls.at(-1)?.composite).toBe("source-over");
   });
 });

@@ -67,11 +67,14 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > supersedes [What a shot costs since #114](#what-a-shot-costs-since-114) for what the game now draws.
 >
 > [#154](https://github.com/ericbstie/the-game/issues/154) has added a seventh mark — the aim mark
-> under the pointer — at **0.032 ms**. It is the **cheapest layer on this page** and the only one whose
+> under the pointer — at **0.080 ms**. It is the **cheapest layer on this page** and the only one whose
 > count is *fixed*: there is exactly one pointer, it is up on every frame the game draws, and nothing
-> about play, a cadence or a cap can put up a second. It is also the first mark that is **struck
-> twice** — paper under ink — which is what holds it together over an ore patch. See [What the aim
-> mark costs](#what-the-aim-mark-costs-154).
+> about play, a cadence or a cap can put up a second. It is also the first mark that **composites**
+> rather than laying a tone: it is struck as an inversion of whatever is under it, which is what lets
+> it be found over an ore patch. **That is what the figure bought** — the same mark struck plain
+> measures 0.030 ms, so a blend mode is roughly two thirds of it and this is the one entry on the page
+> whose cost is drawing *state* rather than ink. See [What the aim mark
+> costs](#what-the-aim-mark-costs-154).
 
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
 6.3 ms — 38% of it, leaving 10.4 ms of headroom.**
@@ -97,8 +100,8 @@ puff in it**, however many there are — each bundled into one path on purpose, 
 moves the segments in those paths and never the count of paths.
 
 **[#154](https://github.com/ericbstie/the-game/issues/154) has taken it to 16, and both of the two it
-added are one mark.** The aim mark is a single path of four corners struck twice — paper wide, ink
-narrow — so it is one path and two `stroke()` calls, and the script counts the calls. It is the only
+added are one mark.** The aim mark is a single path of four corners struck twice — greyed, then
+inverted — so it is one path and two `stroke()` calls, and the script counts the calls. It is the only
 entry in that count that cannot move: every other path there rides a cadence, a cap or a squad, and
 this one is the pointer.
 
@@ -154,7 +157,7 @@ difference from the row above.
 | + the lettered words | — | ≈0 | 5 words, one blit each (#79) — 4 on hits, 1 on deaths. Not in the run above; 0.04 ms isolated |
 | + the damage veil | — | 0.61 | one rgba fill over the whole viewport (#142), laid only by the client of the player who was hit. Not in the run above; 0.61 ms isolated |
 | + the blood | — | 1.82 | 300 filled discs under the sorted pass (#140) — the cap `BLOOD_CAP` holds the list to. Not in the run above; 1.82 ms isolated |
-| + the aim mark | — | ≈0 | one path of four corners, struck twice (#154). **In every row above**, unlike the six marks before it — it is up on every frame the game draws. 0.032 ms isolated |
+| + the aim mark | — | ≈0 | one path of four corners, composited twice against what is under it (#154). **In every row above**, unlike the six marks before it — it is up on every frame the game draws. 0.080 ms isolated |
 | **Total** | **6.3** | | **38% of a 16.67 ms frame** — and the shot row it contains has since been replaced by one an order of magnitude cheaper |
 
 **The script's printed labels for the first two rows are wrong, and the names in brackets above are
@@ -792,10 +795,16 @@ steps of its fade, on the white floor they have to read against.
 
 ## What the aim mark costs (#154)
 
-**One mark is 0.032 ms — 0.19% of a 16.67 ms frame, and the cheapest layer on this page by an order
-of magnitude.** [#154](https://github.com/ericbstie/the-game/issues/154) hides the OS arrow over the
-arena and strikes a mark of its own under the pointer (`src/game/draw.ts` `drawAim`), so this is what
-the game pays for having a cursor at all.
+**One mark is 0.080 ms — 0.48% of a 16.67 ms frame, and still the cheapest layer on this page by an
+order of magnitude.** [#154](https://github.com/ericbstie/the-game/issues/154) hides the OS arrow over
+the arena and strikes a mark of its own under the pointer (`src/game/draw.ts` `drawAim`), so this is
+what the game pays for having a cursor at all.
+
+**It cost 0.032 ms until the mark started compositing, and that is the whole of the rise.** The mark
+is now struck as an inversion of what is under it rather than as a tone laid over it — two blend
+passes over one path where there were two plain strokes. Struck plain at its own geometry and its own
+width it measures **0.030 ms**, so the blend modes are **0.050 ms of the 0.080**: nearly two thirds of
+the mark, and the first figure on this page whose cost is drawing *state* rather than ink.
 
 **Its count is fixed, and that is what makes it different from every other mark here.** A shot, a
 burst, a puff and a word ride a cadence, so their worst case is arithmetic on constants; a decal
@@ -807,12 +816,16 @@ of the ladder above**, which no mark before it has been.
 One container, dpr 2, at the governor's cap, through the standalone probe `bun run frame:budget`
 prints as `the aim mark`. **Ten runs rather than the five every other figure on this page is taken
 over**, because sets of five disagreed with each other by more than a set disagreed with itself —
-which is the finding below.
+which is the finding below. The plain control is the same probe with its two
+`ctx.globalCompositeOperation` lines deleted and nothing else touched, which is the only way to
+attribute the rise to the mode rather than to everything that changed with it.
 
 | | median | spread |
 | --- | ---: | ---: |
-| the aim mark, one path struck twice, 10 runs | **0.032 ms** | 0.028–0.037 |
-| the aim mark at half this span, 15 runs | 0.027 ms | 0.022–0.033 |
+| the aim mark, one path composited twice, 10 runs | **0.080 ms** | 0.077–0.093 |
+| the same mark and path struck plain, 10 runs | 0.030 ms | 0.028–0.083 |
+| the aim mark before it composited, 10 runs | 0.032 ms | 0.028–0.037 |
+| the aim mark at half that span, 15 runs | 0.027 ms | 0.022–0.033 |
 | the damage veil, in ten of the same runs | 0.664 ms | 0.592–0.907 |
 
 **Neither widening the mark nor doubling it moved it much, and the second is the interesting one.**
@@ -821,22 +834,33 @@ went from a reach of 13 and an arm of 6 to 26 and 16: the path's total struck le
 128, nearly 2.7×, for **+0.005 ms** — under a fifth more, for 2.7× the ink. Sixteen pieces before and
 sixteen after, and the piece count is what the bill tracks. **Rule 1 read from the other side**: what
 subdivides a mark pays per piece, and what only makes the pieces longer is close to free. It is why
-the mark could be made findable by making it bigger rather than heavier without anyone having to
-open this page first.
+the mark could be made bigger without anyone having to open this page first.
 
-**The measurement is looser than it was**: ±15% here and ±20% at the smaller span, against the ±6%
-the 5 u mark held to, and the disagreement is between *sets* rather than within one. The geometry is
-fixed and every iteration is identical work, so this is the timer and the container rather than the
-mark — at 32 µs a run there is not much above the noise floor left to measure.
+**The blend mode is the one thing that ever did move it, and it moved it 2.7×.** Same eight segments,
+same two passes, one width narrower than the paper it replaced — and 0.030 ms became 0.080. **Rule 1
+does not price this at all**, which is its fourth correction on this page: the rule counts pieces, and
+nothing about the piece count changed. What changed is that each pass now *reads* the framebuffer it
+is drawing into instead of only writing to it, and a `saturation` or `difference` pass is a different
+rasterisation path in the compositor. **The lesson for the next mark is the mode, not the count**: a
+blend pass over a path costs roughly what the plain pass costs again, on top.
 
-**It is struck twice and it is still the cheapest layer in the frame.** Paper at `AIM_PAPER_WIDTH`
-under ink at `AIM_INK_WIDTH`, over one path of eight segments — so rule 1 counts sixteen pieces,
-twice a burst's eight, and it measures at **two thirds of one burst** (47.3 µs each at fifty
-concurrent). **Rule 1 gets the sign wrong here, which is its third correction on this page**, and the
-reason is what the pieces are: a burst's eight spikes are eight `moveTo`/`lineTo` pairs and this
-mark's sixteen are two strokes over one path of eight segments, so the second pass buys its pieces at
-a discount the count does not show. The paper pass is what makes the mark hold together over a dense
-ore patch, where black on black stipple breaks up, and it is bought for about 0.01 ms.
+**It was bought knowingly.** Three cuts of this mark chose tones — ink, paper under ink, then a wider
+rim — and all three were lost on an ore patch by readers told only that a mark existed somewhere in
+the frame, because a black-and-white mark on black-and-white stipple has no channel the texture does
+not already own. Compositing is what settles that rather than another width, and 0.050 ms for the one
+mark the player is always looking at is the cheapest thing on this page to argue about.
+
+**The measurement is looser than it was**: ±15% at the old span and ±20% at the one before that,
+against the ±6% the 5 u mark held to, and the disagreement is between *sets* rather than within one.
+The composite figure is the tightest of the three (0.077–0.093, ±10%) for the plain reason that it is
+the largest — at 30 µs a run there was not much above the noise floor left to measure, and at 80 there
+is. One run of the plain control read 0.083 and is why that row's spread is wider than its median: a
+contended run inflates everything and has to be read as the container rather than the mark.
+
+**It is struck twice and it is still the cheapest layer in the frame.** One width, `AIM_WIDTH`, over
+one path of eight segments — so rule 1 counts sixteen pieces, twice a burst's eight, and it measures
+at **1.7 bursts** (47.3 µs each at fifty concurrent) where before it composited it measured at two
+thirds of one.
 
 **Eight straight segments and no arc, deliberately.** A ring was the other obvious drawing of a
 reticle, and `ctx.arc` is the dearest piece the frame has: #116 measured a puff's six arcs at 94.7 µs
@@ -845,7 +869,7 @@ this is not a saving worth having on its own. It is picked because the mark has 
 from the burst and the puff struck a few units away from it in the same pen**, and a shape that
 frames the point without radiating from it is what does that. The cost simply follows.
 
-**Do not add 0.032 ms to the 6.3 ms headline.** This container reads about 15 ms for the whole frame
+**Do not add 0.080 ms to the 6.3 ms headline.** This container reads about 15 ms for the whole frame
 at the cap the governor now stands at, where that headline reads 6.3 ms at a cap the game no longer
 has. Both are honest; neither may be added to the other.
 

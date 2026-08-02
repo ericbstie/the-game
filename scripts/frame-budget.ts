@@ -116,7 +116,7 @@ import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { DEFAULT_WORLD_SETTINGS } from ${JSON.stringify(SETTINGS_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
 import { inkPuff, reticle, speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
-import { AIM_INK_WIDTH, AIM_PAPER_WIDTH, letteringAt, SHOT_STREAK } from ${JSON.stringify(DRAW_MODULE)};
+import { AIM_WIDTH, letteringAt, SHOT_STREAK } from ${JSON.stringify(DRAW_MODULE)};
 import { BLOOD_BANDS } from ${JSON.stringify(DRAW_MODULE)};
 import { BLOOD_CAP, BLOOD_FADE_MS, DROP_RADIUS, stainMarks } from ${JSON.stringify(BLOOD_MODULE)};
 import { FLASH_ALPHA } from ${JSON.stringify(DAMAGE_MODULE)};
@@ -493,10 +493,13 @@ try {
     ctx.fillRect(CAM.x, CAM.y, VIEW.width, VIEW.height);
   });
 
-  // The aim mark (#154), struck the way drawAim strikes it: one path of four mitred corners, laid in
-  // paper and struck again in ink. Standalone and with no ladder, because it is the one mark in the
-  // frame whose count is fixed — there is exactly one pointer, and it is up on every frame the game
-  // draws. Nothing about play, a cadence or a cap can put up a second.
+  // The aim mark (#154), struck the way drawAim strikes it: one path of four mitred corners, greyed
+  // and then flipped against what is under them. Standalone and with no ladder, because it is the
+  // one mark in the frame whose count is fixed — there is exactly one pointer, and it is up on every
+  // frame the game draws. Nothing about play, a cadence or a cap can put up a second.
+  //
+  // Both composite passes are in the probe and so is putting the mode back, because a blend mode is
+  // the whole of what changed about this mark and the two plain strokes it replaced were cheaper.
   const aimMs = measure(() => {
     setup();
     ctx.beginPath();
@@ -505,10 +508,13 @@ try {
       for (let i = 1; i < corner.length; i++) ctx.lineTo(corner[i].x, corner[i].y);
     }
     ctx.lineJoin = "miter";
-    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = AIM_PAPER_WIDTH;
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = AIM_WIDTH;
+    const under = ctx.globalCompositeOperation;
+    ctx.globalCompositeOperation = "saturation";
     ctx.stroke();
-    ctx.strokeStyle = "#000"; ctx.lineWidth = AIM_INK_WIDTH;
+    ctx.globalCompositeOperation = "difference";
     ctx.stroke();
+    ctx.globalCompositeOperation = under;
   });
 
   const result = {

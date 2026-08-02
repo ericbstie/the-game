@@ -8,7 +8,7 @@ import {
   tileKey,
   tileOf,
 } from "../src/game/build";
-import { AIM_PAPER_WIDTH } from "../src/game/draw";
+import { AIM_WIDTH } from "../src/game/draw";
 import { BLOODLING_HP } from "../src/game/enemies";
 import { FLOAT_RISE, oreFloatOrigin } from "../src/game/floats";
 import { AIM_REACH, PUFF_REACH } from "../src/game/fx";
@@ -142,13 +142,13 @@ describe("the scene the harness paints", () => {
   // frame. A mark half behind a spider — or over the map's white plate — says nothing about the
   // floor, which is the only thing this picture is asked about.
   //
-  // Measured to the paper rather than to the ink: what the mark takes out of whatever it crosses is
-  // its widest stroke, and the rim is that. Held to `AIM_REACH` alone, the pointer could sit a rim's
-  // width onto the map and cut a gap in the plate's rule — which is the drawing behaving correctly
+  // Measured to the stroke and not to `AIM_REACH` alone: what the mark takes out of whatever it
+  // crosses is the band it is struck in, so a pointer held to its reach could still sit half a width
+  // onto the map and flip a length of the plate's rule — which is the drawing behaving correctly
   // (`drawAim` is struck over the map on purpose) in the one picture that must not show it.
   test("stands its pointer clear of everything else in the scene, and inside the frame", () => {
     const world = demoWorld();
-    const struck = AIM_REACH + AIM_PAPER_WIDTH / 2;
+    const struck = AIM_REACH + AIM_WIDTH / 2;
     for (const enemy of world.enemies) {
       expect(Math.hypot(DEMO_AIM.x - enemy.pos.x, DEMO_AIM.y - enemy.pos.y)).toBeGreaterThan(
         struck + enemy.radius,
