@@ -28,6 +28,7 @@ import { concurrentShots } from "./shot-ink";
 const DRAW_MODULE = join(import.meta.dir, "../src/game/draw.ts");
 const BLOOD_MODULE = join(import.meta.dir, "../src/game/blood.ts");
 const CACHE_MODULE = join(import.meta.dir, "../src/sprite/cache.ts");
+const SHEET_MODULE = join(import.meta.dir, "../src/sprite/sheet.ts");
 const REGISTRY_MODULE = join(import.meta.dir, "../src/sprite/registry.ts");
 const BUILD_MODULE = join(import.meta.dir, "../src/game/build.ts");
 const SETTINGS_MODULE = join(import.meta.dir, "../src/game/worldSettings.ts");
@@ -110,10 +111,25 @@ export interface BudgetResult {
   bloodMs: Record<string, number>;
   veilMs: number;
   tutorialMs: number; // the mini-tutorial's three world-anchored prompts, all up at once (#134)
-  // What the first frame after a zoom settles costs (#92, ADR 0008): every sprite the worst frame
-  // asks for, baked afresh at the scale it is now drawn at. Paid once per settle, which is the whole
-  // reason the settle exists.
+  // What a cold cache costs (#92, ADR 0008): every sprite the worst frame asks for, baked afresh,
+  // with nothing in hand to stand in for any of it. That is a match opening — the one burst the
+  // per-frame budget cannot spread, because a first bake has nothing to defer to.
   bakeBurstMs: number;
+  bakeBurstBakes: number;
+  // And what a settled zoom costs, which is the burst a player can provoke over and over. The budget
+  // in `cache.ts` spreads it, so what matters is its shape: the dearest single frame of the
+  // convergence, how many frames it took, and what those frames cost end to end.
+  settleWorstMs: number;
+  settleMedianMs: number;
+  settleFrames: number;
+  settleTotalMs: number;
+  // The frame while it converges: every blit from a bake made for another scale, so every one of them
+  // resamples. Both ways, because that is the one frame in the game where nearest against smoothed is
+  // a live question (ADR 0008 left it open for exactly this). `convergedMs` is the same frame with
+  // every bake in hand at the scale it is drawn at, measured beside them.
+  convergedMs: number;
+  heldMs: number;
+  heldSmoothedMs: number;
   // And what those bakes hold, in bytes — 4 a device pixel, over the distinct images the worst
   // frame blits. Residency goes as the square of the scale, so this is the figure the ADR's
   // "0.25x at 0.5, 9x at 3" is checked against through the shipped cache.
@@ -130,6 +146,7 @@ export function entrySource(request: BudgetRequest): string {
   return `${imports}
 import { drawWorld } from ${JSON.stringify(DRAW_MODULE)};
 import { createSpriteCache } from ${JSON.stringify(CACHE_MODULE)};
+import { bakeOne } from ${JSON.stringify(SHEET_MODULE)};
 import { SPRITES } from ${JSON.stringify(REGISTRY_MODULE)};
 import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { DEFAULT_WORLD_SETTINGS } from ${JSON.stringify(SETTINGS_MODULE)};
@@ -546,9 +563,10 @@ try {
   const bareMs = measure(() => { setup(); drawWorld(ctx, empty, opts); }, ITERS * 4);
   const taughtMs = measure(() => { setup(); drawWorld(ctx, empty, { ...opts, tutorial: tutorialMarks }); }, ITERS * 4);
 
-  // The re-bake burst a settled zoom pays (#92). ADR 0008 keys the bake on \`dpr x zoom\`, so the
-  // frame after a gesture stops asks a cold cache for every sprite it draws; \`zoom.ts\` holds the old
-  // bakes until then precisely so this is paid once rather than on every frame of the gesture.
+  // What a **cold** cache costs: every sprite the frame draws, baked afresh, with nothing in hand to
+  // stand in for any of it. That is a match opening, and it is the one burst the budget below cannot
+  // spread — a first bake has no older bake to hand back in its place, and a hole in the picture is
+  // worse than a frame that runs long (\`cache.ts\`).
   //
   // A fresh cache per iteration is the measurement: each one pays the whole bill, and the warm frame
   // drawn immediately after through the same fixture is what it is charged against. Fewer iterations
@@ -559,6 +577,61 @@ try {
     drawWorld(ctx, flying, { ...withBlood, sprites: createSpriteCache(subjects).source(SCALE) });
   }, burstIters);
   const warmBurstMs = measure(() => { setup(); drawWorld(ctx, flying, withBlood); }, burstIters);
+
+  // How many bakes that is, so the burst can be read as a rate rather than only as a total.
+  let bakes = 0;
+  const countingBake = (subject, scale, facing, frame) => { bakes++; return bakeOne(subject, scale, facing, frame); };
+  setup();
+  drawWorld(ctx, flying, { ...withBlood, sprites: createSpriteCache(subjects, countingBake).source(SCALE) });
+  flush();
+  const coldBakes = bakes;
+
+  // And what a **settle** costs as shipped, which is the burst the player can provoke over and over.
+  // The frame before it is drawn through bakes made one wheel notch out; the burst does not depend on
+  // how far the wheel turned, because any move at all makes every bake in hand the wrong resolution.
+  // Then the scale settles here and frames are driven until the cache stops baking, so what comes back
+  // is the shape of the convergence and not a single number: the dearest frame in it, how many frames
+  // it took, and what they cost end to end.
+  const NOTCH = 1.16; // one Chromium wheel notch at \`ZOOM_RATE\`
+  const settling = createSpriteCache(subjects, countingBake);
+  setup();
+  drawWorld(ctx, flying, { ...withBlood, sprites: settling.source(SCALE / NOTCH) });
+  flush();
+  const settled = { ...withBlood, sprites: settling.source(SCALE) };
+  const settleFrames = [];
+  for (let i = 0; i < 2000; i++) {
+    const before = bakes;
+    const t0 = performance.now();
+    setup();
+    // Asked afresh every frame because that call is what opens the frame's bake budget (\`cache.ts\`).
+    settled.sprites = settling.source(SCALE);
+    drawWorld(ctx, flying, settled);
+    flush();
+    settleFrames.push(performance.now() - t0);
+    if (bakes === before) break; // nothing left to sharpen: the picture has converged
+  }
+
+  // What the picture costs *while* it converges: a frame drawn entirely from bakes made for another
+  // scale, so every blit resamples. Priced both ways, because ADR 0008 left "nearest against smoothed
+  // when magnifying" open and said it would return for anything that ever resamples. This is that
+  // frame, and it is the only one in the game that does.
+  const holding = createSpriteCache(subjects, undefined, undefined, { budgetMs: 0 });
+  setup();
+  drawWorld(ctx, flying, { ...withBlood, sprites: holding.source(SCALE / NOTCH) });
+  flush();
+  const heldOpts = { ...withBlood, sprites: holding.source(SCALE) };
+  // The converged frame again, immediately before the two held ones and on the same iteration count,
+  // so what holding costs is a difference between readings taken side by side rather than against a
+  // row measured a session earlier. Drift over a long run lands on all three equally.
+  const convergedMs = measure(() => { setup(); drawWorld(ctx, flying, withBlood); });
+  const heldMs = measure(() => { setup(); drawWorld(ctx, flying, heldOpts); });
+  // \`drawWorld\` turns smoothing off for the frame it draws, so the only way to price the filtered blit
+  // through the shipped path is to shadow the property while it is measured.
+  const proto = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(ctx), "imageSmoothingEnabled");
+  proto.set.call(ctx, true);
+  Object.defineProperty(ctx, "imageSmoothingEnabled", { configurable: true, get: () => true, set: () => {} });
+  const heldSmoothedMs = measure(() => { setup(); drawWorld(ctx, flying, heldOpts); });
+  delete ctx.imageSmoothingEnabled;
 
   // What the bakes behind that frame hold. Read off the blits rather than out of the cache, so it is
   // the images the frame actually *draws* — the eagerly baked set plus one ore variant per distinct
@@ -610,6 +683,14 @@ try {
     veilMs: +veilMs.toFixed(3),
     tutorialMs: +(taughtMs - bareMs).toFixed(3),
     bakeBurstMs: +(coldBurstMs - warmBurstMs).toFixed(3),
+    bakeBurstBakes: coldBakes,
+    settleWorstMs: +Math.max(...settleFrames).toFixed(3),
+    settleMedianMs: +settleFrames.slice().sort((a, b) => a - b)[settleFrames.length >> 1].toFixed(3),
+    settleFrames: settleFrames.length - 1, // the last one found nothing left to bake
+    settleTotalMs: +settleFrames.reduce((a, b) => a + b, 0).toFixed(3),
+    convergedMs: +convergedMs.toFixed(3),
+    heldMs: +heldMs.toFixed(3),
+    heldSmoothedMs: +heldSmoothedMs.toFixed(3),
     bakedBytes,
   };
 
@@ -686,7 +767,13 @@ if (import.meta.main) {
     `  the tutorial        ${r.tutorialMs.toFixed(3)} ms   standalone, all three prompts at once`,
   );
   console.log(
-    `  the re-bake burst   ${r.bakeBurstMs.toFixed(3)} ms   once per settled zoom, not per frame (#92)`,
+    `  a cold cache        ${r.bakeBurstMs.toFixed(3)} ms   ${r.bakeBurstBakes} first bakes, nothing in hand to hold (#92)`,
+  );
+  console.log(
+    `  a settled zoom      ${r.settleWorstMs.toFixed(3)} ms   the dearest of ${r.settleFrames} frames (median ${r.settleMedianMs.toFixed(3)}), ${r.settleTotalMs.toFixed(0)} ms to converge`,
+  );
+  console.log(
+    `  while it converges  ${r.heldMs.toFixed(3)} ms   every blit resampled, against ${r.convergedMs.toFixed(3)} ms converged — ${r.heldSmoothedMs.toFixed(3)} ms with the filter on`,
   );
   console.log(
     `  baked residency     ${(r.bakedBytes / 1024 / 1024).toFixed(2)} MiB  what this frame's bakes hold`,

@@ -347,6 +347,12 @@ export function drawWorld(
   // which ever *does* drift off that alignment shows it, instead of being quietly blurred into
   // looking almost right. Set per frame, not once: `GameScreen` resizes the backing store when the
   // DPR changes, and assigning `canvas.width` resets the whole 2D drawing state with it.
+  //
+  // **The frames after a zoom settles are the exception, and it stays false through them** (ADR
+  // 0009). While the cache converges, a blit whose bake has not been re-made yet is drawn from one
+  // made for another scale and genuinely does resample. Filtering those reads 2–4× closer to the
+  // picture they are converging on — and costs 90% of the whole frame to do it, because during
+  // convergence *every* blit is one of them. That is the frame this budget exists to protect.
   ctx.imageSmoothingEnabled = false;
 
   // Clear and repaint only the visible slice of the world, not the whole 31,200² arena.

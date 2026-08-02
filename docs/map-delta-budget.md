@@ -174,6 +174,13 @@ digit of it. But **1 world unit = 1 CSS px** at the fixed M4 zoom, so all of tha
 strictly sub-pixel — and not even sub-pixel *motion*, because the client interpolates between
 samples anyway. Rounding on the way out costs nothing anyone can see.
 
+**That last step is zoom-dependent since [#92](https://github.com/ericbstie/the-game/issues/92).**
+One world unit is `zoom` CSS pixels now, so a whole-unit rounding error is 3 CSS px at `3×` — six
+device px at dpr 2 — where at the M4 zoom it was one. The budget below is not re-derived for it: what
+rides the wire is unchanged, and the interpolation that made the rounding invisible is unchanged. It
+is the *consequence* that no longer holds at every zoom, and the ticket that revisits it will need a
+number for how far a body may sit from where the server put it, not a number for the wire.
+
 A launch's heading has the same problem in miniature — it was `PeerShot.dir` before #80 and it is
 `ProjectileSpawn`'s last two numbers now: a full-precision unit vector, where three decimals is
 under half a world unit of lateral drift over the whole `RANGED_RANGE` (700). Its origin rides as

@@ -64,6 +64,27 @@ describe("entrySource", () => {
     expect(source).toContain("image.width * image.height * 4");
   });
 
+  // The burst a player provokes over and over is the settle, and since it is spread over frames a
+  // single number cannot describe it. The loop below is the measurement: drive frames until the
+  // cache stops baking, asking for the source afresh each time because that call is what opens the
+  // frame's budget. Time it in one draw and the budget reads as a burst that never ends.
+  test("drives the settle frame by frame instead of pricing it as one draw", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("settled.sprites = settling.source(SCALE);");
+    expect(source).toContain("if (bakes === before) break;");
+    expect(source).toContain("settling.source(SCALE / NOTCH)");
+  });
+
+  // ADR 0009 turns on what a resampled blit costs when every blit in the frame is one, so the frame
+  // that decides it has to be measured both ways through the shipped `drawWorld` — which sets the
+  // flag itself, and so has to be shadowed rather than asked.
+  test("prices the converging frame with the filter off and on, against the converged one", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("{ budgetMs: 0 }"); // a cache that holds everything and bakes nothing
+    expect(source).toContain('Object.defineProperty(ctx, "imageSmoothingEnabled"');
+    expect(source).toContain("delete ctx.imageSmoothingEnabled;");
+  });
+
   test("bounds the frame to the world the screen reaches, and bakes at the scale it draws at", () => {
     const source = entrySource(parseArgs(["--zoom", "0.5"]));
     expect(source).toContain("const ZOOM = 0.5;");
@@ -184,9 +205,10 @@ describe("entrySource", () => {
     // the art. Counted, because a timing call alone passing is exactly how a report comes to quote a
     // word count off a frame that had no words in it.
     expect(source).toContain("const withBlood = { ...withLettering, blood: bloodMarks(DECALS) }");
-    // Five: the blood row, the blit-and-bar count, the screenshot, the warm side of the re-bake
-    // burst and the residency read — every one of them the whole frame, art included.
-    expect(source.split("drawWorld(ctx, flying, withBlood)").length - 1).toBe(5);
+    // Six: the blood row, the blit-and-bar count, the screenshot, the warm side of the re-bake
+    // burst, the converged frame the held ones are weighed against, and the residency read — every
+    // one of them the whole frame, art included.
+    expect(source.split("drawWorld(ctx, flying, withBlood)").length - 1).toBe(6);
     // The count is derived from the cadences that actually fire, not chosen here
     // (`lettering-ink.ts`), and it is the two mark counts added because a word rides both.
     expect(source).toContain(`const LETTERING = ${concurrentLettering()};`);

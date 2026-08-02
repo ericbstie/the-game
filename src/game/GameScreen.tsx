@@ -677,6 +677,12 @@ export function GameScreen({
             // until the gesture has been still for `ZOOM_SETTLE_MS`, and the frame blits them
             // resampled in the meantime — which is what every candidate the ADR rejected does on
             // every frame, paid here for the length of a gesture instead.
+            //
+            // **Asked once a frame, and that call is what opens the frame's bake budget**
+            // (`cache.ts`). The settle does not pay the whole re-bake either: this frame re-makes
+            // what the budget allows and blits the bakes in hand for the rest, so the picture
+            // sharpens over the second after a gesture instead of stopping on the frame that
+            // steps the avatar and judges contact damage.
             sprites: spriteCache.source(dpr * bakeZoom(zoomRef.current, clock)),
             // The tutorial's world-anchored half, straight off the step above (#134). The other
             // two prompts travel no further than this component: they are screen-fixed chrome, and

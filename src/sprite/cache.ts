@@ -19,14 +19,27 @@ import { bakedPixels, bakeOne, type SpriteSubject } from "./sheet";
 // today's at 0.5× where baking at the top pays nine times it always.
 //
 // That scale is therefore a bake's identity: when it moves — a window dragged to a display of a
-// different density, or a player turning the wheel — every bake in hand is the wrong resolution, so
-// the cache empties itself rather than keeping a second copy of the whole sprite set for a scale
-// nobody is looking at. What stops a zoom gesture paying that bill every frame is not here: the
-// caller holds the settled scale and asks for the new one once the hand stops (`zoom.ts`).
+// different density, or a player turning the wheel — every bake in hand is the wrong resolution.
+// What stops a zoom gesture paying that bill on every frame is not here: the caller holds the
+// settled scale and asks for the new one once the hand stops (`zoom.ts`).
+//
+// **What stops the settled frame paying it whole is here.** Re-baking the set is 92–315 ms
+// (`docs/frame-budget.md`), and it would be spent inside the one `requestAnimationFrame` callback
+// that also steps the avatar and judges contact damage, on the thread that takes socket delivery —
+// so paid whole it is a third of a second in which a surrounded player cannot move, cannot fire, and
+// then takes every enemy's gated hit at once on resume. Instead each frame re-bakes what a fixed
+// budget allows and **hands back the bake it already has for everything else**, resampled, so the
+// picture sharpens over the frames after a settle rather than stopping on it.
+//
+// Only the newest bake of a variant is kept — the new one replaces the old one in the same entry —
+// so a gesture that sweeps 0.5× to 3× holds one image per sprite at the end of it and never one per
+// scale it crossed.
 //
 // Baking is lazy, per sprite. Nothing is baked until something asks to draw it, so a match that
 // never spawns an elite never pays for one, and the fifteen sprite modules can land one at a time
-// without the first frame growing to meet them.
+// without the first frame growing to meet them. **A first bake is not deferrable**: there is no
+// older bake to hand back in its place, and a hole in the picture is worse than a frame that runs
+// long, so the budget governs re-baking and leaves the lazy path exactly as it was.
 
 // What the render loop needs to put a sprite on screen: the baked image, and the box in world units
 // to blit it into. World units, because `drawWorld` paints in them and the zoom that turns one into
@@ -68,8 +81,11 @@ export type SpriteSource = (
 
 export interface SpriteCache {
   // The sprites as they should be drawn at this scale — device pixels per world unit, which is the
-  // device pixel ratio times the camera's zoom. Called once a frame; a scale that has not moved is
-  // free.
+  // device pixel ratio times the camera's zoom. A scale that has not moved is free.
+  //
+  // **Called once a frame, and that is what a frame is here**: this call opens the frame's bake
+  // budget. A caller that asks twice gets two budgets, and one that never asks again keeps drawing
+  // whatever it has.
   source(scale: number): SpriteSource;
 }
 
@@ -93,6 +109,42 @@ type Derive = (ink: CanvasImageSource, pixels: number, rim: number) => CanvasIma
 // and the elite's 0.243 → 0.069, while at 1.5 px the grunt rises to 0.135 and at 2 px to 0.170.
 const HIT_FLASH_RIM = 1;
 
+const flashRim = (scale: number): number => Math.max(1, Math.round(HIT_FLASH_RIM * scale));
+
+// How much of one frame may go into re-baking, in milliseconds.
+//
+// **Derived from the frame's own headroom rather than picked.** The worst frame is 6.3 ms of a
+// 16.67 ms one and leaves 10.4 ms spare (`docs/frame-budget.md`). The zoom whose burst is dearest is
+// the widest one, and that frame is 1.35–1.51× the headline — about 8.5–9.5 ms, leaving about 7–8.
+// Four is under half of what is spare exactly where the burst is worst; the end with no headroom of
+// its own (3×, twice the headline) is the end whose burst is the *cheapest*, 132 bakes against 545.
+//
+// **It bounds what a frame decides to spend, not what it spends.** A bake cannot be interrupted, so
+// the check happens before one and never inside it, and a frame runs over by whatever it started —
+// which grows with the scale, a 96 u nest at 3× dpr 2 being a 576 px canvas. Measured, that puts the
+// dearest frame of a settle at 33 / 42 / 58 ms against a burst of 315 / 247 / 92 ms paid whole, and
+// convergence at 13–51 frames.
+//
+// What it trades is how long held ink stands after a settle — about a second — and only a played
+// match can judge that, so the figure is provisional and a later change to it is a retune. What is
+// not provisional is that there is a budget at all.
+export const BAKE_BUDGET_MS = 4;
+
+// Injected the way `bake` and `derive` are, and for the same reason: a budget in milliseconds cannot
+// be exercised under `bun test`, where a stubbed bake costs no time at all. A stub that advances its
+// own clock can be.
+export interface BakeBudget {
+  budgetMs?: number;
+  now?: () => number;
+}
+
+// A bake and the scale it was made for. The scale is what makes an entry stale rather than absent,
+// which is the whole difference between a picture that sharpens and one that stops.
+interface Held {
+  image: CanvasImageSource;
+  scale: number;
+}
+
 // `bake` and the flash `derive` are injected so the bookkeeping can be tested under `bun test`, where
 // happy-dom has no canvas at all and a real bake is impossible. They default to the harness's own
 // `bakeOne`, which is what already encodes the bake-at-`size × dpr` rule, and to `bakeHitFlash`.
@@ -106,17 +158,22 @@ export function createSpriteCache(
   subjects: Partial<Record<SpriteName, SpriteSubject>>,
   bake: Bake = bakeOne,
   derive: Derive = bakeHitFlash,
+  { budgetMs = BAKE_BUDGET_MS, now = () => performance.now() }: BakeBudget = {},
 ): SpriteCache {
-  let baked = new Map<string, CanvasImageSource>();
+  const baked = new Map<string, Held>();
   let bakedScale = 0;
+  let spent = 0;
 
-  const held = (key: string, make: () => CanvasImageSource): CanvasImageSource => {
-    let image = baked.get(key);
-    if (!image) {
-      image = make();
-      baked.set(key, image);
-    }
-    return image;
+  // The bake for `key` at the scale it is wanted at, made now unless this frame's budget is gone and
+  // there is an older one to hand back instead.
+  const held = (key: string, wanted: number, make: () => CanvasImageSource): Held => {
+    const inHand = baked.get(key);
+    if (inHand && (inHand.scale === wanted || spent >= budgetMs)) return inHand;
+    const started = now();
+    const fresh = { image: make(), scale: wanted };
+    spent += now() - started;
+    baked.set(key, fresh);
+    return fresh;
   };
 
   const source: SpriteSource = (name, facing, frame, variant = "ink") => {
@@ -124,20 +181,29 @@ export function createSpriteCache(
     if (!subject) return null;
     const f = wrap(facing, subject.facings);
     const n = wrap(frame, subject.frames);
-    const pixels = bakedPixels(subject.size, bakedScale);
-    const ink = held(`${name}/${f}/${n}`, () => bake(subject, bakedScale, f, n));
-    if (variant === "ink") return { image: ink, size: pixels / bakedScale };
+    const key = `${name}/${f}/${n}`;
+    const ink = held(key, bakedScale, () => bake(subject, bakedScale, f, n));
+    if (variant === "ink") {
+      return { image: ink.image, size: bakedPixels(subject.size, bakedScale) / bakedScale };
+    }
     // Lazy per variant here too, and that is what makes the flash affordable: only the facings a
     // spider is actually hit in are ever derived, and a wave that never lands a hit on a
     // north-facing elite never pays for one.
     //
-    // Floored at a whole device pixel: a rim of a fraction of one comes out grey rather than thin,
-    // which is the same trap `bakedPixels` exists to keep a bake out of at Windows' 1.25× scaling.
-    const rim = Math.max(1, Math.round(HIT_FLASH_RIM * bakedScale));
-    return {
-      image: held(`${name}/${f}/${n}/flash`, () => derive(ink, pixels, rim)),
-      size: (pixels + 2 * rim) / bakedScale,
-    };
+    // Derived at **the ink's** scale rather than at the frame's, because it is derived from that ink
+    // and can be no fresher than it. Keyed at the frame's, an ink held over a settle would produce a
+    // flash that looks current and no later frame would ever correct.
+    //
+    // The rim is floored at a whole device pixel: a rim of a fraction of one comes out grey rather
+    // than thin, which is the same trap `bakedPixels` exists to keep a bake out of at Windows' 1.25×
+    // scaling.
+    const flash = held(`${key}/flash`, ink.scale, () =>
+      derive(ink.image, bakedPixels(subject.size, ink.scale), flashRim(ink.scale)),
+    );
+    // Off the scale the flash in hand was made at, not off the ink's or the frame's: the box has to
+    // be the world width of the art it holds, and the ink can be a generation ahead of it.
+    const pixels = bakedPixels(subject.size, flash.scale);
+    return { image: flash.image, size: (pixels + 2 * flashRim(flash.scale)) / flash.scale };
   };
 
   return {
@@ -145,10 +211,8 @@ export function createSpriteCache(
       if (!Number.isFinite(scale) || scale <= 0) {
         throw new Error(`bake scale must be a positive number, got ${scale}`);
       }
-      if (scale !== bakedScale) {
-        baked = new Map();
-        bakedScale = scale;
-      }
+      bakedScale = scale;
+      spent = 0;
       return source;
     },
   };

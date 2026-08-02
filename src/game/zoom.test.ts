@@ -93,7 +93,7 @@ describe("the wheel moves the zoom", () => {
   });
 });
 
-// ADR 0008: the bake follows the zoom, and a re-bake burst is 93–339 ms through the shipped path
+// ADR 0008: the bake follows the zoom, and a re-bake burst is 92–315 ms through the shipped path
 // (`docs/frame-budget.md`). Paying that on every frame of a gesture is not affordable, so the
 // previous bake is held — blitted resampled, which is what every rejected candidate did all the
 // time — until the gesture stops.

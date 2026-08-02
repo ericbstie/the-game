@@ -241,7 +241,10 @@ The render loop paints through a scaled transform, so a sprite baked at its logi
 **upscaled by that transform** before it reaches the screen: at 28 px it comes out visibly soft.
 Sprites are therefore baked at `size × scale` and blitted into a box **exactly that many device
 pixels wide**, one device pixel per baked pixel, and the cache re-bakes the set when that scale
-changes.
+changes — over the frames that follow rather than on the frame that noticed, because the whole set
+at once is 92–315 ms and that is a stopped thread rather than a slow one
+([ADR 0009](../../docs/adr/0009-a-held-bake-resamples-nearest.md)). Until a sprite's turn comes it is
+blitted from the bake in hand, resampled, so the picture sharpens instead of stopping.
 
 **The scale is `dpr × zoom`.** It was `dpr` alone until the camera could zoom (#92). ADR 0008
 measured the alternatives — baking at the top of the range, baking at reference scales, accepting

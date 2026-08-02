@@ -40,9 +40,14 @@ const PX_PER_LINE = 16;
 // settle several times and pay a re-bake for each. This is the first round figure above it.
 //
 // **It is deliberately not derived from the burst it hides**, which `bun run frame:budget` measures
-// at 93 ms at 3× and 339 ms at 0.5× (`docs/frame-budget.md`). No settle short of a second would make
+// at 92 ms at 3× and 315 ms at 0.5× (`docs/frame-budget.md`). No settle short of a second would make
 // a one-notch-then-pause gesture cheap, because a zoom that genuinely moved *owes* a re-bake; what a
 // settle can do is stop one continuous gesture paying several, and that is all this number is for.
+//
+// Nor is it what stops that burst being a freeze — `cache.ts` spends a fixed bake budget per frame
+// and hands back the bakes in hand for the rest, so the settle is a second of sharpening rather than
+// a stopped thread. The two are independent: without the settle a gesture would re-bake toward a
+// scale it is about to leave, on every frame of the turn.
 //
 // What it trades is how long resampled ink stands after the hand stops, and only a played match can
 // judge that — so the value is provisional and a later change to it is a retune.

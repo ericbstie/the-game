@@ -199,8 +199,15 @@ zoom must settle first.
   also what makes upscaled ink look soft rather than blocky, and a bold staircase may read better as
   1930s ink than a soft edge does. The decision above makes the question moot for sprites, and it
   returns for anything that ever does resample.
+
+  > **Answered by [ADR 0009](0009-a-held-bake-resamples-nearest.md).** #92's spread re-bake is the
+  > thing that resamples, and it stays nearest: filtering the frames of a settle costs 52–409% of the
+  > frame it is protecting, worst at `3×` where the sharpness case is strongest.
 - **The mitigation.** Holding the previous bake and blitting resampled from it during a gesture was
   not built or measured — only the burst it would have to hide.
+
+  > **Built and measured** for the settle as well as the gesture — see
+  > [What a settled zoom costs to re-bake](../frame-budget.md#what-a-settled-zoom-costs-to-re-bake).
 - **GPU compositing.** Everything is software-rasterised under `--disable-gpu`, an upper bound. A
   GPU resamples far more cheaply than a CPU does, so the frame-time margin above is the widest this
   decision will ever have. The sharpness and memory arguments do not depend on it; the frame-time
