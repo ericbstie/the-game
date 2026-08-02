@@ -1138,6 +1138,41 @@ describe("a shot travels, and the damage lands where it arrives (#80)", () => {
     expect(stepEnemies(s, [], [], DT).events.hits).toHaveLength(1);
   });
 
+  // The seam at the far end of the sweep, and the allowance `flyProjectiles` closes it with. A body
+  // sitting *past* this tick's far end takes its own step before the next sweep is struck, and one
+  // closing head-on takes that step towards the shot — so it can land *behind* the near end of the
+  // next sweep without either one ever having contained it, and the shot passes it by for good.
+  //
+  // Placed and walked by hand, like `flightAgainst` below: this is a test about where the sweep
+  // ends, not about where a spider strolls.
+  const closingHeadOn = (gap: number): number => {
+    const step = (BLOODLING_SPEED * DT) / 1000;
+    const from = { x: 100, y: 100 };
+    const start = { x: from.x + gap, y: from.y };
+    const body: Enemy = { id: "e1", kind: "bloodling", pos: { ...start }, hp: 10_000, biteMs: 0 };
+    const s = stateWith([body]);
+    stepEnemies(s, [], [shot(from, { x: 1, y: 0 })], DT); // launched; nothing has flown yet
+    for (let t = 0; s.projectiles.size > 0 && t <= 40; t++) {
+      body.pos = { x: start.x - step * t, y: start.y }; // straight down the line, into the shot
+      stepEnemies(s, [], [], DT);
+    }
+    return 10_000 - body.hp;
+  };
+
+  test("a body past this tick's reach, closing head-on at the fastest enemy's speed, is still struck", () => {
+    // The allowance is one step of the *fastest* thing in the arena, so this has to be that thing.
+    expect(BLOODLING_SPEED).toBe(Math.max(GRUNT_SPEED, ELITE_SPEED, BLOODLING_SPEED));
+    const perTick = (PROJECTILE_SPEED * DT) / 1000;
+    const step = (BLOODLING_SPEED * DT) / 1000;
+    expect(perTick).toBeGreaterThan(step); // or the seam would not be at the far end at all
+    // Across the whole window the plain sweep leaves open: past its far end, inside one step of it.
+    // Every one of these is caught by the allowance and by nothing else — take it away and the body
+    // is behind the near end of the next sweep before that sweep is struck, and is never hit at all.
+    for (const past of [0.5, step / 2, step - 0.001]) {
+      expect(closingHeadOn(perTick + past)).toBe(RANGED_DAMAGE);
+    }
+  });
+
   test("enemy HP is written on impact and by nothing else — a spent shot cannot hit twice", () => {
     const s = oneGrunt(100);
     fire(s);
