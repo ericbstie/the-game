@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { Vec2 } from "../lobby/protocol";
+import { TILE } from "./build";
 import { ELITE_RADIUS, GRUNT_RADIUS } from "./enemies";
 import {
+  AIM_ARM,
+  AIM_REACH,
   BURST_REACH,
   inkPuff,
   type Lobe,
   PUFF_REACH,
+  reticle,
   SHOT_DASH,
   SHOT_GAP,
   type Strand,
@@ -358,5 +362,67 @@ describe("the ink puff struck where an enemy dies", () => {
         to: round(l.to),
       }));
     expect(shape(inkPuff(AT), AT)).toEqual(shape(inkPuff(ORIGIN), ORIGIN));
+  });
+});
+
+// #154: the mark under the pointer. Its whole job is to be found at a glance in a frame full of ink,
+// so every claim below is about the silhouette — where it stands, what it leaves clear, and that it
+// cannot be read as one of the two radial marks struck a few units away from it.
+describe("the reticle marking the aim point", () => {
+  const AT: Vec2 = { x: 4_812, y: 19_073 };
+
+  // Corners as points rather than as strands: the two arms of one corner are struck as a single
+  // polyline so the joint mitres shut, which is exactly what `draw.ts` is handed.
+  const corners = (at: Vec2) => reticle(at);
+
+  test("it is four corners of a square, each two arms meeting at the corner", () => {
+    const struck = corners(AT);
+    expect(struck.length).toBe(4);
+    for (const corner of struck) {
+      expect(corner.length).toBe(3);
+      const [start, bend, end] = corner;
+      // The bend is the corner itself: both arms run in from it, one along each axis.
+      expect(Math.abs(bend.x - AT.x)).toBeCloseTo(AIM_REACH, 9);
+      expect(Math.abs(bend.y - AT.y)).toBeCloseTo(AIM_REACH, 9);
+      expect(start.y).toBeCloseTo(bend.y, 9);
+      expect(end.x).toBeCloseTo(bend.x, 9);
+      expect(Math.abs(start.x - bend.x)).toBeCloseTo(AIM_ARM, 9);
+      expect(Math.abs(end.y - bend.y)).toBeCloseTo(AIM_ARM, 9);
+    }
+    // One corner per quadrant, and no two in the same one.
+    const quadrants = struck.map((c) => `${Math.sign(c[1].x - AT.x)},${Math.sign(c[1].y - AT.y)}`);
+    expect(new Set(quadrants).size).toBe(4);
+  });
+
+  // The point itself is what the player is reading, and the mark is a frame around it rather than a
+  // blot on it. Nothing struck may come within an arm's turn of the middle.
+  test("the middle is left open, so what is being aimed at shows through", () => {
+    for (const corner of corners(AT)) {
+      for (const p of corner) {
+        expect(Math.max(Math.abs(p.x - AT.x), Math.abs(p.y - AT.y))).toBeCloseTo(AIM_REACH, 9);
+      }
+    }
+    expect(AIM_ARM).toBeLessThan(AIM_REACH); // the arms stop short of the axes they point at
+  });
+
+  // The burst on a connect (#115) and the puff on a death (#116) are struck in the same pen a few
+  // units away from this one, and a shot aimed at a spider puts all three in one place. They are
+  // told apart by shape or not at all: those two radiate from their point, and this one does not.
+  test("nothing it strikes runs through the point it marks", () => {
+    for (const corner of corners(AT)) {
+      const bearings = corner.map((p) => Math.atan2(p.y - AT.y, p.x - AT.x));
+      expect(new Set(bearings.map((b) => b.toFixed(6))).size).toBe(3);
+    }
+  });
+
+  test("it stands clear of the tile the cursor is over, so the tile is never covered", () => {
+    expect(AIM_REACH).toBeGreaterThan(TILE / 2);
+  });
+
+  test("it is the same mark wherever in the arena it is struck", () => {
+    const round = (n: number) => +n.toFixed(9) || 0;
+    const shape = (struck: Vec2[][], at: Vec2) =>
+      struck.map((c) => c.map((p) => ({ x: round(p.x - at.x), y: round(p.y - at.y) })));
+    expect(shape(corners(AT), AT)).toEqual(shape(corners(ORIGIN), ORIGIN));
   });
 });

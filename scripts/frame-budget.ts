@@ -98,6 +98,7 @@ export interface BudgetResult {
   letteringMs: Record<string, number>;
   bloodMs: Record<string, number>;
   veilMs: number;
+  aimMs: number;
 }
 
 export function entrySource(request: BudgetRequest): string {
@@ -114,8 +115,8 @@ import { SPRITES } from ${JSON.stringify(REGISTRY_MODULE)};
 import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { DEFAULT_WORLD_SETTINGS } from ${JSON.stringify(SETTINGS_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
-import { inkPuff, speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
-import { letteringAt, SHOT_STREAK } from ${JSON.stringify(DRAW_MODULE)};
+import { inkPuff, reticle, speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
+import { AIM_PAPER_WIDTH, letteringAt, SHOT_STREAK } from ${JSON.stringify(DRAW_MODULE)};
 import { BLOOD_BANDS } from ${JSON.stringify(DRAW_MODULE)};
 import { BLOOD_CAP, BLOOD_FADE_MS, DROP_RADIUS, stainMarks } from ${JSON.stringify(BLOOD_MODULE)};
 import { FLASH_ALPHA } from ${JSON.stringify(DAMAGE_MODULE)};
@@ -254,7 +255,13 @@ try {
   delete unlettered.lettering;
   const sprites = createSpriteCache(unlettered).source(DPR);
   const setup = () => ctx.setTransform(DPR, 0, 0, DPR, -CAM.x * DPR, -CAM.y * DPR);
-  const opts = { selfId: "p0", camera: CAM, viewport: VIEW, dpr: DPR, now: 1000, sprites, minimapCoverage: ${request.map} };
+  // The pointer, in the middle of the frame (#154). In the *base* options rather than a row of its
+  // own, because it is the one mark that is up on every frame the game draws — there is exactly one
+  // pointer and nothing can put up a second — so a ladder measured without it would be pricing a
+  // frame the game does not paint. It is priced on its own below as well, since 0.02 ms cannot be
+  // resolved between two rows that vary by a millisecond.
+  const AIM = { x: CAM.x + VIEW.width / 2, y: CAM.y + VIEW.height / 2 };
+  const opts = { selfId: "p0", camera: CAM, viewport: VIEW, dpr: DPR, now: 1000, sprites, minimapCoverage: ${request.map}, aim: AIM };
 
   const empty = build(0, 0, false);
   const floor = build(0, 0, true);
@@ -486,6 +493,24 @@ try {
     ctx.fillRect(CAM.x, CAM.y, VIEW.width, VIEW.height);
   });
 
+  // The aim mark (#154), struck the way drawAim strikes it: one path of four mitred corners, laid in
+  // paper and struck again in ink. Standalone and with no ladder, because it is the one mark in the
+  // frame whose count is fixed — there is exactly one pointer, and it is up on every frame the game
+  // draws. Nothing about play, a cadence or a cap can put up a second.
+  const aimMs = measure(() => {
+    setup();
+    ctx.beginPath();
+    for (const corner of reticle(AIM)) {
+      ctx.moveTo(corner[0].x, corner[0].y);
+      for (let i = 1; i < corner.length; i++) ctx.lineTo(corner[i].x, corner[i].y);
+    }
+    ctx.lineJoin = "miter";
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = AIM_PAPER_WIDTH;
+    ctx.stroke();
+    ctx.strokeStyle = "#000"; ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+
   const result = {
     standing: full.enemies.length + STRUCTURES + full.players.length + full.nests.length,
     blits,
@@ -516,6 +541,7 @@ try {
     letteringMs: { [LETTERING]: +words(LETTERING).toFixed(3), 25: +words(25).toFixed(3), 50: +words(50).toFixed(3), 150: +words(150).toFixed(3) },
     bloodMs: { [DECALS]: +blood(DECALS).toFixed(3), 25: +blood(25).toFixed(3), 50: +blood(50).toFixed(3), 150: +blood(150).toFixed(3) },
     veilMs: +veilMs.toFixed(3),
+    aimMs: +aimMs.toFixed(3),
   };
 
   // Drawn last so the screenshot is the frame that was measured, not the final probe.
@@ -583,6 +609,9 @@ if (import.meta.main) {
   );
   console.log(
     `  the damage veil     ${r.veilMs.toFixed(3)} ms   standalone, one full-viewport fill`,
+  );
+  console.log(
+    `  the aim mark        ${r.aimMs.toFixed(3)} ms   standalone, one path struck twice — and always exactly one`,
   );
   console.log("");
   console.log(`Worst case, measured through the shipped drawWorld`);

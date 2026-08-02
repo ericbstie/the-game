@@ -26,7 +26,7 @@ import { HIT_FLASH_MS, type Mark } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
 import { BLOODLING_HP, ELITE_HP, GRUNT_HP } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
-import { BURST_REACH, inkPuff, PUFF_REACH, SHOT_DASH, speedLines, starburst } from "./fx";
+import { BURST_REACH, inkPuff, PUFF_REACH, reticle, SHOT_DASH, speedLines, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_U,
   minimapWindow,
@@ -157,6 +157,15 @@ export interface DrawOptions {
   // the reason a burst's lifetime is: the instant it is measured from is `ClientWorld`'s, and this
   // layer has never seen it.
   damageFlash?: number;
+  // Where the pointer is, in world units (#154) — the point `aimDir` takes a shot's direction from,
+  // and the point `cursorTile` reads a tile out of. Handed in as a world position rather than as the
+  // CSS pixel it came from, because that conversion is the caller's and this layer paints in world
+  // space; `GameScreen` derives both from one expression, so the mark cannot land on a different
+  // point from the one a click is spent at.
+  //
+  // Absent, no mark is struck at all — which is every test written before this ticket, and every
+  // frame `sprite:frame` rendered before it.
+  aim?: Vec2;
 }
 
 // One thing standing on the floor, waiting for its turn to paint. `y` is its floor line — the
@@ -230,6 +239,17 @@ const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for n
 // dpr 1. The weight is shared by the trail so the whole mark reads as one hand. Exported for
 // `scripts/shot-ink.ts`, which cannot measure the mark's coverage against a width of its own.
 export const SHOT_WIDTH = 2;
+
+// How far the paper stands clear of the ink on either side of the aim mark (#154), in world units.
+// The mark's ink is `SHOT_WIDTH` like every other stroke in the frame — one hand for the whole
+// drawing — and this is the only thing about it that is not shared with the rest: 1.5 u of paper each
+// side, which at dpr 1 is still a whole pixel of rim after the ink has taken its two.
+//
+// The paper pass's own width is derived from it and exported for `scripts/frame-budget.ts`, which
+// prices the mark and cannot be left to pick a width of its own — the same reason `SHOT_WIDTH` is
+// exported for `scripts/shot-ink.ts`.
+const AIM_HALO = 1.5;
+export const AIM_PAPER_WIDTH = SHOT_WIDTH + 2 * AIM_HALO;
 
 // Blood (#140), and the one place the black-and-white theme is broken on purpose. #76 grants the
 // game two colours and this is neither of them — it is a stated exception, and it earns it by being
@@ -529,6 +549,11 @@ export function drawWorld(
   // to centre on there is no window and nothing is drawn at all.
   const self = world.players.find((p) => p.id === options.selfId);
   if (self) drawMinimap(ctx, world, self, options);
+
+  // Over the map as well as over the world (#154). The mark stands in for the OS arrow, which was
+  // over every pixel on the screen — so a pointer that slid behind the corner map would simply be
+  // gone, and there would be nothing left to say where it was.
+  drawAim(ctx, options);
 
   // Last of all, and only ever on the dying player's own screen. It falls over the map too — a
   // player who is down is out of the fight, and reading the arena is part of the fight.
@@ -973,6 +998,46 @@ function drawMinimap(
   ctx.lineWidth = MAP_RULE;
   ctx.strokeStyle = INK;
   ctx.strokeRect(win.x, win.y, win.size, win.size);
+}
+
+// The mark under the pointer (#154). `.arena` hides the OS arrow (`src/styles.css`), so this is the
+// only thing on screen that says where the pointer is — and since `aimDir` takes a shot's direction
+// from that same point, it is the only thing that says where a shot is aimed.
+//
+// **Struck twice over one path: paper wide, ink narrow.** It is the whole of what makes the mark
+// work, and it is not a style. The floor is white paper and an ore patch is dense black stipple
+// (#106), so a black mark is invisible on the ore and a white one is invisible on the floor — a
+// single colour cannot carry this drawing over both, whichever one is picked. A wider paper stroke
+// under a narrower ink one reads as plain ink on the floor, where the rim is the floor's own colour,
+// and as a paper-rimmed mark on the ore. That is exactly the idiom a player's name and a `+1` are
+// already cut out of the sprites they are read over with (`paintOverhead`, `drawFloats`), moved from
+// `fillText` to a stroke.
+//
+// One path for both passes: the current path survives a `stroke()`, so the geometry is built once
+// and the frame pays two strokes rather than two paths. Eight segments struck twice is sixteen
+// pieces by `docs/frame-budget.md` rule 1 — twice a burst's eight — and it still measures at
+// 0.023 ms against a burst's 47 µs, because this mark spans 26 u where a burst spans 60. It is the
+// cheapest layer in the frame, and the only one whose count nothing can move: there is one pointer
+// and it is up on every frame, which is why the mark has no lifetime, no list and no cull.
+//
+// Not culled, alone among the marks in this file: every other one is a point in a 31,200² arena and
+// almost always off screen, while this one is under the player's own hand.
+function drawAim(ctx: CanvasRenderingContext2D, { aim }: DrawOptions): void {
+  if (!aim) return;
+  ctx.beginPath();
+  for (const corner of reticle(aim)) {
+    ctx.moveTo(corner[0].x, corner[0].y);
+    for (let i = 1; i < corner.length; i++) ctx.lineTo(corner[i].x, corner[i].y);
+  }
+  // Set rather than inherited: a corner is a right angle and the last thing to touch the join was a
+  // player's name, which rounds it (`paintOverhead`). Rounded, the four points come off the mark.
+  ctx.lineJoin = "miter";
+  ctx.strokeStyle = PAPER;
+  ctx.lineWidth = AIM_PAPER_WIDTH;
+  ctx.stroke();
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = SHOT_WIDTH;
+  ctx.stroke();
 }
 
 // The damage readout for one entity, sitting above whatever was drawn for it. Nothing at full

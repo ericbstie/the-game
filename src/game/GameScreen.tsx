@@ -542,6 +542,15 @@ export function GameScreen({
             // Aged the same way, on the same frame clock, and judged without that delay — a death
             // takes its spider off this very snapshot, so the puff has nothing to wait for (#116).
             puffs: world.deathMarks(clock, PUFF_MS),
+            // Where the pointer is, so the frame can mark it (#154). The *true* camera, exactly as
+            // the ghost's tile above is: the mark and the ghost are one gesture and have to hold
+            // together, and a mark laid out against the swung view would be the one thing on screen
+            // that a blow slid out from under the cursor.
+            //
+            // Drawn whatever the gun is doing. The OS arrow is hidden over the whole arena, so a
+            // mark that came and went with the weapon would leave a player mining and building with
+            // nothing on screen to point with — the ask hides one cursor and owes exactly one back.
+            aim: cursorPoint(pointerRef.current, camera),
             sprites: spriteCache.source(dpr),
           });
         }
@@ -904,10 +913,19 @@ function liveHarvest(
   return self && !withinReach(tileCenter(target.tile), self, INTERACT_REACH) ? null : target;
 }
 
-// The tile under the pointer. The camera maps CSS pixels to world units 1:1, so the pointer's
-// world position is simply pointer + camera.
+// Where the pointer is in the world. The camera maps CSS pixels to world units 1:1, so the
+// pointer's world position is simply pointer + camera.
+//
+// One expression, three readers: the tile below, `aimDir`'s target, and the mark #154 draws under
+// the pointer. That is what makes the mark unable to disagree with the click — it is not drawn from
+// a second conversion that could be given a different camera.
+function cursorPoint(pointer: Vec2, camera: Camera): Vec2 {
+  return { x: pointer.x + camera.x, y: pointer.y + camera.y };
+}
+
+// The tile under the pointer.
 function cursorTile(pointer: Vec2, camera: Camera): Tile {
-  return tileOf({ x: pointer.x + camera.x, y: pointer.y + camera.y });
+  return tileOf(cursorPoint(pointer, camera));
 }
 
 function selfPos(players: { id: string; pos: Vec2 }[], selfId: string | undefined): Vec2 | null {

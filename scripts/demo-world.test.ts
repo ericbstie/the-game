@@ -1,11 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { BLOOD_FADE_MS, DROP_RADIUS, STAIN_RADIUS } from "../src/game/blood";
-import { INTERACT_REACH, resolveHarvest, tileCenter, tileKey } from "../src/game/build";
+import {
+  INTERACT_REACH,
+  oreAt,
+  resolveHarvest,
+  tileCenter,
+  tileKey,
+  tileOf,
+} from "../src/game/build";
 import { BLOODLING_HP } from "../src/game/enemies";
 import { FLOAT_RISE, oreFloatOrigin } from "../src/game/floats";
-import { PUFF_REACH } from "../src/game/fx";
-import { MINIMAP_COVERAGES, minimapWindow, oreCells, oreDensity } from "../src/game/minimap";
+import { AIM_REACH, PUFF_REACH } from "../src/game/fx";
 import {
+  MINIMAP_COVERAGE_U,
+  MINIMAP_COVERAGES,
+  minimapWindow,
+  oreCells,
+  oreDensity,
+} from "../src/game/minimap";
+import {
+  DEMO_AIM,
   DEMO_CAMERA,
   DEMO_MINED,
   DEMO_NOW,
@@ -99,6 +113,58 @@ describe("the scene the harness paints", () => {
     expect(floats.filter((f) => f.id === null).map((f) => f.pos)).toEqual([
       oreFloatOrigin(DEMO_MINED),
     ]);
+  });
+
+  // #154's mark is struck under the pointer, and the one question about it a spy cannot answer is
+  // whether ink rimmed in paper still reads over a floor that is already black. That is what this
+  // scene's pointer is for: it stands on the densest ore in the frame, which is the case the mark is
+  // at risk in — the white floor needs no picture, because there the rim is the floor's own colour.
+  test("aims its pointer into an ore patch, which is the floor the aim mark is at risk on", () => {
+    const world = demoWorld();
+    expect(oreAt(world.ore, tileOf(DEMO_AIM))).toBe("metal");
+    // And a patch rather than one tile in open ground. What the mark has to survive is a floor that
+    // is already black under the whole of it, so the claim is about the box the mark covers and not
+    // about the tile its middle happens to land on — a lone tile would leave most of it on paper.
+    const step = AIM_REACH / 3;
+    let covered = 0;
+    let sampled = 0;
+    for (let dy = -AIM_REACH; dy <= AIM_REACH; dy += step) {
+      for (let dx = -AIM_REACH; dx <= AIM_REACH; dx += step) {
+        sampled++;
+        if (oreAt(world.ore, tileOf({ x: DEMO_AIM.x + dx, y: DEMO_AIM.y + dy }))) covered++;
+      }
+    }
+    expect(covered / sampled).toBeGreaterThan(0.7);
+  });
+
+  // Clear of everything else the scene draws, the corner map's own plate included, and inside the
+  // frame. A mark half behind a spider — or over the map's white plate — says nothing about the
+  // floor, which is the only thing this picture is asked about.
+  test("stands its pointer clear of everything else in the scene, and inside the frame", () => {
+    const world = demoWorld();
+    for (const enemy of world.enemies) {
+      expect(Math.hypot(DEMO_AIM.x - enemy.pos.x, DEMO_AIM.y - enemy.pos.y)).toBeGreaterThan(
+        AIM_REACH + enemy.radius,
+      );
+    }
+    for (const player of world.players) {
+      expect(Math.hypot(DEMO_AIM.x - player.pos.x, DEMO_AIM.y - player.pos.y)).toBeGreaterThan(
+        AIM_REACH + player.radius,
+      );
+    }
+    expect(DEMO_AIM.x).toBeGreaterThan(DEMO_CAMERA.x + AIM_REACH);
+    expect(DEMO_AIM.x).toBeLessThan(DEMO_CAMERA.x + DEMO_VIEWPORT.width - AIM_REACH);
+    expect(DEMO_AIM.y).toBeGreaterThan(DEMO_CAMERA.y + AIM_REACH);
+    expect(DEMO_AIM.y).toBeLessThan(DEMO_CAMERA.y + DEMO_VIEWPORT.height - AIM_REACH);
+    const self = demoWorld().players.find((p) => p.id === DEMO_SELF);
+    if (!self) throw new Error(`the scene has no ${DEMO_SELF} for the map to centre on`);
+    const plate = minimapWindow(self.pos, DEMO_CAMERA, DEMO_VIEWPORT, MINIMAP_COVERAGE_U);
+    const overPlate =
+      DEMO_AIM.x + AIM_REACH > plate.x &&
+      DEMO_AIM.x - AIM_REACH < plate.x + plate.size &&
+      DEMO_AIM.y + AIM_REACH > plate.y &&
+      DEMO_AIM.y - AIM_REACH < plate.y + plate.size;
+    expect(overPlate).toBe(false);
   });
 
   // Inside the frame the harness paints, or the picture answers nothing about a mark nobody sees.

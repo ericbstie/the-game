@@ -11,6 +11,7 @@ import { capture, measurementsIn } from "./headless";
 //   bun run sprite:frame --sprite grunt=src/sprite/grunt.ts   # a real sprite, in a real frame
 //   bun run sprite:frame --map 15600                          # the corner map at its widest level
 //   bun run sprite:frame --damage 0                           # the frame a blow lands on (#142)
+//   bun run sprite:frame --aim 15790,15750                    # the aim mark on bare paper (#154)
 //
 // #77 §6 proved this needs no server, no lobby, no socket and no play-through. It is the only
 // channel that shows a sprite at the size and against the background a player actually sees it,
@@ -42,6 +43,10 @@ export interface FrameRequest {
   // a function of (#142). Infinity is a frame with no blow behind it, which is what a player who
   // has never been hit carries and what every other frame this script renders has always been.
   damage: number;
+  // Where the pointer is, in world units, or null for the scene's own (#154). The mark struck under
+  // it has to read over two floors — near-white paper and dense black stipple — and a frame carries
+  // one pointer, so the second floor is a second render and this is what moves it there.
+  aim: { x: number; y: number } | null;
 }
 
 export interface Blit {
@@ -65,6 +70,7 @@ export function parseArgs(argv: string[]): FrameRequest {
   let at: { x: number; y: number } | null = null;
   let map = MINIMAP_COVERAGE_U;
   let damage = Number.POSITIVE_INFINITY;
+  let aim: { x: number; y: number } | null = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--out") out = argv[++i] ?? "";
@@ -79,12 +85,14 @@ export function parseArgs(argv: string[]): FrameRequest {
       if (!Number.isFinite(damage) || damage < 0) {
         throw new Error("--damage wants ms since the blow");
       }
-    } else if (arg === "--at") {
+    } else if (arg === "--at" || arg === "--aim") {
       const pair = (argv[++i] ?? "").split(",").map(Number);
       if (pair.length !== 2 || pair.some((n) => !Number.isFinite(n))) {
-        throw new Error("--at wants x,y");
+        throw new Error(`${arg} wants x,y`);
       }
-      at = { x: pair[0], y: pair[1] };
+      const point = { x: pair[0], y: pair[1] };
+      if (arg === "--at") at = point;
+      else aim = point;
     } else if (arg === "--sprite") {
       const pair = argv[++i] ?? "";
       const split = pair.indexOf("=");
@@ -95,7 +103,7 @@ export function parseArgs(argv: string[]): FrameRequest {
   // With nothing asked for, the frame is simply the game as the registry has it. `--sprite` layers
   // a module over that: art under review, or a name nothing has drawn yet. `calibration` is the
   // harness's own test pattern and is never art — pass it explicitly to check the machinery.
-  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr, at, map, damage };
+  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr, at, map, damage, aim };
 }
 
 // The screen's swing and its veil are worked out here rather than in the page, because both are a
@@ -114,7 +122,7 @@ export function entrySource(request: FrameRequest, modules = MODULES): string {
 import { drawWorld } from ${JSON.stringify(modules.draw)};
 import { createSpriteCache } from ${JSON.stringify(modules.cache)};
 import { SPRITES } from ${JSON.stringify(modules.registry)};
-import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBlood, demoBursts, demoFloats, demoProjectiles, demoPuffs, demoWorld } from ${JSON.stringify(modules.world)};
+import { DEMO_AIM, DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBlood, demoBursts, demoFloats, demoProjectiles, demoPuffs, demoWorld } from ${JSON.stringify(modules.world)};
 
 const dpr = ${request.dpr};
 // How far the blow threw the view off the camera (#142). Applied to the camera the world is painted
@@ -174,6 +182,11 @@ drawWorld(ctx, world, {
   // How black the blow left the screen this frame (#142). Zero — the default — is a frame nobody
   // was hit on, and lays nothing at all.
   damageFlash: ${fx.flash},
+  // Where the pointer is (#154). The scene aims it at the densest ore in the frame, which is the
+  // floor the mark is at risk on; \`--aim\` puts it on bare paper, which is the other render this
+  // mark takes to review. Procedural ink under the player's own hand — no sprite sheet carries it,
+  // and no spy says whether ink rimmed in paper reads over black stipple (ADR 0002 §5).
+  aim: ${request.aim ? JSON.stringify(request.aim) : "DEMO_AIM"},
   // The real registry, so the frame is the game as it actually stands. Anything named on the
   // command line is layered over it — a sprite under review, or one nobody has wired yet.
   sprites: createSpriteCache({ ...SPRITES, ${table} }).source(dpr),
@@ -214,6 +227,7 @@ if (import.meta.main) {
   );
   console.log(`map     ${request.map} u across`);
   console.log(`damage  ${request.damage} ms since the blow`);
+  console.log(`aim     ${request.aim ? `${request.aim.x},${request.aim.y}` : "the scene's own"}`);
   console.log(`sprites ${Object.keys(request.sprites).join(", ") || "none"}`);
   console.log(`blits   ${result.blits.length}`);
   for (const blit of result.blits) {

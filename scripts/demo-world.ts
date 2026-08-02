@@ -310,6 +310,16 @@ export function demoBlood(world: WorldSnapshot, now: number): BloodMark[] {
   return marks;
 }
 
+// Where the scene's pointer is (#154), and so where the aim mark is struck.
+//
+// **Inside a metal patch, which is the harder of the two floors it has to read over.** The mark is
+// ink rimmed in paper: on the white floor the rim is the floor's own colour and the mark is simply
+// ink, with nothing to judge; on a patch of ore it is ink over black stipple and the rim is the whole
+// of what carries it. A frame has exactly one pointer, so the paper case is a second render —
+// `bun run sprite:frame --aim x,y` moves it there — and `demo-world.test` is what holds this one
+// over ore, clear of everything else the scene draws, and off the corner map's plate.
+export const DEMO_AIM: Vec2 = { x: 16_020, y: 15_650 };
+
 // The ore tile the scene's own player is digging by hand (#136). Placed rather than derived, and
 // that is the mirror of the miners below: a miner carries the tile it stands on, while a hand
 // carries nothing the snapshot can be asked about — the button is held on a client and this scene

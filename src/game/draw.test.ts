@@ -34,7 +34,7 @@ import {
   SHOT_STREAK,
 } from "./draw";
 import { FLOAT_MS, type MetalFloat } from "./floats";
-import { inkPuff, starburst } from "./fx";
+import { inkPuff, reticle, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_CLOSE_U,
   MINIMAP_COVERAGE_U,
@@ -52,6 +52,9 @@ import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
 // The drawing state a call went out under is recorded with it, because from M5 on that state *is*
 // the message for two of the things drawn here: the ghost says "you cannot place this" in opacity
 // alone, and the health bar's two fills differ only in colour and extent.
+//
+// The pen goes in with them for a third: #154's aim mark is struck twice over one path, and the two
+// passes differ in nothing a call log records except their colour and their width.
 interface Call {
   fn: string;
   args: unknown[];
@@ -59,6 +62,8 @@ interface Call {
   fill: unknown;
   stroke: unknown;
   composite: unknown;
+  width: unknown;
+  join: unknown;
 }
 function spyCtx() {
   const calls: Call[] = [];
@@ -73,6 +78,8 @@ function spyCtx() {
         fill: ctx.fillStyle,
         stroke: ctx.strokeStyle,
         composite: ctx.globalCompositeOperation ?? "source-over",
+        width: ctx.lineWidth,
+        join: ctx.lineJoin,
       });
     };
   ctx = {
@@ -2528,5 +2535,89 @@ describe("blood on the floor", () => {
   // 800 × 600 of it. Culled before the geometry is built, so a mark nobody can see costs no arcs.
   test("lays nothing for a mark the camera cannot see", () => {
     expect(discs(bled([{ pos: { x: 9_000, y: 9_000 }, at: 1_000, radius: 32 }]))).toEqual([]);
+  });
+});
+
+// #154: the mark under the pointer. The OS arrow is hidden over the arena (`.arena`, `styles.css`),
+// so this is the only thing on screen that says where the pointer is — and because `aimDir` takes a
+// shot's direction from that very point, it is also the only thing that says where a shot is aimed.
+//
+// What it has to survive is the floor it is read against: white paper over most of a frame, dense
+// black stipple over an ore patch. That is what the two passes below are, and it is what most of
+// these claims are about.
+describe("the aim point's mark", () => {
+  const AIM: Vec2 = { x: 1_300, y: 1_250 };
+  const marked = (patch: Partial<DrawOptions> = {}) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport, aim: AIM, ...patch });
+    return ctx;
+  };
+  // Where the mark begins in a frame's log: the `beginPath` that opens it. Found from the first
+  // point of the first corner rather than from the end of the log, so a mark drawn in the wrong
+  // place fails these tests instead of quietly moving what they read.
+  const opensAt = (ctx: { calls: Call[] }) =>
+    ctx.calls.findIndex((c) => c.fn === "moveTo" && c.args[0] === reticle(AIM)[0][0].x) - 1;
+  const markCalls = (ctx: { calls: Call[] }) => ctx.calls.slice(opensAt(ctx));
+  const points = (ctx: { calls: Call[] }) =>
+    markCalls(ctx)
+      .filter((c) => c.fn === "moveTo" || c.fn === "lineTo")
+      .map((c) => c.args as [number, number]);
+  const passes = (ctx: { calls: Call[] }) => markCalls(ctx).filter((c) => c.fn === "stroke");
+
+  test("strikes the corners `fx.ts` lays out, around the point the pointer is on", () => {
+    expect(points(marked())).toEqual(
+      reticle(AIM).flatMap((corner) => corner.map((p) => [p.x, p.y] as [number, number])),
+    );
+  });
+
+  // The half of this ticket that cannot be got by picking a colour. Ink alone vanishes into an ore
+  // patch and paper alone vanishes into the floor, so the mark is struck twice — a wider paper pass
+  // under a narrower ink one — the idiom a player's name and a `+1` are already cut out of the
+  // sprites they are read over with. The order carries as much as the colours: paper struck second
+  // would rub the mark out.
+  test("is struck in paper first and ink over it, so it reads on paper and on an ore patch", () => {
+    const struck = passes(marked());
+    expect(struck.map((c) => c.stroke)).toEqual(["#ffffff", "#000"]);
+    expect(struck[0].width as number).toBeGreaterThan(struck[1].width as number);
+  });
+
+  // Both passes run one path, so the paper stands evenly around the ink rather than being a second
+  // drawing beside it — the path survives a `stroke()` and is struck again.
+  test("both passes are the one path, so the paper is a rim and not a second mark", () => {
+    const ctx = marked();
+    expect(markCalls(ctx).filter((c) => c.fn === "beginPath")).toHaveLength(1);
+    expect(passes(ctx)).toHaveLength(2);
+  });
+
+  // A corner is one polyline and not two strands, so its outer angle mitres shut. Struck as two
+  // separate segments it comes out notched by half a line width, which on a mark this size is most
+  // of what there is to see.
+  test("each corner is struck as one polyline, so its angle closes", () => {
+    const ctx = marked();
+    expect(markCalls(ctx).filter((c) => c.fn === "moveTo")).toHaveLength(reticle(AIM).length);
+    expect(passes(ctx)[0].join).toBe("miter");
+  });
+
+  // Nothing the frame draws may bury the pointer: the OS arrow this replaces was over every pixel on
+  // the screen, the corner map included.
+  test("paints over everything in the world and over the corner map", () => {
+    const ctx = marked({ selfId: "p1" });
+    expect(opensAt(ctx)).toBeGreaterThan(mapStart(ctx));
+  });
+
+  test("costs the frame nothing at all when there is no pointer to mark", () => {
+    const bare = spyCtx();
+    drawWorld(bare, world, { camera, viewport });
+    expect(bare.calls.some((c) => c.fn === "stroke" && c.join === "miter")).toBe(false);
+    expect(marked().calls.length).toBeGreaterThan(bare.calls.length);
+  });
+
+  // It is the last mark in the frame, so its own state is what the next frame opens on. Every other
+  // stroked mark here sets its colour and its width before it draws and would override those; the
+  // join is the one thing nothing else sets, and a `round` left in force by a name would round this
+  // mark's corners off.
+  test("leaves the frame's alpha as it found it", () => {
+    expect(marked().calls[0].alpha).toBe(1);
+    expect(marked().calls.at(-1)?.alpha).toBe(1);
   });
 });

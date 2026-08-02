@@ -65,6 +65,13 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > count fell from **63 to 14** and the shot layer from 50 marks of ~14 strokes each to **20 of one
 > stroke each, in one path**. See [What a shot costs since #80](#what-a-shot-costs-since-80), which
 > supersedes [What a shot costs since #114](#what-a-shot-costs-since-114) for what the game now draws.
+>
+> [#154](https://github.com/ericbstie/the-game/issues/154) has added a seventh mark — the aim mark
+> under the pointer — at **0.023 ms**. It is the **cheapest layer on this page** and the only one whose
+> count is *fixed*: there is exactly one pointer, it is up on every frame the game draws, and nothing
+> about play, a cadence or a cap can put up a second. It is also the first mark that is **struck
+> twice** — paper under ink — which is what carries it over an ore patch. See [What the aim mark
+> costs](#what-the-aim-mark-costs-154).
 
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
 6.3 ms — 38% of it, leaving 10.4 ms of headroom.**
@@ -88,6 +95,12 @@ Eleven of the fourteen are the minimap's marks: four nest rings, six squad dots 
 The last three are **every shot in the air**, **every impact burst in the frame** and **every death
 puff in it**, however many there are — each bundled into one path on purpose, so the mark count
 moves the segments in those paths and never the count of paths.
+
+**[#154](https://github.com/ericbstie/the-game/issues/154) has taken it to 16, and both of the two it
+added are one mark.** The aim mark is a single path of four corners struck twice — paper wide, ink
+narrow — so it is one path and two `stroke()` calls, and the script counts the calls. It is the only
+entry in that count that cannot move: every other path there rides a cadence, a cap or a squad, and
+this one is the pointer.
 
 **The minimap is inside every figure on this page, the paper baseline included.** `drawWorld` draws
 it whenever the frame's `selfId` names one of the players (`src/game/draw.ts:471`), and the fixture
@@ -141,6 +154,7 @@ difference from the row above.
 | + the lettered words | — | ≈0 | 5 words, one blit each (#79) — 4 on hits, 1 on deaths. Not in the run above; 0.04 ms isolated |
 | + the damage veil | — | 0.61 | one rgba fill over the whole viewport (#142), laid only by the client of the player who was hit. Not in the run above; 0.61 ms isolated |
 | + the blood | — | 1.82 | 300 filled discs under the sorted pass (#140) — the cap `BLOOD_CAP` holds the list to. Not in the run above; 1.82 ms isolated |
+| + the aim mark | — | ≈0 | one path of four corners, struck twice (#154). **In every row above**, unlike the six marks before it — it is up on every frame the game draws. 0.023 ms isolated |
 | **Total** | **6.3** | | **38% of a 16.67 ms frame** — and the shot row it contains has since been replaced by one an order of magnitude cheaper |
 
 **The script's printed labels for the first two rows are wrong, and the names in brackets above are
@@ -776,6 +790,51 @@ good for is the picture, and for this mark that is the whole point: it is the on
 shows the trail behind a running bloodling and the splat where one went off, in colour, at the four
 steps of its fade, on the white floor they have to read against.
 
+## What the aim mark costs (#154)
+
+**One mark is 0.023 ms — 0.14% of a 16.67 ms frame, and the cheapest layer on this page by an order
+of magnitude.** [#154](https://github.com/ericbstie/the-game/issues/154) hides the OS arrow over the
+arena and strikes a mark of its own under the pointer (`src/game/draw.ts` `drawAim`), so this is what
+the game pays for having a cursor at all.
+
+**Its count is fixed, and that is what makes it different from every other mark here.** A shot, a
+burst, a puff and a word ride a cadence, so their worst case is arithmetic on constants; a decal
+rides a cap. This one rides nothing: there is exactly one pointer, it is up on every frame the game
+draws, and nothing about play can put up a second. There is therefore **no ladder below** — a table
+of counts would be a table of frames the game cannot produce — and the mark is instead in **every row
+of the ladder above**, which no mark before it has been.
+
+Medians of five runs, one container, dpr 2, at the governor's cap, through the standalone probe
+`bun run frame:budget` prints as `the aim mark`.
+
+| | median of 5 | spread |
+| --- | ---: | ---: |
+| the aim mark, one path struck twice | **0.023 ms** | 0.022–0.025 |
+| the damage veil, measured in the same runs | 0.638 ms | 0.597–0.742 |
+
+**It holds to about ±6%, which is tighter than anything else on this page**, and for the same reason
+the veil does: the geometry is fixed, so every iteration is the identical work. Nothing about the
+world, the camera or the count is in it.
+
+**It is struck twice and it is still the cheapest layer in the frame.** Paper at `AIM_PAPER_WIDTH`
+under ink at `SHOT_WIDTH`, over one path of eight segments — so rule 1 counts sixteen pieces, twice a
+burst's eight, and it measures at **half of one burst** (47.3 µs each at fifty concurrent). **Rule 1
+gets the sign wrong here, which is its third correction on this page**, and the reason is reach
+rather than pieces: a burst's spikes span 60 u and this mark spans 26, so the second pass is struck
+over a quarter of the line the comparison assumes. The paper pass is what makes the mark read over a
+dense ore patch, where black on black stipple is not there at all, and it is bought for about 0.01 ms.
+
+**Eight straight segments and no arc, deliberately.** A ring was the other obvious drawing of a
+reticle, and `ctx.arc` is the dearest piece the frame has: #116 measured a puff's six arcs at 94.7 µs
+against a burst's eight segments at 47.3. At one mark a frame either would have been affordable —
+this is not a saving worth having on its own. It is picked because the mark has to be **told apart
+from the burst and the puff struck a few units away from it in the same pen**, and a shape that
+frames the point without radiating from it is what does that. The cost simply follows.
+
+**Do not add 0.023 ms to the 6.3 ms headline.** This container reads about 15 ms for the whole frame
+at the cap the governor now stands at, where that headline reads 6.3 ms at a cap the game no longer
+has. Both are honest; neither may be added to the other.
+
 ## The rules
 
 1. **Shot lines are the most expensive thing in the frame, per unit** — and one effect has already
@@ -961,6 +1020,11 @@ measured to a PNG so the numbers can be checked against the picture that produce
 needs no flag of its own: the fixture puts a bloodling in every seventh enemy and fills the decal
 list to `BLOOD_CAP`, which is the ceiling and so is already the worst case — retune that constant and
 the ladder re-prices itself.
+
+#154's aim mark needs no flag either, and for the opposite reason: the fixture puts the pointer in
+the middle of the frame and there is nothing to vary — one pointer is the only count the game has.
+Whether it *reads* is the other question entirely, and that one is a picture:
+`bun run sprite:frame` aims it into the scene's ore and `--aim x,y` moves it onto bare paper.
 
 `shot:ink`, `burst:ink`, `puff:ink` and `lettering:ink` answer the other axis and only that one — how much ink a mark lays, never
 what it costs. Both take `--dpr` as often as you like (the default is the three above) and `--json`

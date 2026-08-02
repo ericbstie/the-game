@@ -240,3 +240,46 @@ export function inkPuff(at: Vec2): Lobe[] {
   }
   return struck;
 }
+
+// The mark under the pointer (#154): four corners of a square standing around the point, and
+// nothing at the point itself.
+//
+// **A frame around the aim rather than a star on it, and that is what tells it apart from the two
+// marks it will share a spot with.** A shot aimed at a spider that is being hit puts this, #115's
+// burst and #116's puff within a few units of each other, struck in one pen at one width — so shape
+// is the only channel left to tell them apart. Both of those radiate from their point; every stroke
+// here runs *around* it, and none of them points at anything.
+//
+// That is also what keeps it honest about the shot. Since #80 a shot is a body the server flies, and
+// it takes `PROJECTILE_FLIGHT_MS` to arrive and can miss a spider that walks out of the way — so a
+// mark that reached toward the target, or led it, would promise something the sim does not. This one
+// says where the pointer is, which is exactly what `aimDir` reads and all that is being claimed.
+//
+// The middle is left open for the reason the burst's is: what is being aimed at is what the player
+// is reading, and a blot on it would be the one drawing that hides the thing it is about.
+
+// Half the square the corners stand on, and how far each arm runs in from its corner, in world
+// units. **Provisional**: at 13 the mark is 26 u across, a little under a grunt's 32 and wider than a
+// 15 u tile, so it frames the cursor's tile without covering the spider standing on it; at 6 the two
+// arms of a corner are unmistakably an L rather than a full box outline.
+export const AIM_REACH = 13;
+export const AIM_ARM = 6;
+
+// One corner as the three points its two arms run through, so `draw.ts` strikes each as a single
+// polyline and the joint mitres shut. Struck as two strands instead, the outer corner comes out
+// notched by half a line width — which is the whole visual weight of a mark this size.
+export function reticle(at: Vec2): Vec2[][] {
+  const corners: Vec2[][] = [];
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      const x = at.x + sx * AIM_REACH;
+      const y = at.y + sy * AIM_REACH;
+      corners.push([
+        { x: x - sx * AIM_ARM, y },
+        { x, y },
+        { x, y: y - sy * AIM_ARM },
+      ]);
+    }
+  }
+  return corners;
+}

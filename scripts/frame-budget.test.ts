@@ -192,4 +192,17 @@ describe("entrySource", () => {
     expect(source).toContain("150: +words(150)");
     expect(source).toContain('lettered("lettering", letteringAt(m.pos, m.at), 0)');
   });
+
+  // The one mark in the frame with no ladder, because it has no count: there is exactly one pointer
+  // and it is up on every frame the game draws. It is priced standalone for the reason every
+  // sub-millisecond mark on this page is, and struck through the shipped geometry and the shipped
+  // paper width — a probe that picked either would be measuring a mark the game does not draw.
+  test("prices the aim mark on its own, at the one count it can ever have (#154)", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("aimMs");
+    expect(source).toContain("aim: AIM"); // in the frame it prices, not only beside it
+    expect(source).toContain("reticle(");
+    expect(source).toContain("ctx.lineWidth = AIM_PAPER_WIDTH");
+    expect(source).not.toContain("aimMs: { "); // no ladder: a second pointer is not a case
+  });
 });
