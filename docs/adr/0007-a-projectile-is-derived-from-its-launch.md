@@ -135,35 +135,53 @@ it owns.
 **14 stroked paths** where it reported 63, and the shot layer at 0.26 ms.
 `docs/frame-budget.md` carries the ladder.
 
-**A turret is the shooter that misses.** Measured against a live sim — one shot in the air at a
-time, so each `spent` is unambiguous, over eight virtual minutes at mid-match density:
+**A turret is the shooter that misses — and how often is not a figure this repo can hand you.**
+Measured against a live sim — one shot in the air at a time, so each `spent` is unambiguous, over
+eight virtual minutes at mid-match density:
 
 | shooter | connects |
 |---|---:|
 | a player, aiming at the body of whatever is nearest | 871/876 — **99.4%** |
 | the same player, leading the target | 1041/1048 — 99.3% |
 | a player standing still, covering a kiting teammate | 841/851 — 98.8% |
-| a turret, which never leads | 130/164 — **79.3%** |
+| a turret, which never leads | 130/164 — **not reproducible; read the next paragraph** |
 
-**A player barely misses, and the reason is the AI rather than the aim.** Enemies chase *you*, so
-your target is closing along the line you are shooting down, and nothing in the arena can outrun a
-shot it is running towards. Leading buys nothing measurable. A turret shoots whatever is *nearest*,
-which is usually chasing a player somewhere else and therefore crossing — and a crossing elite at
-maximum range is missed by 94 u against a 48 u tolerance.
+**The player rows reproduce. The turret row does not, and the probe behind it was never committed.**
+Three later reconstructions against the shipped `stepEnemies`, written independently of the run
+above, put the player figure at 99.9% (6,891/6,897) and **could not produce a turret miss at all** —
+365/365 and 608/608 in two of them, and in the third a sweep of arrangements, sparse crossing
+setups deliberately included, that read 99–100% in every one. None of the four setups is committed
+either, which is the point: **130/164 is what one run of one fixture read once, and nothing in this
+repo can confirm or refute it. Do not quote it as a turret's hit rate.**
 
-The turret figure is 164 samples and should be read as "about four in five" rather than as 79.3.
+**What is checkable is that a turret can miss, and why.** `nearestHitAlong` catches whatever the
+swept segment passes inside `RANGED_HALFWIDTH` plus that body's own radius, so a target that clears
+that band before the shot arrives escapes. That is proved on the geometry rather than on a rate, by
+"a target crossing at elite speed at maximum range outruns a turret's shot too" and its
+standing-still twin (`src/game/enemies.test.ts:1967`). A player's target is closing along the line
+they are shooting down and nothing in the arena outruns a shot it is running towards, which is why
+leading buys nothing measurable; a turret shoots whatever is *nearest*, which is as often crossing.
 
-**Speed is the dial, and 1,800 u/s is on the shoulder of the curve.** The same probe at four speeds:
+**A rate, though, prices the fixture rather than the weapon, which is why none is committed here.**
+The same rule that lets a shot miss its aim point lets it strike whatever else is in the lane, so on
+a populated floor a turret's misses land on something anyway. The number therefore rides enemy
+density and where the turret stands — neither a property of the gun — and an instrument for it would
+enshrine one arrangement with a filename rather than settle anything. Nothing below rests on it: the
+conclusion this section reaches is *change nothing*.
 
-| `PROJECTILE_SPEED` | player | turret |
+**Speed is the dial, and 1,800 u/s is on the shoulder of the curve.** The same uncommitted probe at
+four speeds — so the turret column carries everything said above and is recorded for its shape only:
+
+| `PROJECTILE_SPEED` | player | turret (unreproduced) |
 |---:|---:|---:|
 | 900 | 96.5% | 83.2% |
 | 1,200 | 98.0% | 78.3% |
-| **1,800 — what ships** | **99.4%** | **79.3%** |
+| **1,800 — what ships** | **99.4%** | 79.3% |
 | 2,700 | 99.5% | 84.5% |
 
-The player curve is clean and flattens above 1,800; the turret figures are inside their own noise at
-this sample size. **1,800 is provisional** — a later value is a retune — and the arithmetic behind
+The player curve is clean and flattens above 1,800; the turret column moves less than the spread
+between reconstructions and says nothing. **1,800 is provisional** — a later value is a retune — and
+the arithmetic behind
 the pick is not: a target crossing the line escapes once it clears `RANGED_HALFWIDTH` plus its own
 radius before the shot arrives, which for an elite is 48 u at a range of
 `48 × PROJECTILE_SPEED / ELITE_SPEED` — **369 u at 1,800**. So the near half of the weapon's 700 u
@@ -178,17 +196,21 @@ reach is point-and-click and the far half has to be led.
   halved it and 250 is what ships. A faster trigger has nothing to make up at 99% and would only
   spend the squad's Metal quicker.
 - `TURRET_DAMAGE` **4** / `TURRET_CADENCE_MS` **200** — the *claim* moved and the numbers did not.
-  "~20 dps kills a 30 HP grunt in ~1.5 s" is now **~16 dps and ~1.9 s**, and `src/game/build.ts`
-  says so. Missing is the whole of what #80 adds and the turret is the only place it bites; buying
+  "~20 dps kills a 30 HP grunt in ~1.5 s" is now a **ceiling** rather than a rate, since a turret
+  can miss and how often is not a figure anything here can hand you; `src/game/build.ts` says so.
+  Missing is the whole of what #80 adds and the turret is the only place it bites; buying
   it back in the damage would leave the game where it was with a flight simulation bolted on.
 
 **A turret miss wastes Metal, and #80's text says it does not.** The ticket reads "Turrets spend
 energy, not ammo — a turret miss wastes time, not Metal", which was true when it was written and
 stopped being true at [#102](https://github.com/ericbstie/the-game/issues/102): `stepTurrets` calls
-`spendBullet` on the squad's shared pool, and ADR 0003's own amendment records it. So a fifth of
-every engaged turret's fire is 5 Metal on the floor — at thirty turrets, **150 Metal a second**.
-That is the largest economic consequence of this ticket and it is **not** retuned here, because
-`BULLET_COST` is not among the numbers #80 put in scope. Named so it is not discovered.
+`spendBullet` on the squad's shared pool, and ADR 0003's own amendment records it. So whatever share
+of an engaged turret's fire misses is Metal on the floor. Thirty turrets at `TURRET_CADENCE_MS` fire
+150 bullets a second, which at `BULLET_COST` 5 is **750 Metal a second of turret fire**, and the
+waste is that times a miss rate nobody can price (above). That the waste exists at all does not
+depend on the rate. It is the largest economic consequence of this ticket and it is **not** retuned
+here, because `BULLET_COST` is not among the numbers #80 put in scope. Named so it is not
+discovered.
 
 **A reconnecting client sees no shot that was already in the air.** `game/enemy-init` carries no
 projectiles, deliberately: a flight is 389 ms and a reconnect is not, so the keyframe would be
