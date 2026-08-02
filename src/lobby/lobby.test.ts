@@ -870,8 +870,17 @@ describe("M3: enemy sim tick lifecycle", () => {
   test("a wave spawns grunts and a validated melee on one streams its hit", () => {
     const t = new Capture();
     const clock = new ManualScheduler();
-    // Fire the first wave almost at once, then step past it.
-    const hub = new LobbyHub(t, { tickMs: 10, firstWaveMs: 5, scheduler: clock, startingAmmo: 9 });
+    // Fire the first wave almost at once, then step past it. Fixed rng, because the draw that
+    // scatters a wave is the same one that picks each enemy's kind (#140): an unseeded hub hands
+    // this test a bloodling `BLOODLING_SHARE` of the time. 0.75 sits in the grunt band, and is not
+    // 0.5 — that is the zero-jitter midpoint, which stacks every spawn exactly on its nest.
+    const hub = new LobbyHub(t, {
+      tickMs: 10,
+      firstWaveMs: 5,
+      scheduler: clock,
+      startingAmmo: 9,
+      rng: () => 0.75,
+    });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
     clock.advance(30);
@@ -942,11 +951,14 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
     return expectMessage(found, type);
   }
 
-  // Two players in a started match, with the first wave already on the floor.
+  // Two players in a started match, with the first wave already on the floor. Fixed rng for the
+  // same reason as the melee test above: every assertion here reads a chase, and a bloodling — the
+  // top `BLOODLING_SHARE` of the same draw that scatters the wave (#140) — charges the body it is
+  // chasing and detonates on it instead.
   function matchWithWave() {
     const t = new Capture();
     const clock = new ManualScheduler();
-    const hub = new LobbyHub(t, { tickMs: 50, firstWaveMs: 1, scheduler: clock });
+    const hub = new LobbyHub(t, { tickMs: 50, firstWaveMs: 1, scheduler: clock, rng: () => 0.75 });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));
     const { code } = firstOf(t, "lobby/created");
     hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "Ben" }));
@@ -1863,7 +1875,7 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     await sleep(TICK * 3);
     hub.dispose();
     expect(t.sent.some((m) => m.msg.type === "game/match-end")).toBe(false); // still in play
-    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]); // no line, and no damage
+    expect(deltas(t).flatMap((d) => d.projectiles ?? [])).toEqual([]); // no bullet, no damage
   });
 
   test("and it is admitted again once they report themselves back up", async () => {
@@ -1871,82 +1883,129 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     hub.handleMessage("s1", JSON.stringify({ type: "game/health", hp: 0, seq: 2 }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
     await sleep(TICK * 3);
-    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]);
+    expect(deltas(t).flatMap((d) => d.projectiles ?? [])).toEqual([]);
 
     hub.handleMessage("s1", JSON.stringify({ type: "game/health", hp: 100, seq: 3 }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 2 }));
     await sleep(TICK * 3);
     hub.dispose();
     // The refusal must not have burned the seq or the cadence, or being dead would cost a shot.
-    expect(deltas(t).flatMap((d) => d.shots ?? []).length).toBeGreaterThan(0);
+    expect(deltas(t).flatMap((d) => d.projectiles ?? []).length).toBeGreaterThan(0);
   });
 
-  test("an admitted shot rides the delta as a PeerShot naming what the sim damaged", async () => {
-    const { t, hub, me, grunt } = await fighting();
+  test("an admitted shot rides the delta as a launch, on the aim that was sent", async () => {
+    const { t, hub, grunt } = await fighting();
     const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
     hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
     await sleep(TICK * 3);
     hub.dispose();
-    const struck = deltas(t).find((d) => (d.shots ?? []).length > 0);
-    const shot = struck?.shots?.[0];
-    if (!shot) throw new Error("the admitted shot never reached the wire");
-    expect(shot.id).toBe(me);
+    const launched = deltas(t).flatMap((d) => d.projectiles ?? []);
+    expect(launched).toHaveLength(1);
+    const [id, x, y, dx, dy] = launched[0];
+    expect(id).toMatch(/^s\d+$/);
+    expect({ x, y }).toEqual({ x: Math.round(grunt.pos.x), y: Math.round(grunt.pos.y) });
     // The wire carries three decimals (#84) — under half a world unit of lateral drift at
     // RANGED_RANGE, and it swallows whole the ULP wobble admission's re-normalisation adds
     // (dividing an already-unit vector through its own length moves it by up to an ULP).
-    expect(shot.dir.x).toBe(Math.round(shot.dir.x * 1000) / 1000); // quantised on the way out
-    expect(shot.dir.y).toBe(Math.round(shot.dir.y * 1000) / 1000);
-    expect(shot.dir.x).toBeCloseTo(dir.x, 2); // and still the aim that was sent
-    expect(shot.dir.y).toBeCloseTo(dir.y, 2);
-    // Whatever the ray reached first, the same delta has to show the sim writing that thing's HP.
-    // Asserting the invariant rather than the geometry keeps this honest about which target won.
-    // `hit` is optional because a miss carries none, so pin that this shot connected at all —
-    // without it a shot that hit nothing would satisfy the membership check vacuously.
-    if (shot.hit === undefined) throw new Error("the admitted shot reported no target");
-    expect([
-      ...(struck?.hits ?? []).map((h) => h.id),
-      ...(struck?.deaths ?? []),
-      ...(struck?.nests ?? []).map((n) => n.id),
-    ]).toContain(shot.hit);
+    expect(dx).toBe(Math.round(dx * 1000) / 1000); // quantised on the way out
+    expect(dy).toBe(Math.round(dy * 1000) / 1000);
+    expect(dx).toBeCloseTo(dir.x, 2); // and still the aim that was sent
+    expect(dy).toBeCloseTo(dir.y, 2);
   });
 
-  test("a shot refused for cadence produces no PeerShot at all", async () => {
-    const { t, hub, me, grunt } = await fighting();
+  // #80's central change. Admission puts a body in the air; nothing takes damage on that tick.
+  test("the tick a shot is admitted carries no damage — the blow lands when the shot arrives", async () => {
+    const { t, hub, grunt } = await fighting();
+    const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
+    await sleep(TICK * 20);
+    hub.dispose();
+    const all = deltas(t);
+    const fired = all.findIndex((d) => (d.projectiles ?? []).length > 0);
+    expect(fired).toBeGreaterThanOrEqual(0);
+    const launch = all[fired];
+    expect(launch.hits ?? []).toEqual([]);
+    expect(launch.deaths ?? []).toEqual([]);
+    expect(launch.nests ?? []).toEqual([]);
+    // And it did land, on a later tick, alongside the `spent` that took it out of the air.
+    const struck = all
+      .slice(fired + 1)
+      .find((d) => (d.hits ?? []).length + (d.deaths ?? []).length + (d.nests ?? []).length > 0);
+    if (!struck) throw new Error("the shot never arrived");
+    expect(struck.spent).toEqual([(launch.projectiles ?? [])[0][0]]);
+  });
+
+  // The security core of #80. `ATTACK_POS_TOLERANCE` admits a reported origin up to 500 u from the
+  // stream, which under hitscan only slid a ray; against a travelling shot it is 278 ms off the
+  // flight and a shot nothing could outrun. The origin is the hub's own sample, so the report
+  // cannot move it.
+  test("a forged origin cannot move where a shot leaves from, or shorten its flight", async () => {
+    const { t, hub, grunt } = await fighting();
+    const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
+    // Half the tolerance along the aim: admitted, and worth 400 u of flight if it were believed.
+    const forged = { x: grunt.pos.x + dir.x * 400, y: grunt.pos.y + dir.y * 400 };
+    hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: forged, dir, seq: 1 }));
+    await sleep(TICK * 3);
+    hub.dispose();
+    const [[, x, y]] = deltas(t).flatMap((d) => d.projectiles ?? []);
+    expect({ x, y }).toEqual({ x: Math.round(grunt.pos.x), y: Math.round(grunt.pos.y) });
+  });
+
+  test("a player the hub has no position for cannot shoot at all", async () => {
+    const t = new Capture();
+    const hub = new LobbyHub(t, {
+      tickMs: TICK,
+      firstWaveMs: 5,
+      startingMetal: 1_000,
+      startingAmmo: 9,
+      rng: () => 0.75,
+    });
+    hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
+    hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+    await sleep(TICK * 3);
+    // No `game/pos` has ever been sent, so there is nowhere for a bullet to leave from.
+    const dir = { x: 1, y: 0 };
+    hub.handleMessage(
+      "s1",
+      JSON.stringify({ type: "game/attack", pos: { x: 0, y: 0 }, dir, seq: 1 }),
+    );
+    await sleep(TICK * 3);
+    hub.dispose();
+    expect(deltas(t).flatMap((d) => d.projectiles ?? [])).toEqual([]);
+  });
+
+  test("a shot refused for cadence launches nothing at all", async () => {
+    const { t, hub, grunt } = await fighting();
     const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
     // Two clicks in the same instant: the second is inside RANGED_CADENCE_MS, so the hub refuses
-    // it. A refused attack never enters `pendingAttacks`, so it never becomes a line.
+    // it. A refused attack never enters `pendingAttacks`, so it never becomes a projectile.
     for (const seq of [1, 2]) {
       hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq }));
     }
     await sleep(TICK * 3);
     hub.dispose();
-    expect(
-      deltas(t)
-        .flatMap((d) => d.shots ?? [])
-        .filter((s) => s.id === me),
-    ).toHaveLength(1);
+    expect(deltas(t).flatMap((d) => d.projectiles ?? [])).toHaveLength(1);
   });
 
-  test("a shot refused for teleport-aim produces no PeerShot", async () => {
+  test("a shot refused for teleport-aim launches nothing", async () => {
     const { t, hub, grunt } = await fighting();
     const far = { x: grunt.pos.x + ATTACK_POS_TOLERANCE + 1, y: grunt.pos.y };
     const dir = aimAt(far, grunt.pos);
     hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: far, dir, seq: 1 }));
     await sleep(TICK * 3);
     hub.dispose();
-    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]);
+    expect(deltas(t).flatMap((d) => d.projectiles ?? [])).toEqual([]);
   });
 
-  test("a shot refused for a stale seq produces no PeerShot", async () => {
-    const { t, hub, me, grunt } = await fighting();
+  test("a shot refused for a stale seq launches nothing", async () => {
+    const { t, hub, grunt } = await fighting();
     const dir = aimAt(grunt.pos, { x: ARENA.width / 2, y: ARENA.height / 2 });
     hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 5 }));
     await sleep(RANGED_CADENCE_MS + TICK); // let the cadence clear, so only the seq can refuse
     hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 4 }));
     await sleep(TICK * 3);
     hub.dispose();
-    expect(deltas(t).flatMap((d) => d.shots ?? [])).toHaveLength(1);
-    expect(deltas(t).flatMap((d) => d.shots ?? [])[0].id).toBe(me);
+    expect(deltas(t).flatMap((d) => d.projectiles ?? [])).toHaveLength(1);
   });
 
   test("an absurd reported aim reaches the squad normalized, never as reported", async () => {
@@ -1957,25 +2016,26 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
     hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
     await sleep(TICK * 3);
     hub.dispose();
-    const shots = deltas(t).flatMap((d) => d.shots ?? []);
-    expect(shots).toHaveLength(1);
-    expect(shots[0].dir).toEqual({ x: 1, y: 0 });
+    const launched = deltas(t).flatMap((d) => d.projectiles ?? []);
+    expect(launched).toHaveLength(1);
+    expect([launched[0][3], launched[0][4]]).toEqual([1, 0]);
   });
 
-  test("a zero-length aim produces no PeerShot — it would relay as a NaN line", async () => {
+  test("a zero-length aim launches nothing — it would fly as a NaN bullet", async () => {
     const { t, hub, grunt } = await fighting();
     const dir = { x: 0, y: 0 };
     hub.handleMessage("s1", JSON.stringify({ type: "game/attack", pos: grunt.pos, dir, seq: 1 }));
     await sleep(TICK * 3);
     hub.dispose();
-    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]);
+    expect(deltas(t).flatMap((d) => d.projectiles ?? [])).toEqual([]);
   });
 
-  test("nothing fired means no shots field on the wire at all", async () => {
+  test("nothing fired means neither shot field rides the wire at all", async () => {
     const { t, hub } = await fighting();
     await sleep(TICK * 3);
     hub.dispose();
-    expect(deltas(t).every((d) => d.shots === undefined)).toBe(true);
+    expect(deltas(t).every((d) => d.projectiles === undefined)).toBe(true);
+    expect(deltas(t).every((d) => d.spent === undefined)).toBe(true);
   });
 
   test("a turret that engages with no grid behind it streams the unpowered aim", async () => {
@@ -2148,11 +2208,11 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
     hub.dispose();
   });
 
-  test("a client at zero ammo cannot shoot — no damage reaches the enemy, and no line is drawn", () => {
+  test("a client at zero ammo cannot shoot — nothing leaves the barrel and nothing is damaged", () => {
     const { t, hub, clock, grunt, dir } = fighting({ startingMetal: 1_000 });
     shoot(hub, grunt.pos, dir);
-    clock.advance(TICK * 3);
-    expect(deltas(t).flatMap((d) => d.shots ?? [])).toEqual([]);
+    clock.advance(TICK * 20);
+    expect(deltas(t).flatMap((d) => d.projectiles ?? [])).toEqual([]);
     expect(deltas(t).flatMap((d) => d.hits ?? [])).toEqual([]);
     hub.dispose();
   });
@@ -2161,7 +2221,7 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
     const { t, hub, clock, grunt, dir } = fighting({ startingAmmo: 2 });
     shoot(hub, grunt.pos, dir);
     clock.advance(TICK * 3);
-    expect(deltas(t).flatMap((d) => d.shots ?? [])).toHaveLength(1);
+    expect(deltas(t).flatMap((d) => d.projectiles ?? [])).toHaveLength(1);
     expect(ammoStream(t)).toEqual([1]);
     hub.dispose();
   });
@@ -2172,7 +2232,7 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
     clock.advance(RANGED_CADENCE_MS + TICK);
     shoot(hub, grunt.pos, dir, 2);
     clock.advance(TICK * 3);
-    expect(deltas(t).flatMap((d) => d.shots ?? [])).toHaveLength(1);
+    expect(deltas(t).flatMap((d) => d.projectiles ?? [])).toHaveLength(1);
     expect(ammoStream(t)).toEqual([0]);
     hub.dispose();
   });
@@ -2349,7 +2409,13 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
       deltas(t)
         .flatMap((d) => d.nests ?? [])
         .map((n) => n.hp);
-    const shotsFired = (t: Capture) => deltas(t).flatMap((d) => d.shots ?? []);
+    // The shots that left the player's own feet. Since #80 a turret's fire rides the very same
+    // shape and nothing on it says who fired — so the origin is what tells the two apart, which is
+    // all a client drawing them needs and all this needs too.
+    const herShots = (t: Capture) =>
+      deltas(t)
+        .flatMap((d) => d.projectiles ?? [])
+        .filter(([, x, y]) => x === Math.round(CENTRE.x) && y === Math.round(CENTRE.y));
     // The turret, aimed at the nest and holding a power slot. Asserted wherever a test's evidence
     // is an *absent* nest delta, so "it held its fire" cannot be satisfied by a turret that was
     // never standing, never targeting, or never powered.
@@ -2365,9 +2431,12 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
 
     test("a turret's shot comes out of the pool a player shoots from", () => {
       const { t, hub, clock, nest } = besieging({ startingAmmo: 2 });
-      clock.advance(TICK);
+      // The tick the turret fires on, plus the four its shot needs to cross the ~300 u to the
+      // nest (#80). The cadence has come round again by then, so the pool has paid for a second
+      // shot still in the air — the first entry is the one this test is about.
+      clock.advance(TICK * 5);
       expect(nestHps(t)).toEqual([nest.hp - TURRET_DAMAGE]);
-      expect(ammoStream(t)).toEqual([1]);
+      expect(ammoStream(t)[0]).toBe(1);
       hub.dispose();
     });
 
@@ -2384,6 +2453,7 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
       clock.advance(TURRET_CADENCE_MS * 10);
       hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
       clock.advance(FORGE_MS);
+      clock.advance(TICK * 5); // and the shot it fired has to cross the ground to the nest (#80)
       expect(nestHps(t)).toEqual([nest.hp - TURRET_DAMAGE]);
       hub.dispose();
     });
@@ -2403,7 +2473,7 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
         }),
       );
       clock.advance(TURRET_CADENCE_MS * 10);
-      expect(shotsFired(t)).toHaveLength(1); // hers, and only hers
+      expect(herShots(t)).toHaveLength(1); // hers, and only hers
       expectEngaged(t, nest);
       expect(nestHps(t)).toEqual([]); // the turret found the pool empty
       hub.dispose();
@@ -2423,7 +2493,7 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
       );
       clock.advance(TURRET_CADENCE_MS * 10);
       expect(nestHps(t)).toEqual([nest.hp - TURRET_DAMAGE]); // one shot, from the one bullet
-      expect(shotsFired(t)).toEqual([]); // and nothing left for her
+      expect(herShots(t)).toEqual([]); // and nothing left for her
       hub.dispose();
     });
   });

@@ -24,7 +24,7 @@ import {
 import { type Camera, computeCamera } from "./camera";
 import { type ClientWorld, RESPAWN_DELAY_MS } from "./clientWorld";
 import { damageFx } from "./damageFx";
-import { BURST_MS, type BuildGhost, drawWorld, type OwnShot, PUFF_MS, SHOT_LINE_MS } from "./draw";
+import { BURST_MS, type BuildGhost, drawWorld, PUFF_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { freshMetalFloats, stepMetalFloats } from "./floats";
 import { freshHarvest, stepHarvest } from "./harvest";
@@ -150,9 +150,6 @@ export function GameScreen({
   // negative jitter and be refused. Widening the gate here would cut the sustained rate of fire.
   // The boundary case is accepted.
   const lastAttackRef = useRef(Number.NEGATIVE_INFINITY);
-  // Your own last shot, kept so its line can be drawn from here rather than from the relay the
-  // server sends back to the whole squad. `drawWorld` ages it; nothing has to clear it.
-  const ownShotRef = useRef<OwnShot | null>(null);
   // The `+1`s the squad's miners are throwing up (#99). Client-derived from the mirrored structure
   // set, so it lives with the loop that draws it rather than on the wire or in `ClientWorld` — the
   // beat is the same one the bank is paid on, but which miners *emit* is a question about the camera.
@@ -302,7 +299,13 @@ export function GameScreen({
   // The gap is measured shot-to-shot off the clock rather than counted in ticks: a long frame
   // delays the next shot instead of letting two through, and no accumulator survives a stall to
   // pay its backlog out as a burst. Two shots are therefore never closer than the floor
-  // `admitAttack` enforces — the property that keeps a drawn line from outrunning admission (#85).
+  // `admitAttack` enforces.
+  //
+  // **None of the gates below stands between a refusal and a drawing any more (#80).** Nothing this
+  // client believes about its own trigger puts a bullet on screen — every projectile it draws came
+  // off the world stream, so #85 is closed by where shots come from rather than by these agreeing
+  // with the server's rules. What they still do is keep the socket from carrying reports the hub
+  // would only throw away, and keep a held trigger from pacing itself into refusals.
   const fireIfDue = useCallback((now: number) => {
     const world = worldRef.current;
     if (!world) return;
@@ -328,14 +331,13 @@ export function GameScreen({
     // A shot spends a bullet from the squad's pool, and the server refuses one it cannot pay for
     // (#102). Read before the cadence for the same reason the build bar is: an empty pool must not
     // cost the first shot after a bullet lands. The mirror is at worst one tick behind the pool it
-    // is gating on, so two players racing for the last bullet can still both draw — the same
-    // boundary the cadence gate already accepts, and the only case a round-trip could close.
+    // is gating on, so two players racing for the last bullet can both still send — and only one of
+    // them gets a projectile back.
     if (world.ammo() <= 0) return;
     if (now - lastAttackRef.current < RANGED_CADENCE_MS) return;
     lastAttackRef.current = now;
     const { camera, self } = aimRef.current;
     const dir = aimDir(pointerRef.current, self, camera);
-    ownShotRef.current = { at: now, from: { ...self }, dir };
     onAttackRef.current({ ...self }, dir);
   }, []);
 
@@ -405,8 +407,9 @@ export function GameScreen({
         const dpr = window.devicePixelRatio || 1;
         if (dpr !== viewRef.current.dpr) resizeForDpr(canvas, viewRef, dpr);
         // One clock for the whole frame. `snapshot` advances each entity's gait on the `now` it is
-        // given, and the shot lines resolve their targets against the same interpolation it renders
-        // on — reading the clock twice would split that step and land a line off its own sprite.
+        // given, and since #80 flies every shot in the air against the same delayed instant it
+        // interpolates the spiders to — reading the clock twice would split that step and land a
+        // bullet off the body it is about to strike.
         const clock = Date.now();
         // What the held buttons are harvesting this frame, or null. One answer for both of them,
         // because one tile is never two things: a structure under the cursor is a demolish and the
@@ -523,13 +526,6 @@ export function GameScreen({
             // takes its spider off this very snapshot, so the puff has nothing to wait for (#116).
             puffs: world.deathMarks(clock, PUFF_MS),
             sprites: spriteCache.source(dpr),
-            shots: {
-              // Aged to the line's own lifetime, never to the buffer's longer retention window.
-              peers: world.peerShots(clock, SHOT_LINE_MS),
-              own: ownShotRef.current,
-              resolve: (id) => world.shotTargetPos(id, clock),
-              ammo: world.ammo(),
-            },
           });
         }
       }

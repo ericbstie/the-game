@@ -7,8 +7,8 @@ import type {
   EnemySpawn,
   NestDelta,
   NestSnapshot,
-  PeerShot,
   PlayerId,
+  ProjectileSpawn,
   StructureHit,
   TurretAim,
   Vec2,
@@ -119,6 +119,10 @@ const STATS: Record<EnemyKind, EnemyStats> = {
   },
 };
 
+// The fastest anything in the arena moves. Read off the table rather than named, so a new kind
+// cannot be added without the shot sweep allowing for it (`flyProjectiles`).
+const FASTEST_ENEMY = Math.max(...Object.values(STATS).map((s) => s.speed));
+
 export function enemyContactDamage(kind: EnemyKind): number {
   return STATS[kind].contactDamage;
 }
@@ -128,18 +132,75 @@ export function enemyContactCadenceMs(kind: EnemyKind): number {
 }
 
 // The player's one weapon (M4 retired M3's melee/ranged pair so right-click could become
-// hand-mining): a hitscan ray — no projectile entity, no per-tick wire state. Reach + DPS.
-export const RANGED_RANGE = 700; // how far the ray reaches from the origin
-export const RANGED_HALFWIDTH = 24; // the ray's half-thickness; an enemy within it is on-line
+// hand-mining). #80 took the hitscan ray off it: a shot is a body that travels, and the damage
+// lands on the tick it arrives rather than on the tick the hub admitted it.
+export const RANGED_RANGE = 700; // how far a shot reaches from the origin before it is spent
+export const RANGED_HALFWIDTH = 24; // the shot's half-thickness; a body within it is on-line
+// What one connect takes off. **Unchanged by #80, and measured rather than assumed**: a shot can
+// miss now, but a player's target is nearly always *closing on them*, and nothing in the arena can
+// outrun a shot along the line it is running down. About 99 shots in 100 connect
+// (`docs/adr/0007-a-projectile-is-derived-from-its-launch.md`), so ten connects still cost about
+// ten bullets and there is nothing here to compensate for. What changed is the wording: this is a
+// claim about *connects*, and how many shots those cost is the player's aim.
 export const RANGED_DAMAGE = 3;
 // Both the client's own gate and the server's admission floor (#103) — one number, so a held
 // trigger can never pace itself into shots `admitAttack` refuses.
+//
+// Unchanged by #80 for the reason above, and for one of its own: at a 99% hit rate there is nothing
+// for a faster trigger to make up, and a faster one would only spend the squad's Metal quicker.
 export const RANGED_CADENCE_MS = 250;
 
 // The server's loose anti-teleport-aim tolerance: a reported swing origin this far from the
 // player's last relayed position is rejected. Generous enough to survive relay lag (a player
 // moves ≈52 u in one ~200 ms round-trip at 260 u/s), tight enough to reject teleport-aim.
+//
+// Since #80 it is the second line rather than the first: a shot leaves the position the hub
+// already relays for that player (`lobby.ts`'s `gameAttack`), so a reported origin is an
+// admission input and never a coordinate anything is computed from. Kept because a report that
+// disagrees with the stream by half a screen is a client saying something untrue about itself, and
+// this is the one place that is cheap to notice.
 export const ATTACK_POS_TOLERANCE = 500;
+
+// --- Shots in flight -------------------------------------------------------------------------
+// #80. A shot is a body the sim carries across ticks, and it can miss: the target it was aimed at
+// has moved by the time it arrives, so the far half of the weapon's reach has to be led.
+//
+// **The whole flight is here, and nothing about it is client-writable.** A `game/attack` carries a
+// heading and nothing else the flight reads: the origin is the position the hub already relays for
+// that player, the speed and the reach are the two constants below, and where a shot has got to is
+// this module's arithmetic against positions this module owns. There is no field a forged client
+// could move to shorten a flight, extend a reach, or force a hit.
+
+// How fast a shot travels, in world units per second. **Provisional** — only a played match can
+// judge it, and a later change is a retune rather than a correction — but it is picked off two
+// speeds the arena already fixes rather than out of the air.
+//
+// It is the one number that decides how much leading the game asks for. A target crossing the
+// shot's line escapes when it clears `RANGED_HALFWIDTH` plus its own radius before the shot
+// arrives, which for an elite (`ELITE_SPEED`, `ELITE_RADIUS`) is 48 u — reached at a range of
+// 48 × PROJECTILE_SPEED / ELITE_SPEED, or 369 u here. So the near half of the 700 u reach is
+// point-and-click and the far half has to be led, which is what the ask means by "you lead your
+// shots". A full-reach shot is 389 ms in the air: ~23 frames at 60 Hz, and plainly a thing that
+// travels rather than a line that appears.
+export const PROJECTILE_SPEED = 1_800;
+
+// The furthest any shot in the game reaches, and how long that takes. Neither rides the wire —
+// both sides compile against them, which is what lets a client derive a whole flight from one
+// launch (ADR 0007). The client needs the *bound* rather than the per-weapon reach, because
+// nothing on the wire says which weapon fired a shot and nothing it draws differs.
+export const PROJECTILE_RANGE = Math.max(RANGED_RANGE, TURRET_RANGE);
+export const PROJECTILE_FLIGHT_MS = (PROJECTILE_RANGE / PROJECTILE_SPEED) * 1_000;
+
+// One shot in flight. `left` is what remains of its reach and `damage` what it takes off whatever
+// it strikes, so a player's shot and a turret's differ in the only two ways they differ and the
+// flight itself never has to ask which fired it.
+export interface Projectile {
+  id: string;
+  pos: Vec2;
+  dir: Vec2; // unit; normalized at admission, or derived from the turret's bearing
+  left: number;
+  damage: number;
+}
 
 // AI: a peel-off aggro radius, and the leg an un-aggroed enemy walks before it turns.
 export const AGGRO_RADIUS = 1_800; // a player this close pulls the nearest enemies off the line
@@ -294,9 +355,10 @@ export interface PlayerRef {
   prev?: Vec2;
 }
 
-// A server-validated shot the sim resolves against enemy HP. `pos` is the shot origin,
-// `dir` a unit aim vector, `by` the player the sim attributes the resulting line to. The hub
-// admits it (cadence/range/seq) before it reaches the sim.
+// A server-validated shot the sim launches a projectile for. `pos` is the origin the hub holds
+// for that player — never the one the report carried (#80) — `dir` a unit aim vector, and `by` the
+// player it is attributed to. The hub admits it (cadence/range/seq) and pays its bullet before it
+// reaches the sim.
 export interface Attack {
   pos: Vec2;
   dir: Vec2;
@@ -315,9 +377,12 @@ export interface EnemyEvents {
   // Structures chewed on this tick, and the ids of any that fell. Sparse, mirroring hits/deaths.
   structHits: StructureHit[];
   removals: string[];
-  // What was depicted this tick: turrets whose aim changed, and the squad's shots as resolved.
+  // What was depicted this tick: turrets whose aim changed, the shots put in the air, and the
+  // shots taken out of it. `projectiles` and `spent` are the whole of a shot's wire life — the
+  // flight between them is derived on both sides (ADR 0007).
   aims: TurretAim[];
-  shots: PeerShot[];
+  projectiles: ProjectileSpawn[];
+  spent: string[];
 }
 
 // Per-player attack admission state (server-side). `seq` guards apply-if-newer; `lastAt`
@@ -338,9 +403,10 @@ export function freshGuard(): AttackGuard {
 // resists teleport-aim; the seq drops stale/duplicate reports (the `game/pos` idiom).
 //
 // The aim is normalized here rather than trusted. `asVec2` only rejects non-finite numbers, so a
-// hostile client can report `{x: 1e300, y: 0}` or a zero vector — and this vector is rebroadcast
-// to the whole squad as `PeerShot.dir`, where it would blow up or NaN out every other client's
-// canvas path. Normalizing at admission is what makes the protocol's "unit aim vector" true.
+// hostile client can report `{x: 1e300, y: 0}` or a zero vector — and since #80 this vector is what
+// the sim integrates the shot along and what rides the wire as `ProjectileSpawn`'s heading, so a
+// non-unit one flies the bullet at a speed of the shooter's choosing on every client in the squad.
+// Normalizing at admission is what makes the protocol's "unit aim vector" true.
 export function admitAttack(
   guard: AttackGuard,
   report: { pos: Vec2; dir: Vec2; seq: number },
@@ -371,6 +437,10 @@ export function admitAttack(
 export interface EnemyState {
   arena: Arena;
   enemies: Map<string, Enemy>;
+  // Every shot currently in the air (#80). Server-only state, exactly as a wanderer's leg is: the
+  // client holds its own copy of each flight, derived from the launch it was streamed, and neither
+  // side ever compares them.
+  projectiles: Map<string, Projectile>;
   nests: Nest[];
   elapsedMs: number; // match clock, driven by the injected `dtMs`; the three curves read off it
   // Each nest's countdown to its own next wave, by nest id. There is no global wave clock and no
@@ -385,6 +455,9 @@ export interface EnemyState {
   // module scope would be shared state, and two sims of two worlds could not run in one process.
   settings: WorldSettings;
   nextId: number;
+  // Shot ids are minted from their own counter and their own prefix, so nothing has to reason
+  // about whether an id on the wire names a body or a bullet.
+  nextShotId: number;
 }
 
 // The fifty nests, scattered at random through the band and biased toward the wall.
@@ -460,6 +533,7 @@ export function spawnEnemyState(
   return {
     arena: world.arena,
     enemies: new Map(),
+    projectiles: new Map(),
     nests,
     elapsedMs: 0,
     nestTimers: new Map(
@@ -468,13 +542,20 @@ export function spawnEnemyState(
     rng,
     settings,
     nextId: 1,
+    nextShotId: 1,
   };
 }
 
 // Advance the whole sim one tick. Mutates `state` in place (one state per session, stepped at
 // 20 Hz) and returns the same reference plus the events to broadcast. Deterministic in
-// (state, players, attacks, build, dtMs). Attacks resolve first (so a killed enemy neither moves
-// nor appears in `moves` this tick), then survivors chase and chew.
+// (state, players, attacks, build, dtMs).
+//
+// The order is what makes a shot a thing that travels rather than a thing that resolves. Shots
+// already in the air land **first**, so a target killed by one neither moves nor appears in
+// `moves` this tick and the turrets below never fire at it; only then are this tick's shots put in
+// the air, and only then do the survivors chase and chew. A shot therefore spends at least one
+// whole tick in flight, including the point-blank one — there is no distance at which the weapon
+// is still hitscan.
 export function stepEnemies(
   state: EnemyState,
   players: PlayerRef[],
@@ -487,10 +568,12 @@ export function stepEnemies(
   // tick reports once. The sim stays the sole writer of enemy and nest HP either way.
   const enemiesHit = new Set<string>();
   const nestsHit = new Set<string>();
-  const shots: PeerShot[] = [];
+  const projectiles: ProjectileSpawn[] = [];
+  const spent: string[] = [];
   const aims: TurretAim[] = [];
-  applyAttacks(state, attacks, enemiesHit, nestsHit, shots);
-  stepTurrets(state, build, dtMs, enemiesHit, nestsHit, aims);
+  flyProjectiles(state, dtMs, enemiesHit, nestsHit, spent);
+  fireAttacks(state, attacks, projectiles);
+  stepTurrets(state, build, dtMs, aims, projectiles);
   const { hits, deaths, nests } = reapDamage(state, enemiesHit, nestsHit);
 
   const context: StepContext = {
@@ -520,7 +603,17 @@ export function stepEnemies(
     moves.push([enemy.id, Math.round(enemy.pos.x), Math.round(enemy.pos.y)]);
   return {
     state,
-    events: { moves, spawns, hits, deaths, nests, aims, shots, ...reapStructures(context) },
+    events: {
+      moves,
+      spawns,
+      hits,
+      deaths,
+      nests,
+      aims,
+      projectiles,
+      spent,
+      ...reapStructures(context),
+    },
   };
 }
 
@@ -628,69 +721,123 @@ function jitter(pos: Vec2, rng: () => number): Vec2 {
   };
 }
 
-// Apply every admitted shot to enemy and nest HP — this sim is the sole writer. A shot strikes
-// the single nearest target (enemy or nest) along its ray.
-//
-// The `PeerShot` that depicts the shot is emitted here, beside the HP it wrote, rather than when
-// the hub admitted the report. That is what makes the authority invariant structural instead of a
-// rule to remember: a refused attack never reaches `pendingAttacks`, never reaches this loop, and
-// so has no path to the wire.
-// A shot's aim, trimmed to what the line can show: three decimals on a unit vector is under half
+// A shot's aim, trimmed to what a drawing can show: three decimals on a unit vector is under half
 // a world unit of lateral drift at RANGED_RANGE, and one unit is one CSS px.
 //
-// A copy, deliberately. `attack.dir` is the vector `nearestRayHit` resolves against, and rounding
-// the authoritative input would be a gameplay change wearing a bandwidth ticket's clothes (#84).
-function wireDir(dir: Vec2): Vec2 {
-  return { x: Math.round(dir.x * 1000) / 1000, y: Math.round(dir.y * 1000) / 1000 };
+// Serialisation only. The `Projectile` keeps the exact vector it was launched on — rounding the
+// heading the sim integrates would be a gameplay change wearing a bandwidth ticket's clothes
+// (#84) — and the client integrates the rounded one, which after a whole 700 u flight is under
+// half a unit apart from it.
+function wireAxis(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
-function applyAttacks(
+// Put one shot in the air and announce it. The single place a `Projectile` is created, and the
+// single place a `ProjectileSpawn` is: a shot exists on the wire because it exists in the sim,
+// which is what closes #85 for a projectile the same way it was closed for a line — a refused
+// attack never reaches `pendingAttacks`, never reaches `fireAttacks`, and has no path here.
+function launch(
   state: EnemyState,
-  attacks: Attack[],
+  from: Vec2,
+  dir: Vec2,
+  reach: number,
+  damage: number,
+): ProjectileSpawn {
+  const id = `s${state.nextShotId++}`;
+  state.projectiles.set(id, { id, pos: { ...from }, dir: { ...dir }, left: reach, damage });
+  return [id, Math.round(from.x), Math.round(from.y), wireAxis(dir.x), wireAxis(dir.y)];
+}
+
+// This tick's admitted attacks, put in the air. No damage is applied here at all: an admitted
+// attack buys a body in flight, and what that body reaches is decided on a later tick by
+// `flyProjectiles`.
+function fireAttacks(state: EnemyState, attacks: Attack[], out: ProjectileSpawn[]): void {
+  for (const attack of attacks) {
+    out.push(launch(state, attack.pos, attack.dir, RANGED_RANGE, RANGED_DAMAGE));
+  }
+}
+
+// Advance every shot in the air by one tick and apply what it reached — this sim is the sole
+// writer of enemy and nest HP, and this is now the only pass in it that writes either from a shot.
+//
+// Each shot is resolved against the **segment it swept this tick**, not the point it landed on: at
+// PROJECTILE_SPEED a shot crosses 90 u in a 50 ms tick and a grunt is 32 u across, so a point test
+// would step clean over most of what the game asks the player to shoot at. A shot that reaches
+// something stops at the closest approach to it, which is where the blow lands and where the
+// client's own copy of the flight ends.
+//
+// A shot passes through walls, exactly as the hitscan ray it replaces did: there is no line of
+// sight in this game and no firing lane, and nothing asked for one.
+function flyProjectiles(
+  state: EnemyState,
+  dtMs: number,
   enemiesHit: Set<string>,
   nestsHit: Set<string>,
-  shots: PeerShot[],
+  spent: string[],
 ): void {
-  for (const attack of attacks) {
-    const hit = nearestRayHit(state, attack);
-    const shot: PeerShot = { id: attack.by, dir: wireDir(attack.dir) };
-    if (hit?.enemy) {
-      hit.enemy.hp -= RANGED_DAMAGE;
-      enemiesHit.add(hit.enemy.id);
-      shot.hit = hit.enemy.id;
-    } else if (hit?.nest) {
-      hit.nest.hp -= RANGED_DAMAGE;
-      nestsHit.add(hit.nest.id);
-      shot.hit = hit.nest.id;
+  const travel = (PROJECTILE_SPEED * dtMs) / 1000;
+  // How far past the swept segment a body is still caught. **The bodies move between ticks too**,
+  // and towards the shot as often as not: a grunt closing head-on shortens the gap by its own
+  // step as well as by the shot's, so one that sat a few units past this tick's far end can be
+  // *behind* the near end of the next tick's without either sweep ever containing it. At
+  // `FASTEST_ENEMY` that seam swallowed about a tenth of every head-on shot in the game.
+  //
+  // The allowance is exactly one step of the fastest thing that could be closing, which is what
+  // makes the seam provably empty rather than merely narrow: a body can only leave the far end by
+  // more than the sweep advances if it moved faster than that. What it costs is that a body up to
+  // one of its own steps beyond the sweep is struck a tick early, by a shot that was going to
+  // reach it regardless — nothing can outrun a shot along its own line at a quarter of its speed.
+  const slack = (FASTEST_ENEMY * dtMs) / 1000;
+  for (const shot of state.projectiles.values()) {
+    // Clamped to what is left of the reach, so the last tick of a flight is a short one and a shot
+    // covers exactly its range rather than a whole number of ticks' worth.
+    const reach = Math.min(travel, shot.left);
+    const struck = nearestHitAlong(state, shot.pos, shot.dir, reach, slack);
+    if (struck?.enemy) {
+      struck.enemy.hp -= shot.damage;
+      enemiesHit.add(struck.enemy.id);
+    } else if (struck?.nest) {
+      struck.nest.hp -= shot.damage;
+      nestsHit.add(struck.nest.id);
     }
-    shots.push(shot);
+    const flown = struck ? struck.at : reach;
+    shot.pos = { x: shot.pos.x + shot.dir.x * flown, y: shot.pos.y + shot.dir.y * flown };
+    shot.left -= flown;
+    if (struck || shot.left <= 0) {
+      state.projectiles.delete(shot.id);
+      spent.push(shot.id);
+    }
   }
 }
 
 // Advance every turret one tick: hold or re-acquire a target, settle the power budget, and let
 // the turrets that won power fire on their own cadence.
 //
-// A turret strikes the nearest thing in range — enemy or nest, whichever is closer, with no
-// lowest-HP or elite priority. Hitscan straight through walls and structures: turrets need no
-// line of sight and no firing lane, so there is deliberately no ray-vs-structure test here.
+// A turret shoots at the nearest thing in range — enemy or nest, whichever is closer, with no
+// lowest-HP or elite priority — and since #80 it shoots *at* it rather than hitting it: the shot
+// is a projectile like a player's, launched on the bearing to where that target stands this tick,
+// and it misses on exactly the same terms. A turret does not lead, so its miss is the plain
+// geometric one; leading was not asked for and giving it would make a turret a better shot than
+// the squad.
+//
+// It fires straight through walls and structures, exactly as its hitscan ray did: turrets need no
+// line of sight and no firing lane, so there is deliberately no shot-vs-structure test anywhere.
 // Nests are legitimate targets, so a forward turret line sieges one unattended.
 //
-// What the client draws is streamed from here as a transition: each turret's `(targetId, powered)`
-// pair is snapshotted before it moves and diffed once the power budget has settled. It is written
-// by the same pass that applies `TURRET_DAMAGE`, so it cannot outlive the damage by more than one
-// tick. Nothing is remembered between ticks: every client gets the same delta, every tick.
+// The `(targetId, powered)` transition streamed from here is no longer what draws a turret's fire
+// — every shot is its own event now — but it is still what draws the **unpowered lightning**, so
+// it stays exactly as #74 shaped it. Each turret's pair is snapshotted before it moves and diffed
+// once the power budget has settled; nothing is remembered between ticks.
 //
-// The ammo precondition below is deliberately *not* in that transition, and the client gates the
-// train on the pool it already mirrors instead. Putting it here would mean an aim transition per
-// engaged turret every time the pool crossed zero — which is every few ticks in exactly the scarce
-// regime #102 designs for, on a field whose whole point is that it is sparse.
+// The ammo precondition below is deliberately *not* in that transition. It never needed to be, and
+// since #80 it could not be: a shot the pool refused is a shot with no `ProjectileSpawn`, so the
+// client is told by the absence of the event rather than by the state.
 function stepTurrets(
   state: EnemyState,
   build: BuildState | null,
   dtMs: number,
-  enemiesHit: Set<string>,
-  nestsHit: Set<string>,
   aims: TurretAim[],
+  projectiles: ProjectileSpawn[],
 ): void {
   if (!build) return;
   const turrets = [...build.structures.values()].filter((s) => s.turret !== undefined);
@@ -745,14 +892,21 @@ function stepTurrets(
     // holding fire costs the turret nothing and the first bullet forged is fired at once.
     if (!spendBullet(build.ammo)) continue;
     runtime.cooldownMs = TURRET_CADENCE_MS;
-    if (target.enemy) {
-      target.enemy.hp -= TURRET_DAMAGE;
-      enemiesHit.add(target.enemy.id);
-    } else if (target.nest) {
-      target.nest.hp -= TURRET_DAMAGE;
-      nestsHit.add(target.nest.id);
-    }
+    const at = target.enemy?.pos ?? target.nest?.pos;
+    if (!at) continue;
+    const from = structureCenter(turret);
+    projectiles.push(launch(state, from, bearing(from, at), TURRET_RANGE, TURRET_DAMAGE));
   }
+}
+
+// The unit heading from one point to another, or due east if the two coincide. A turret standing
+// exactly on what it is shooting at has no bearing to fire on, and a shot down its own barrel
+// reaches that target on its first tick whichever way it was pointed.
+function bearing(from: Vec2, to: Vec2): Vec2 {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy);
+  return len === 0 ? { x: 1, y: 0 } : { x: dx / len, y: dy / len };
 }
 
 // A turret's aim collapsed to one comparable value, so the diff is an equality test rather than
@@ -839,35 +993,42 @@ function reapDamage(
   return { hits, deaths, nests };
 }
 
-// The single nearest target a hitscan ray reaches — an enemy or a nest, whichever is closer
-// along the ray — within range and inside the ray's half-width (plus the target's radius). A
-// degenerate zero-length aim hits nothing.
-function nearestRayHit(state: EnemyState, attack: Attack): { enemy?: Enemy; nest?: Nest } | null {
-  const dirLen = Math.hypot(attack.dir.x, attack.dir.y);
-  if (dirLen === 0) return null;
-  const ux = attack.dir.x / dirLen;
-  const uy = attack.dir.y / dirLen;
-  // Distance along the ray to a target at `pos`, or null if it's behind, out of range, or off-line.
+// The single nearest thing a segment from `from`, `reach` long on the unit heading `dir`, sweeps
+// past — an enemy or a nest, whichever comes first — inside `RANGED_HALFWIDTH` plus that thing's
+// own radius, and up to `slack` past the far end. `at` is how far the shot travels to reach it,
+// which is never more than `reach`: the allowance widens what is *caught*, never what is covered.
+//
+// A degenerate zero-length heading sweeps nothing: `along` is 0 for every candidate and `perp`
+// their whole distance, so only something already on top of the muzzle could match.
+function nearestHitAlong(
+  state: EnemyState,
+  from: Vec2,
+  dir: Vec2,
+  reach: number,
+  slack: number,
+): { enemy?: Enemy; nest?: Nest; at: number } | null {
+  // Distance along the segment to a body at `pos`, or null if it is behind the near end, past the
+  // far end and the allowance, or off to one side.
   const alongIfHit = (pos: Vec2, radius: number): number | null => {
-    const rx = pos.x - attack.pos.x;
-    const ry = pos.y - attack.pos.y;
-    const along = rx * ux + ry * uy;
-    if (along < 0 || along > RANGED_RANGE) return null;
-    const perp = Math.hypot(rx - along * ux, ry - along * uy);
-    return perp <= RANGED_HALFWIDTH + radius ? along : null;
+    const rx = pos.x - from.x;
+    const ry = pos.y - from.y;
+    const along = rx * dir.x + ry * dir.y;
+    if (along < 0 || along > reach + slack) return null;
+    const perp = Math.hypot(rx - along * dir.x, ry - along * dir.y);
+    return perp <= RANGED_HALFWIDTH + radius ? Math.min(along, reach) : null;
   };
-  let best: { along: number; enemy?: Enemy; nest?: Nest } | null = null;
+  let best: { at: number; enemy?: Enemy; nest?: Nest } | null = null;
   for (const enemy of state.enemies.values()) {
     if (enemy.hp <= 0) continue;
-    const along = alongIfHit(enemy.pos, enemyRadius(enemy.kind));
-    if (along !== null && (best === null || along < best.along)) best = { along, enemy };
+    const at = alongIfHit(enemy.pos, enemyRadius(enemy.kind));
+    if (at !== null && (best === null || at < best.at)) best = { at, enemy };
   }
   for (const nest of state.nests) {
     if (!nest.alive) continue;
-    const along = alongIfHit(nest.pos, NEST_RADIUS);
-    if (along !== null && (best === null || along < best.along)) best = { along, nest };
+    const at = alongIfHit(nest.pos, NEST_RADIUS);
+    if (at !== null && (best === null || at < best.at)) best = { at, nest };
   }
-  return best === null ? null : { enemy: best.enemy, nest: best.nest };
+  return best;
 }
 
 // One enemy's pure geometric step — one of three states:

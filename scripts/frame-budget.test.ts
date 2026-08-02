@@ -63,7 +63,20 @@ describe("entrySource", () => {
   test("prices a shot through the treatment the game strikes, not a plain line", () => {
     const source = entrySource(parseArgs([]));
     expect(source).toContain("src/game/fx.ts");
-    expect(source).toContain("speedLines(p.pos, e.pos)");
+    // The streak behind a bullet in flight (#80), struck from its launch point to where it has
+    // reached — and bundled into one path, which is how `drawProjectiles` strikes the frame's.
+    expect(source).toContain("speedLines(m.from, m.pos)");
+  });
+
+  // #80 put the shots on the world snapshot rather than in the options bag, so every row from the
+  // shot layer down has to be drawn against *that* world. Draw them against the bare one and every
+  // row below the shots silently loses them, which reads as the shot layer costing nothing.
+  test("draws every layer from the shots down against the world that carries them", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("const flying = { ...full, projectiles: inFlight(IN_FLIGHT) }");
+    expect(source).not.toMatch(
+      /drawWorld\(ctx, full, (m5|withFloats|withBursts|withPuffs|withLettering|withBlood)\)/,
+    );
   });
 
   test("forces a rasterisation per iteration, or it would time queueing rather than painting", () => {
@@ -140,7 +153,7 @@ describe("entrySource", () => {
     // the art. Counted, because a timing call alone passing is exactly how a report comes to quote a
     // word count off a frame that had no words in it.
     expect(source).toContain("const withBlood = { ...withLettering, blood: bloodMarks(DECALS) }");
-    expect(source.split("drawWorld(ctx, full, withBlood)").length - 1).toBe(3);
+    expect(source.split("drawWorld(ctx, flying, withBlood)").length - 1).toBe(3);
     // The count is derived from the cadences that actually fire, not chosen here
     // (`lettering-ink.ts`), and it is the two mark counts added because a word rides both.
     expect(source).toContain(`const LETTERING = ${concurrentLettering()};`);

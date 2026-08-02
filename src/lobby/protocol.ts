@@ -235,16 +235,25 @@ export interface Power {
 // this costs 0.9% of a delta, against 2.3% for streaming every shot (#74).
 export type TurretAim = [id: string, target: string | null, powered: 0 | 1];
 
-// A squadmate's resolved shot, emitted by the sim on the tick it applied the damage — never at
-// admission time, so a refused attack has no path here. `dir` is the admitted unit aim vector;
-// `hit` is the enemy or nest the server actually damaged, absent when the ray hit nothing (a miss
-// still draws, out to full range). The origin is deliberately not on the wire: the client draws
-// from its own rendered position for that peer, already within a player-diameter of the truth.
-export interface PeerShot {
-  id: PlayerId;
-  dir: Vec2;
-  hit?: string;
-}
+// A shot the server has put in flight (#80), announced once on the tick it was fired: where it
+// left from, and the unit heading it is travelling on. Both a player's shot and a turret's ride
+// this one shape — nothing on it says which, because nothing the client draws differs.
+//
+// **The flight itself is not on the wire.** A projectile is a straight line at a constant speed
+// both sides compile against (`PROJECTILE_SPEED`), so its position at any instant is arithmetic on
+// this entry, and streaming it per tick would be re-sending a number the receiver can already
+// work out — the derive-don't-stream idiom the ore grid and the nest layout already use
+// ([ADR 0007](../../docs/adr/0007-a-projectile-is-derived-from-its-launch.md)).
+//
+// The origin *is* on the wire, where the hitscan `PeerShot` it replaces left it off. A line lived
+// for one frame and could be struck from the shooter's rendered position; a projectile outlives
+// its shooter's next several positions, so anchoring it to a moving avatar would drag the bullet
+// along behind the gun.
+//
+// Coordinates are whole world units and the heading is three decimals, on #84's terms: 1 unit is
+// 1 CSS px at the fixed zoom, and three decimals on a unit vector is under half a unit of lateral
+// drift over the whole 700 u reach.
+export type ProjectileSpawn = [id: string, x: number, y: number, dx: number, dy: number];
 
 // The per-tick enemy/combat delta: a full `moves` set plus sparse event arrays — only the
 // non-empty ones ride the wire. `tick` is monotonic per session; the client applies-if-newer.
@@ -273,7 +282,13 @@ export interface MapDelta {
   removals?: string[];
   power?: Power;
   aims?: TurretAim[];
-  shots?: PeerShot[];
+  // Shots put in flight this tick, and shots taken out of it. A projectile costs the wire these
+  // two small entries for its whole life rather than a coordinate pair every tick — see
+  // `ProjectileSpawn` — and it is `spent` that keeps the client from drawing a bullet the sim no
+  // longer has: it ends the flight where the sim ended it, whether that was a target or the far
+  // end of its reach.
+  projectiles?: ProjectileSpawn[];
+  spent?: string[];
   // The squad has found the door (#93). `WorldInit.exit` reached every client on the first frame,
   // so this says nothing about *where* it is — only that the squad has now earned the right to be
   // shown it. Sparse on the same terms as the bank, and more so: it flips once per match and never
@@ -314,6 +329,19 @@ export interface RenderedNest {
   alive: boolean;
 }
 
+// A shot in flight as the client has worked it out this frame (not a wire type): where it was
+// fired from, and where it has got to. Two points and no heading, because everything the render
+// layer wants — the bearing, how far it has come, whether it has cleared the muzzle — is the
+// difference between them.
+//
+// Its position is derived rather than streamed, and on the same delayed clock the spiders render
+// on, so a bullet arrives at a body on the frame that body is drawn taking the hit.
+export interface RenderedProjectile {
+  id: string;
+  from: Vec2;
+  pos: Vec2;
+}
+
 // The render model the client assembles each frame from world-init + local self-sim +
 // relayed peer positions + the enemy stream. Not a wire type — it never crosses the socket.
 // `ore` is the locally-derived grid, shared by reference (it never changes).
@@ -321,6 +349,12 @@ export interface WorldSnapshot {
   arena: Arena;
   players: Avatar[]; // sorted by slot
   enemies: RenderedEnemy[];
+  // Every shot the server has in the air, drawn by every client alike — the shooter's own
+  // included. It is here rather than handed to the render layer beside the frame's other marks
+  // because it is server state this class mirrors, exactly as the enemies are, and because after
+  // #80 there is no shot from any other source: nothing a client believes about its own trigger
+  // can put a projectile in this list.
+  projectiles: RenderedProjectile[];
   nests: RenderedNest[];
   exit: Exit;
   // Whether the squad has found the door (#93). `exit` has been here since the first frame, so this

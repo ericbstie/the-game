@@ -7,24 +7,29 @@ import type { Vec2 } from "../lobby/protocol";
 // says where the ink goes and `draw.ts` puts it there. That is what lets every claim below be
 // checked without a canvas, a spy or a frame.
 //
-// Nothing here ages, the starburst and the puff included. A shot carries the `at` it is drawn from
-// and `SHOT_LINE_MS` retires it; an impact's mark carries the instant its hit arrived and
-// `ClientWorld.impactMarks` retires it; a death's mark carries the instant its enemy was taken off
-// the stream and `ClientWorld.deathMarks` retires it. The lifecycle #114 left unwritten went there
-// rather than here, because the two things it needs are both private to that class — the delta the
-// mark is spawned from, and `ENEMY_RENDER_DELAY_MS`, the clock it has to be judged on. What is left
-// for this module is what it was always for: where the ink goes.
+// Nothing here ages, the starburst and the puff included. A shot is no longer aged on a clock at
+// all — since #80 it is a body the sim carries, and `ClientWorld.renderProjectiles` strikes it for
+// as long as the server still has it in the air; an impact's mark carries the instant its hit
+// arrived and `ClientWorld.impactMarks` retires it; a death's mark carries the instant its enemy
+// was taken off the stream and `ClientWorld.deathMarks` retires it. The lifecycle #114 left
+// unwritten went there rather than here, because the two things it needs are both private to that
+// class — the delta the mark is spawned from, and `ENEMY_RENDER_DELAY_MS`, the clock it has to be
+// judged on. What is left for this module is what it was always for: where the ink goes.
 
-// The break, in world units: ink, then paper. A shot is instantaneous — #80 is deferred, so nothing
-// about it travels — and the breaks are the whole of what makes it read as fast rather than as a
-// ruled line.
+// The break, in world units: ink, then paper. #114 struck it down the whole of a shot's line, when
+// a shot was instantaneous and the breaks were the whole of what made it read as fast rather than
+// as a ruled one. #80 gave the shot a body that travels, and the mark became a streak of exactly one
+// `SHOT_DASH` behind it (`draw.ts` `SHOT_STREAK`) — so what the dash sets in the game today is the
+// *length* of that streak, which `run` below fits as a single unbroken stroke with no trail. The
+// period still governs the longer marks struck through here, which is what the ink instruments
+// price a full-reach shot at.
 //
 // The period is a cost as much as a look, and the cost is **per stroke, not per inked pixel** —
-// the opposite of what a shot's price has meant until now (`docs/frame-budget.md` rule 1). Measured
-// at 50 concurrent shots, dpr 2, software rasterisation: a plain line is one stroke and 1.64 ms; the
-// same mark broken at 18/12 is ~35 strokes a shot and 4.88 ms, and at 40/26 with this trail ~11 and
-// 2.47 ms. 52/32 is ~9. A finer break buys a difference the eye has to hunt for and charges the
-// frame's dearest layer for it, so the coarse one ships.
+// the opposite of what a shot's price had meant until then (`docs/frame-budget.md` rule 1).
+// Measured on the full-length mark at 50 concurrent shots, dpr 2, software rasterisation: a plain
+// line is one stroke and 1.64 ms; the same mark broken at 18/12 is ~35 strokes a shot and 4.88 ms,
+// and at 40/26 with this trail ~11 and 2.47 ms. 52/32 is ~9. A finer break buys a difference the
+// eye has to hunt for and charges the frame's dearest layer for it, so the coarse one ships.
 //
 // Coarser has a floor: past about 64/38 each trailing strand on a mid-range shot collapses to one
 // unbroken stroke, and two of those converging read as an arrowhead rather than as speed.

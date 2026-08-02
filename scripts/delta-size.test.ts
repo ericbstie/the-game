@@ -14,13 +14,35 @@ setDefaultTimeout(30_000);
 describe("the worst case is the one the game actually supports", () => {
   test("drives the sim to the enemy cap rather than asserting against a hand-written fixture", () => {
     const { enemies, trimmed } = worstCaseTick();
-    expect(enemies).toBe(DEFAULT_WORLD_SETTINGS.enemyCap);
-    expect(trimmed.moves).toHaveLength(DEFAULT_WORLD_SETTINGS.enemyCap);
+    // At the governor, give or take what the warm-up's own fire has just killed: since #80 the
+    // fixture spends thirty ticks shooting before it measures, so the population sits against the
+    // cap rather than pinned to it. Anything materially below it is a fixture that stopped working.
+    expect(enemies).toBeGreaterThan(DEFAULT_WORLD_SETTINGS.enemyCap - 10);
+    expect(enemies).toBeLessThanOrEqual(DEFAULT_WORLD_SETTINGS.enemyCap);
+    expect(trimmed.moves).toHaveLength(enemies);
   });
 
-  test("every player's shot rides the measured tick, so `shots` is at its per-tick maximum", () => {
+  test("every player's shot rides the measured tick, so the launches are at their maximum", () => {
     const { trimmed } = worstCaseTick();
-    expect(trimmed.shots).toHaveLength(6);
+    // Six players' launches plus whichever turrets came round on this tick — the point is that
+    // none of the six is missing, not that nothing else fired.
+    expect((trimmed.projectiles ?? []).length).toBeGreaterThanOrEqual(6);
+  });
+
+  // #80. A shot lives ~8 ticks in the air, so a tick taken cold would carry only the launches
+  // fired on it — the budget has to be against a sky that is already full.
+  test("the measured tick is taken with shots already in flight, not on a cold sim", () => {
+    const { inFlight } = worstCaseTick();
+    expect(inFlight).toBeGreaterThan(6);
+  });
+
+  // The decision #80 had to remake (#74 chose transitions over per-shot streaming). Both shapes are
+  // built from the same tick so the comparison is a measurement rather than an argument.
+  test("streaming every shot's position is measured beside deriving it, on one tick", () => {
+    const { trimmed, streamed } = worstCaseTick();
+    expect(streamed.spent).toBeUndefined();
+    expect(streamed.projectiles).toBeUndefined();
+    expect(streamed.moves.length).toBe(trimmed.moves.length + (worstCaseTick().inFlight ?? 0));
   });
 
   // Turret aims stream as transitions, not per tick (#74), so a settled tick carries none. That
@@ -39,10 +61,30 @@ describe("the worst case is the one the game actually supports", () => {
       "nests",
       "structHits",
       "aims",
-      "shots",
+      "projectiles",
+      "spent",
     ] as const) {
       expect(trimmed[key]?.length ?? 1).toBeGreaterThan(0);
     }
+  });
+});
+
+// #80 had to remake #74's turret-wire decision, and this is the property that settled it: what a
+// derived flight costs is set by how often the game *fires*, which its cadences fix, while what a
+// streamed one costs is set by how long a shot is *in the air*, which is a provisional speed.
+describe("what deriving a flight buys over streaming it", () => {
+  test("streaming is charged per shot in the air; deriving is charged per shot fired", () => {
+    const { streamed, streamedBare, inFlightCeiling } = measure();
+    expect(streamed.inFlight).toBeGreaterThan(0);
+    const perShot = (streamed.raw - streamedBare.raw) / streamed.inFlight;
+    expect(perShot).toBeGreaterThan(0); // linear in the count, which is the whole finding
+    expect(inFlightCeiling).toBeGreaterThan(streamed.inFlight);
+  });
+
+  test("and at the ceiling the cadences allow, streaming costs more than what ships", () => {
+    const { trimmed, streamed, streamedBare, inFlightCeiling } = measure();
+    const perShot = (streamed.raw - streamedBare.raw) / streamed.inFlight;
+    expect(streamedBare.raw + perShot * inFlightCeiling).toBeGreaterThan(trimmed.raw);
   });
 });
 

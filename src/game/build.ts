@@ -331,7 +331,23 @@ export interface BuildableSpec {
 export const MINER_TRICKLE = 2; // metal/s — it never stops and it stacks
 export const GENERATOR_OUTPUT = 400; // energy/s of ceiling each standing generator contributes
 
-// Turret fire. Range matches the player's own reach, and ~20 dps kills a 30 HP grunt in ~1.5 s.
+// Turret fire. Range matches the player's own reach.
+//
+// **Both figures below are unchanged by #80, and the claim they carried is not.** A turret's shot
+// travels now and can miss, and a turret is the shooter it misses *for*: it shoots at whatever is
+// nearest, which is usually chasing a player somewhere else and so crossing its line, where a
+// player's target is almost always closing along it. That a crossing target escapes is proved on
+// the geometry — `enemies.test.ts` "a target crossing at elite speed at maximum range outruns a
+// turret's shot too", against its standing-still twin.
+//
+// **How often it happens is not a figure this repo can hand you.** The one measurement of it is not
+// reproducible, and ADR 0007 says so and says why: the rate rides enemy density and where the
+// turret stands rather than anything about the gun. So "~20 dps kills a 30 HP grunt in ~1.5 s" is
+// now a **ceiling** rather than a rate — a turret that never missed would be exactly that, and a
+// real one is somewhere under it. Neither number below was raised to buy the difference back, at
+// any size it turns out to be. Missing is the whole of what #80 adds, and a turret is the only
+// place it bites; compensating it away in the damage would leave the game where it was with a
+// flight simulation bolted on. Both are provisional as they always were — a later change is a retune.
 export const TURRET_RANGE = 700;
 export const TURRET_DAMAGE = 4;
 export const TURRET_CADENCE_MS = 200;

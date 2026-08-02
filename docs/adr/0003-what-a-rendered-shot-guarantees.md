@@ -96,3 +96,23 @@ and this ADR does not reopen. It is left open because it misattributes a shot ra
 one: the count is what decision 1 is about. Ammo is not in the transition because it would put an
 aim delta on every engaged turret each time the pool crossed zero — routine in the scarce regime
 #102 designs for — on a field whose value is that it is sparse.
+
+## Amendment — shots travel, and the invariant becomes absolute (2026-08-02, [#80](https://github.com/ericbstie/the-game/issues/80))
+
+A shot is a projectile the server flies now, so there is no line and no instant to be optimistic
+about. [ADR 0007](0007-a-projectile-is-derived-from-its-launch.md) **reopens decision 2 and reverses
+it**: own shots round-trip like everybody else's, and the client draws no shot of its own accord.
+
+That makes decision 1 unconditional for the first time:
+
+> A projectile is drawn because the server has one in the air. There is no other source.
+
+What made round-tripping unacceptable is not the trade that was on the table. A hitscan line's whole
+existence was the instant it was fired, so a tick of delay delayed 100% of the event; a flight is
+389 ms, so a tick delays 13% of it and the impact was always going to be a third of a second out.
+
+Decisions 3, 4 and 5 go with it. There is no full-range own line to justify (3), no client-side
+approximation of a server rule left to gate on (4 — the cadence, ammo and death gates remain, but
+only to keep the socket from carrying reports the hub would refuse), and no named non-answer (5).
+The #102 amendment above goes too: a turret's fire is a per-shot event now, so a shot the pool
+refused is a shot with no event, and the client is told by the absence rather than by a count.
