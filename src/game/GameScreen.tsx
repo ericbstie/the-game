@@ -46,6 +46,12 @@ const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the a
 // spider's bite cadence, so a base being chewed holds the warning steady rather than strobing it
 // between bites, and short enough that the bell stops soon after the last spider is off it.
 const UNDER_ATTACK_MS = 2000;
+// The floor between two acknowledgements of a refused trigger (#150). A hold refuses on every frame,
+// so without one the mark would be remounted sixty times a second and never get to play; with one, a
+// held dry trigger simply renews the strike and every click of a mashed trigger still lands its own.
+// Provisional — well under the interval between two clicks a hand can make, and that is all it has
+// to clear.
+export const REFUSAL_MS = 80;
 const BUILD_ICON_PX = 26; // the buildable's own sprite, shrunk to fit a slot
 const AMMO_ICON_PX = 26; // the ammo box's icon, sized as a build slot's so the two squares agree
 const GUN_ICON_PX = 26; // and the gun's, so every icon plate on the HUD is one square
@@ -182,6 +188,11 @@ export function GameScreen({
   const [costs, setCosts] = useState(() => slotCosts(state.world)); // the build bar's cost circles
   const [ammo, setAmmo] = useState({ bullets: 0, queued: 0, forgeAt: null as number | null }); // #102
   const [underAttack, setUnderAttack] = useState(false); // drives the HUD's warning bell
+  // When the last acknowledged dry pull was, or 0 before there has been one (#150). A timestamp
+  // rather than a tally so `REFUSAL_MS` can be applied in the updater itself: a pull inside the floor
+  // returns the value already held, and React bails out of the re-render — the same way every other
+  // mirror in this component keeps an unmoved reading off the render path.
+  const [refusedAt, setRefusedAt] = useState(0);
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
   const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
   const aimRef = useRef<{ camera: Camera; self: Vec2 }>({
@@ -333,7 +344,13 @@ export function GameScreen({
     // cost the first shot after a bullet lands. The mirror is at worst one tick behind the pool it
     // is gating on, so two players racing for the last bullet can both still send — and only one of
     // them gets a projectile back.
-    if (world.ammo() <= 0) return;
+    if (world.ammo() <= 0) {
+      // The pull is refused, and the box says so (#150). Nothing else here does: the shot is the
+      // server's to fly since #80, so a refusal that returns quietly is a click with no trace on
+      // screen at all beyond the `0` that was already sitting there.
+      setRefusedAt((last) => (now - last < REFUSAL_MS ? last : now));
+      return;
+    }
     if (now - lastAttackRef.current < RANGED_CADENCE_MS) return;
     lastAttackRef.current = now;
     const { camera, self } = aimRef.current;
@@ -780,6 +797,11 @@ export function GameScreen({
                 style={{ animationDuration: `${FORGE_MS}ms` }}
               />
             )}
+            {/* The strike a refused trigger leaves (#150), keyed on the pull it acknowledges so each
+                one restarts the mark rather than letting a spent animation sit there — the same
+                remount the forge overlay is restarted by. Over the veil: a pool can be empty and
+                forging at once, and the refusal is the newer of the two things to say. */}
+            {refusedAt > 0 && <span key={refusedAt} className="ammo-refused" />}
             {/* After the veil, so the circle stays legible through it without a stacking context. */}
             {ammo.queued > 0 && <span className="ammo-queued">{ammo.queued}</span>}
           </button>
