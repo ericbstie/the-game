@@ -461,3 +461,36 @@ export function demoCrowd(
   }
   return { ...world, enemies: crowd };
 }
+
+// The squad standing in the escape door (#152). The sign is up only for a player who is themselves
+// in it, and this scene is staged 15,400 u away from one — so, like the reveal latch `--door` sets,
+// there is no arrangement of the scene as it stands that can produce the frame.
+//
+// The door is the west wall's: x 0..98, y 15,000..15,936. Two of the three stand inside it and the
+// third is still out on the floor, so the count the frame states is **2 of 3** and not a whole
+// squad — a sign that only ever read `3 of 3` would say nothing about whether it reads as a count.
+// `DEMO_SELF` is one of the two inside, because that is the only player the sign is drawn for.
+const DEMO_ESCAPE_POSITIONS: Vec2[] = [
+  { x: 62, y: 15_360 }, // p1, in
+  { x: 46, y: 15_440 }, // p2 — DEMO_SELF — in
+  { x: 320, y: 15_540 }, // p3, still walking
+];
+
+// Where the camera lands with `DEMO_SELF` standing there: `computeCamera` clamped against the west
+// wall, which is exactly what the game does for a player pressed up against the edge of the arena.
+export const DEMO_ESCAPE_CAMERA = { x: 0, y: 15_140 };
+
+export function demoEscape(world: WorldSnapshot): WorldSnapshot {
+  return {
+    ...world,
+    players: world.players.map((p, i) => ({ ...p, pos: { ...DEMO_ESCAPE_POSITIONS[i] } })),
+  };
+}
+
+// The roster the sign is counted against (#152) — everyone at the keyboard. A render input the game
+// always has and this script has always withheld, so it rides with the escape frame rather than with
+// every frame: handed over unconditionally it would put #94's off-screen arrows into the zoomed
+// frames, which is a change to somebody else's review channel.
+export function demoConnected(world: WorldSnapshot): Set<string> {
+  return new Set(world.players.map((p) => p.id));
+}

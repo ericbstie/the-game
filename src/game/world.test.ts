@@ -1,15 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import type { Vec2 } from "../lobby/protocol";
 import { mulberry32 } from "./build";
 import {
   ARENA,
   distanceToExit,
   EXIT_REVEAL_RADIUS,
+  escapeTally,
   generateWorld,
+  inEscape,
   insideExit,
   PLAYER_RADIUS,
   PLAYER_SPEED,
   pushOutOfBodies,
   revealsExit,
+  squadEscaped,
   stepPos,
 } from "./world";
 
@@ -206,6 +210,58 @@ describe("insideExit (M4-T11: standing in the door)", () => {
     const { exit: placed } = generateWorld(players(1), { rng: () => 0.5 });
     const centre = { x: placed.x + placed.width / 2, y: placed.y + placed.height / 2 };
     expect(insideExit(centre, placed)).toBe(true);
+  });
+});
+
+describe("escapeTally (#152: how much of the squad is in the door)", () => {
+  const exit = { x: 0, y: 1_000, width: 98, height: 936 };
+  const inDoor = { x: 50, y: 1_400 };
+  const outside = { x: 5_000, y: 1_400 };
+  const up = (pos: Vec2 | undefined) => ({ pos, hp: 100 });
+  const down = (pos: Vec2 | undefined) => ({ pos, hp: 0 });
+
+  test("counts everyone standing in the door, out of everyone handed in", () => {
+    expect(escapeTally([up(inDoor), up(inDoor), up(outside)], exit)).toEqual({
+      inside: 2,
+      needed: 3,
+    });
+  });
+
+  test("a downed player in the door is not in it — they are counted only as a blocker", () => {
+    expect(escapeTally([up(inDoor), down(inDoor)], exit)).toEqual({ inside: 1, needed: 2 });
+  });
+
+  test("a player nobody has a position for blocks, exactly as one standing outside does", () => {
+    expect(escapeTally([up(inDoor), up(undefined)], exit)).toEqual({ inside: 1, needed: 2 });
+  });
+
+  test("an empty squad is nought of nought — it never reads as an escape", () => {
+    expect(escapeTally([], exit)).toEqual({ inside: 0, needed: 0 });
+    expect(squadEscaped([], exit)).toBe(false);
+  });
+
+  test("the escape is the tally reaching its own denominator, and nothing else", () => {
+    // The one measure both readers take (#152): the server ends the match on `squadEscaped` and the
+    // client writes the tally on screen. Derived from each other here, so a squad the sign calls
+    // whole and a match that has not ended cannot both be true.
+    for (const squad of [
+      [up(inDoor)],
+      [up(inDoor), up(outside)],
+      [up(inDoor), up(inDoor)],
+      [up(inDoor), down(inDoor)],
+      [down(inDoor)],
+      [up(inDoor), up(undefined)],
+    ]) {
+      const { inside, needed } = escapeTally(squad, exit);
+      expect(squadEscaped(squad, exit)).toBe(needed > 0 && inside === needed);
+    }
+  });
+
+  test("inEscape is the per-player half of it, and what the tally counts", () => {
+    expect(inEscape(up(inDoor), exit)).toBe(true);
+    expect(inEscape(up(outside), exit)).toBe(false);
+    expect(inEscape(down(inDoor), exit)).toBe(false);
+    expect(inEscape(up(undefined), exit)).toBe(false);
   });
 });
 

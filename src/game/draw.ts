@@ -29,6 +29,7 @@ import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
 import { BURST_REACH, inkPuff, PUFF_REACH, SHOT_DASH, speedLines, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_U,
+  MINIMAP_MARGIN,
   minimapWindow,
   oreCells,
   oreDensity,
@@ -36,7 +37,14 @@ import {
   projectRect,
 } from "./minimap";
 import type { Say, TutorialMarks } from "./tutorial";
-import { clamp, distanceToExit, nearestInExit, PLAYER_MAX_HP } from "./world";
+import {
+  clamp,
+  distanceToExit,
+  escapeTally,
+  inEscape,
+  nearestInExit,
+  PLAYER_MAX_HP,
+} from "./world";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
 // caller pre-translates and scales the context to the camera, so this draws in world space and
@@ -231,10 +239,15 @@ const NEST_DEAD = "#3a2d44"; // a silenced (destroyed) nest
 const INK = "#000";
 const LABEL_PAD = 30; // extra top margin so an avatar's name doesn't pop as it scrolls off
 
-// The game's own typeface, as every other word in it is — the fallbacks match `styles.css`. Shared
-// by the two things ADR 0001 allows to be written in the world: a player's name and the `+1` a
-// whole Metal floats.
-const WORLD_FONT = '12px "Playfair Display", "Times New Roman", Times, serif';
+// The game's own typeface, as every other word in it is — the fallbacks match `styles.css`. Named
+// apart from the size below because one mark is set in it at a size of its own: #152's escape count
+// is screen-fixed, so its type is a CSS size divided by the zoom rather than a world size.
+const TYPEFACE = '"Playfair Display", "Times New Roman", Times, serif';
+
+// Shared by everything written *in* the world: a player's name, the `+1` a whole Metal floats, the
+// tutorial's prompts and #151's distance. 12 world units, so it scales with the camera like the
+// thing it annotates.
+const WORLD_FONT = `12px ${TYPEFACE}`;
 const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for no other figure
 
 // How thick every stroke of a shot is. Two logical px, so a strand survives being drawn diagonally
@@ -560,6 +573,11 @@ export function drawWorld(
     );
     ctx.globalAlpha = 1;
   }
+
+  // The count for a player standing in the door (#152), the second thing here that is a corner of
+  // the screen rather than a place in the world. Before the map and not after it, so the map's own
+  // rule — that it writes nothing, anywhere, at any level — stays a claim about the map.
+  if (self) drawEscapeCount(ctx, world, self, options);
 
   // Over the world entire, because it is not in it: the map is a corner of the *screen*, drawn in
   // world coordinates only because that is the space this whole file paints in. Without a player
@@ -1155,6 +1173,78 @@ function writeExitDistance(
   ctx.strokeText(figure, x, y);
   ctx.fillStyle = INK;
   ctx.fillText(figure, x, y);
+}
+
+// How large the escape count is set and how far its baseline sits below the top of the screen, both
+// in **CSS px** rather than in world units — see the anchoring note below. **Provisional** layout
+// numbers: nothing in the code fixes either, and only a played match can judge them.
+//
+// The size is not `WORLD_FONT`'s 12 because the type is not measured against the same thing: 12 u is
+// a name over an avatar, read at the avatar, and this is read at the top of the screen while the
+// player is watching the door. The margin is the one the corner map is held off its own corner by,
+// which is the only other chrome the canvas draws.
+const ESCAPE_TYPE_PX = 20;
+const ESCAPE_MARGIN = MINIMAP_MARGIN;
+
+// How much of the squad is standing in the escape door, for a player standing in it (#152).
+//
+// **Up exactly when this player is one of the counted**, which is `inEscape` — the same per-player
+// half of the rule the tally counts with and the server ends the match on. That is what makes the
+// mark's presence the answer to "am I in it": there is no second condition it could be up under.
+// A downed player standing in the door is therefore told nothing, because a downed player is not in
+// it — they block, and they have to get up and walk back.
+//
+// **The count is the escape rule, counted** (`escapeTally` in `world.ts`). One measure, two readers:
+// the server ends the match on the same function, so a sign that says the squad is whole and a match
+// that has not ended cannot both be true. What this side has to get right is *which squad* — the
+// connected one, a downed player in it and blocking, a dropped one not in it at all.
+//
+// **Nothing without the roster**, the same refusal #94's arrows make and for the same reason (#75):
+// presence rides the lobby snapshot, and there is nothing in a `WorldSnapshot` that tells a player
+// inside the server's grace window from a teammate who has stopped walking. A denominator guessed
+// from the avatars alone would be wrong in exactly the case the escape rule turns on.
+//
+// It **trails** the server and never leads it, for peers: their positions are the interpolated,
+// render-delayed samples the frame is drawing them at, so what is counted is what is on the screen.
+// The owner's own position is its live local one, which is the client-authoritative stance the whole
+// game takes — and neither can decide anything, because this draws and the server rules.
+//
+// **Screen-anchored, unlike #151's dart and like the corner map.** Two reasons, and the first is the
+// stronger: the count is about the squad rather than about a point on the floor, and a door 936 u
+// long has no point on it a camera is guaranteed to hold in view, so a world anchor would have to be
+// clamped into the viewport — a screen anchor wearing a disguise. The second is legibility: held in
+// the world, 20 u of type is 10 CSS px at 0.5×, on the one frame a whole match resolves on.
+//
+// The **numeral** is #151's precedent followed rather than departed from (ADR 0001 §4): a quantity
+// is written, not encoded in a ramp. Two of them and the word between them, in the ticket's own
+// words — "2 of 3" — because `2/3` is a fraction and means something else.
+function drawEscapeCount(
+  ctx: CanvasRenderingContext2D,
+  world: WorldSnapshot,
+  self: Avatar,
+  { camera, viewport, zoom = 1, connected }: DrawOptions,
+): void {
+  if (!connected?.has(self.id) || !inEscape(self, world.exit)) return;
+  const squad = world.players.filter((p) => connected.has(p.id));
+  const { inside, needed } = escapeTally(squad, world.exit);
+  const count = `${inside} of ${needed}`;
+
+  // A screen size, in world units — the same conversion the corner map's every mark makes, and for
+  // the same reason: this is a corner of the screen, drawn in world coordinates only because that is
+  // the space this whole file paints in.
+  const px = 1 / zoom;
+  ctx.font = `${ESCAPE_TYPE_PX * px}px ${TYPEFACE}`;
+  ctx.textAlign = "center";
+  ctx.lineWidth = 3 * px;
+  ctx.lineJoin = "round";
+  const x = camera.x + viewport.width / 2;
+  const y = camera.y + (ESCAPE_MARGIN + ESCAPE_TYPE_PX) * px;
+  // Cut out of the ink rather than laid on it, exactly as a name label is: a player standing in the
+  // door is standing on the one black shape in the frame that is the size of a wall.
+  ctx.strokeStyle = PAPER;
+  ctx.strokeText(count, x, y);
+  ctx.fillStyle = INK;
+  ctx.fillText(count, x, y);
 }
 
 // The corner map (#93): the squad, the nests, the ore as density, the base, and the door once the

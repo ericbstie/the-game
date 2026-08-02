@@ -69,6 +69,11 @@ describe("parseArgs", () => {
     expect(parseArgs(["--door"]).door).toBe(true);
   });
 
+  test("takes a squad standing in the door, so the count in it can be looked at (#152)", () => {
+    expect(parseArgs([]).escape).toBe(false); // a scene staged 15,400 u from its door
+    expect(parseArgs(["--escape"]).escape).toBe(true);
+  });
+
   test("takes a crowd, so the worst frame the enemy cap allows can be looked at", () => {
     expect(parseArgs([]).enemies).toBeNull(); // the scene's own handful
     expect(parseArgs(["--enemies", "500"]).enemies).toBe(500);
@@ -162,6 +167,29 @@ describe("entrySource", () => {
   test("stages a found door only when one was asked for", () => {
     expect(entrySource(parseArgs(["--door"]), modules)).toContain("world.exitRevealed = true;");
     expect(entrySource(parseArgs([]), modules)).toContain("world.exitRevealed = false;");
+  });
+
+  // The count is drawn only for a player standing in the door and only against a roster, and the
+  // scene carries neither: its squad is 15,400 u away and this script has never handed presence over.
+  // Both are staged by the one flag, and by nothing else — a frame that moved the squad without the
+  // roster would draw no sign and look like a regression in the mark rather than in its staging.
+  test("stands the squad in the door only when asked, roster and all (#152)", () => {
+    const staged = entrySource(parseArgs(["--escape"]), modules);
+    expect(staged).toContain("const world = demoEscape(demoWorld());");
+    expect(staged).toContain("connected: demoConnected(world)");
+    expect(staged).toContain("?? DEMO_ESCAPE_CAMERA;");
+    const plain = entrySource(parseArgs([]), modules);
+    expect(plain).toContain("const world = demoWorld();");
+    expect(plain).toContain("connected: undefined");
+    expect(plain).toContain("?? DEMO_CAMERA;");
+  });
+
+  // `--escape` moves the squad and `--enemies` stocks the frame: two independent questions, so the
+  // one has to compose around the other rather than replace it.
+  test("stands the squad in the door of a crowded frame too (#152)", () => {
+    expect(entrySource(parseArgs(["--escape", "--enemies", "500"]), modules)).toContain(
+      "demoEscape(demoCrowd(demoWorld(), 500, viewport))",
+    );
   });
 
   test("carries the blood, so the trail and the stain can be looked at (#140)", () => {

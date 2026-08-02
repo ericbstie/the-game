@@ -14,6 +14,7 @@ import { capture, measurementsIn } from "./headless";
 //   bun run sprite:frame --zoom 0.5                           # the camera zoomed out (#92)
 //   bun run sprite:frame --zoom 0.5 --enemies 500             # and the worst crowd it can hold
 //   bun run sprite:frame --door                               # the way back to a found door (#151)
+//   bun run sprite:frame --escape                             # the squad's count, from in the door (#152)
 //
 // #77 §6 proved this needs no server, no lobby, no socket and no play-through. It is the only
 // channel that shows a sprite at the size and against the background a player actually sees it,
@@ -59,6 +60,11 @@ export interface FrameRequest {
   // been near, so no arrangement of it can produce the flag and it is set here instead. False is
   // every frame this script has drawn until now.
   door: boolean;
+  // Whether the squad is standing in the escape door (#152). The count is drawn only for a player
+  // who is in it, and the scene stands 15,400 u away, so this moves the squad there and puts the
+  // camera with them. It also hands over the roster the count is taken against — a render input the
+  // rest of this script's frames deliberately go without.
+  escape: boolean;
 }
 
 export interface Blit {
@@ -87,9 +93,11 @@ export function parseArgs(argv: string[]): FrameRequest {
   let zoom = 1;
   let enemies: number | null = null;
   let door = false;
+  let inDoor = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--door") door = true;
+    else if (arg === "--escape") inDoor = true;
     else if (arg === "--out") out = argv[++i] ?? "";
     else if (arg === "--dpr") {
       dpr = Number(argv[++i]);
@@ -136,6 +144,7 @@ export function parseArgs(argv: string[]): FrameRequest {
     zoom,
     enemies,
     door,
+    escape: inDoor,
   };
 }
 
@@ -143,6 +152,12 @@ export function parseArgs(argv: string[]): FrameRequest {
 // pure function of one number this script already holds — so the entry states the frame it draws
 // instead of re-deriving it, and a frame with no blow behind it emits the very numbers (a zero
 // offset, no veil) that make it the frame this script has always rendered.
+// The squad moved into the escape door (#152), or left where the scene stands them. Composed around
+// whatever built the world rather than switched against it, so `--escape` and `--enemies` are still
+// two independent questions about one frame.
+const escapeWrap = (request: FrameRequest, world: string) =>
+  request.escape ? `demoEscape(${world})` : world;
+
 export function entrySource(request: FrameRequest, modules = MODULES): string {
   const fx = damageFx(request.damage);
   const imports = Object.keys(request.sprites)
@@ -155,7 +170,7 @@ export function entrySource(request: FrameRequest, modules = MODULES): string {
 import { drawWorld } from ${JSON.stringify(modules.draw)};
 import { createSpriteCache } from ${JSON.stringify(modules.cache)};
 import { SPRITES } from ${JSON.stringify(modules.registry)};
-import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBlood, demoBursts, demoCrowd, demoFloats, demoProjectiles, demoPuffs, demoTutorial, demoWorld } from ${JSON.stringify(modules.world)};
+import { DEMO_CAMERA, DEMO_ESCAPE_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBlood, demoBursts, demoConnected, demoCrowd, demoEscape, demoFloats, demoProjectiles, demoPuffs, demoTutorial, demoWorld } from ${JSON.stringify(modules.world)};
 import { worldViewport } from ${JSON.stringify(modules.camera)};
 
 const dpr = ${request.dpr};
@@ -166,7 +181,7 @@ const scale = dpr * zoom;
 // How far the blow threw the view off the camera (#142). Applied to the camera the world is painted
 // from and to nothing else, exactly as \`GameScreen\` applies it.
 const shake = ${JSON.stringify(fx.shake)};
-const at = ${JSON.stringify(request.at)} ?? DEMO_CAMERA;
+const at = ${JSON.stringify(request.at)} ?? ${request.escape ? "DEMO_ESCAPE_CAMERA" : "DEMO_CAMERA"};
 const camera = { x: at.x + shake.x, y: at.y + shake.y };
 // The world the screen reaches, which is the screen itself only at 1:1 (#92).
 const viewport = worldViewport(DEMO_VIEWPORT, zoom);
@@ -193,7 +208,7 @@ ctx.drawImage = (...args) => {
 
 // The transform GameScreen paints the world through, unchanged.
 ctx.setTransform(scale, 0, 0, scale, -camera.x * scale, -camera.y * scale);
-const world = ${request.enemies === null ? "demoWorld()" : `demoCrowd(demoWorld(), ${request.enemies}, viewport)`};
+const world = ${escapeWrap(request, request.enemies === null ? "demoWorld()" : `demoCrowd(demoWorld(), ${request.enemies}, viewport)`)};
 // The squad has found the door (#151), or has not. A session latch rather than anything the scene
 // can stand in the right place for, so it is set here — and the camera is 15,400 u from the door on
 // the west wall, which is the frame the pointer exists for.
@@ -210,6 +225,11 @@ drawWorld(ctx, world, {
   // Frozen, so the two things that alternate on the clock are in their visible phase.
   now: DEMO_NOW,
   ghost: DEMO_GHOST,
+  // Who the lobby roster says is at the keyboard. The escape count is taken against it and draws
+  // nothing without it (#152), so it rides with \`--escape\` and with nothing else: handed over on
+  // every frame it would put #94's off-screen arrows into the zoomed ones, which is a change to a
+  // different review channel than this flag is about.
+  connected: ${request.escape ? "demoConnected(world)" : "undefined"},
   minimapCoverage: ${request.map},
   floats: demoFloats(world, DEMO_NOW),
   // On the spiders the scene has flashing, because that is the only place the game ever puts one:

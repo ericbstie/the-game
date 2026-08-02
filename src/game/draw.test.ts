@@ -48,7 +48,7 @@ import {
   projectRect,
 } from "./minimap";
 import { METAL_WORDS, MINE_WORDS, TURRET_WORDS, type TutorialMarks } from "./tutorial";
-import { distanceToExit } from "./world";
+import { distanceToExit, escapeTally, squadEscaped } from "./world";
 import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
 
 // happy-dom returns null from getContext('2d'), so the draw path is exercised against a
@@ -63,6 +63,10 @@ interface Call {
   fill: unknown;
   stroke: unknown;
   composite: unknown;
+  // The type a written call went out in. Recorded for the same reason the fills are: for #152's
+  // escape count the size *is* part of the message — it is screen-fixed chrome, so it has to grow
+  // in world units as the camera zooms out, and nothing about its position can say that.
+  font: unknown;
 }
 const SPY_CHAR_WIDTH = 6;
 
@@ -79,6 +83,7 @@ function spyCtx() {
         fill: ctx.fillStyle,
         stroke: ctx.strokeStyle,
         composite: ctx.globalCompositeOperation ?? "source-over",
+        font: ctx.font,
       });
     };
   ctx = {
@@ -2100,6 +2105,190 @@ describe("#151: the pointer back to a revealed door", () => {
     const name = ctx.calls.findIndex((c) => c.fn === "strokeText" && c.args[0] === "Ana");
     expect(pointer).toBeGreaterThan(-1);
     expect(pointer).toBeLessThan(name);
+  });
+});
+
+describe("#152: the count for a player standing in the escape door", () => {
+  // The base world's door is on the west wall — x 0..98, y 1,100..2,036 — and a player standing in
+  // it is looking straight at it, so the camera here is the one the game would have.
+  const exit = world.exit;
+  const doorCam: Camera = { x: 0, y: 1_150 };
+  const IN = { x: 50, y: 1_400 };
+  const ALSO_IN = { x: 60, y: 1_500 };
+  const OUT = { x: 5_000, y: 1_500 };
+
+  // One member of the squad: where they are standing, whether they are up, and whether the roster
+  // still has them at the keyboard. The first is always the self.
+  interface Member {
+    pos: Vec2;
+    hp?: number;
+    dropped?: boolean; // in the server's grace window: still on the screen, out of the squad
+  }
+
+  const scene = (members: Member[]) => {
+    const players: Avatar[] = members.map((m, i) => ({
+      ...POSE,
+      id: `p${i + 1}`,
+      slot: i + 1,
+      name: `P${i + 1}`,
+      pos: m.pos,
+      radius: 14,
+      hp: m.hp ?? 100,
+    }));
+    return {
+      snapshot: { ...world, players } satisfies WorldSnapshot,
+      connected: new Set(players.filter((_, i) => !members[i].dropped).map((p) => p.id)),
+    };
+  };
+
+  const drawn = (members: Member[], options: Partial<DrawOptions> = {}) => {
+    const { snapshot, connected } = scene(members);
+    const ctx = spyCtx();
+    drawWorld(ctx, snapshot, { camera: doorCam, viewport, selfId: "p1", connected, ...options });
+    return ctx;
+  };
+
+  // The squad as the *server* would hold it for this scene: the connected, at the HP and position it
+  // was last told. What the sign is checked against, rather than a second copy of the client's own
+  // arithmetic.
+  const asServerHolds = (members: Member[]) =>
+    members.filter((m) => !m.dropped).map((m) => ({ pos: m.pos, hp: m.hp ?? 100 }));
+
+  // The sign, read off the log. Nothing else in the frame is written in this shape: a name is a
+  // name, a `+1` is a `+1`, and #151's distance is a bare run of digits.
+  const written = (ctx: { calls: Call[] }) =>
+    ctx.calls
+      .filter((c) => c.fn === "fillText" && /^\d+ of \d+$/.test(String(c.args[0])))
+      .map((c) => ({
+        text: String(c.args[0]),
+        x: c.args[1] as number,
+        y: c.args[2] as number,
+        font: String(c.font),
+      }));
+  const sign = (ctx: { calls: Call[] }) => written(ctx).map((w) => w.text);
+
+  test("standing outside the door, nothing is written at all", () => {
+    expect(sign(drawn([{ pos: OUT }, { pos: IN }]))).toEqual([]);
+  });
+
+  test("standing in it says so, and says how much of the squad is in with you", () => {
+    expect(sign(drawn([{ pos: IN }, { pos: OUT }]))).toEqual(["1 of 2"]);
+  });
+
+  test("the count climbs as the rest of the squad arrives", () => {
+    expect(sign(drawn([{ pos: IN }, { pos: ALSO_IN }]))).toEqual(["2 of 2"]);
+  });
+
+  test("a downed squadmate in the door is not in it, and is still needed", () => {
+    expect(sign(drawn([{ pos: IN }, { pos: ALSO_IN, hp: 0 }]))).toEqual(["1 of 2"]);
+  });
+
+  test("a downed player in the door is told nothing — they are not one of the counted", () => {
+    expect(sign(drawn([{ pos: IN, hp: 0 }, { pos: ALSO_IN }]))).toEqual([]);
+  });
+
+  test("a dropped squadmate is out of the count entirely, as the escape rule leaves them out", () => {
+    expect(sign(drawn([{ pos: IN }, { pos: OUT, dropped: true }]))).toEqual(["1 of 1"]);
+  });
+
+  test("without the roster nothing is written — a dropped teammate reads as one standing still", () => {
+    // The same refusal #94's arrows make (#75): presence rides the lobby snapshot, and with no
+    // snapshot there is nothing that tells a player in the server's grace window from a player who
+    // has simply stopped walking. A denominator guessed from the avatars alone would be wrong in the
+    // one case the escape rule cares about.
+    expect(sign(drawn([{ pos: IN }, { pos: OUT }], { connected: undefined }))).toEqual([]);
+  });
+
+  test("nothing at all without a player to judge", () => {
+    expect(sign(drawn([{ pos: IN }, { pos: OUT }], { selfId: undefined }))).toEqual([]);
+  });
+
+  test("what it counts is what ends the match, case for case", () => {
+    // The whole of the agreement (#152). Both readers take one measure — `escapeTally` in
+    // `world.ts` — so what is checked here is the half that is *not* shared: that the client
+    // assembles the same squad the server does. Connected only, a downed player in it and blocking,
+    // a dropped one not in it at all.
+    const cases: Member[][] = [
+      [{ pos: IN }],
+      [{ pos: IN }, { pos: OUT }],
+      [{ pos: IN }, { pos: ALSO_IN }],
+      [{ pos: IN }, { pos: ALSO_IN, hp: 0 }],
+      [{ pos: IN }, { pos: OUT, dropped: true }],
+      [{ pos: IN }, { pos: ALSO_IN }, { pos: OUT }],
+      [{ pos: IN }, { pos: ALSO_IN }, { pos: OUT, dropped: true }],
+      [{ pos: IN }, { pos: ALSO_IN, dropped: true }, { pos: OUT, dropped: true }],
+    ];
+    for (const members of cases) {
+      const squad = asServerHolds(members);
+      const { inside, needed } = escapeTally(squad, exit);
+      expect(sign(drawn(members))).toEqual([`${inside} of ${needed}`]);
+      // And the match ends on that tally reaching its own denominator, never on a second rule.
+      expect(squadEscaped(squad, exit)).toBe(inside === needed);
+    }
+  });
+
+  test("drawing it changes nothing the rule that ends the match reads", () => {
+    const { snapshot, connected } = scene([{ pos: IN }, { pos: ALSO_IN }]);
+    const before = structuredClone(snapshot.players);
+    drawWorld(spyCtx(), snapshot, { camera: doorCam, viewport, selfId: "p1", connected });
+    expect(snapshot.players).toEqual(before);
+    expect(squadEscaped(asServerHolds([{ pos: IN }, { pos: ALSO_IN }]), exit)).toBe(true);
+  });
+
+  test("it is screen-anchored: same place and same size on the screen at every zoom", () => {
+    // The opposite choice from #151's dart and the same one the corner map made. The count is about
+    // the squad rather than about a point on the floor, and a 936 u door has no point a camera is
+    // guaranteed to hold in view — so it is chrome. Held in the world it would be six CSS px of type
+    // at 0.5×, on the one frame a whole match resolves on.
+    const onScreen = (zoom: number) => {
+      const view = worldViewport(viewport, zoom);
+      const [mark] = written(drawn([{ pos: IN }, { pos: OUT }], { zoom, viewport: view }));
+      const size = Number(/^([\d.]+)px/.exec(mark.font)?.[1]);
+      return {
+        x: (mark.x - doorCam.x) * zoom,
+        y: (mark.y - doorCam.y) * zoom,
+        size: size * zoom,
+        centred: mark.x - (doorCam.x + view.width / 2),
+      };
+    };
+    const at1 = onScreen(1);
+    expect(at1.centred).toBeCloseTo(0, 9);
+    for (const zoom of [0.5, 3]) {
+      const zoomed = onScreen(zoom);
+      expect(zoomed.x).toBeCloseTo(at1.x, 9);
+      expect(zoomed.y).toBeCloseTo(at1.y, 9);
+      expect(zoomed.size).toBeCloseTo(at1.size, 9);
+      expect(zoomed.centred).toBeCloseTo(0, 9);
+    }
+  });
+
+  test("it stands at the top of the screen, clear of the whole viewport's depth", () => {
+    const [mark] = written(drawn([{ pos: IN }, { pos: OUT }]));
+    expect(mark.y).toBeGreaterThan(doorCam.y);
+    expect(mark.y - doorCam.y).toBeLessThan(viewport.height / 4);
+  });
+
+  test("it is cut out of paper, so it reads over the door as well as over the floor", () => {
+    const ctx = drawn([{ pos: IN }, { pos: OUT }]);
+    const cut = ctx.calls.findIndex(
+      (c) => c.fn === "strokeText" && /^\d+ of \d+$/.test(String(c.args[0])),
+    );
+    expect(ctx.calls[cut].stroke).toBe("#ffffff");
+    expect(ctx.calls[cut + 1]).toMatchObject({ fn: "fillText", fill: "#000" });
+  });
+
+  test("it is not on the corner map, which still writes nothing", () => {
+    const ctx = drawn([{ pos: IN }, { pos: OUT }]);
+    expect(sign(ctx)).toHaveLength(1);
+    expect(mapCalls(ctx).some((c) => c.fn === "fillText" || c.fn === "strokeText")).toBe(false);
+  });
+
+  test("it says nothing about the door until somebody stands in it", () => {
+    // #151's latch has no say here and must not acquire one: a player standing in the door has found
+    // it by definition, so gating this on the reveal would be a second condition that can only ever
+    // be true.
+    expect(sign(drawn([{ pos: IN }, { pos: OUT }], { camera: doorCam }))).toEqual(["1 of 2"]);
+    expect(sign(drawn([{ pos: OUT }, { pos: IN }]))).toEqual([]);
   });
 });
 

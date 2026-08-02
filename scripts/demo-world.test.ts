@@ -10,13 +10,16 @@ import {
   tileKey,
   tileOf,
 } from "../src/game/build";
+import { computeCamera } from "../src/game/camera";
 import { BLOODLING_HP } from "../src/game/enemies";
 import { FLOAT_RISE, oreFloatOrigin } from "../src/game/floats";
 import { PUFF_REACH } from "../src/game/fx";
 import { MINIMAP_COVERAGES, minimapWindow, oreCells, oreDensity } from "../src/game/minimap";
 import { POWER_WORDS } from "../src/game/tutorial";
+import { escapeTally, insideExit, squadEscaped } from "../src/game/world";
 import {
   DEMO_CAMERA,
+  DEMO_ESCAPE_CAMERA,
   DEMO_HOVER,
   DEMO_MINED,
   DEMO_NOW,
@@ -25,6 +28,8 @@ import {
   DEMO_VIEWPORT,
   demoBlood,
   demoBursts,
+  demoConnected,
+  demoEscape,
   demoFloats,
   demoPuffs,
   demoTutorial,
@@ -159,6 +164,45 @@ describe("the scene the harness paints", () => {
 // that is otherwise black ink on white paper — so what this scene has to show is a trail with the
 // creature that laid it at the head, a stain standing where nothing is, and the whole of the fade in
 // one picture. None of that can be judged by a spy; the frame is the channel (ADR 0002 §5).
+// `--escape` is the only way to a frame with #152's count in it, and everything about that frame is
+// staged rather than arranged: a sign drawn for the wrong player, or a squad that turns out to be
+// standing beside the door rather than in it, would read as a fault in the mark instead of in this.
+describe("the squad standing in the escape door (#152)", () => {
+  const staged = demoEscape(demoWorld());
+  const self = staged.players.find((p) => p.id === DEMO_SELF);
+
+  test("puts the scene's own player in the door, which is the only one it is drawn for", () => {
+    expect(self).toBeDefined();
+    expect(self && insideExit(self.pos, staged.exit)).toBe(true);
+  });
+
+  test("leaves one of the three out of it, so the frame states a count and not a whole squad", () => {
+    const squad = staged.players.map((p) => ({ pos: p.pos, hp: p.hp }));
+    expect(escapeTally(squad, staged.exit)).toEqual({ inside: 2, needed: 3 });
+    expect(squadEscaped(squad, staged.exit)).toBe(false);
+  });
+
+  test("holds the whole squad inside the frame the harness captures", () => {
+    for (const p of staged.players) {
+      expect(p.pos.x).toBeGreaterThanOrEqual(DEMO_ESCAPE_CAMERA.x);
+      expect(p.pos.x).toBeLessThanOrEqual(DEMO_ESCAPE_CAMERA.x + DEMO_VIEWPORT.width);
+      expect(p.pos.y).toBeGreaterThanOrEqual(DEMO_ESCAPE_CAMERA.y);
+      expect(p.pos.y).toBeLessThanOrEqual(DEMO_ESCAPE_CAMERA.y + DEMO_VIEWPORT.height);
+    }
+  });
+
+  test("stands the camera where the game would put it for a player pressed against that wall", () => {
+    expect(self).toBeDefined();
+    if (self) {
+      expect(computeCamera(self.pos, DEMO_VIEWPORT, staged.arena)).toEqual(DEMO_ESCAPE_CAMERA);
+    }
+  });
+
+  test("counts everyone on the roster, because everyone in the scene is at the keyboard", () => {
+    expect([...demoConnected(staged)].sort()).toEqual(staged.players.map((p) => p.id).sort());
+  });
+});
+
 describe("the blood the scene lays", () => {
   const world = demoWorld();
   const marks = demoBlood(world, DEMO_NOW);
