@@ -36,7 +36,7 @@ import {
   projectRect,
 } from "./minimap";
 import type { Say, TutorialMarks } from "./tutorial";
-import { clamp, PLAYER_MAX_HP } from "./world";
+import { clamp, distanceToExit, nearestInExit, PLAYER_MAX_HP } from "./world";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
 // caller pre-translates and scales the context to the camera, so this draws in world space and
@@ -520,6 +520,11 @@ export function drawWorld(
   // spot on the floor, so nothing standing near that edge may bury it.
   drawEdgeMarkers(ctx, beyond, camera, viewport);
 
+  // The way back to the door (#151), on the same rim and after the squad's own arrows: where two
+  // marks land on the same spot, the one the win condition hangs on is the one left legible.
+  const self = world.players.find((p) => p.id === options.selfId);
+  if (self) drawExitPointer(ctx, world, self, options);
+
   // Names last of everything in the world. They are on ADR 0001's short allowlist — almost nothing
   // else may be written on screen — so nothing the world draws is allowed to obscure one, the `+1`
   // included.
@@ -559,7 +564,6 @@ export function drawWorld(
   // Over the world entire, because it is not in it: the map is a corner of the *screen*, drawn in
   // world coordinates only because that is the space this whole file paints in. Without a player
   // to centre on there is no window and nothing is drawn at all.
-  const self = world.players.find((p) => p.id === options.selfId);
   if (self) drawMinimap(ctx, world, self, options);
 
   // Last of all, and only ever on the dying player's own screen. It falls over the map too — a
@@ -1043,6 +1047,106 @@ function drawEdgeMarkers(
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+}
+
+// The way back to the escape door, once the squad has found it (#151). A dart on the viewport rim
+// for the bearing and a figure beside it for the distance, and neither of them until `exitRevealed`
+// — `WorldSnapshot.exit` has been on every client since the first frame, so the latch is the only
+// thing standing between this layer and giving the door away before anyone has earned it.
+//
+// **#94's edge arrow, reused whole**, because the geometry is the same question: a thing beyond the
+// screen, struck on the rim the ray to it leaves by. The origin is the viewport centre for the
+// reason `edgeMarker` gives, and that reason is at its sharpest here — the door is *on* a perimeter
+// wall, which is exactly where the camera clamps and the player's own avatar is furthest off centre.
+// What it does not reuse is the fade: distance is stated in figures below, so there is nothing left
+// for opacity to say, and the case an arrow fades hardest in — a door across the arena — is the one
+// this mark exists for.
+//
+// Ink filled inside a paper outline, the inverse of a peer's arrow. Both need to read over the white
+// floor *and* over an ink wall; a slot colour does it with an ink outline, and the door's own colour
+// is ink, so it takes the outline the names and the floats take.
+//
+// **World-anchored, like the arrows it sits beside and unlike the corner map** (#92). Every part of
+// it — the dart, the rim inset, the 12 u type — is a world size, so it scales with the zoom exactly
+// as a squadmate's arrow on the same rim does. A mark that held its screen size there would grow and
+// shrink against its own neighbour as the player zoomed.
+function drawExitPointer(
+  ctx: CanvasRenderingContext2D,
+  world: WorldSnapshot,
+  self: Avatar,
+  { camera, viewport }: DrawOptions,
+): void {
+  if (!world.exitRevealed) return;
+  const { exit } = world;
+  // Nothing while the door is on screen: it is drawn there, and an arrow at the rim pointing at
+  // something already in the picture is a second, worse answer to a question the frame has answered.
+  // The rectangle itself and not a radius around it — the door is 98 × 936, so a circle over it
+  // would call it visible while a whole screen-width of it was still off the side.
+  if (
+    exit.x < camera.x + viewport.width &&
+    exit.x + exit.width > camera.x &&
+    exit.y < camera.y + viewport.height &&
+    exit.y + exit.height > camera.y
+  ) {
+    return;
+  }
+
+  const points = markerPoints(edgeMarker(nearestInExit(self.pos, exit), camera, viewport));
+  ctx.fillStyle = INK;
+  ctx.strokeStyle = PAPER;
+  ctx.lineWidth = MARKER_STROKE;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+  ctx.closePath();
+  // Struck first and filled over, so the paper is a halo outside the dart rather than half of it.
+  ctx.stroke();
+  ctx.fill();
+
+  writeExitDistance(ctx, Math.round(distanceToExit(self.pos, exit)), points, camera, viewport);
+}
+
+// How far inboard of the dart's tip the figure's centre sits, and how far its baseline drops to put
+// that centre on the glyphs instead of under them — half the cap height of 12 u type. Layout
+// numbers, and **provisional**: nothing fixes either.
+const EXIT_FIGURE_GAP = 26;
+const EXIT_FIGURE_MIDLINE = 4;
+
+// The distance itself, as a numeral (ADR 0001 §4: a quantity needs one). Every graphical channel a
+// mark this size has — opacity, scale, weight — is a ramp over a fixed span, and the span here is
+// the arena's own diagonal: a squad walking 2,000 u toward a door 14,000 away would move such a ramp
+// by a seventh of its length and read nothing at all off it. The figure is exact at every distance
+// and needs no legend.
+//
+// Laid inboard along the dart's own bearing rather than under it, so it is on the same side of the
+// rim at every bearing instead of hanging off the top edge of the screen. It is written flat while
+// the dart turns, because a rotated numeral is a drawing of a number rather than a reading of one.
+function writeExitDistance(
+  ctx: CanvasRenderingContext2D,
+  away: number,
+  points: readonly Vec2[],
+  camera: Camera,
+  viewport: Viewport,
+): void {
+  const figure = String(away);
+  ctx.font = WORLD_FONT;
+  ctx.textAlign = "center";
+  ctx.lineWidth = 3;
+  // Inboard along the dart, read off the shape rather than off the bearing again: tip and notch are
+  // the mark's own axis, so this is the one line through it that cannot disagree with what was drawn.
+  const [tip, , notch] = points;
+  const back = Math.hypot(tip.x - notch.x, tip.y - notch.y);
+  const along = (from: number, toward: number) => from + ((toward - from) / back) * EXIT_FIGURE_GAP;
+  // Type runs across the screen whatever the bearing does, so a figure struck at a corner would
+  // otherwise reach past the edge the dart is inset from.
+  const half = ctx.measureText(figure).width / 2;
+  const x = clamp(along(tip.x, notch.x), camera.x + half, camera.x + viewport.width - half);
+  const y = along(tip.y, notch.y) + EXIT_FIGURE_MIDLINE;
+  ctx.strokeStyle = PAPER;
+  ctx.strokeText(figure, x, y);
+  ctx.fillStyle = INK;
+  ctx.fillText(figure, x, y);
 }
 
 // The corner map (#93): the squad, the nests, the ore as density, the base, and the door once the

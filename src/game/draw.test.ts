@@ -47,6 +47,7 @@ import {
   projectRect,
 } from "./minimap";
 import { METAL_WORDS, MINE_WORDS, TURRET_WORDS, type TutorialMarks } from "./tutorial";
+import { distanceToExit } from "./world";
 import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
 
 // happy-dom returns null from getContext('2d'), so the draw path is exercised against a
@@ -1943,6 +1944,123 @@ describe("an off-screen teammate's arrow", () => {
     expect(arrow).toBeGreaterThan(-1);
     expect(arrow).toBeLessThan(name);
     expect(ctx.globalAlpha).toBe(1);
+  });
+});
+
+describe("#151: the pointer back to a revealed door", () => {
+  // The base world's door is on the west wall, 902 u beyond the left of the camera's viewport, and
+  // the squad stands in the middle of the screen — so nothing in this block ever has the door in
+  // sight, which is the whole situation the pointer exists for.
+  const found = { ...world, exitRevealed: true };
+  const drawn = (snapshot: WorldSnapshot, options: Partial<DrawOptions> = {}) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, snapshot, { camera, viewport, selfId: "p1", ...options });
+    return ctx;
+  };
+  // The pointer's dart. It is the frame's only ink-filled path of more than two points: a peer's
+  // arrow is filled in a slot colour, a nest and a body are arcs, and a burst and a puff are struck
+  // rather than filled.
+  const dart = (ctx: { calls: Call[] }) => polygons(ctx).find((p) => p.fill === "#000");
+  // The figure it states. Every other word in the frame is a name, and no name is a run of digits.
+  const figures = (ctx: { calls: Call[] }) =>
+    ctx.calls
+      .filter((c) => c.fn === "fillText" && /^\d+$/.test(String(c.args[0])))
+      .map((c) => String(c.args[0]));
+  const standing = (pos: Vec2) => ({ ...found, players: [{ ...SELF, pos }] });
+  const centre = { x: camera.x + viewport.width / 2, y: camera.y + viewport.height / 2 };
+
+  test("before the door is found, nothing points at it and nothing states its distance", () => {
+    const ctx = drawn(world);
+    expect(dart(ctx)).toBeUndefined();
+    expect(figures(ctx)).toEqual([]);
+  });
+
+  test("once it is found, a player who cannot see it is pointed back at it", () => {
+    const ctx = drawn(found);
+    expect(dart(ctx)).toBeDefined();
+    expect(figures(ctx)).toEqual([String(Math.round(distanceToExit(SELF.pos, world.exit)))]);
+  });
+
+  test("it is struck from the middle of the screen toward the nearest part of the door", () => {
+    const ctx = drawn(standing({ x: 5_000, y: 1_500 }));
+    const [tip] = dart(ctx)?.points ?? [];
+    expect(Math.atan2(tip[1] - centre.y, tip[0] - centre.x)).toBeCloseTo(
+      Math.atan2(1_500 - centre.y, 98 - centre.x),
+      6,
+    );
+  });
+
+  test("the figure is how far the player is from the door, in whole world units", () => {
+    expect(figures(drawn(standing({ x: 5_000, y: 1_500 })))).toEqual(["4902"]);
+  });
+
+  test("it counts down as the player walks in", () => {
+    const away = Number(figures(drawn(standing({ x: 5_000, y: 1_500 })))[0]);
+    const closer = Number(figures(drawn(standing({ x: 3_000, y: 1_500 })))[0]);
+    expect(closer).toBeLessThan(away);
+  });
+
+  test("every client draws it off the one reveal, each from where it is standing", () => {
+    const ana = drawn(found, { selfId: "p1" });
+    const ben = drawn(found, { selfId: "p2" });
+    expect(dart(ana)).toBeDefined();
+    expect(dart(ben)).toBeDefined();
+    expect(figures(ana)).not.toEqual(figures(ben));
+  });
+
+  test("nothing is drawn while the door is on screen — you can see it", () => {
+    const ctx = drawn(found, { camera: { x: 0, y: 1_000 } });
+    expect(dart(ctx)).toBeUndefined();
+    expect(figures(ctx)).toEqual([]);
+  });
+
+  test("nothing at all without a player to measure from", () => {
+    const ctx = drawn(found, { selfId: undefined });
+    expect(dart(ctx)).toBeUndefined();
+    expect(figures(ctx)).toEqual([]);
+  });
+
+  test("every point of the dart stays inside the viewport, at every bearing", () => {
+    for (let i = 0; i < 16; i++) {
+      const angle = (i / 16) * Math.PI * 2;
+      const pos = { x: 98 - Math.cos(angle) * 9_000, y: 1_500 - Math.sin(angle) * 9_000 };
+      for (const [x, y] of dart(drawn(standing(pos)))?.points ?? []) {
+        expect(x).toBeGreaterThanOrEqual(camera.x);
+        expect(x).toBeLessThanOrEqual(camera.x + viewport.width);
+        expect(y).toBeGreaterThanOrEqual(camera.y);
+        expect(y).toBeLessThanOrEqual(camera.y + viewport.height);
+      }
+    }
+  });
+
+  test("it is world-anchored: the mark holds its size in the world at every zoom", () => {
+    // The opposite choice from the corner map, and the same one #94's arrows made — the two sit on
+    // the same rim, so a pointer that held a screen size beside them would grow and shrink against
+    // its own neighbour as the player zoomed.
+    const span = (zoom: number) => {
+      const ctx = drawn(found, { zoom, viewport: worldViewport(viewport, zoom) });
+      const points = dart(ctx)?.points ?? [];
+      return Math.hypot(points[1][0] - points[3][0], points[1][1] - points[3][1]);
+    };
+    expect(span(0.5)).toBeCloseTo(span(1), 9);
+    expect(span(3)).toBeCloseTo(span(1), 9);
+  });
+
+  test("the figure is cut out of paper, so it reads over whatever it crosses", () => {
+    const ctx = drawn(found);
+    const cut = ctx.calls.findIndex(
+      (c) => c.fn === "strokeText" && /^\d+$/.test(String(c.args[0])),
+    );
+    expect(ctx.calls[cut].stroke).toBe("#ffffff");
+    expect(ctx.calls[cut + 1]).toMatchObject({ fn: "fillText", fill: "#000" });
+  });
+
+  test("it is drawn over the world and under the names", () => {
+    const ctx = drawn(found);
+    const pointer = ctx.calls.findIndex((c) => c.fn === "closePath");
+    const name = ctx.calls.findIndex((c) => c.fn === "strokeText" && c.args[0] === "Ana");
+    expect(pointer).toBeGreaterThan(-1);
+    expect(pointer).toBeLessThan(name);
   });
 });
 

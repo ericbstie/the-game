@@ -64,6 +64,11 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--zoom", "nope"])).toThrow(/--zoom/);
   });
 
+  test("takes a found door, so the pointer back to it can be looked at (#151)", () => {
+    expect(parseArgs([]).door).toBe(false); // a squad that has not found it yet
+    expect(parseArgs(["--door"]).door).toBe(true);
+  });
+
   test("takes a crowd, so the worst frame the enemy cap allows can be looked at", () => {
     expect(parseArgs([]).enemies).toBeNull(); // the scene's own handful
     expect(parseArgs(["--enemies", "500"]).enemies).toBe(500);
@@ -151,6 +156,14 @@ describe("entrySource", () => {
   // The blood is the only *colour* the game draws and the only mark that is filled rather than
   // struck, so it is the mark this channel is most needed for: a spy records that a disc was filled,
   // never whether red on white paper still reads as blood at the faintest band of its fade (#140).
+  // The reveal is a session latch the server flips, so no arrangement of a hand-built scene can
+  // produce it: the demo squad stands 15,400 u from its door and has never been near enough. Setting
+  // it here is the only way this frame can show the pointer at all (#151).
+  test("stages a found door only when one was asked for", () => {
+    expect(entrySource(parseArgs(["--door"]), modules)).toContain("world.exitRevealed = true;");
+    expect(entrySource(parseArgs([]), modules)).toContain("world.exitRevealed = false;");
+  });
+
   test("carries the blood, so the trail and the stain can be looked at (#140)", () => {
     const source = entrySource(parseArgs([]), modules);
     expect(source).toContain("demoBlood");

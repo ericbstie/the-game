@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mulberry32 } from "./build";
 import {
   ARENA,
+  distanceToExit,
   EXIT_REVEAL_RADIUS,
   generateWorld,
   insideExit,
@@ -205,6 +206,33 @@ describe("insideExit (M4-T11: standing in the door)", () => {
     const { exit: placed } = generateWorld(players(1), { rng: () => 0.5 });
     const centre = { x: placed.x + placed.width / 2, y: placed.y + placed.height / 2 };
     expect(insideExit(centre, placed)).toBe(true);
+  });
+});
+
+describe("distanceToExit (#151: how far the pointer says the door is)", () => {
+  const exit = { x: 0, y: 1_000, width: 98, height: 936 };
+  const face = exit.x + exit.width;
+  const midY = exit.y + exit.height / 2;
+
+  test("standing in the door is zero", () => {
+    expect(distanceToExit({ x: 50, y: midY }, exit)).toBe(0);
+  });
+
+  test("is measured to the nearest point of the door, not to its centre", () => {
+    expect(distanceToExit({ x: face + 1_800, y: exit.y }, exit)).toBeCloseTo(1_800, 10);
+  });
+
+  test("carries both axes off the door's corner", () => {
+    const corner = { x: face, y: exit.y + exit.height };
+    expect(distanceToExit({ x: corner.x + 300, y: corner.y + 400 }, exit)).toBeCloseTo(500, 10);
+  });
+
+  test("is what the reveal is judged on, so the two can never disagree", () => {
+    // The pointer states this number and the latch is tripped by it. Read from the same place or a
+    // door could announce itself at a distance the pointer then contradicts.
+    for (const at of [0, 1_799, 1_800, 1_801, 20_000]) {
+      expect(revealsExit({ x: face + at, y: midY }, exit)).toBe(at <= EXIT_REVEAL_RADIUS);
+    }
   });
 });
 

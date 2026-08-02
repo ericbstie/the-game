@@ -61,6 +61,13 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > in the frame that is **written** rather than struck, filled or blitted. See [What the tutorial's
 > prompts cost](#what-the-tutorials-prompts-cost-134).
 >
+> [#151](https://github.com/ericbstie/the-game/issues/151) has added an eighth mark — a dart on the
+> viewport rim and the distance beside it, pointing back at the escape door once the squad has found
+> it — and it is the **first one this page does not measure**. It adds no new kind of drawing: one
+> more four-segment path of the shape #94's arrows already draw five of, and one more run of words of
+> the shape every name and `+1` already draws. See [What the way back to the door
+> costs](#what-the-way-back-to-the-door-costs-151).
+>
 > [#125](https://github.com/ericbstie/the-game/issues/125) has raised `ENEMY_CAP` from 240 to 500, so
 > **the enemy count in every figure below is no longer the cap**. It is worth **+2.40 ms** measured on
 > an isolated probe — the largest single addition to this frame since the page was written, and the
@@ -845,6 +852,37 @@ the picture, and it is the only instrument that shows a prompt and the highlight
 agent of its own; until then `drawWorld` falls back to one stroked circle, exactly as every entity in
 this file falls back to its M2 shape. A baked mark replaces one stroked path with one blit, which
 rule 1 says is the cheaper of the two — this figure will not go up when the art lands.
+
+## What the way back to the door costs (#151)
+
+**Nothing this page can resolve, and it is the first mark here priced by arithmetic instead of by a
+probe.** [#151](https://github.com/ericbstie/the-game/issues/151) draws a dart on the viewport rim
+pointing back at the escape door and writes the distance to it beside the dart, once per frame and
+never more, from the tick the squad finds the door to the end of the match.
+
+Rule 1 prices a mark by its pieces, and every piece of this one is already in the frame:
+
+| | pieces | what it is one more of |
+| --- | --- | --- |
+| the dart | one four-segment closed path, stroked and filled | #94's edge arrows, of which the frame draws up to five |
+| the figure | one `strokeText` + `fillText` | a name label, of which the frame draws up to six |
+
+So the whole mark is **a fifth of the edge-arrow layer plus a sixth of the name layer**, both of them
+inside every whole-frame figure on this page already. Derived against #134's measured
+0.200 ms for fourteen text calls, a run of words is ~29 µs; a four-segment path is under a shot's
+fourteen strokes at ~51 µs. **Of the order of a few tens of microseconds** — smaller than the 0.04 ms
+lettered word, which is the cheapest layer this page has managed to measure and is already described
+there as under the whole-frame instrument's noise floor.
+
+No probe was written for it. #134's section is the precedent for why: weighed as a difference against
+a ~1.8 ms baseline it took four times the iterations of any other layer and still read negative at
+sixty, and this mark is an order smaller than that one.
+
+**`bun run sprite:frame --door` reports 357 blits, and the same frame without the flag reports 357.**
+The pointer is struck and written, never blitted, so the count cannot see it — which is the whole of
+what that instrument has to say here. What it is good for is the picture, and `--door` is the only
+way to get one: the reveal is a session latch the server flips, so no arrangement of the demo scene
+can produce it.
 
 ## What the camera's zoom costs (#92)
 

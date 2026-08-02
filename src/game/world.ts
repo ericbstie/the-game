@@ -83,13 +83,31 @@ export function stepPos(pos: Vec2, input: MoveInput, dtMs: number, arena: Arena)
 // sim, which is what keeps the two apart — a shared value would only look independent.
 export const EXIT_REVEAL_RADIUS = 1_800;
 
-// Has a player come close enough to find the door? Measured to the nearest point of the door's
-// rectangle, like `insideExit` and unlike a centre distance: standing in it is zero, and walking up
-// to one end of a 936 u door is as much a discovery as walking up to the middle.
+// How far a player is from the door. Measured to the nearest point of its rectangle, like
+// `insideExit` and unlike a centre distance: standing in it is zero, and walking up to one end of a
+// 936 u door is as close as walking up to the middle.
+//
+// One measure, two readers — the reveal below and the figure the pointer states (#151). A second
+// copy would eventually disagree, and the frame it disagreed on is the one where the door announces
+// itself at a distance the pointer immediately contradicts.
+export function distanceToExit(pos: Vec2, exit: Exit): number {
+  const at = nearestInExit(pos, exit);
+  return Math.hypot(pos.x - at.x, pos.y - at.y);
+}
+
+// The part of the door nearest `pos` — where a player walking to it is actually walking. It is what
+// the distance above is measured to, so the pointer's bearing and its figure describe one point of
+// the door rather than two (#151).
+export function nearestInExit(pos: Vec2, exit: Exit): Vec2 {
+  return {
+    x: clamp(pos.x, exit.x, exit.x + exit.width),
+    y: clamp(pos.y, exit.y, exit.y + exit.height),
+  };
+}
+
+// Has a player come close enough to find the door?
 export function revealsExit(pos: Vec2, exit: Exit): boolean {
-  const dx = Math.max(exit.x - pos.x, 0, pos.x - (exit.x + exit.width));
-  const dy = Math.max(exit.y - pos.y, 0, pos.y - (exit.y + exit.height));
-  return Math.hypot(dx, dy) <= EXIT_REVEAL_RADIUS;
+  return distanceToExit(pos, exit) <= EXIT_REVEAL_RADIUS;
 }
 
 // Is an avatar standing in the escape door? Measured on its centre, which is generous enough at

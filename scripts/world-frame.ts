@@ -13,6 +13,7 @@ import { capture, measurementsIn } from "./headless";
 //   bun run sprite:frame --damage 0                           # the frame a blow lands on (#142)
 //   bun run sprite:frame --zoom 0.5                           # the camera zoomed out (#92)
 //   bun run sprite:frame --zoom 0.5 --enemies 500             # and the worst crowd it can hold
+//   bun run sprite:frame --door                               # the way back to a found door (#151)
 //
 // #77 §6 proved this needs no server, no lobby, no socket and no play-through. It is the only
 // channel that shows a sprite at the size and against the background a player actually sees it,
@@ -53,6 +54,11 @@ export interface FrameRequest {
   // show one of everything; a *crowd* is what a zoomed-out screen actually carries, and the enemy
   // cap is a dial a player can raise (#96), so the worst picture has to be askable for.
   enemies: number | null;
+  // Whether the squad has found the escape door (#151). A session latch the server flips when
+  // anyone comes within `EXIT_REVEAL_RADIUS` of it — the scene stands 15,400 u away and has never
+  // been near, so no arrangement of it can produce the flag and it is set here instead. False is
+  // every frame this script has drawn until now.
+  door: boolean;
 }
 
 export interface Blit {
@@ -80,9 +86,11 @@ export function parseArgs(argv: string[]): FrameRequest {
   let damage = Number.POSITIVE_INFINITY;
   let zoom = 1;
   let enemies: number | null = null;
+  let door = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--out") out = argv[++i] ?? "";
+    if (arg === "--door") door = true;
+    else if (arg === "--out") out = argv[++i] ?? "";
     else if (arg === "--dpr") {
       dpr = Number(argv[++i]);
       if (!Number.isFinite(dpr) || dpr <= 0) throw new Error("--dpr must be a positive number");
@@ -118,7 +126,17 @@ export function parseArgs(argv: string[]): FrameRequest {
   // With nothing asked for, the frame is simply the game as the registry has it. `--sprite` layers
   // a module over that: art under review, or a name nothing has drawn yet. `calibration` is the
   // harness's own test pattern and is never art — pass it explicitly to check the machinery.
-  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr, at, map, damage, zoom, enemies };
+  return {
+    sprites,
+    out: resolve(out ?? "sprite-frame.png"),
+    dpr,
+    at,
+    map,
+    damage,
+    zoom,
+    enemies,
+    door,
+  };
 }
 
 // The screen's swing and its veil are worked out here rather than in the page, because both are a
@@ -176,6 +194,10 @@ ctx.drawImage = (...args) => {
 // The transform GameScreen paints the world through, unchanged.
 ctx.setTransform(scale, 0, 0, scale, -camera.x * scale, -camera.y * scale);
 const world = ${request.enemies === null ? "demoWorld()" : `demoCrowd(demoWorld(), ${request.enemies}, viewport)`};
+// The squad has found the door (#151), or has not. A session latch rather than anything the scene
+// can stand in the right place for, so it is set here — and the camera is 15,400 u from the door on
+// the west wall, which is the frame the pointer exists for.
+world.exitRevealed = ${request.door};
 // The shots in the air ride the snapshot rather than the options (#80): they are server state the
 // client mirrors, like the spiders, and every client draws the same ones.
 world.projectiles = demoProjectiles(world);
@@ -259,6 +281,7 @@ if (import.meta.main) {
   console.log(
     `enemies ${request.enemies === null ? "the scene's own" : `${request.enemies}, all on screen`}`,
   );
+  console.log(`door    ${request.door ? "found — the pointer is up" : "not found yet"}`);
   console.log(`sprites ${Object.keys(request.sprites).join(", ") || "none"}`);
   console.log(`blits   ${result.blits.length}`);
   for (const blit of result.blits) {
