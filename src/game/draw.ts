@@ -240,16 +240,25 @@ const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for n
 // `scripts/shot-ink.ts`, which cannot measure the mark's coverage against a width of its own.
 export const SHOT_WIDTH = 2;
 
-// How far the paper stands clear of the ink on either side of the aim mark (#154), in world units.
-// The mark's ink is `SHOT_WIDTH` like every other stroke in the frame — one hand for the whole
-// drawing — and this is the only thing about it that is not shared with the rest: 1.5 u of paper each
-// side, which at dpr 1 is still a whole pixel of rim after the ink has taken its two.
+// The two weights the aim mark is struck in (#154): its ink, and how far the paper stands clear of
+// that ink on either side. World units, and both **provisional**.
 //
-// The paper pass's own width is derived from it and exported for `scripts/frame-budget.ts`, which
-// prices the mark and cannot be left to pick a width of its own — the same reason `SHOT_WIDTH` is
-// exported for `scripts/shot-ink.ts`.
-const AIM_HALO = 1.5;
-export const AIM_PAPER_WIDTH = SHOT_WIDTH + 2 * AIM_HALO;
+// The first cut was 2 u of ink under 1.5 u of rim a side. It measured as working — the rim did turn
+// the ore white under it — and could still not be found by anyone shown the frame and not told
+// where to look. Both figures sat inside the ore's own grain: a patch of it leaves white gaps
+// around 3 u across and lays splinters around 3.5 u thick, so the rim read as one more gap and the
+// stroke as one more splinter. These clear that grain on both channels at once, which is what it
+// takes for a mark to be *found* on stipple rather than merely be present in it.
+//
+// The ink is therefore the one stroke in the frame that is not `SHOT_WIDTH`. Everything else here
+// is the drawing, struck in one hand; this is the instrument the drawing is aimed with, and it has
+// to hold on any floor the game can put under it rather than belong to one of them.
+//
+// Both are exported for `scripts/frame-budget.ts`, which prices the mark and cannot be left to pick
+// widths of its own — the same reason `SHOT_WIDTH` is exported for `scripts/shot-ink.ts`.
+export const AIM_INK_WIDTH = 4;
+const AIM_HALO = 6;
+export const AIM_PAPER_WIDTH = AIM_INK_WIDTH + 2 * AIM_HALO;
 
 // Blood (#140), and the one place the black-and-white theme is broken on purpose. #76 grants the
 // game two colours and this is neither of them — it is a stated exception, and it earns it by being
@@ -1013,10 +1022,19 @@ function drawMinimap(
 // already cut out of the sprites they are read over with (`paintOverhead`, `drawFloats`), moved from
 // `fillText` to a stroke.
 //
+// **The rim is wider than the arms are long, and that is what the first cut got wrong.** At
+// `AIM_ARM` 6 a rim of 6 u a side makes each corner's paper footprint a block rather than an outline
+// around the bracket inside it — so on stipple the mark is four clean blocks standing in formation,
+// which is a thing the texture cannot make, with the bracket drawn in the middle of them. On paper
+// the block is the floor's own colour and only the bracket is there to be seen, so the shape the
+// mark is read by does not change with the floor. What the block costs is the ink it clears out of
+// whatever it crosses, and at 16 u that is a nick in a shot line and a bite out of a sprite's
+// edge — the same trade a name already makes over a spider, at the size this mark needs.
+//
 // One path for both passes: the current path survives a `stroke()`, so the geometry is built once
 // and the frame pays two strokes rather than two paths. Eight segments struck twice is sixteen
 // pieces by `docs/frame-budget.md` rule 1 — twice a burst's eight — and it still measures at
-// 0.023 ms against a burst's 47 µs, because this mark spans 26 u where a burst spans 60. It is the
+// 0.027 ms against a burst's 47 µs, because this mark spans 26 u where a burst spans 60. It is the
 // cheapest layer in the frame, and the only one whose count nothing can move: there is one pointer
 // and it is up on every frame, which is why the mark has no lifetime, no list and no cull.
 //
@@ -1036,7 +1054,7 @@ function drawAim(ctx: CanvasRenderingContext2D, { aim }: DrawOptions): void {
   ctx.lineWidth = AIM_PAPER_WIDTH;
   ctx.stroke();
   ctx.strokeStyle = INK;
-  ctx.lineWidth = SHOT_WIDTH;
+  ctx.lineWidth = AIM_INK_WIDTH;
   ctx.stroke();
 }
 

@@ -32,6 +32,7 @@ import {
   letteringAt,
   PUFF_MS,
   SHOT_STREAK,
+  SHOT_WIDTH,
 } from "./draw";
 import { FLOAT_MS, type MetalFloat } from "./floats";
 import { inkPuff, reticle, starburst } from "./fx";
@@ -2579,6 +2580,24 @@ describe("the aim point's mark", () => {
     const struck = passes(marked());
     expect(struck.map((c) => c.stroke)).toEqual(["#ffffff", "#000"]);
     expect(struck[0].width as number).toBeGreaterThan(struck[1].width as number);
+  });
+
+  // What two blind reads of the first cut turned up: the mechanism was right and the magnitude was
+  // not. A rim of 1.5 u a side is finer than the gaps the ore's own stipple leaves between its
+  // shards, so it read as one more of them and the mark could not be found at all. Over stipple the
+  // rim is the *whole* of what the mark is seen by — the ink is black on black there — so it has to
+  // be the larger half of the drawing rather than a hairline around it.
+  test("stands clear in paper by more than the ink is wide, so the rim carries it on stipple", () => {
+    const [paper, ink] = passes(marked()).map((c) => c.width as number);
+    expect((paper - ink) / 2).toBeGreaterThan(ink);
+  });
+
+  // And the ink is the one stroke in the frame that is not `SHOT_WIDTH`. The same blind read named
+  // the weight: the corners were struck at the weight the ore's own splinters are, so they fused
+  // with them. Every other mark here is part of the drawing; this one is the instrument the drawing
+  // is aimed with, and it is heavier than the hand on purpose.
+  test("is struck heavier than the ink the rest of the frame is drawn in", () => {
+    expect(passes(marked())[1].width as number).toBeGreaterThan(SHOT_WIDTH);
   });
 
   // Both passes run one path, so the paper stands evenly around the ink rather than being a second

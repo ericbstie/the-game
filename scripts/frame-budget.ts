@@ -116,7 +116,7 @@ import { generateOre, tileKey, TILE } from ${JSON.stringify(BUILD_MODULE)};
 import { DEFAULT_WORLD_SETTINGS } from ${JSON.stringify(SETTINGS_MODULE)};
 import { FLOAT_MS, minerFloatOrigin } from ${JSON.stringify(FLOATS_MODULE)};
 import { inkPuff, reticle, speedLines, starburst } from ${JSON.stringify(FX_MODULE)};
-import { AIM_PAPER_WIDTH, letteringAt, SHOT_STREAK } from ${JSON.stringify(DRAW_MODULE)};
+import { AIM_INK_WIDTH, AIM_PAPER_WIDTH, letteringAt, SHOT_STREAK } from ${JSON.stringify(DRAW_MODULE)};
 import { BLOOD_BANDS } from ${JSON.stringify(DRAW_MODULE)};
 import { BLOOD_CAP, BLOOD_FADE_MS, DROP_RADIUS, stainMarks } from ${JSON.stringify(BLOOD_MODULE)};
 import { FLASH_ALPHA } from ${JSON.stringify(DAMAGE_MODULE)};
@@ -507,7 +507,7 @@ try {
     ctx.lineJoin = "miter";
     ctx.strokeStyle = "#ffffff"; ctx.lineWidth = AIM_PAPER_WIDTH;
     ctx.stroke();
-    ctx.strokeStyle = "#000"; ctx.lineWidth = 2;
+    ctx.strokeStyle = "#000"; ctx.lineWidth = AIM_INK_WIDTH;
     ctx.stroke();
   });
 
