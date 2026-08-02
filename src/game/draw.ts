@@ -39,9 +39,9 @@ import type { Say, TutorialMarks } from "./tutorial";
 import { clamp, PLAYER_MAX_HP } from "./world";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
-// caller pre-translates the context to the camera (so 1 world unit = 1 CSS px), so this
-// draws in world space and never sees the camera transform. Off-screen entities are culled
-// and the clear/fill is bounded to the viewport, keeping cost independent of world size. No
+// caller pre-translates and scales the context to the camera, so this draws in world space and
+// never sees the camera transform — the player's zoom (#92) included. Off-screen entities are
+// culled and the clear/fill is bounded to the viewport, keeping cost independent of world size. No
 // React, no DOM, no state — it renders identically in the browser and under a spy context.
 //
 // Milestone 5 turns the shapes into sprites. Two things about the world changed with them:
@@ -130,9 +130,17 @@ export interface DrawOptions {
   // Baked art, or nothing. Absent — in a test, or before the first sprite lands — every entity
   // falls back to its shape, which is what keeps this one draw path the only one.
   sprites?: SpriteSource;
-  // Device pixels per CSS pixel, matching the `setTransform(dpr, …)` the caller paints through.
-  // Blits are aligned to whole device pixels with it; nothing else here needs it.
+  // Device pixels per CSS pixel. Blits are aligned to whole device pixels with it — against
+  // `dpr × zoom`, which is what the caller's transform actually paints at.
   dpr?: number;
+  // CSS pixels per world unit — the camera's zoom (#92). At 1 the world is drawn 1:1, as it has
+  // been since M2; at 0.5 the screen shows four times the area. Two things here read it and nothing
+  // else does: the device scale a blit is snapped to, and the corner map, which is chrome and holds
+  // its size on screen rather than in the world. Everything else already works in world units and
+  // takes the zoom through `viewport`, which is the world rectangle on screen.
+  //
+  // Absent, the frame is the 1:1 one every older test in this file asserts against.
+  zoom?: number;
   // How much world the corner map is a window onto, in world units — the zoom level the player has
   // cycled to (#110). Client-local and never on the wire. Absent, the map is at the level it opens
   // at, which is what keeps every older test in this file an assertion about 1×.
@@ -325,16 +333,26 @@ export function drawWorld(
   options: DrawOptions,
 ): void {
   const { arena } = world;
-  const { camera, viewport, sprites, dpr = 1, now = 0 } = options;
+  const { camera, viewport, sprites, dpr = 1, zoom = 1, now = 0 } = options;
   const flash = Math.floor(now / FLASH_MS);
+  // Device pixels per world unit — the scale the caller's transform paints at, and the only thing a
+  // 1:1 blit can be aligned against (ADR 0008). It is what the sprite cache is keyed on too, so the
+  // bake in hand and the box it lands in are the same number of device pixels by construction.
+  const scale = dpr * zoom;
 
-  // Every blit below is one device pixel per baked pixel: `BakedSprite.size` is the CSS width that
+  // Every blit below is one device pixel per baked pixel: `BakedSprite.size` is the world width that
   // comes out to exactly the bake's device-pixel width, and `snap` puts its corner on a whole
   // device pixel, so there is nothing left for smoothing to interpolate (#77 §5). Turning it off
   // is therefore not what makes sprites crisp — the 1:1 geometry is. It is here so that a sprite
   // which ever *does* drift off that alignment shows it, instead of being quietly blurred into
   // looking almost right. Set per frame, not once: `GameScreen` resizes the backing store when the
   // DPR changes, and assigning `canvas.width` resets the whole 2D drawing state with it.
+  //
+  // **The frames after a zoom settles are the exception, and it stays false through them** (ADR
+  // 0009). While the cache converges, a blit whose bake has not been re-made yet is drawn from one
+  // made for another scale and genuinely does resample. Filtering those reads 2–4× closer to the
+  // picture they are converging on — and costs 90% of the whole frame to do it, because during
+  // convergence *every* blit is one of them. That is the frame this budget exists to protect.
   ctx.imageSmoothingEnabled = false;
 
   // Clear and repaint only the visible slice of the world, not the whole 31,200² arena.
@@ -348,8 +366,8 @@ export function drawWorld(
   const blit = (sprite: BakedSprite, footX: number, footY: number): void => {
     ctx.drawImage(
       sprite.image,
-      snap(footX - sprite.size / 2, camera.x, dpr),
-      snap(footY - sprite.size, camera.y, dpr),
+      snap(footX - sprite.size / 2, camera.x, scale),
+      snap(footY - sprite.size, camera.y, scale),
       sprite.size,
       sprite.size,
     );
@@ -360,8 +378,8 @@ export function drawWorld(
   const blitOver = (sprite: BakedSprite, x: number, y: number): void => {
     ctx.drawImage(
       sprite.image,
-      snap(x - sprite.size / 2, camera.x, dpr),
-      snap(y - sprite.size / 2, camera.y, dpr),
+      snap(x - sprite.size / 2, camera.x, scale),
+      snap(y - sprite.size / 2, camera.y, scale),
       sprite.size,
       sprite.size,
     );
@@ -1049,17 +1067,23 @@ function drawMinimap(
   ctx: CanvasRenderingContext2D,
   world: WorldSnapshot,
   self: Avatar,
-  { camera, viewport, dpr = 1, minimapCoverage = MINIMAP_COVERAGE_U }: DrawOptions,
+  { camera, viewport, dpr = 1, zoom = 1, minimapCoverage = MINIMAP_COVERAGE_U }: DrawOptions,
 ): void {
-  const placed = minimapWindow(self.pos, camera, viewport, minimapCoverage);
+  const placed = minimapWindow(self.pos, camera, viewport, minimapCoverage, zoom);
+  // One CSS pixel, in world units. Every mark below is a fixed size *on the plate* (#93) rather than
+  // the world drawn smaller, so each is stated in screen pixels and converted here — which is what
+  // leaves the map reading identically at every zoom instead of shrinking to a stamp at 0.5× and
+  // swallowing the screen at 3×.
+  const px = 1 / zoom;
   // The plate's own corner has to land on a device pixel or its rule — the hard edge that stops it
   // dissolving into the white floor — comes out soft. Snapped here and not in `minimap.ts`, which
   // is deliberately free of the device ratio; every mark is projected off this origin, so moving it
   // moves the whole map together and the projection stays exact.
+  const scale = dpr * zoom;
   const win = {
     ...placed,
-    x: snap(placed.x, camera.x, dpr),
-    y: snap(placed.y, camera.y, dpr),
+    x: snap(placed.x, camera.x, scale),
+    y: snap(placed.y, camera.y, scale),
   };
 
   ctx.fillStyle = PAPER;
@@ -1089,7 +1113,8 @@ function drawMinimap(
     if (!spec) continue;
     const at = project(win, footprintCenter(s.tile, spec.footprint));
     if (!at) continue;
-    ctx.fillRect(at.x - MAP_STRUCTURE / 2, at.y - MAP_STRUCTURE / 2, MAP_STRUCTURE, MAP_STRUCTURE);
+    const box = MAP_STRUCTURE * px;
+    ctx.fillRect(at.x - box / 2, at.y - box / 2, box, box);
   }
 
   // The door, at its true projected size, so it is the bar set into the wall rather than a symbol
@@ -1100,13 +1125,13 @@ function drawMinimap(
       ctx.fillRect(
         door.x,
         door.y,
-        Math.max(door.width, MAP_DOOR_MIN),
-        Math.max(door.height, MAP_DOOR_MIN),
+        Math.max(door.width, MAP_DOOR_MIN * px),
+        Math.max(door.height, MAP_DOOR_MIN * px),
       );
     }
   }
 
-  ctx.lineWidth = 1;
+  ctx.lineWidth = px;
   ctx.strokeStyle = INK;
   // Nothing here knows how many nests there are or where they were laid out, which is what let #123
   // land without touching this: fifty at random read exactly as eight on a ring did.
@@ -1116,8 +1141,8 @@ function drawMinimap(
     // Filled against hollow, not two colours. At 6 u across, `NEST` and `NEST_DEAD` are the same
     // dark dot, and a state has to survive being printed the size of a full stop.
     ctx.fillStyle = nest.alive ? NEST : PAPER;
-    fillCircle(ctx, at.x, at.y, MAP_DOT);
-    strokeCircle(ctx, at.x, at.y, MAP_DOT);
+    fillCircle(ctx, at.x, at.y, MAP_DOT * px);
+    strokeCircle(ctx, at.x, at.y, MAP_DOT * px);
   }
 
   for (const player of world.players) {
@@ -1128,16 +1153,16 @@ function drawMinimap(
     // four of the six colours are under 3:1 against paper, so the outline is what the mark is read
     // by and the fill is what it is told apart by.
     ctx.fillStyle = SLOT_COLORS[(player.slot - 1) % SLOT_COLORS.length];
-    fillCircle(ctx, at.x, at.y, MAP_DOT);
-    strokeCircle(ctx, at.x, at.y, MAP_DOT);
-    if (player.id === self.id) strokeCircle(ctx, at.x, at.y, MAP_SELF_RING);
+    fillCircle(ctx, at.x, at.y, MAP_DOT * px);
+    strokeCircle(ctx, at.x, at.y, MAP_DOT * px);
+    if (player.id === self.id) strokeCircle(ctx, at.x, at.y, MAP_SELF_RING * px);
   }
 
   ctx.restore();
 
   // The rule last, over everything the clip let through, so the plate's edge stays the hard line
   // the rest of the HUD is boxed in rather than whatever happened to run into it.
-  ctx.lineWidth = MAP_RULE;
+  ctx.lineWidth = MAP_RULE * px;
   ctx.strokeStyle = INK;
   ctx.strokeRect(win.x, win.y, win.size, win.size);
 }
@@ -1590,10 +1615,15 @@ function paintOverhead(
 }
 
 // Land a world coordinate on a whole device pixel. The caller paints through
-// `setTransform(dpr, 0, 0, dpr, -camera * dpr, …)`, so `(world - camera) * dpr` is the device
-// pixel a coordinate falls on, and rounding it there is what keeps a bake 1:1 with the display.
-function snap(world: number, cameraAxis: number, dpr: number): number {
-  return cameraAxis + Math.round((world - cameraAxis) * dpr) / dpr;
+// `setTransform(scale, 0, 0, scale, -camera * scale, …)`, so `(world - camera) * scale` is the
+// device pixel a coordinate falls on, and rounding it there is what keeps a bake 1:1 with the
+// display.
+//
+// `scale` is **device pixels per world unit** — `dpr × zoom`, never `dpr` (ADR 0008). A bake that is
+// exactly the right size, landed half a device pixel off, measures worse than every resampling
+// treatment the ADR rejected, at every zoom; this is the only thing standing between the two.
+function snap(world: number, cameraAxis: number, scale: number): number {
+  return cameraAxis + Math.round((world - cameraAxis) * scale) / scale;
 }
 
 function fillCircle(ctx: CanvasRenderingContext2D, x: number, y: number, r: number): void {

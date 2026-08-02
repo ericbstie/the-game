@@ -1,18 +1,21 @@
 import type { MoveInput, Vec2 } from "../lobby/protocol";
-import type { Camera } from "./camera";
+import { type Camera, pointerWorld } from "./camera";
 
 // Pure player-input mapping, kept out of the component so it is trivially testable. The
 // keyboard drives movement (which directions are held); the pointer drives aim.
 
 export const NO_MOVE: MoveInput = { up: false, down: false, left: false, right: false };
 
-// The unit aim vector from the self avatar toward the pointer. `pointer` is in CSS pixels
-// within the canvas; `camera` maps the canvas to world space (1 world unit = 1 CSS px), so
-// `pointer + camera` is the pointer's world position. A pointer exactly on self defaults to
-// aiming right, so a swing always has a direction.
-export function aimDir(pointer: Vec2, self: Vec2, camera: Camera): Vec2 {
-  const dx = pointer.x + camera.x - self.x;
-  const dy = pointer.y + camera.y - self.y;
+// The unit aim vector from the self avatar toward the pointer. `pointer` is in CSS pixels within
+// the canvas, and `pointerWorld` is what turns those into a place — the same conversion the build
+// ghost and the hand-mine read the cursor through, so a shot can never leave along a line the
+// cursor was not on. `zoom` defaults to the 1:1 the game opened its life at.
+//
+// A pointer exactly on self defaults to aiming right, so a swing always has a direction.
+export function aimDir(pointer: Vec2, self: Vec2, camera: Camera, zoom = 1): Vec2 {
+  const at = pointerWorld(pointer, camera, zoom);
+  const dx = at.x - self.x;
+  const dy = at.y - self.y;
   const len = Math.hypot(dx, dy);
   if (len === 0) return { x: 1, y: 0 };
   return { x: dx / len, y: dy / len };

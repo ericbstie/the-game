@@ -58,6 +58,34 @@ describe("aimDir", () => {
       y: 0,
     });
   });
+
+  // #92. The pointer is CSS px and the aim is world, so the zoom stands between them: at 0.5× a
+  // pixel is two world units and the shot has to leave along the line the player drew on screen.
+  test("aims at the world point under the cursor at every zoom", () => {
+    const camera = { x: 400, y: 400 };
+    const self = { x: 500, y: 500 };
+    for (const zoom of [0.5, 0.75, 1, 1.5, 2, 2.5, 3]) {
+      // A target 300 u right and 400 u below self, which is the 3-4-5 triangle at every scale.
+      const target = { x: 800, y: 900 };
+      const pointer = { x: (target.x - camera.x) * zoom, y: (target.y - camera.y) * zoom };
+      const dir = aimDir(pointer, self, camera, zoom);
+      expect(dir.x).toBeCloseTo(0.6, 9);
+      expect(dir.y).toBeCloseTo(0.8, 9);
+    }
+  });
+
+  test("without a zoom it is the 1:1 aim it has always been", () => {
+    const dir = aimDir({ x: 200, y: 100 }, { x: 500, y: 500 }, { x: 400, y: 400 }, 1);
+    expect(dir).toEqual(aimDir({ x: 200, y: 100 }, { x: 500, y: 500 }, { x: 400, y: 400 }));
+  });
+
+  test("a pointer on self at any zoom is still the default aim, not a zero vector", () => {
+    for (const zoom of [0.5, 1, 3]) {
+      expect(
+        aimDir({ x: 100 * zoom, y: 100 * zoom }, { x: 500, y: 500 }, { x: 400, y: 400 }, zoom),
+      ).toEqual({ x: 1, y: 0 });
+    }
+  });
 });
 
 describe("keyToBuildSlot", () => {

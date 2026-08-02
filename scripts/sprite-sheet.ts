@@ -80,7 +80,10 @@ canvas.height = Math.round(layout.height * dpr);
 canvas.style.width = canvas.width + "px";
 canvas.style.height = canvas.height + "px";
 const ctx = canvas.getContext("2d");
-ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // the same transform GameScreen paints the world through
+// GameScreen paints through \`setTransform(dpr × zoom, …)\` since #92; this is that transform at
+// zoom 1, and the sheet deliberately has no zoom — it shows a sprite at one fixed ratio so two
+// sheets can be compared.
+ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 const bakes = bakeSubject(subject, dpr);
 drawSheet(ctx, { subject, bakes, dpr });
 document.getElementById("measurements").textContent = JSON.stringify({

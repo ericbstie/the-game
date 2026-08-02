@@ -26,6 +26,7 @@ import { aimDir, GUN_TOGGLE_KEY, MINIMAP_ZOOM_KEY, movesEqual, NO_MOVE } from ".
 import { MINIMAP_COVERAGE_CLOSE_U, MINIMAP_COVERAGE_U, MINIMAP_SIZE } from "./minimap";
 import { ARENA, PLAYER_RADIUS } from "./world";
 import { DEFAULT_WORLD_SETTINGS } from "./worldSettings";
+import { ZOOM_SETTLE_MS } from "./zoom";
 
 const SPAWN = { x: 400, y: 300 };
 const init: WorldInit = {
@@ -2060,5 +2061,104 @@ describe("#134: the mini-tutorial", () => {
     } finally {
       Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
     }
+  });
+});
+
+// #92: the wheel zooms the camera. The zoom is a ref the render loop reads, like the corner map's
+// own level (#110), so nothing about it reaches the DOM — what it changes is the transform the
+// frame is painted through, the scale the sprites are baked at, and, most consequentially, where a
+// click lands. The recording context below is what makes the first two readable from here.
+describe("#92: the wheel zooms the camera", () => {
+  // Twenty notches: more than the twelve the range takes, so the zoom is against its stop and the
+  // arithmetic below is exact rather than a power of e.
+  const spin = (canvas: HTMLElement, deltaY: number) => {
+    for (let i = 0; i < 20; i++) fireEvent.wheel(canvas, { deltaY });
+  };
+  const OUT = 100; // a wheel notch, as Chromium reports one
+  const IN = -100;
+
+  test("a placement lands on the tile the cursor is over, not the tile it was over at 1:1", () => {
+    const placed: Tile[] = [];
+    const world = armed();
+    world.build.bank.metal = 100_000;
+    const canvas = renderMatch({ onBuild: (_kind, tile) => placed.push(tile) }, world);
+    fireEvent.keyDown(window, { key: "2" }); // a wall
+    spin(canvas, OUT); // held at ZOOM_MIN, so a CSS pixel is exactly two world units
+    fireEvent.mouseDown(canvas, { button: 0, clientX: 4 * TILE, clientY: 0 });
+    // Four tiles across the screen at half scale is eight tiles into the world. Miss the zoom here
+    // and the ghost is drawn on tile 4 while the wall is built on it — the failure #92 names.
+    expect(placed).toEqual([{ tx: 8, ty: 0 }]);
+  });
+
+  test("and comes back to the tile it started on when the wheel comes back", () => {
+    const placed: Tile[] = [];
+    const world = armed();
+    world.build.bank.metal = 100_000;
+    const canvas = renderMatch({ onBuild: (_kind, tile) => placed.push(tile) }, world);
+    fireEvent.keyDown(window, { key: "2" });
+    spin(canvas, OUT);
+    spin(canvas, IN); // back past 1:1, to ZOOM_MAX
+    fireEvent.mouseDown(canvas, { button: 0, clientX: 4 * TILE, clientY: 0 });
+    expect(placed).toEqual([{ tx: 1, ty: 0 }]); // 60 px at 3× is 20 world units
+  });
+
+  test("the wheel belongs to the arena, so the page never scrolls under it", () => {
+    const canvas = renderMatch();
+    expect(fireEvent.wheel(canvas, { deltaY: OUT })).toBe(false); // preventDefault was called
+  });
+
+  describe("what the frame is painted through", () => {
+    let drawn: { calls: DrawnCall[]; restore: () => void };
+
+    beforeEach(() => {
+      drawn = recordFrames();
+    });
+    afterEach(() => drawn.restore());
+
+    const transforms = (calls: DrawnCall[], canvas: HTMLElement) =>
+      calls.filter((c) => c.fn === "setTransform" && c.into === canvas).map((c) => c.args[0]);
+    // How many device pixels wide the bake behind each blit of the *last* frame in the log is. A
+    // sprite is baked at the scale it is drawn at (ADR 0008), so this is the sprite's world box
+    // times that scale — the one place a frame says out loud which bake it is holding. Bounded to
+    // one frame from its own `setTransform`, because the frames of a gesture deliberately hold
+    // different bakes and a set over all of them would say nothing.
+    const bakeWidths = (calls: DrawnCall[], canvas: HTMLElement) => {
+      const frame = calls.slice(
+        calls.findLastIndex((c) => c.fn === "setTransform" && c.into === canvas),
+      );
+      return new Set(
+        frame
+          .filter((c) => c.fn === "drawImage" && c.into === canvas)
+          .map((c) => (c.args[0] as HTMLCanvasElement).width),
+      );
+    };
+
+    test("the transform follows the wheel on the very next frame", async () => {
+      const canvas = renderMatch();
+      await nextFrames();
+      const before = transforms(drawn.calls, canvas).at(-1);
+      spin(canvas, OUT);
+      const at = drawn.calls.length;
+      await nextFrames();
+      const after = transforms(drawn.calls.slice(at), canvas).at(-1);
+      expect(before).toBe(1); // dpr 1 under happy-dom, drawn 1:1
+      expect(after).toBe(0.5); // dpr × ZOOM_MIN
+    });
+
+    test("the sprites are re-baked at the scale they are now drawn at, once the wheel stops", async () => {
+      const canvas = renderMatch();
+      await nextFrames();
+      const before = bakeWidths(drawn.calls, canvas);
+      expect(before.size).toBeGreaterThan(0);
+      spin(canvas, OUT);
+      // Past `ZOOM_SETTLE_MS`, which is what ADR 0008 asks for: the bake in hand is held and
+      // blitted resampled while the hand is moving, and the new one is made once it stops.
+      await settle(ZOOM_SETTLE_MS + 120);
+      // Every one of them half the device pixels it held, because the world is now drawn at half
+      // the scale and a sprite is baked at the scale it is drawn at.
+      expect(bakeWidths(drawn.calls, canvas)).toEqual(
+        new Set([...before].map((width) => width / 2)),
+      );
+    });
   });
 });

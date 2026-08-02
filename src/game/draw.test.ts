@@ -14,7 +14,7 @@ import lettering from "../sprite/lettering";
 import type { SpriteName } from "../sprite/registry";
 import { BLOOD_FADE_MS, type BloodMark } from "./blood";
 import { TILE, tileKey, tileOf } from "./build";
-import type { Camera, Viewport } from "./camera";
+import { type Camera, type Viewport, worldViewport } from "./camera";
 import {
   ClientWorld,
   DEATH_RETENTION_MS,
@@ -39,6 +39,7 @@ import {
   MINIMAP_COVERAGE_CLOSE_U,
   MINIMAP_COVERAGE_U,
   MINIMAP_COVERAGES,
+  MINIMAP_MARGIN,
   MINIMAP_ORE_CELL_U,
   MINIMAP_SIZE,
   minimapWindow,
@@ -172,10 +173,12 @@ function stubSprites(boxes: Partial<Record<SpriteName, number>>): SpriteSource {
 // forward to the first fill at the plate's size. Forward, a 200 px viewport would match the floor
 // fill instead, and every world-layer assertion built on `worldCalls` would go on passing against an
 // empty log.
-const mapStart = (ctx: { calls: Call[] }) => {
+// `plate` is the map's side in *world* units, which is `MINIMAP_SIZE` only at 1:1 — the map is
+// chrome and holds its size on screen, so a zoomed frame draws it into a different world box (#92).
+const mapStart = (ctx: { calls: Call[] }, plate = MINIMAP_SIZE) => {
   for (let i = ctx.calls.findIndex((c) => c.fn === "clip"); i >= 0; i--) {
     const c = ctx.calls[i];
-    if (c.fn === "fillRect" && c.args[2] === MINIMAP_SIZE && c.args[3] === MINIMAP_SIZE) return i;
+    if (c.fn === "fillRect" && c.args[2] === plate && c.args[3] === plate) return i;
   }
   return ctx.calls.length;
 };
@@ -2658,5 +2661,153 @@ describe("#134: the tutorial's marks", () => {
     const ctx = spyCtx();
     drawWorld(ctx, world, { camera, viewport });
     expect(written(ctx)).toEqual(["Ana", "Ben"]);
+  });
+});
+
+// #92: the camera's zoom, folded into the transform the caller paints through. `drawWorld` never
+// sees that transform — it draws in world units and always has — so the zoom reaches it as exactly
+// two things: a `viewport` that is now the *world* rectangle on screen, and the device scale a blit
+// has to land on.
+describe("the camera's zoom", () => {
+  const boxes = { nest: 96, player: 28, grunt: 32 };
+  // Fractional positions on both axes, because a sprite already sitting on a whole device pixel
+  // cannot show whether it was snapped to the right one.
+  const drifting: WorldSnapshot = {
+    ...world,
+    players: [
+      {
+        ...POSE,
+        id: "p1",
+        slot: 1,
+        name: "Ana",
+        pos: { x: 1100.4, y: 1100.7 },
+        radius: 14,
+        hp: 100,
+      },
+      {
+        ...POSE,
+        id: "p2",
+        slot: 2,
+        name: "Ben",
+        pos: { x: 1207.3, y: 1152.9 },
+        radius: 14,
+        hp: 100,
+      },
+    ],
+    enemies: [
+      { ...POSE, id: "e1", kind: "grunt", pos: { x: 1150.1, y: 1200.6 }, radius: 16, hp: 30 },
+    ],
+    nests: [
+      { id: "n1", pos: { x: 1090.8, y: 1090.2 }, radius: 48, maxHp: 600, hp: 600, alive: true },
+    ],
+  };
+  const zooms = [0.5, 0.6, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
+  // How far a device coordinate is off the whole pixel it should be on, with the float dust the
+  // snap's own arithmetic leaves swept away: anything within a thousandth of a pixel reads here as
+  // zero, and anything a *half* pixel out — what ADR 0008 measured — reads as itself.
+  const offPixel = (device: number) => (Math.abs(device - Math.round(device)) < 0.001 ? 0 : device);
+  const at = (zoom: number, dpr: number) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, drifting, {
+      camera,
+      viewport: worldViewport(viewport, zoom),
+      zoom,
+      dpr,
+      selfId: "p1",
+      sprites: stubSprites(boxes),
+    });
+    return ctx;
+  };
+
+  // ADR 0008's loudest measurement: a bake that *is* the right size, landed half a device pixel
+  // off, reads 17.9–41.0 RMSE against the ideal — worse than every resampling candidate it
+  // rejected, at every zoom. `snap` is the only thing standing between the bake decision and that,
+  // and the scale it has to snap to is `dpr × zoom`, never `dpr`.
+  test("lands every blit on a whole device pixel, at every zoom and every ratio", () => {
+    for (const dpr of [1, 2, 3]) {
+      for (const zoom of zooms) {
+        const scale = dpr * zoom;
+        for (const blit of blits(at(zoom, dpr))) {
+          const device = { x: (blit.x - camera.x) * scale, y: (blit.y - camera.y) * scale };
+          // Whole device pixels, to well inside the width of one: what the ADR measured is a *half*
+          // pixel, and the arithmetic that puts a corner back on the grid carries a float's worth
+          // of dust with it.
+          expect({ dpr, zoom, off: offPixel(device.x) }).toEqual({ dpr, zoom, off: 0 });
+          expect({ dpr, zoom, off: offPixel(device.y) }).toEqual({ dpr, zoom, off: 0 });
+        }
+      }
+    }
+  });
+
+  test("snapping to the ratio alone would put a sprite half a device pixel out", () => {
+    // The control for the test above: at 0.5× and dpr 1 the device scale is 0.5, so rounding on the
+    // ratio leaves every odd world unit on a half pixel. If this ever passes, the test above is
+    // asserting nothing.
+    const unsnapped = 1100.4;
+    expect((Math.round(unsnapped - camera.x) - (unsnapped - camera.x)) * 0.5).not.toBe(0);
+  });
+
+  test("draws a sprite into its world box, so it is the same size in the world at every zoom", () => {
+    for (const zoom of zooms) {
+      const player = blits(at(zoom, 2)).find((b) => b.tag.startsWith("player/"));
+      expect({ zoom, width: player?.width }).toEqual({ zoom, width: 28 });
+    }
+  });
+
+  test("clears and fills the world the screen actually reaches", () => {
+    const ctx = at(0.5, 2);
+    const clear = ctx.calls.find((c) => c.fn === "clearRect");
+    expect(clear?.args).toEqual([camera.x, camera.y, 1600, 1200]);
+  });
+
+  test("the corner map is chrome and holds its size on screen at every zoom", () => {
+    for (const zoom of zooms) {
+      const world = worldViewport(viewport, zoom);
+      const plate = MINIMAP_SIZE / zoom;
+      const ctx = at(zoom, 2);
+      const paper = ctx.calls[mapStart(ctx, plate)];
+      // The plate's world box shrinks as the zoom grows, which is what leaves it 200 CSS px across.
+      expect({ zoom, side: paper.args[2] }).toEqual({ zoom, side: plate });
+      expect((paper.args[2] as number) * zoom).toBeCloseTo(MINIMAP_SIZE, 9);
+      // And it stays in the corner it was put in, the same distance off the screen's own edge.
+      const rightEdge = camera.x + world.width - (paper.args[0] as number) - plate;
+      expect(rightEdge * zoom).toBeCloseTo(MINIMAP_MARGIN, 6);
+    }
+  });
+
+  test("the map's marks hold their size on the plate, so it reads the same at every zoom", () => {
+    // A squad dot is a fixed mark on the plate (#93) — the world is never drawn smaller onto it —
+    // so at 0.5× it is drawn twice as wide in world units and comes out the same on screen.
+    const dot = (zoom: number) => {
+      const ctx = at(zoom, 2);
+      const arcs = ctx.calls
+        .slice(mapStart(ctx, MINIMAP_SIZE / zoom))
+        .filter((c) => c.fn === "arc");
+      return (arcs[0].args[2] as number) * zoom;
+    };
+    expect(dot(0.5)).toBeCloseTo(dot(1), 9);
+    expect(dot(3)).toBeCloseTo(dot(1), 9);
+  });
+
+  test("a frame with no zoom in it is the 1:1 frame the game has always drawn", () => {
+    const zoomed = spyCtx();
+    drawWorld(zoomed, drifting, {
+      camera,
+      viewport,
+      zoom: 1,
+      dpr: 2,
+      selfId: "p1",
+      sprites: stubSprites(boxes),
+    });
+    const plain = spyCtx();
+    drawWorld(plain, drifting, {
+      camera,
+      viewport,
+      dpr: 2,
+      selfId: "p1",
+      sprites: stubSprites(boxes),
+    });
+    expect(blits(zoomed)).toEqual(blits(plain));
+    expect(zoomed.calls.length).toBe(plain.calls.length);
   });
 });

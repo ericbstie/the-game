@@ -97,8 +97,10 @@ canvas.height = VIEW * DPR;
 canvas.style.width = canvas.width + "px";
 canvas.style.height = canvas.height + "px";
 const ctx = canvas.getContext("2d");
-// The transform GameScreen paints the world through, unchanged — drawWorld works in world
-// coordinates, so without this the whole scene lands off-canvas.
+// The transform GameScreen paints the world through at zoom 1 — drawWorld works in world
+// coordinates, so without this the whole scene lands off-canvas. Since #92 the game's own is
+// \`setTransform(dpr × zoom, …)\` and its bakes follow that product (ADR 0008); this page has no zoom
+// on purpose, because a seam is a property of the tiling and not of how far away it is looked at.
 ctx.setTransform(DPR, 0, 0, DPR, -camera.x * DPR, -camera.y * DPR);
 
 const cache = createSpriteCache(SPRITES);

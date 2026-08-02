@@ -72,6 +72,16 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > count fell from **63 to 14** and the shot layer from 50 marks of ~14 strokes each to **20 of one
 > stroke each, in one path**. See [What a shot costs since #80](#what-a-shot-costs-since-80), which
 > supersedes [What a shot costs since #114](#what-a-shot-costs-since-114) for what the game now draws.
+>
+> [#92](https://github.com/ericbstie/the-game/issues/92) has put the camera on a wheel, and it is the
+> first thing on this page that is **not a layer at all** — it is an axis every figure below now has.
+> The frame this section measures is the `1×` one; a `0.5×` screen is **1.35×** it and a `3×` screen
+> **2.32×**. Re-baking the sprite set at a new scale is **92–315 ms**, the largest number this page
+> has ever carried, and it is the one figure here that **no frame pays**: `src/sprite/cache.ts` spends
+> 4 ms a frame on it and blits the bakes in hand for the rest, so a settle is about a second of a
+> sharpening picture. See [What the camera's zoom costs](#what-the-cameras-zoom-costs-92). **Nothing
+> below was re-measured for it**: every unlabelled figure on this page is `1×`, which is what the game
+> opens at and what it stays at until somebody turns the wheel.
 
 **60 fps is a 16.67 ms frame. The worst frame the game can currently be asked to draw costs
 6.3 ms — 38% of it, leaving 10.4 ms of headroom.**
@@ -836,6 +846,181 @@ agent of its own; until then `drawWorld` falls back to one stroked circle, exact
 this file falls back to its M2 shape. A baked mark replaces one stroked path with one blit, which
 rule 1 says is the cheaper of the two — this figure will not go up when the art lands.
 
+## What the camera's zoom costs (#92)
+
+**The worst frame is no longer the 1:1 one, and both ends of the range are dearer than the middle.**
+[#92](https://github.com/ericbstie/the-game/issues/92) puts the camera on a wheel between `0.5×` and
+`3×`, and the two directions cost the frame in opposite places:
+
+- **Zooming out multiplies the floor.** A `0.5×` screen is four times the world, so it walks four
+  times the grass tiles and four times the ore. Nothing else moves: the entity count is governed by
+  `enemyCap`, and the fixture already puts every one of them on screen.
+- **Zooming in multiplies every blit.** At `3×` a 32 u grunt lands in 96 device px a side instead of
+  32 — nine times the pixels — and there is no cull to take it back, because the same governor
+  bounds how many spiders exist rather than how many fit.
+
+Medians are **not** what follows: these are single runs at each scale on one container, interleaved
+in one sitting, at `--enemies 500` with every entity inside the viewport and `BLOOD_CAP` decals on
+the floor. Read the **ratios**, which are what carries to another machine; the absolute numbers are
+this container's, and it reads **14.90 ms at `1×`** where this page's headline machine reads 6.3 ms
+at a cap the game no longer has.
+
+| | `0.5×` | `1×` | `3×` |
+| --- | ---: | ---: | ---: |
+| world on an 800 × 600 screen | 1,600 × 1,200 u | 800 × 600 u | 267 × 200 u |
+| blits in the worst frame | 2,810 | 1,112 | 633 |
+| paper, grass, the squad and the map | 5.47 ms | 2.33 ms | 2.15 ms |
+| + ore | 13.98 ms | 4.38 ms | 2.84 ms |
+| + everything standing | 18.15 ms | 10.55 ms | 21.74 ms |
+| **the whole worst frame** | **22.44 ms** | **14.90 ms** | **29.88 ms** |
+| **against the frame it opens at** | **1.51×** | — | **2.01×** |
+
+> Re-measured after the bake budget landed, in one sitting on the same container — the previous set
+> read 20.37 / 15.09 / 35.01 and 1.35× / 2.32×. Nothing in the drawing changed between them and
+> nothing here is a median, so the difference is this instrument's ±15% and the direction is what
+> reproduces: both ends are dearer than the middle, and `3×` is the end with no headroom.
+
+**Zooming out fits and zooming in does not.** Carried onto the machine the 6.3 ms headline was taken
+on — 6.3 ms at cap 240, plus the ~1 ms [#125](#what-enemy_cap-500-costs-125) scales the cap raise to
+— `1×` is about 7.3 ms, and the two ends are **1.35–1.51×** and **2.01–2.32×** it across the two
+sittings: `0.5×` about 10–11 ms and `3×` about 15–17 ms. **`3×` is the end that has no headroom**,
+and it is the end nobody expected: ADR 0008 predicted zooming in would be *cheaper*
+because culling takes more away than the larger blits add back. That held for the fixed world the
+prototype measured and does not hold here, because this fixture's enemy count is a governor rather
+than a density — culling takes nothing away, and only the magnification is left.
+
+**The `3×` row assumes 500 spiders inside a 267 × 200 u box, and that is a pile.** It is reachable:
+`enemyCap` bounds the arena's population rather than the screen's, enemies path toward the squad,
+and `src/game/enemies.ts` has no separation force, so a converged wave genuinely stacks. It is the
+worst case and not the ordinary one — a wave spread over the arena is culled to about a ninth of a
+`1×` screen's at `3×`, and that frame is cheaper than either.
+
+**The floor is what the zoom-out spends, and rule 4 is what to spend it on.** The ore-and-grass layer
+goes from 2.05 ms at `1×` to 8.51 ms at `0.5×`, four times the tiles for four times the cost, exactly
+linear. A `0.5×` screen carries about **868 grass tufts** against 217, which is past the ~300
+crossover where a `CanvasPattern` or a chunk cache beats the per-tuft blit
+([How the grass mechanism was chosen](#how-the-grass-mechanism-was-chosen)). **That crossover is now
+reachable in the shipped game, and it was not before.** Nothing was changed about the grass here; it
+is named because it is the first lever anyone should reach for.
+
+### What a settled zoom costs to re-bake
+
+**Nothing like the whole burst, and no longer in one frame.**
+[ADR 0008](adr/0008-a-sprite-is-baked-at-the-scale-it-is-drawn-at.md) keys the bake on `dpr × zoom`,
+so a zoom that lands on a new scale makes every bake in hand the wrong resolution and one frame could
+be asked for all of them. `src/game/zoom.ts` stops that being asked on every frame of a gesture — the
+bakes in hand are blitted resampled until the wheel has been still for `ZOOM_SETTLE_MS`. **What stops
+the settled frame paying it whole is `src/sprite/cache.ts`**: a frame re-bakes what a **4 ms budget**
+allows and hands back the bake it already has for everything else, so a settle is a second of a
+sharpening picture instead of a third of a second of a stopped thread.
+
+That distinction is the whole reason this is not filed as a rendering hitch. The bake would run
+inside the one `requestAnimationFrame` callback that also steps the avatar and calls `updateHealth`,
+on the thread that takes WebSocket delivery — so a burst is not a dropped frame, it is a window with
+no input, no frame and no messages, ending in every enemy in contact clearing its own cadence gate at
+once. Four elites is 80 damage against 100 max HP (`enemies.ts`), and the player most likely to be
+surrounded is the one who zoomed out to look at the wave.
+
+Through `bun run frame:budget`, dpr 2, `--enemies 500`, every entity inside the viewport:
+
+| | `0.5×` | `1×` | `3×` |
+| --- | ---: | ---: | ---: |
+| the burst, if one frame paid it | 315.13 ms | 247.17 ms | 92.34 ms |
+| bakes in it | 545 | 409 | 132 |
+| **the dearest frame of the settle** | **32.80 ms** | **41.90 ms** | **57.80 ms** |
+| the median frame of it | 26.00 ms | 26.40 ms | 48.00 ms |
+| frames to converge | 51 | 42 | 13 |
+| wall clock to converge | 1,367 ms | 1,142 ms | 646 ms |
+| the same frame converged | 21.15 ms | 14.28 ms | 31.08 ms |
+
+**The dearest frame is the budget plus one bake, not the budget.** A bake cannot be interrupted, so
+the check is made before one and never inside it: a frame spends up to 4 ms *deciding* to bake and
+then finishes whatever it started. **That floor rises with the scale** — at `3×`, dpr 2, the largest
+bake in the set is a 96 u nest on a 576 px canvas, thirty-six times the pixels of the same nest at
+`0.5×` — and it is where the 9.8 ms between that column's median frame and its worst comes from.
+Lowering the budget cannot lower it; only a smaller sprite could.
+
+**The rest of a converging frame is the resample, and the gesture already paid it.** A frame whose
+bakes are all held costs 22.23 / 19.61 / 41.52 ms against 21.15 / 14.28 / 31.08 converged — +5%, +37%
+and +34%. That is the cost ADR 0008 accepted for the length of a gesture; what is new is that it
+carries on for about a second after the wheel stops. **It stays nearest**, which
+[ADR 0009](adr/0009-a-held-bake-resamples-nearest.md) decides on the same runs: filtering those blits
+costs +52%, +162% and **+409%** over the converged frame, and at `3×` that is 158 ms a frame — more
+than the burst it is replacing, every frame, for as long as it lasts.
+
+**Memory did not grow to buy this.** The bake that supersedes one replaces it in the same entry, so a
+sprite holds **one** image whatever the wheel did on the way here — not one per scale crossed, and
+not the two a literal two-generation cache would keep. A gesture that sweeps 0.5× to 3× and back
+holds what the last frame drew; `baked residency` below is unchanged by any of this.
+
+**The burst is dearest at the wide end, which is the opposite of residency.** A `0.5×` screen asks
+for the most *distinct* bakes — one ore variant per visible tile, and four times the tiles — and each
+of them is small; a `3×` screen asks for a handful of large ones. ADR 0008 estimated 10.6 ms for the
+eagerly baked set and up to 130.7 ms with the ore; a cold cache is **two to three times that**,
+because the prototype counted the eager set and the ore and not the per-variant floor bakes the grass
+and the ore actually make.
+
+**A cold cache still pays it whole, and that is deliberate.** The 545/409/132 first bakes above have
+nothing in hand to stand in for them, and a hole in the picture is worse than a frame that runs long,
+so the budget governs re-baking only (`cache.ts`). That burst is a match opening rather than a
+gesture: it is paid once, before there is anything to be surrounded by, and it is unchanged from what
+every frame of the game has always paid lazily. **A wheel gesture that reveals world nobody has drawn
+yet pays a slice of it too** — a flick from `1×` to `0.5×` uncovers three quarters of a screen of
+tiles that have never been baked at any scale, and those are first bakes. That is what is left owing
+here, and it is bounded by how much new world crosses the screen rather than by the size of the
+sprite set.
+
+### What the bakes hold
+
+Residency goes as the square of the scale, so this is the axis where zooming *out* is the cheap
+direction. Read off the distinct images the worst frame actually blits, at 4 bytes a device pixel:
+
+| | `0.5×` | `1×` | `3×` |
+| --- | ---: | ---: | ---: |
+| baked residency, dpr 2 | **0.80 MiB** | 2.75 MiB | **16.47 MiB** |
+| against `1×` | 0.29× | — | 5.99× |
+
+ADR 0008 predicted `0.25×` and `9×` on the eagerly baked set alone. The wide end lands where it said;
+the close end comes in under it because a `3×` screen sees a ninth of the tiles and so bakes a ninth
+of the ore variants, which offsets part of the nine-fold growth in each one.
+
+### At the enemy cap's exposed maximum
+
+`enemyCap` is a dial the lobby offers (#96, #129), and `worldSettings.ts` admits up to
+`MAX_MULTIPLE` × the shipped value — **50,000**. Asked for at `0.5×`, with every one of them on
+screen:
+
+| | frame | y-sort alone |
+| --- | ---: | ---: |
+| 50,000 enemies at `0.5×` | **346.49 ms** — 2,079% of a 16.67 ms frame | 24.65 ms |
+
+**That is not a zoom finding, and the composition is what says so.** The floor at that scale — paper,
+grass and ore, the layer the zoom actually multiplies — is **13.41 ms** of it. The other **333 ms** is
+50,050 standing entities, each a blit and a bar, and that layer is set by the dial rather than by the
+camera: at `1×` each of those blits is *four times* the device pixels, so the crowd is not cheaper
+for looking at less of the world. **The exposed maximum does not fit a 16.67 ms frame at any zoom,
+and did not before #92** — what the zoom adds to it is under a twentieth of the bill. Only `0.5×` was
+timed at this count; the `1×` run was abandoned rather than reported half-measured.
+
+`bun run sprite:frame --zoom 0.5 --enemies 50000` draws the picture in a second and a half:
+**50,934 blits in one frame.**
+
+### What this did not settle
+
+- **Whether the resampled frames of a gesture read badly.** For the length of a gesture, and for
+  about a second after it settles, the frame blits bakes made for another scale, with
+  `imageSmoothingEnabled = false` — a nearest-neighbour resample, which ADR 0008 measured as 2–4×
+  further from the ideal than a filtered one.
+
+  > **The treatment is decided and the reading is not.**
+  > [ADR 0009](adr/0009-a-held-bake-resamples-nearest.md) keeps it nearest, because filtering every
+  > blit of a converging frame costs +52% to +409% of the frame it is protecting. Whether an eye
+  > prefers the staircase is still nobody's measurement.
+- **Medians.** Every figure above is one run at each scale. The ratios reproduce the direction; the
+  third decimal is noise.
+- **A GPU.** Everything is software-rasterised under `--disable-gpu`, so the blit-bound `3×` row is
+  the widest this gap will ever be.
+
 ## The rules
 
 1. **Shot lines are the most expensive thing in the frame, per unit** — and one effect has already
@@ -1003,6 +1188,9 @@ bun run frame:budget --sprite grass=src/sprite/grass.ts  # layer in art that has
 bun run frame:budget --dpr 1                             # an ordinary, non-retina monitor
 bun run frame:budget --map 15600                         # the corner map at its widest level
 bun run frame:budget --enemies 500                       # a cap the governor has not reached (#111)
+bun run frame:budget --zoom 0.5                          # the camera zoomed out (#92) — four times the floor
+bun run frame:budget --zoom 3                            # and zoomed in, where every blit is nine times the pixels
+bun run sprite:frame --zoom 0.5 --enemies 500            # the picture that frame draws, rather than its cost
 bun run shot:ink                                         # what a shot's mark lays, at dpr 1, 2 and 3 — the 52 u row is what #80 draws
 bun run burst:ink                                        # what an impact burst lays, and its share of a screen
 bun run burst:ink --bursts 40                            # a density the cadences cannot reach today
@@ -1015,6 +1203,14 @@ bun run lettering:ink --words 40                         # a wave clearing at on
 `--enemies` overrides `WorldSettings.enemyCap` for the fixture alone and nothing else, so a frame can
 be priced at a density before the simulation is raised to it. Without it the worst case is whatever
 the governor says today, which is what every unlabelled figure on this page was measured at.
+
+`--zoom` is the camera's own (#92), in CSS px per world unit. The screen stays 800 × 600 at every
+value of it and the *world* inside it changes, so the floor passes, every cull and the fixture's own
+ore patches all scale with it. Without it the frame is the 1:1 one every unlabelled figure on this
+page was measured at. Four figures only that flag produces are printed with it: `a cold cache`, the
+whole set baked with nothing in hand; `a settled zoom`, the dearest and median frames of the
+convergence the bake budget spreads it over; `while it converges`, that frame with every blit held and
+the same frame filtered (ADR 0009); and `baked residency`, what the frame's bakes hold.
 
 `frame:budget` prints the layer breakdown and the projected worst case, and writes the frame it
 measured to a PNG so the numbers can be checked against the picture that produced them. #140's blood

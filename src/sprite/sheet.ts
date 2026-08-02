@@ -7,17 +7,21 @@
 // - The layout is a **pure function of the subject**, so the runner can size the browser window
 //   before launching. Chromium's `--screenshot` captures the viewport and crops a taller sheet
 //   silently, so guessing is not an option (#77 §1).
-// - Sprites **bake at `size × dpr` and blit into a `size`-CSS-px box**, mirroring the
-//   `setTransform(dpr, …)` in `GameScreen`. A bake at logical size is upscaled by that transform
-//   and reads as a smudge — 70% of a 28 px contour comes out grey (#77 §5). The sheet reproduces
-//   the player's device pixels rather than describing them.
+// - Sprites **bake at `size × dpr` and blit into a `size`-CSS-px box**. A bake at logical size is
+//   upscaled by the paint transform and reads as a smudge — 70% of a 28 px contour comes out grey
+//   (#77 §5). The sheet reproduces the player's device pixels rather than describing them.
+//
+//   That is `GameScreen`'s own transform **at zoom 1 only**: since #92 the game paints through
+//   `setTransform(dpr × zoom, …)` and bakes at that product (ADR 0008). The sheet has no zoom and
+//   wants none — a reviewer judges a sprite at its own fixed ratio, and every dpr the sheet is run
+//   at is a scale some zoom puts the game at anyway.
 
 // What a sprite module hands the harness. `draw` works in a `size × size` logical box with the
 // context already scaled by dpr, so it never sees the device resolution it is being baked at.
 // `facing` and `frame` are indices only — what each facing points at is #73's to settle.
 export interface SpriteSubject {
   name: string;
-  size: number; // the logical box, in CSS px, which is also world units (the zoom is 1:1)
+  size: number; // the logical box, in world units — what the thing measures in the simulation
   facings: number;
   frames: number;
   draw(ctx: CanvasRenderingContext2D, size: number, facing: number, frame: number): void;

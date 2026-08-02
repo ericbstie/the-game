@@ -14,7 +14,8 @@ import type { Vec2 } from "../lobby/protocol";
 // damage never reaches your screen" a property of where the stamp is written rather than a check.
 
 // How long the view keeps swinging, and how far it is thrown at the first swing. World units, which
-// the camera maps 1:1 onto CSS px, so the reach is also what it measures on screen. **Provisional**:
+// the reach is in world units, so a zoomed-out screen swings by proportionally less of itself (#92).
+// **Provisional**:
 // the ask fixes neither, and only a played match can judge them.
 export const SHAKE_MS = 220;
 export const SHAKE_REACH = 7;

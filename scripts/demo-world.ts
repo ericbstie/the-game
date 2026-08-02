@@ -422,3 +422,42 @@ export const DEMO_FIRST_TILE = {
   tx: Math.floor(DEMO_CAMERA.x / TILE),
   ty: Math.floor(DEMO_CAMERA.y / TILE),
 };
+
+// The scene with a crowd of spiders standing on it: `count` of them scattered over `viewport` from
+// the camera, so **none is culled** and the frame is the worst one the enemy cap can be asked for
+// (#92). The scene's own enemies stay where they are — they are the ones the sort, the flash, the
+// burst and the puff are read off — and this is filler behind them.
+//
+// Here rather than in the entry that renders it, because the two instruments that want it
+// (`sprite:frame` for the picture, and anything asking what a zoomed-out screen holds) must draw
+// the same crowd. `viewport` is the **world** the screen reaches, so a 0.5× frame is filled to its
+// own wider extent rather than to the screen's.
+//
+// Deterministic, so two runs of a script compare to each other, and damaged, so every one of them
+// carries a health bar — the same reasoning `frame-budget.ts` builds its own fixture on.
+export function demoCrowd(
+  world: WorldSnapshot,
+  count: number,
+  viewport: { width: number; height: number },
+): WorldSnapshot {
+  const rng = mulberry32(4_242);
+  const crowd = [...world.enemies];
+  for (let i = crowd.length; i < count; i++) {
+    const elite = i % 5 === 0;
+    const kind = elite ? "elite" : i % 7 === 3 ? "bloodling" : "grunt";
+    crowd.push({
+      id: `crowd${i}`,
+      kind,
+      pos: {
+        x: DEMO_CAMERA.x + rng() * viewport.width,
+        y: DEMO_CAMERA.y + rng() * viewport.height,
+      },
+      facing: Math.floor(rng() * 8),
+      frame: Math.floor(rng() * 2),
+      radius: elite ? 24 : kind === "bloodling" ? BLOODLING_RADIUS : 16,
+      hp: elite ? ELITE_HP - 1 : kind === "bloodling" ? BLOODLING_HP - 1 : 17,
+      flashing: false,
+    });
+  }
+  return { ...world, enemies: crowd };
+}
