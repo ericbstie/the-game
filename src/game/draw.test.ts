@@ -33,6 +33,7 @@ import {
   PUFF_MS,
   SHOT_STREAK,
 } from "./draw";
+import { MARKER_INSET } from "./edgeMarker";
 import { FLOAT_MS, type MetalFloat } from "./floats";
 import { inkPuff, starburst } from "./fx";
 import {
@@ -1968,6 +1969,8 @@ describe("#151: the pointer back to a revealed door", () => {
       .map((c) => String(c.args[0]));
   const standing = (pos: Vec2) => ({ ...found, players: [{ ...SELF, pos }] });
   const centre = { x: camera.x + viewport.width / 2, y: camera.y + viewport.height / 2 };
+  // The size of the type the figure is set in, off `WORLD_FONT` in `draw.ts`.
+  const FIGURE_TYPE_SIZE = 12;
 
   test("before the door is found, nothing points at it and nothing states its distance", () => {
     const ctx = drawn(world);
@@ -2029,6 +2032,42 @@ describe("#151: the pointer back to a revealed door", () => {
         expect(x).toBeLessThanOrEqual(camera.x + viewport.width);
         expect(y).toBeGreaterThanOrEqual(camera.y);
         expect(y).toBeLessThanOrEqual(camera.y + viewport.height);
+      }
+    }
+  });
+
+  test("the figure stays inside the viewport with the mark at each of the four corners", () => {
+    // A corner is where the figure has least room in both axes at once, and it is the mark's own
+    // inset that has to buy that room: the type runs flat across the screen whatever the bearing
+    // did, and its baseline is dropped `EXIT_FIGURE_MIDLINE` further toward the bottom edge again.
+    //
+    // The corners are struck rather than searched for. The ray leaves the inset rect exactly at a
+    // corner when it runs along that rect's own diagonal, so the camera is put ten diagonals back
+    // from the door — far enough out that the door is nowhere near the screen being pointed off.
+    const pos = { x: 5_000, y: 1_500 };
+    const nearest = { x: world.exit.x + world.exit.width, y: pos.y };
+    const reach = { x: viewport.width / 2 - MARKER_INSET, y: viewport.height / 2 - MARKER_INSET };
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        const vantage = {
+          x: nearest.x - sx * reach.x * 10 - viewport.width / 2,
+          y: nearest.y - sy * reach.y * 10 - viewport.height / 2,
+        };
+        const ctx = drawn(standing(pos), { camera: vantage });
+        const written = ctx.calls.filter(
+          (c) => c.fn === "fillText" && /^\d+$/.test(String(c.args[0])),
+        );
+        expect(written).toHaveLength(1);
+        const [figure, x, y] = written[0].args as [string, number, number];
+        // The figure's ink box. Across, what the draw path itself measured — asked of the same
+        // context, so the box cannot disagree with the width the clamp worked from. Down, the
+        // baseline: a digit has no descender to reach below it, and none reaches a whole type size
+        // above it either, so 12 u is a ceiling and not a metric.
+        const half = ctx.measureText(figure).width / 2;
+        expect(x - half).toBeGreaterThanOrEqual(vantage.x);
+        expect(x + half).toBeLessThanOrEqual(vantage.x + viewport.width);
+        expect(y - FIGURE_TYPE_SIZE).toBeGreaterThanOrEqual(vantage.y);
+        expect(y).toBeLessThanOrEqual(vantage.y + viewport.height);
       }
     }
   });

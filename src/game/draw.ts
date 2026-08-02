@@ -1110,7 +1110,15 @@ function drawExitPointer(
 // How far inboard of the dart's tip the figure's centre sits, and how far its baseline drops to put
 // that centre on the glyphs instead of under them — half the cap height of 12 u type. Layout
 // numbers, and **provisional**: nothing fixes either.
-const EXIT_FIGURE_GAP = 26;
+//
+// The gap is struck to the figure's *centre*, so the longest figure the arena can state is what
+// sets it: five digits, the box being 31,200 u square. It was 26, and a blind reviewer read the
+// mark as one thing rather than two. Measured off that frame — the dart is 18 u tip to barb, and
+// `15534` measures 30 u of advance carrying ink from 14 u left of its centre — the leading digit
+// sat 6 u *behind* the barbs, so the dart's swept trailing strokes ran through the very seam the
+// eye separates arrow from number at. 38 clears the barbs by 6 u: a whole digit's advance of white,
+// against the 1 u that falls between two digits.
+const EXIT_FIGURE_GAP = 38;
 const EXIT_FIGURE_MIDLINE = 4;
 
 // The distance itself, as a numeral (ADR 0001 §4: a quantity needs one). Every graphical channel a
