@@ -34,7 +34,7 @@ read it.
 ```ts
 export interface SpriteSubject {
   name: string;
-  size: number; // the logical box, in CSS px, which is also world units (the zoom is 1:1)
+  size: number; // the logical box, in world units — what the thing measures in the simulation
   facings: number;
   frames: number;
   draw(ctx: CanvasRenderingContext2D, size: number, facing: number, frame: number): void;
@@ -59,8 +59,10 @@ export default grunt;
 
 Three rules about `draw`:
 
-- **It works in logical units.** The context is already scaled by `dpr` and the canvas is already
-  `size × dpr`. Never multiply by `dpr` yourself, and never read `devicePixelRatio`.
+- **It works in logical units.** The context is already scaled by the scale it is baking at and the
+  canvas is already `size × scale`. Never multiply by `dpr` yourself, never read
+  `devicePixelRatio`, and never read the camera's zoom — the scale is `dpr × zoom` (ADR 0008) and
+  neither factor is yours to apply.
 - **The box is square and the same for every facing and frame.** One `size` covers your whole
   sprite, so it has to be the size of your *largest* facing or frame. Where the table below fixes
   a number, that number is the box and a test fails if you disagree with it — if your sprite
@@ -156,9 +158,10 @@ off.
 
 ## The set, and the box each one draws in
 
-The box is in CSS px, which is world units, because the zoom is 1:1 and does not change. Every
-size below is **derived** from the size that thing already is in the simulation, so the art and
-the collision it stands for cannot drift apart. They are in code as `SPRITE_BOX` in
+The box is in **world units** — what the thing measures in the simulation. It was also CSS pixels
+until the camera could zoom (#92); it is not any more, and nothing you write changes because of
+that. Every size below is **derived** from the size that thing already is in the simulation, so
+the art and the collision it stands for cannot drift apart. They are in code as `SPRITE_BOX` in
 [`registry.ts`](registry.ts), and a test fails if your `size` disagrees.
 
 | `<name>` | Covers | Box | facings | frames | Drawn by the game? |
@@ -228,21 +231,28 @@ ran into the edge of its box. Read them; they catch what the picture hides.
 Then spawn your reviewer and record what it said. That is not optional and it is not this file's
 subject — see [`docs/sprite-loop.md`](../../docs/sprite-loop.md).
 
-## Sprites bake at `size × dpr`
+## A sprite is baked at the scale it is drawn at
 
 The one rule behind everything else here, measured in
-[#77 §5](https://github.com/ericbstie/the-game/issues/77#issuecomment-5080621289).
+[#77 §5](https://github.com/ericbstie/the-game/issues/77#issuecomment-5080621289) and extended to
+the camera's zoom by [ADR 0008](../../docs/adr/0008-a-sprite-is-baked-at-the-scale-it-is-drawn-at.md).
 
-The render loop paints through `setTransform(dpr, …)`, so a sprite baked at its logical size is
+The render loop paints through a scaled transform, so a sprite baked at its logical size is
 **upscaled by that transform** before it reaches the screen: at 28 px it comes out visibly soft.
-Sprites are therefore baked at `size × dpr` and blitted into a box **exactly that many device
-pixels wide**, one device pixel per baked pixel, and the cache re-bakes the set when the display's
-ratio changes.
+Sprites are therefore baked at `size × scale` and blitted into a box **exactly that many device
+pixels wide**, one device pixel per baked pixel, and the cache re-bakes the set when that scale
+changes.
 
-That is deliberately not the same as "blitted into a `size`-CSS-px box". A canvas cannot be 22.5
-pixels wide, so the bake is `round(size × dpr)`; where `size × dpr` is fractional — a 15 px ore
-tile or a 75 px generator at Windows' **1.25× or 1.5×** scaling — the nominal box would land the
-destination half a device pixel off its source, and every edge would resample. The cache hands the
+**The scale is `dpr × zoom`.** It was `dpr` alone until the camera could zoom (#92). ADR 0008
+measured the alternatives — baking at the top of the range, baking at reference scales, accepting
+soft ink — and every one of them resamples somewhere: only a bake at the size it is drawn at is
+exact at every zoom, and it is also the cheapest blit and the smallest at the wide end.
+
+That is deliberately not the same as "blitted into a `size`-unit box". A canvas cannot be 22.5
+pixels wide, so the bake is `round(size × scale)`; where `size × scale` is fractional — a 15 px ore
+tile or a 75 px generator at Windows' **1.25× or 1.5×** scaling, or at any zoom between the stops —
+the nominal box would land the destination half a device pixel off its source, and every edge would
+resample. The cache hands the
 corrected box to `drawWorld` instead, so a sprite can draw up to half a device pixel larger than
 its nominal size. That is invisible, and it is the cheaper of the two errors.
 
@@ -250,6 +260,9 @@ The harness and the cache both do this for you. What it means for you is only th
 sprite at `--dpr 1` as well as the default 2**, because that is a real monitor and it is where
 your sprite has the fewest pixels to work with. **`--dpr 1.5` is worth a look too** if your box is
 15, 30 or 75 — 1 and 2 are precisely the two ratios where the fractional case cannot show.
+**And `--zoom` is a third axis with the same trap**: the camera's zoom is continuous between 0.5×
+and 3× (#92), so `size × dpr × zoom` is fractional almost everywhere and the corrected box is what
+keeps every one of those blits 1:1.
 
 ## Do not "fix" the anti-aliasing
 
@@ -267,7 +280,7 @@ It is not enough pixels. Every fix that suggests itself has already been measure
   and Chromium's canvas-AA flags are no-ops in this build — flags the harness would have and
   players would not.
 
-Bake at `size × dpr` and leave the rasteriser alone. Two places where hard edges are correct and
+Bake at the scale you are given and leave the rasteriser alone. Two places where hard edges are correct and
 free: `imageSmoothingEnabled = false` when *scaling an image* (which is genuinely controllable, and
 is what the magnified review panel and the game's own blit both use), and **axis-aligned fills on
 integer edges**, which carry no anti-aliasing at all — so walls, elevation faces and the build
@@ -306,4 +319,5 @@ To see yours in a real frame of the game, with no server and no lobby:
 bun run sprite:frame                                  # the game as the registry has it
 bun run sprite:frame --sprite grunt=src/sprite/grunt.ts   # layer a module over it
 bun run sprite:frame --at 0,0                         # against the arena corner, for `room`
+bun run sprite:frame --zoom 0.5                       # the camera zoomed out, and the bake with it
 ```

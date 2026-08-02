@@ -11,6 +11,8 @@ import { capture, measurementsIn } from "./headless";
 //   bun run sprite:frame --sprite grunt=src/sprite/grunt.ts   # a real sprite, in a real frame
 //   bun run sprite:frame --map 15600                          # the corner map at its widest level
 //   bun run sprite:frame --damage 0                           # the frame a blow lands on (#142)
+//   bun run sprite:frame --zoom 0.5                           # the camera zoomed out (#92)
+//   bun run sprite:frame --zoom 0.5 --enemies 500             # and the worst crowd it can hold
 //
 // #77 §6 proved this needs no server, no lobby, no socket and no play-through. It is the only
 // channel that shows a sprite at the size and against the background a player actually sees it,
@@ -24,6 +26,7 @@ const DRAW_MODULE = join(import.meta.dir, "../src/game/draw.ts");
 const CACHE_MODULE = join(import.meta.dir, "../src/sprite/cache.ts");
 const REGISTRY_MODULE = join(import.meta.dir, "../src/sprite/registry.ts");
 const WORLD_MODULE = join(import.meta.dir, "./demo-world.ts");
+const CAMERA_MODULE = join(import.meta.dir, "../src/game/camera.ts");
 const DEFAULT_DPR = 2;
 
 export interface FrameRequest {
@@ -42,6 +45,14 @@ export interface FrameRequest {
   // a function of (#142). Infinity is a frame with no blow behind it, which is what a player who
   // has never been hit carries and what every other frame this script renders has always been.
   damage: number;
+  // The camera's zoom, in CSS px per world unit (#92). The PNG is the same number of pixels at
+  // every value of it — it is the same screen — so what changes is how much world is in it, which
+  // is the only thing a review of this can be about.
+  zoom: number;
+  // How many spiders the frame holds, or null for the scene's own handful. The scene is arranged to
+  // show one of everything; a *crowd* is what a zoomed-out screen actually carries, and the enemy
+  // cap is a dial a player can raise (#96), so the worst picture has to be askable for.
+  enemies: number | null;
 }
 
 export interface Blit {
@@ -54,6 +65,8 @@ export interface Blit {
 export interface FrameResult {
   out: string;
   dpr: number;
+  // The screen, in CSS px — the same at every zoom, because the zoom changes how much world is in
+  // the picture and never how large the picture is.
   viewport: { width: number; height: number };
   blits: Blit[];
 }
@@ -65,6 +78,8 @@ export function parseArgs(argv: string[]): FrameRequest {
   let at: { x: number; y: number } | null = null;
   let map = MINIMAP_COVERAGE_U;
   let damage = Number.POSITIVE_INFINITY;
+  let zoom = 1;
+  let enemies: number | null = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--out") out = argv[++i] ?? "";
@@ -78,6 +93,14 @@ export function parseArgs(argv: string[]): FrameRequest {
       damage = Number(argv[++i]);
       if (!Number.isFinite(damage) || damage < 0) {
         throw new Error("--damage wants ms since the blow");
+      }
+    } else if (arg === "--zoom") {
+      zoom = Number(argv[++i]);
+      if (!Number.isFinite(zoom) || zoom <= 0) throw new Error("--zoom must be a positive number");
+    } else if (arg === "--enemies") {
+      enemies = Number(argv[++i]);
+      if (!Number.isInteger(enemies) || enemies <= 0) {
+        throw new Error("--enemies must be a positive whole number");
       }
     } else if (arg === "--at") {
       const pair = (argv[++i] ?? "").split(",").map(Number);
@@ -95,7 +118,7 @@ export function parseArgs(argv: string[]): FrameRequest {
   // With nothing asked for, the frame is simply the game as the registry has it. `--sprite` layers
   // a module over that: art under review, or a name nothing has drawn yet. `calibration` is the
   // harness's own test pattern and is never art — pass it explicitly to check the machinery.
-  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr, at, map, damage };
+  return { sprites, out: resolve(out ?? "sprite-frame.png"), dpr, at, map, damage, zoom, enemies };
 }
 
 // The screen's swing and its veil are worked out here rather than in the page, because both are a
@@ -114,18 +137,24 @@ export function entrySource(request: FrameRequest, modules = MODULES): string {
 import { drawWorld } from ${JSON.stringify(modules.draw)};
 import { createSpriteCache } from ${JSON.stringify(modules.cache)};
 import { SPRITES } from ${JSON.stringify(modules.registry)};
-import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBlood, demoBursts, demoFloats, demoProjectiles, demoPuffs, demoTutorial, demoWorld } from ${JSON.stringify(modules.world)};
+import { DEMO_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBlood, demoBursts, demoCrowd, demoFloats, demoProjectiles, demoPuffs, demoTutorial, demoWorld } from ${JSON.stringify(modules.world)};
+import { worldViewport } from ${JSON.stringify(modules.camera)};
 
 const dpr = ${request.dpr};
+const zoom = ${request.zoom};
+// Device pixels per world unit — the ratio the display reports times the camera's zoom, which is
+// what \`GameScreen\` folds into one number for the transform, the pixel snap and the sprite bakes.
+const scale = dpr * zoom;
 // How far the blow threw the view off the camera (#142). Applied to the camera the world is painted
 // from and to nothing else, exactly as \`GameScreen\` applies it.
 const shake = ${JSON.stringify(fx.shake)};
 const at = ${JSON.stringify(request.at)} ?? DEMO_CAMERA;
 const camera = { x: at.x + shake.x, y: at.y + shake.y };
-const viewport = DEMO_VIEWPORT;
+// The world the screen reaches, which is the screen itself only at 1:1 (#92).
+const viewport = worldViewport(DEMO_VIEWPORT, zoom);
 const canvas = document.getElementById("sheet");
-canvas.width = Math.round(viewport.width * dpr);
-canvas.height = Math.round(viewport.height * dpr);
+canvas.width = Math.round(DEMO_VIEWPORT.width * dpr);
+canvas.height = Math.round(DEMO_VIEWPORT.height * dpr);
 // One backing-store pixel per captured pixel, so the PNG is exactly the device pixels a player at
 // this ratio sees — nothing in the screenshot path can soften or sharpen a sprite.
 canvas.style.width = canvas.width + "px";
@@ -145,8 +174,8 @@ ctx.drawImage = (...args) => {
 };
 
 // The transform GameScreen paints the world through, unchanged.
-ctx.setTransform(dpr, 0, 0, dpr, -camera.x * dpr, -camera.y * dpr);
-const world = demoWorld();
+ctx.setTransform(scale, 0, 0, scale, -camera.x * scale, -camera.y * scale);
+const world = ${request.enemies === null ? "demoWorld()" : `demoCrowd(demoWorld(), ${request.enemies}, viewport)`};
 // The shots in the air ride the snapshot rather than the options (#80): they are server state the
 // client mirrors, like the spiders, and every client draws the same ones.
 world.projectiles = demoProjectiles(world);
@@ -155,6 +184,7 @@ drawWorld(ctx, world, {
   camera,
   viewport,
   dpr,
+  zoom,
   // Frozen, so the two things that alternate on the clock are in their visible phase.
   now: DEMO_NOW,
   ghost: DEMO_GHOST,
@@ -181,10 +211,13 @@ drawWorld(ctx, world, {
   tutorial: demoTutorial(world),
   // The real registry, so the frame is the game as it actually stands. Anything named on the
   // command line is layered over it — a sprite under review, or one nobody has wired yet.
-  sprites: createSpriteCache({ ...SPRITES, ${table} }).source(dpr),
+  // Keyed on \`dpr × zoom\` and not on \`dpr\` (ADR 0008): a sprite is baked at the scale it is drawn
+  // at and blitted 1:1, which is the whole reason the ink stays crisp at a zoom the player picked.
+  // There is no settle here — nothing is gesturing, and this frame is the settled one.
+  sprites: createSpriteCache({ ...SPRITES, ${table} }).source(scale),
 });
 
-document.getElementById("measurements").textContent = JSON.stringify({ dpr, viewport, blits });
+document.getElementById("measurements").textContent = JSON.stringify({ dpr, viewport: DEMO_VIEWPORT, blits });
 `;
 }
 
@@ -193,6 +226,7 @@ const MODULES = {
   cache: CACHE_MODULE,
   world: WORLD_MODULE,
   registry: REGISTRY_MODULE,
+  camera: CAMERA_MODULE,
 };
 
 export async function renderFrame(request: FrameRequest): Promise<FrameResult> {
@@ -219,6 +253,12 @@ if (import.meta.main) {
   );
   console.log(`map     ${request.map} u across`);
   console.log(`damage  ${request.damage} ms since the blow`);
+  console.log(
+    `zoom    ${request.zoom}x — ${result.viewport.width / request.zoom} x ${result.viewport.height / request.zoom} u of world in it`,
+  );
+  console.log(
+    `enemies ${request.enemies === null ? "the scene's own" : `${request.enemies}, all on screen`}`,
+  );
   console.log(`sprites ${Object.keys(request.sprites).join(", ") || "none"}`);
   console.log(`blits   ${result.blits.length}`);
   for (const blit of result.blits) {

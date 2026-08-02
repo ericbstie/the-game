@@ -28,7 +28,7 @@ export const SEED_FACING = 2; // South, until the first suprathreshold motion
 
 // Distance travelled per walk frame. Driving the cycle by distance rather than by a wall clock
 // is what stops a fast character skating: one rate in milliseconds cannot serve player (260),
-// elite (234) and grunt (182) across a 43% speed spread. At 1 world unit = 1 CSS px this is one
+// elite (234) and grunt (182) across a 43% speed spread. At the 1:1 the camera opens at this is one
 // player body width (2 × PLAYER_RADIUS) — the number sprite agents draw a stride to.
 export const STRIDE_PX = 28;
 

@@ -22,7 +22,7 @@ import {
   tilesBetween,
   withinReach,
 } from "./build";
-import { type Camera, computeCamera } from "./camera";
+import { type Camera, computeCamera, pointerWorld, worldViewport } from "./camera";
 import { type ClientWorld, RESPAWN_DELAY_MS } from "./clientWorld";
 import { damageFx } from "./damageFx";
 import { BURST_MS, type BuildGhost, drawWorld, PUFF_MS } from "./draw";
@@ -49,6 +49,7 @@ import {
   type TutorialView,
 } from "./tutorial";
 import { PLAYER_MAX_HP } from "./world";
+import { bakeZoom, freshZoom, wheelZoom } from "./zoom";
 
 const POS_SEND_MS = 50; // ~20 Hz position stream, independent of the render frame rate
 const MAX_FRAME_MS = 100; // cap dt so a backgrounded tab doesn't teleport the avatar on resume
@@ -131,8 +132,9 @@ interface GameScreenProps {
 // The in-match screen: a fullscreen camera that follows your Avatar through the giant box.
 // A single render loop integrates the owner locally each frame (zero input lag), samples
 // peers render-delay behind from their buffers, clamps the camera at the walls, culls
-// off-screen entities, and paints via a DPR-correct transform (1 world unit = 1 CSS px,
-// crisp on HiDPI). The owner's position streams out at a fixed ~20 Hz. Refs bridge React's
+// off-screen entities, and paints via a transform scaled by the device ratio and the player's
+// own zoom (#92), which is crisp on HiDPI at every scale because a sprite is baked at the one it
+// is drawn at (ADR 0008). The owner's position streams out at a fixed ~20 Hz. Refs bridge React's
 // render into the loop so a world swapped on reconnect and a changed callback are picked up
 // without restarting it.
 export function GameScreen({
@@ -192,6 +194,12 @@ export function GameScreen({
   // How much world the corner map is showing (#110). A ref and not state: it is read by the frame
   // that draws it and by nothing else, so a re-render per press would buy the HUD nothing.
   const minimapCoverageRef = useRef(MINIMAP_COVERAGE_U);
+  // How much world the *screen* is showing (#92). A ref for the reason the map's level is one, and
+  // for a second of its own: the pointer handlers read it between frames — a click has to land on
+  // the tile the player is looking at, and a render behind would put it on the tile they were
+  // looking at a moment ago. Client-local and per player, exactly as the map's level is: nothing
+  // about it rides the wire, and two players in a match can be at different scales.
+  const zoomRef = useRef(freshZoom());
   // The mini-tutorial (#134), and what it currently has on screen. Client-local and per player:
   // nothing about it rides the wire, and every event it is fed is something *this* client did.
   // Seeded from the browser's own record, so a player who has already been taught a lesson is not
@@ -405,7 +413,7 @@ export function GameScreen({
       if (now - lastAttackRef.current < RANGED_CADENCE_MS) return;
       lastAttackRef.current = now;
       const { camera, self } = aimRef.current;
-      const dir = aimDir(pointerRef.current, self, camera);
+      const dir = aimDir(pointerRef.current, self, camera, zoomRef.current.drawn);
       onAttackRef.current({ ...self }, dir);
       // Prompt 6's second half is taught by the pull, not by the bullet that comes back (#134). The
       // report has gone; whether the server flies a projectile from it is its business, and a lesson
@@ -462,6 +470,26 @@ export function GameScreen({
     [teach],
   );
 
+  // The wheel zooms the camera (#92). It is the one gesture nothing else in the match wants: the
+  // keyboard binds WASD and the arrows to movement, `1`–`4` to the build bar, `g` to the gun, `m`
+  // to the corner map and Escape to the menu, and both mouse buttons already have two jobs each.
+  //
+  // A native listener rather than React's `onWheel`, and `passive: false` is the whole reason:
+  // React registers `wheel` at the root as a passive listener, where `preventDefault` is ignored
+  // and warned about — so the page would keep whatever scrolling or pinch-zoom the browser had in
+  // mind for a gesture the arena has taken. Nothing is sent and nothing re-renders: the zoom is a
+  // ref the next frame reads.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      wheelZoom(zoomRef.current, e.deltaY, e.deltaMode, Date.now());
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, []);
+
   // Track the CSS viewport size and size the backing store to device pixels (crisp HiDPI).
   // ResizeObserver reports content-box changes without a per-frame layout read; the loop
   // handles a pure DPR change (moving to a different-density monitor) itself.
@@ -495,6 +523,10 @@ export function GameScreen({
         // interpolates the spiders to — reading the clock twice would split that step and land a
         // bullet off the body it is about to strike.
         const clock = Date.now();
+        // And one zoom for the whole frame (#92). Read once rather than per consumer, because the
+        // wheel can move it between two reads and a frame painted through one scale while its
+        // cursor was resolved against another is exactly the ghost-and-placement split #92 names.
+        const zoom = zoomRef.current.drawn;
         // What the held buttons are harvesting this frame, or null. One answer for both of them,
         // because one tile is never two things: a structure under the cursor is a demolish and the
         // ore beneath it is unreachable until it is gone (`resolveHarvest`). Read fresh every frame
@@ -508,6 +540,7 @@ export function GameScreen({
           selectedRef.current,
           pointerRef.current,
           aimRef.current.camera,
+          zoom,
         );
         // Hand-mining pins you where you stand (#109); pulling a building down does not.
         const move = target?.kind === "mine" ? NO_MOVE : heldRef.current;
@@ -545,12 +578,9 @@ export function GameScreen({
           build: world.build,
           self: world.selfPos(),
           camera: aimRef.current.camera,
-          viewport: { width: viewRef.current.w, height: viewRef.current.h },
+          viewport: worldViewport({ width: viewRef.current.w, height: viewRef.current.h }, zoom),
           cursor: overArenaRef.current
-            ? {
-                x: pointerRef.current.x + aimRef.current.camera.x,
-                y: pointerRef.current.y + aimRef.current.camera.y,
-              }
+            ? pointerWorld(pointerRef.current, aimRef.current.camera, zoom)
             : null,
         });
         // Held left-click is one of three things and never two of them at once: a run of buildables
@@ -565,7 +595,10 @@ export function GameScreen({
         if (ctx) {
           const snapshot = world.snapshot(clock);
           const self = selfPos(snapshot.players, selfIdRef.current) ?? center(world.arena);
-          const viewport = { width: w, height: h };
+          // The world this screen reaches, which is the screen itself only at 1:1 (#92). Everything
+          // downstream — the wall clamp, every cull, both floor passes, the room's wall run, the
+          // tutorial's tile walk — is bounded by it and none of them has to know there is a zoom.
+          const viewport = worldViewport({ width: w, height: h }, zoom);
           const camera = computeCamera(self, viewport, world.arena);
           aimRef.current = { camera, self }; // feed the attack handlers the live origin + camera
           // What a blow you took does to the screen (#142). The swing is applied to the camera the
@@ -583,25 +616,29 @@ export function GameScreen({
           // through `view` with everything else.
           const fx = damageFx(clock - world.damagedAt());
           const view = { x: camera.x + fx.shake.x, y: camera.y + fx.shake.y };
-          ctx.setTransform(dpr, 0, 0, dpr, -view.x * dpr, -view.y * dpr);
+          // Device pixels per world unit: the ratio the display reports, times the zoom. One number
+          // for the transform, for the pixel snap inside `drawWorld`, and for the sprite bakes —
+          // which is the whole of ADR 0008 at this call site.
+          const scale = dpr * zoom;
+          ctx.setTransform(scale, 0, 0, scale, -view.x * scale, -view.y * scale);
           const kind = selectedRef.current;
           const ghost: BuildGhost | undefined = kind
             ? {
                 kind,
-                tile: cursorTile(pointerRef.current, camera),
+                tile: cursorTile(pointerRef.current, camera, zoom),
                 // The ghost runs the very rule the server will: same registry, same ore, same
                 // mirrored build state — so green never turns into a rejected placement.
                 valid:
                   placementError(
                     kind,
-                    cursorTile(pointerRef.current, camera),
+                    cursorTile(pointerRef.current, camera, zoom),
                     world.ore,
                     world.build,
                     self,
                   ) === null,
               }
             : undefined;
-          // Asking the cache for this frame's DPR is also what re-bakes the set when the window
+          // Asking the cache for this frame's scale is also what re-bakes the set when the window
           // moves to a display of a different density: every bake in hand is then the wrong
           // resolution, and the cache empties itself rather than being told to.
           drawWorld(ctx, snapshot, {
@@ -610,6 +647,7 @@ export function GameScreen({
             viewport,
             ghost,
             dpr,
+            zoom,
             damageFlash: fx.flash,
             minimapCoverage: minimapCoverageRef.current,
             connected: connectedRef.current,
@@ -633,7 +671,13 @@ export function GameScreen({
             // Aged the same way, on the same frame clock, and judged without that delay — a death
             // takes its spider off this very snapshot, so the puff has nothing to wait for (#116).
             puffs: world.deathMarks(clock, PUFF_MS),
-            sprites: spriteCache.source(dpr),
+            // **Not `scale`** (ADR 0008). A re-bake is 10.6 ms for the eager set and up to 130.7 ms
+            // once a 0.5× screen's ore is in it, so re-keying the cache on every frame of a wheel
+            // gesture is not affordable. `bakeZoom` holds the scale the bakes in hand were made at
+            // until the gesture has been still for `ZOOM_SETTLE_MS`, and the frame blits them
+            // resampled in the meantime — which is what every candidate the ADR rejected does on
+            // every frame, paid here for the length of a gesture instead.
+            sprites: spriteCache.source(dpr * bakeZoom(zoomRef.current, clock)),
             // The tutorial's world-anchored half, straight off the step above (#134). The other
             // two prompts travel no further than this component: they are screen-fixed chrome, and
             // the HUD is where chrome lives.
@@ -751,7 +795,7 @@ export function GameScreen({
     // outruns both the frame and the build cadence, and the tiles it crossed on the way are most
     // of what a drag was asked for. A sample that has not left its tile adds nothing, which is what
     // keeps the tile the press already laid from being laid a second time.
-    const tile = cursorTile(pointerRef.current, aimRef.current.camera);
+    const tile = cursorTile(pointerRef.current, aimRef.current.camera, zoomRef.current.drawn);
     for (const crossed of tilesBetween(drag.at, tile)) drag.pending.push(crossed);
     drag.at = tile;
   };
@@ -771,7 +815,7 @@ export function GameScreen({
       // halfway down its own path; the other two are decided tick by tick, which is what lets `g`
       // swap them under a button that never came up.
       if (kind) {
-        const tile = cursorTile(pointerRef.current, aimRef.current.camera);
+        const tile = cursorTile(pointerRef.current, aimRef.current.camera, zoomRef.current.drawn);
         dragRef.current = {
           kind,
           at: tile,
@@ -1029,9 +1073,10 @@ function liveHarvest(
   selected: BuildableKind | null,
   pointer: Vec2,
   camera: Camera,
+  zoom: number,
 ): HarvestTarget {
   if (!world || world.isDead()) return null;
-  const target = resolveHarvest(cursorTile(pointer, camera), world.ore, world.build);
+  const target = resolveHarvest(cursorTile(pointer, camera, zoom), world.ore, world.build);
   if (target === null) return null;
   if (target.kind === "demolish") return demolishing ? target : null;
   if (!mining || selected) return null;
@@ -1042,10 +1087,10 @@ function liveHarvest(
   return self && !withinReach(tileCenter(target.tile), self, INTERACT_REACH) ? null : target;
 }
 
-// The tile under the pointer. The camera maps CSS pixels to world units 1:1, so the pointer's
-// world position is simply pointer + camera.
-function cursorTile(pointer: Vec2, camera: Camera): Tile {
-  return tileOf({ x: pointer.x + camera.x, y: pointer.y + camera.y });
+// The tile under the pointer. `pointerWorld` is the inverse of the transform the frame was painted
+// through, so the tile a click lands on is the tile the player is looking at — at any zoom (#92).
+function cursorTile(pointer: Vec2, camera: Camera, zoom: number): Tile {
+  return tileOf(pointerWorld(pointer, camera, zoom));
 }
 
 function selfPos(players: { id: string; pos: Vec2 }[], selfId: string | undefined): Vec2 | null {

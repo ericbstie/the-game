@@ -17,7 +17,7 @@
 // `facing` and `frame` are indices only — what each facing points at is #73's to settle.
 export interface SpriteSubject {
   name: string;
-  size: number; // the logical box, in CSS px, which is also world units (the zoom is 1:1)
+  size: number; // the logical box, in world units — what the thing measures in the simulation
   facings: number;
   frames: number;
   draw(ctx: CanvasRenderingContext2D, size: number, facing: number, frame: number): void;

@@ -13,6 +13,7 @@ import { concurrentShots } from "./shot-ink";
 //   bun run frame:budget --sprite grass=src/sprite/grass.ts   # layer in art that has not landed
 //   bun run frame:budget --map 15600                          # the corner map at its widest level
 //   bun run frame:budget --enemies 500                        # a cap the governor has not reached
+//   bun run frame:budget --zoom 0.5                           # the camera zoomed out (#92)
 //
 // The budget this produces is written down in `docs/frame-budget.md`. It exists as a command and
 // not only as a number because the rest of Milestone 5 adds to this frame — health bars, the shot
@@ -34,6 +35,7 @@ const FLOATS_MODULE = join(import.meta.dir, "../src/game/floats.ts");
 const FX_MODULE = join(import.meta.dir, "../src/game/fx.ts");
 const DAMAGE_MODULE = join(import.meta.dir, "../src/game/damageFx.ts");
 const TUTORIAL_MODULE = join(import.meta.dir, "../src/game/tutorial.ts");
+const CAMERA_MODULE = join(import.meta.dir, "../src/game/camera.ts");
 
 export interface BudgetRequest {
   sprites: Record<string, string>;
@@ -47,6 +49,10 @@ export interface BudgetRequest {
   // governor has not been raised to yet — #111's 500 — can only be priced by asking for it, and the
   // alternative is a number nobody measured (rule 5).
   enemies: number | null;
+  // The camera's zoom, in CSS px per world unit (#92). The screen is the same 800 x 600 at every
+  // value of it; what changes is how much world is inside it, and so how much of the arena's floor,
+  // ore and blood survives the cull. The worst frame is now the widest one.
+  zoom: number;
 }
 
 export function parseArgs(argv: string[]): BudgetRequest {
@@ -55,6 +61,7 @@ export function parseArgs(argv: string[]): BudgetRequest {
   let dpr = 2;
   let map = MINIMAP_COVERAGE_U;
   let enemies: number | null = null;
+  let zoom = 1;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--out") out = argv[++i] ?? "";
@@ -69,6 +76,9 @@ export function parseArgs(argv: string[]): BudgetRequest {
       if (!Number.isInteger(enemies) || enemies <= 0) {
         throw new Error("--enemies must be a positive whole number");
       }
+    } else if (arg === "--zoom") {
+      zoom = Number(argv[++i]);
+      if (!Number.isFinite(zoom) || zoom <= 0) throw new Error("--zoom must be a positive number");
     } else if (arg === "--sprite") {
       const pair = argv[++i] ?? "";
       const split = pair.indexOf("=");
@@ -76,7 +86,7 @@ export function parseArgs(argv: string[]): BudgetRequest {
       sprites[pair.slice(0, split)] = resolve(pair.slice(split + 1));
     } else throw new Error(`unknown argument ${arg}`);
   }
-  return { sprites, out: resolve(out ?? "frame-budget.png"), dpr, map, enemies };
+  return { sprites, out: resolve(out ?? "frame-budget.png"), dpr, map, enemies, zoom };
 }
 
 export interface BudgetResult {
@@ -100,6 +110,14 @@ export interface BudgetResult {
   bloodMs: Record<string, number>;
   veilMs: number;
   tutorialMs: number; // the mini-tutorial's three world-anchored prompts, all up at once (#134)
+  // What the first frame after a zoom settles costs (#92, ADR 0008): every sprite the worst frame
+  // asks for, baked afresh at the scale it is now drawn at. Paid once per settle, which is the whole
+  // reason the settle exists.
+  bakeBurstMs: number;
+  // And what those bakes hold, in bytes — 4 a device pixel, over the distinct images the worst
+  // frame blits. Residency goes as the square of the scale, so this is the figure the ADR's
+  // "0.25x at 0.5, 9x at 3" is checked against through the shipped cache.
+  bakedBytes: number;
 }
 
 export function entrySource(request: BudgetRequest): string {
@@ -122,9 +140,17 @@ import { BLOOD_BANDS } from ${JSON.stringify(DRAW_MODULE)};
 import { BLOOD_CAP, BLOOD_FADE_MS, DROP_RADIUS, stainMarks } from ${JSON.stringify(BLOOD_MODULE)};
 import { FLASH_ALPHA } from ${JSON.stringify(DAMAGE_MODULE)};
 import { MINE_WORDS, POWER_WORDS, TURRET_WORDS } from ${JSON.stringify(TUTORIAL_MODULE)};
+import { worldViewport } from ${JSON.stringify(CAMERA_MODULE)};
 
-const VIEW = { width: 800, height: 600 };
+const SCREEN = { width: 800, height: 600 };
+const ZOOM = ${request.zoom};
+// The world the screen reaches (#92). Every cull, both floor passes and the crowd below are bounded
+// by it, so a zoomed-out run measures a genuinely wider frame rather than the same one drawn small.
+const VIEW = worldViewport(SCREEN, ZOOM);
 const DPR = ${request.dpr};
+// Device pixels per world unit, which is what the transform paints at and what the sprite cache is
+// keyed on (ADR 0008).
+const SCALE = DPR * ZOOM;
 const ARENA = { width: 31_200, height: 31_200 };
 const CAM = { x: 15_400, y: 15_400 };
 const STRUCTURES = 40;
@@ -218,8 +244,17 @@ function build(enemyCount, structureCount, withOre) {
   const ore = withOre ? generateOre(ARENA, 12_345) : new Map();
   if (withOre) {
     const ftx = Math.floor(CAM.x / TILE), fty = Math.floor(CAM.y / TILE);
-    for (let ty = fty + 4; ty < fty + 16; ty++) for (let tx = ftx + 4; tx < ftx + 20; tx++) ore.set(tileKey({ tx, ty }), "metal");
-    for (let ty = fty + 24; ty < fty + 34; ty++) for (let tx = ftx + 30; tx < ftx + 44; tx++) ore.set(tileKey({ tx, ty }), "power");
+    // The patches are laid as a share of the screen rather than as a fixed count of tiles, so a
+    // zoomed-out frame carries proportionally the same ore and the layer scales with the area the
+    // way the real floor does (#92). At 1x every bound below is the figure it has always been.
+    const spread = (tiles) => Math.round(tiles / ZOOM);
+    const patch = (kind, ty0, tx0, rows, cols) => {
+      for (let ty = fty + spread(ty0); ty < fty + spread(ty0 + rows); ty++) {
+        for (let tx = ftx + spread(tx0); tx < ftx + spread(tx0 + cols); tx++) ore.set(tileKey({ tx, ty }), kind);
+      }
+    };
+    patch("metal", 4, 4, 12, 16);
+    patch("power", 24, 30, 10, 14);
   }
   // No shots in the air: they are the layer above (#80), and \`flying\` spreads this world to add
   // them. A world without the field would throw rather than draw nothing.
@@ -228,8 +263,8 @@ function build(enemyCount, structureCount, withOre) {
 }
 
 const canvas = document.getElementById("sheet");
-canvas.width = Math.round(VIEW.width * DPR);
-canvas.height = Math.round(VIEW.height * DPR);
+canvas.width = Math.round(SCREEN.width * DPR);
+canvas.height = Math.round(SCREEN.height * DPR);
 canvas.style.width = canvas.width + "px";
 canvas.style.height = canvas.height + "px";
 const ctx = canvas.getContext("2d");
@@ -252,12 +287,12 @@ try {
   // draws through a set with no lettering entry — where drawWorld falls back to nothing at all — and
   // the last row draws through the whole registry.
   const subjects = { ...SPRITES, ${table} };
-  const lettered = createSpriteCache(subjects).source(DPR);
+  const lettered = createSpriteCache(subjects).source(SCALE);
   const unlettered = { ...subjects };
   delete unlettered.lettering;
-  const sprites = createSpriteCache(unlettered).source(DPR);
-  const setup = () => ctx.setTransform(DPR, 0, 0, DPR, -CAM.x * DPR, -CAM.y * DPR);
-  const opts = { selfId: "p0", camera: CAM, viewport: VIEW, dpr: DPR, now: 1000, sprites, minimapCoverage: ${request.map} };
+  const sprites = createSpriteCache(unlettered).source(SCALE);
+  const setup = () => ctx.setTransform(SCALE, 0, 0, SCALE, -CAM.x * SCALE, -CAM.y * SCALE);
+  const opts = { selfId: "p0", camera: CAM, viewport: VIEW, dpr: DPR, zoom: ZOOM, now: 1000, sprites, minimapCoverage: ${request.map} };
 
   const empty = build(0, 0, false);
   const floor = build(0, 0, true);
@@ -511,6 +546,38 @@ try {
   const bareMs = measure(() => { setup(); drawWorld(ctx, empty, opts); }, ITERS * 4);
   const taughtMs = measure(() => { setup(); drawWorld(ctx, empty, { ...opts, tutorial: tutorialMarks }); }, ITERS * 4);
 
+  // The re-bake burst a settled zoom pays (#92). ADR 0008 keys the bake on \`dpr x zoom\`, so the
+  // frame after a gesture stops asks a cold cache for every sprite it draws; \`zoom.ts\` holds the old
+  // bakes until then precisely so this is paid once rather than on every frame of the gesture.
+  //
+  // A fresh cache per iteration is the measurement: each one pays the whole bill, and the warm frame
+  // drawn immediately after through the same fixture is what it is charged against. Fewer iterations
+  // than every other layer, because at 0.5x the ore alone is a hundred bakes of it.
+  const burstIters = 10;
+  const coldBurstMs = measure(() => {
+    setup();
+    drawWorld(ctx, flying, { ...withBlood, sprites: createSpriteCache(subjects).source(SCALE) });
+  }, burstIters);
+  const warmBurstMs = measure(() => { setup(); drawWorld(ctx, flying, withBlood); }, burstIters);
+
+  // What the bakes behind that frame hold. Read off the blits rather than out of the cache, so it is
+  // the images the frame actually *draws* — the eagerly baked set plus one ore variant per distinct
+  // tile on screen — at 4 bytes a device pixel.
+  const resident = new Set();
+  let bakedBytes = 0;
+  const counted = ctx.drawImage.bind(ctx);
+  ctx.drawImage = (...args) => {
+    const image = args[0];
+    if (image && image.width && !resident.has(image)) {
+      resident.add(image);
+      bakedBytes += image.width * image.height * 4;
+    }
+    counted(...args);
+  };
+  setup();
+  drawWorld(ctx, flying, withBlood);
+  ctx.drawImage = counted;
+
   const result = {
     standing: full.enemies.length + STRUCTURES + full.players.length + full.nests.length,
     blits,
@@ -542,6 +609,8 @@ try {
     bloodMs: { [DECALS]: +blood(DECALS).toFixed(3), 25: +blood(25).toFixed(3), 50: +blood(50).toFixed(3), 150: +blood(150).toFixed(3) },
     veilMs: +veilMs.toFixed(3),
     tutorialMs: +(taughtMs - bareMs).toFixed(3),
+    bakeBurstMs: +(coldBurstMs - warmBurstMs).toFixed(3),
+    bakedBytes,
   };
 
   // Drawn last so the screenshot is the frame that was measured, not the final probe.
@@ -584,6 +653,9 @@ if (import.meta.main) {
     `enemy cap   ${request.enemies === null ? "the config's, as the governor stands" : `${request.enemies}, asked for`}`,
   );
   console.log(
+    `camera zoom ${request.zoom}x — ${800 / request.zoom} x ${600 / request.zoom} u of world on an 800 x 600 screen`,
+  );
+  console.log(
     `sprites     ${Object.keys(request.sprites).join(", ") || "the registry as it stands"}`,
   );
   console.log("");
@@ -612,6 +684,12 @@ if (import.meta.main) {
   );
   console.log(
     `  the tutorial        ${r.tutorialMs.toFixed(3)} ms   standalone, all three prompts at once`,
+  );
+  console.log(
+    `  the re-bake burst   ${r.bakeBurstMs.toFixed(3)} ms   once per settled zoom, not per frame (#92)`,
+  );
+  console.log(
+    `  baked residency     ${(r.bakedBytes / 1024 / 1024).toFixed(2)} MiB  what this frame's bakes hold`,
   );
   console.log("");
   console.log(`Worst case, measured through the shipped drawWorld`);

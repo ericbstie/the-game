@@ -64,7 +64,9 @@ export type SpriteName =
   // simulation fixes its size and the box is its own agent's call.
   | "highlight";
 
-// The box a sprite draws in, in CSS px — which is also world units, since the zoom is 1:1.
+// The box a sprite draws in, in world units — what the thing measures in the simulation. It was
+// also CSS pixels until the camera could zoom (#92); the bake follows the scale it is drawn at
+// (ADR 0008) and this box does not move.
 // Every entry is *derived* from the size the entity already is in the simulation, so the art and
 // the thing it stands for can never drift apart. #81 quotes these same numbers.
 //

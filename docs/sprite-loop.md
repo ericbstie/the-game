@@ -21,7 +21,7 @@ import type { SpriteSubject } from "./sheet";
 
 const grunt: SpriteSubject = {
   name: "grunt",
-  size: 32, // the logical box in CSS px, which is also world units — the zoom is 1:1
+  size: 32, // the logical box, in world units — what the thing measures in the simulation
   facings: 8,
   frames: 2,
   draw(ctx, size, facing, frame) {
@@ -32,8 +32,9 @@ const grunt: SpriteSubject = {
 export default grunt;
 ```
 
-- **`draw` works in logical units.** The harness has already scaled the context by `dpr` and sized
-  the offscreen canvas to `size × dpr`. Never multiply by `dpr` yourself.
+- **`draw` works in logical units.** The harness has already scaled the context by the scale it is
+  baking at and sized the offscreen canvas to `size × scale`. Never multiply by `dpr` yourself, and
+  never read the camera's zoom — that scale is `dpr × zoom` (ADR 0008) and neither factor is yours.
 - **The module must import cleanly under Bun** — no `document` at module scope. The runner computes
   the sheet's size without a canvas, because Chromium crops a screenshot to the window it was given
   and never says so.
@@ -112,7 +113,7 @@ addendum):
 - **`getContext("2d", { antialias: false })`** is silently ignored; the Chromium canvas-AA flags
   are no-ops, and would be flags the harness has and players do not.
 
-Bake at `size × dpr` and leave the rasteriser alone. Axis-aligned fills on integer edges carry no
+Bake at the scale you are given and leave the rasteriser alone. Axis-aligned fills on integer edges carry no
 anti-aliasing at all, so walls, elevation faces and the build ghost stay hard-edged for free.
 
 ## Checking the harness itself

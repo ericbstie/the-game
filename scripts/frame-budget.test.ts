@@ -40,11 +40,42 @@ describe("parseArgs", () => {
   test("refuses arguments that would silently measure the wrong thing", () => {
     expect(() => parseArgs(["--sprite", "src/sprite/grass.ts"])).toThrow(/name=path/);
     expect(() => parseArgs(["--dpr", "0"])).toThrow(/dpr/);
-    expect(() => parseArgs(["--zoom", "2"])).toThrow(/--zoom/);
+    expect(() => parseArgs(["--fisheye", "2"])).toThrow(/--fisheye/);
+  });
+
+  // #92. The worst frame is now the widest one: the screen is the same 800 x 600 at every zoom, and
+  // what changes is how much floor, ore, blood and crowd is inside it.
+  test("takes the camera's zoom, and opens at the 1:1 every published figure was measured at", () => {
+    expect(parseArgs([]).zoom).toBe(1);
+    expect(parseArgs(["--zoom", "0.5"]).zoom).toBe(0.5);
+    expect(() => parseArgs(["--zoom", "0"])).toThrow(/--zoom/);
+    expect(() => parseArgs(["--zoom", "wide"])).toThrow(/--zoom/);
   });
 });
 
 describe("entrySource", () => {
+  // ADR 0008 leaves two costs open that only a shipped path can answer: what the frame after a
+  // settled zoom pays to re-bake, and what those bakes hold. Both are read through the shipped cache
+  // rather than arithmetic on the registry.
+  test("prices the re-bake burst against a warm frame, and reads residency off the blits", () => {
+    const source = entrySource(parseArgs([]));
+    expect(source).toContain("createSpriteCache(subjects).source(SCALE)"); // a cold cache each time
+    expect(source).toContain("coldBurstMs - warmBurstMs");
+    expect(source).toContain("image.width * image.height * 4");
+  });
+
+  test("bounds the frame to the world the screen reaches, and bakes at the scale it draws at", () => {
+    const source = entrySource(parseArgs(["--zoom", "0.5"]));
+    expect(source).toContain("const ZOOM = 0.5;");
+    expect(source).toContain("worldViewport(SCREEN, ZOOM)");
+    expect(source).toContain("const SCALE = DPR * ZOOM;");
+    expect(source).toContain(".source(SCALE)"); // ADR 0008: keyed on dpr x zoom, not on dpr
+    expect(source).toContain("ctx.setTransform(SCALE, 0, 0, SCALE");
+    // The backing store is the screen at every zoom — the picture is the same size, the world in it
+    // is not — or the layers would be measured over a different number of device pixels each time.
+    expect(source).toContain("canvas.width = Math.round(SCREEN.width * DPR)");
+  });
+
   test("measures the shipped drawWorld, not a copy of it", () => {
     const source = entrySource(parseArgs([]));
     expect(source).toContain("src/game/draw.ts");
@@ -153,7 +184,9 @@ describe("entrySource", () => {
     // the art. Counted, because a timing call alone passing is exactly how a report comes to quote a
     // word count off a frame that had no words in it.
     expect(source).toContain("const withBlood = { ...withLettering, blood: bloodMarks(DECALS) }");
-    expect(source.split("drawWorld(ctx, flying, withBlood)").length - 1).toBe(3);
+    // Five: the blood row, the blit-and-bar count, the screenshot, the warm side of the re-bake
+    // burst and the residency read — every one of them the whole frame, art included.
+    expect(source.split("drawWorld(ctx, flying, withBlood)").length - 1).toBe(5);
     // The count is derived from the cadences that actually fire, not chosen here
     // (`lettering-ink.ts`), and it is the two mark counts added because a word rides both.
     expect(source).toContain(`const LETTERING = ${concurrentLettering()};`);

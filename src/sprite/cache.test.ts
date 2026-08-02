@@ -133,10 +133,57 @@ describe("createSpriteCache", () => {
     expect(tagOf(sprites("player", -1, -1))).toBe("player/7/1@1");
   });
 
-  test("refuses a pixel ratio no display could report, rather than baking a blank sprite", () => {
+  test("refuses a scale no frame could be painted at, rather than baking a blank sprite", () => {
     const cache = createSpriteCache({ player: subject("player", 28) }, counting().bake);
-    expect(() => cache.source(0)).toThrow(/pixel ratio/);
-    expect(() => cache.source(Number.NaN)).toThrow(/pixel ratio/);
+    expect(() => cache.source(0)).toThrow(/scale/);
+    expect(() => cache.source(Number.NaN)).toThrow(/scale/);
+  });
+
+  // ADR 0008: the bake is keyed on `dpr × zoom` and not on `dpr`, so a sprite is always baked at
+  // the scale it is drawn at and blitted 1:1 — the rule #77 §5 set, with #92's zoom folded into it.
+  // The cache does not learn a second parameter for that; it learns that its one parameter is a
+  // product. Every property below is the same property it already had, asked at a zoomed scale.
+  describe("under a zoom (#92)", () => {
+    test("two ways of reaching one scale are one bake, because the pixels are identical", () => {
+      const { baked, bake } = counting();
+      const cache = createSpriteCache({ player: subject("player", 28) }, bake);
+      cache.source(2 * 1)("player", 0, 0); // dpr 2, drawn 1:1
+      cache.source(1 * 2)("player", 0, 0); // dpr 1, zoomed to 2×
+      expect(baked).toEqual(["player/0/0@2"]);
+    });
+
+    test("re-bakes when the product moves, even though the display has not", () => {
+      const { baked, bake } = counting();
+      const cache = createSpriteCache({ player: subject("player", 28) }, bake);
+      cache.source(2 * 1)("player", 0, 0);
+      cache.source(2 * 0.5)("player", 0, 0); // the same display, zoomed out
+      expect(baked).toEqual(["player/0/0@2", "player/0/0@1"]);
+    });
+
+    test("a sprite keeps its world box at every zoom, so nothing is drawn a different size", () => {
+      const cache = createSpriteCache({ elite: subject("elite", 48) }, counting().bake);
+      for (const zoom of [0.5, 0.75, 1, 1.5, 2, 3]) {
+        const drawn = cache.source(2 * zoom)("elite", 0, 0);
+        expect({ zoom, size: drawn?.size }).toEqual({ zoom, size: 48 });
+      }
+    });
+
+    test("the box is still a whole number of device pixels once the zoom is in the scale", () => {
+      // The trap `bakedPixels` exists for, reached by the zoom rather than by Windows scaling: a
+      // 15 u ore tile at dpr 2 zoomed to 0.75× is 22.5 device px, and a blit into the nominal box
+      // would land half a device pixel off its source.
+      const cache = createSpriteCache({ "ore-metal": subject("ore-metal", 15) }, counting().bake);
+      for (const [dpr, zoom, device] of [
+        [2, 0.75, 23],
+        [1, 0.5, 8],
+        [2, 3, 90],
+        [3, 0.5, 23],
+      ] as const) {
+        const scale = dpr * zoom;
+        const drawn = cache.source(scale)("ore-metal", 0, 0)?.size ?? 0;
+        expect({ dpr, zoom, device: drawn * scale }).toEqual({ dpr, zoom, device });
+      }
+    });
   });
 });
 

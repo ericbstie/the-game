@@ -46,6 +46,10 @@ export function nextMinimapCoverage(coverage: number): number {
 // 200 px plate the scale is 1:39, so a 15 u tile is 0.38 px — under a pixel, which is what makes
 // every layer here an aggregate or a fixed-size marker rather than a drawing of the world. The
 // widest level only sharpens that: 1:78, and a tile at 0.19 px.
+//
+// **CSS px, and that is now a distinction rather than a synonym** (#92). The map is a corner of the
+// screen, so it holds this size however far the camera is zoomed out; what changes with the zoom is
+// the world box it is drawn into, which is this over the zoom.
 export const MINIMAP_SIZE = 200;
 export const MINIMAP_MARGIN = 16;
 
@@ -86,20 +90,27 @@ export interface WorldRect {
 // player in a corner sees the wall instead of black; the map has no black to show, and a window
 // that slid off the player would stop answering the one question it is for — where am I, and what
 // is around me.
+//
+// `viewport` is the world the screen reaches, so the corner it is put in is the screen's corner at
+// any zoom. `zoom` is CSS px per world unit (#92): the plate and its margin are screen sizes, so
+// they are divided by it — a map that scaled with the world would be a 100 px plate at 0.5×, with
+// its 3 px dots at 1.5, and 600 px of the screen at 3×.
 export function minimapWindow(
   centre: Vec2,
   camera: Camera,
   viewport: Viewport,
   coverage: number,
+  zoom = 1,
 ): MinimapWindow {
+  const size = MINIMAP_SIZE / zoom;
   return {
-    x: camera.x + viewport.width - MINIMAP_MARGIN - MINIMAP_SIZE,
-    y: camera.y + MINIMAP_MARGIN,
-    size: MINIMAP_SIZE,
+    x: camera.x + viewport.width - MINIMAP_MARGIN / zoom - size,
+    y: camera.y + MINIMAP_MARGIN / zoom,
+    size,
     worldX: centre.x - coverage / 2,
     worldY: centre.y - coverage / 2,
     coverage,
-    scale: MINIMAP_SIZE / coverage,
+    scale: size / coverage,
   };
 }
 

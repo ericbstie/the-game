@@ -52,7 +52,23 @@ describe("parseArgs", () => {
   });
 
   test("refuses an unknown argument rather than silently ignoring it", () => {
-    expect(() => parseArgs(["--zoom", "2"])).toThrow(/--zoom/);
+    expect(() => parseArgs(["--fisheye", "2"])).toThrow(/--fisheye/);
+  });
+
+  // #92. The frame is the same number of pixels at every zoom — it is the same screen — so what a
+  // review of one is about is how much world is in it.
+  test("takes the camera's zoom, and opens at the 1:1 every older frame was drawn at", () => {
+    expect(parseArgs([]).zoom).toBe(1);
+    expect(parseArgs(["--zoom", "0.5"]).zoom).toBe(0.5);
+    expect(() => parseArgs(["--zoom", "0"])).toThrow(/--zoom/);
+    expect(() => parseArgs(["--zoom", "nope"])).toThrow(/--zoom/);
+  });
+
+  test("takes a crowd, so the worst frame the enemy cap allows can be looked at", () => {
+    expect(parseArgs([]).enemies).toBeNull(); // the scene's own handful
+    expect(parseArgs(["--enemies", "500"]).enemies).toBe(500);
+    expect(() => parseArgs(["--enemies", "0"])).toThrow(/--enemies/);
+    expect(() => parseArgs(["--enemies", "12.5"])).toThrow(/--enemies/);
   });
 });
 
@@ -62,14 +78,31 @@ describe("entrySource", () => {
     cache: "/repo/cache.ts",
     world: "/repo/world.ts",
     registry: "/repo/registry.ts",
+    camera: "/repo/camera.ts",
   };
 
   test("paints the shipped drawWorld through the transform GameScreen uses", () => {
     const source = entrySource(parseArgs(["--dpr", "3"]), modules);
     expect(source).toContain("...SPRITES"); // the registry is the base, not the command line
     expect(source).toContain('from "/repo/draw.ts"');
-    expect(source).toContain("ctx.setTransform(dpr, 0, 0, dpr, -camera.x * dpr");
+    expect(source).toContain("ctx.setTransform(scale, 0, 0, scale, -camera.x * scale");
     expect(source).toContain("const dpr = 3;");
+    expect(source).toContain("const scale = dpr * zoom;"); // #92: device pixels per world unit
+  });
+
+  test("paints the world the screen reaches at the zoom, and bakes the sprites at it", () => {
+    const source = entrySource(parseArgs(["--zoom", "0.5"]), modules);
+    expect(source).toContain("const zoom = 0.5;");
+    expect(source).toContain("worldViewport(DEMO_VIEWPORT, zoom)");
+    expect(source).toContain(".source(scale)"); // ADR 0008: keyed on dpr x zoom, not on dpr
+    expect(source).toContain("zoom,"); // and handed to drawWorld, for the snap and the corner map
+  });
+
+  test("stocks the frame with a crowd only when one was asked for", () => {
+    expect(entrySource(parseArgs([]), modules)).toContain("const world = demoWorld();");
+    expect(entrySource(parseArgs(["--enemies", "500"]), modules)).toContain(
+      "demoCrowd(demoWorld(), 500, viewport)",
+    );
   });
 
   test("wires each named sprite into a cache keyed by the name the game asks for", () => {

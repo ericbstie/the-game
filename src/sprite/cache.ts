@@ -4,27 +4,40 @@ import { bakedPixels, bakeOne, type SpriteSubject } from "./sheet";
 // The draw-time side of the sprite pipeline: baked offscreen canvases the render loop blits
 // instead of drawing shapes.
 //
-// The one rule that shapes all of it comes from #77 §5. `GameScreen` paints through
-// `setTransform(dpr, …)`, so a sprite baked at its logical size is *upscaled* on a HiDPI display
-// and reads as a smudge — at 28 px, 70% of a contour comes out grey. Sprites are therefore baked
-// at `size × dpr` and blitted into a box exactly that many device pixels wide, which is one device
+// The one rule that shapes all of it comes from #77 §5. `GameScreen` paints through a scaled
+// transform, so a sprite baked at its logical size is *upscaled* on a HiDPI display and reads as a
+// smudge — at 28 px, 70% of a contour comes out grey. Sprites are therefore baked at the scale they
+// are drawn at and blitted into a box exactly that many device pixels wide, which is one device
 // pixel per baked pixel and so nothing to resample (see `BakedSprite.size`, which is what carries
 // that box and is not always the nominal one).
-// That makes the device pixel ratio part of a bake's identity: when it changes, every bake in
-// hand is the wrong resolution, so the cache empties itself rather than keeping a second copy of
-// the whole sprite set for a display the player is no longer looking at.
+//
+// **That scale is `dpr × zoom`, not `dpr`** (ADR 0008). #77 §5 wrote the rule when the two were the
+// same number; #92's camera zoom separated them, and the ADR measured the alternatives — baking at
+// the top of the range, baking at reference scales, accepting soft ink — and found that only a bake
+// at the size it is drawn at is right, at every zoom, by construction rather than by tuning. It is
+// also the cheapest: a 1:1 blit is 3.9 µs against 7–8 µs resampled, and residency is a quarter of
+// today's at 0.5× where baking at the top pays nine times it always.
+//
+// That scale is therefore a bake's identity: when it moves — a window dragged to a display of a
+// different density, or a player turning the wheel — every bake in hand is the wrong resolution, so
+// the cache empties itself rather than keeping a second copy of the whole sprite set for a scale
+// nobody is looking at. What stops a zoom gesture paying that bill every frame is not here: the
+// caller holds the settled scale and asks for the new one once the hand stops (`zoom.ts`).
 //
 // Baking is lazy, per sprite. Nothing is baked until something asks to draw it, so a match that
 // never spawns an elite never pays for one, and the fifteen sprite modules can land one at a time
 // without the first frame growing to meet them.
 
-// What the render loop needs to put a sprite on screen: the baked image, and the box in CSS px to
-// blit it into.
+// What the render loop needs to put a sprite on screen: the baked image, and the box in world units
+// to blit it into. World units, because `drawWorld` paints in them and the zoom that turns one into
+// CSS pixels is the transform's business, not this box's — a 28-unit player is 28 units wide at
+// every scale, and what changes with the zoom is how many device pixels the bake behind it holds.
 //
-// `size` is **not** always the subject's nominal box. It is `bakedPixels(size, dpr) / dpr` — the
-// CSS width that comes out to exactly the bake's device-pixel width, so the blit is 1:1 and there
-// is nothing to resample. Those agree whenever `size × dpr` is a whole number, which is every
-// character at every ratio, but not a 15 px ore tile at 1.25× or 1.5× (Windows display scaling),
+// `size` is **not** always the subject's nominal box. It is `bakedPixels(size, scale) / scale` —
+// the world width that comes out to exactly the bake's device-pixel width, so the blit is 1:1 and
+// there is nothing to resample. Those agree whenever `size × scale` is a whole number, which is
+// every character at every ratio drawn 1:1, but not a 15 px ore tile at 1.25× or 1.5× (Windows
+// display scaling) and not one at any of the zooms in between #92's stops,
 // where the nominal box would land the destination half a device pixel off its source and turn
 // every edge grey. A sprite can therefore draw up to half a device pixel larger than its nominal
 // box; that is the cheaper of the two errors, and it is invisible. The flash variant is wider again
@@ -54,23 +67,24 @@ export type SpriteSource = (
 ) => BakedSprite | null;
 
 export interface SpriteCache {
-  // The sprites as they should be drawn at this device pixel ratio. Called once a frame; a ratio
-  // that has not moved is free.
-  source(dpr: number): SpriteSource;
+  // The sprites as they should be drawn at this scale — device pixels per world unit, which is the
+  // device pixel ratio times the camera's zoom. Called once a frame; a scale that has not moved is
+  // free.
+  source(scale: number): SpriteSource;
 }
 
 type Bake = (
   subject: SpriteSubject,
-  dpr: number,
+  scale: number,
   facing: number,
   frame: number,
 ) => CanvasImageSource;
 
 type Derive = (ink: CanvasImageSource, pixels: number, rim: number) => CanvasImageSource;
 
-// How much ink the hit flash leaves standing around a spider's silhouette, in logical px — so the
+// How much ink the hit flash leaves standing around a spider's silhouette, in world units — so the
 // outline is the same weight on a retina display as on a laptop, exactly as `SHOT_WIDTH` and the
-// health bar are.
+// health bar are, and the same weight against the spider at every zoom.
 //
 // **One px is a ceiling, not a taste.** A rim is ink laid along the whole perimeter, and a grunt is
 // almost entirely leg at 1.3–1.7 px wide, so past about a px the ink a rim adds outruns the ink the
@@ -94,7 +108,7 @@ export function createSpriteCache(
   derive: Derive = bakeHitFlash,
 ): SpriteCache {
   let baked = new Map<string, CanvasImageSource>();
-  let bakedDpr = 0;
+  let bakedScale = 0;
 
   const held = (key: string, make: () => CanvasImageSource): CanvasImageSource => {
     let image = baked.get(key);
@@ -110,30 +124,30 @@ export function createSpriteCache(
     if (!subject) return null;
     const f = wrap(facing, subject.facings);
     const n = wrap(frame, subject.frames);
-    const pixels = bakedPixels(subject.size, bakedDpr);
-    const ink = held(`${name}/${f}/${n}`, () => bake(subject, bakedDpr, f, n));
-    if (variant === "ink") return { image: ink, size: pixels / bakedDpr };
+    const pixels = bakedPixels(subject.size, bakedScale);
+    const ink = held(`${name}/${f}/${n}`, () => bake(subject, bakedScale, f, n));
+    if (variant === "ink") return { image: ink, size: pixels / bakedScale };
     // Lazy per variant here too, and that is what makes the flash affordable: only the facings a
     // spider is actually hit in are ever derived, and a wave that never lands a hit on a
     // north-facing elite never pays for one.
     //
     // Floored at a whole device pixel: a rim of a fraction of one comes out grey rather than thin,
     // which is the same trap `bakedPixels` exists to keep a bake out of at Windows' 1.25× scaling.
-    const rim = Math.max(1, Math.round(HIT_FLASH_RIM * bakedDpr));
+    const rim = Math.max(1, Math.round(HIT_FLASH_RIM * bakedScale));
     return {
       image: held(`${name}/${f}/${n}/flash`, () => derive(ink, pixels, rim)),
-      size: (pixels + 2 * rim) / bakedDpr,
+      size: (pixels + 2 * rim) / bakedScale,
     };
   };
 
   return {
-    source(dpr) {
-      if (!Number.isFinite(dpr) || dpr <= 0) {
-        throw new Error(`device pixel ratio must be a positive number, got ${dpr}`);
+    source(scale) {
+      if (!Number.isFinite(scale) || scale <= 0) {
+        throw new Error(`bake scale must be a positive number, got ${scale}`);
       }
-      if (dpr !== bakedDpr) {
+      if (scale !== bakedScale) {
         baked = new Map();
-        bakedDpr = dpr;
+        bakedScale = scale;
       }
       return source;
     },
