@@ -11,6 +11,7 @@ import {
   BUILD_CADENCE_MS,
   BUILD_SLOTS,
   BUILDABLES,
+  BULLET_COST,
   FORGE_MS,
   type HarvestTarget,
   INTERACT_REACH,
@@ -38,6 +39,15 @@ import {
   NO_MOVE,
 } from "./input";
 import { MINIMAP_COVERAGE_U, nextMinimapCoverage } from "./minimap";
+import {
+  freshTutorial,
+  loadLessons,
+  observe,
+  saveLessons,
+  stepTutorial,
+  type TutorialEvent,
+  type TutorialView,
+} from "./tutorial";
 import { PLAYER_MAX_HP } from "./world";
 
 const POS_SEND_MS = 50; // ~20 Hz position stream, independent of the render frame rate
@@ -55,8 +65,19 @@ export const REFUSAL_MS = 80;
 const BUILD_ICON_PX = 26; // the buildable's own sprite, shrunk to fit a slot
 const AMMO_ICON_PX = 26; // the ammo box's icon, sized as a build slot's so the two squares agree
 const GUN_ICON_PX = 26; // and the gun's, so every icon plate on the HUD is one square
+// The tutorial's mark over the ammo box. Wider than the box's own 3.5rem, so it rings the button
+// rather than the icon inside it — the same relation the canvas mark has to the ore tile it circles.
+const AMMO_MARK_PX = 64;
 const ammoIcon = SPRITES.ammo;
 const gunIcon = SPRITES.gun;
+// **The one call the highlight sprite drops into on this host** (#134, ADR 0002). One mark, two
+// hosts: the canvas blits the same subject over an ore tile (`draw.ts`), and until the module lands
+// both fall back to a plain ring so the tutorial is legible from the day it ships.
+const highlightIcon = SPRITES.highlight;
+// What the tutorial has to say on the two screen-fixed surfaces — the HUD's ammo box, and a line
+// over the arena. Nothing here gates an input: they are words beside a button and words on a
+// screen, and the match runs on underneath them.
+const NO_PROMPTS = { ammo: null as string | null, banner: null as string | null };
 // What a slot is called on screen (#98) — the author's wording, one word each. `mine` is the label
 // for a `miner`: a display string, so the domain type keeps the name the whole build path uses.
 const BUILD_NAMES: Record<BuildableKind, string> = {
@@ -171,6 +192,23 @@ export function GameScreen({
   // How much world the corner map is showing (#110). A ref and not state: it is read by the frame
   // that draws it and by nothing else, so a re-render per press would buy the HUD nothing.
   const minimapCoverageRef = useRef(MINIMAP_COVERAGE_U);
+  // The mini-tutorial (#134), and what it currently has on screen. Client-local and per player:
+  // nothing about it rides the wire, and every event it is fed is something *this* client did.
+  // Seeded from the browser's own record, so a player who has already been taught a lesson is not
+  // taught it again — and from nothing at all where that record cannot be read, which shows the
+  // tutorial rather than suppressing it.
+  const tutorialRef = useRef(freshTutorial(loadLessons()));
+  const promptsRef = useRef<TutorialView>({
+    ore: null,
+    cursor: null,
+    turret: null,
+    ...NO_PROMPTS,
+  });
+  // Whether the pointer is over the arena at all. The hover tooltips are the only thing that asks:
+  // every other consumer of `pointerRef` — the aim, the ghost, the mine — wants the last position
+  // whether or not the cursor has since wandered onto the HUD, and a tooltip left standing over the
+  // arena while the cursor is on the ammo box is a tooltip about nothing.
+  const overArenaRef = useRef(false);
   const [selected, setSelected] = useState<BuildableKind | null>(null);
   const selectedRef = useRef(selected); // the render loop and the click handler read it un-stale
   // Whether the gun is up (#120). React state because the HUD's icon is drawn from it, and a ref
@@ -188,6 +226,7 @@ export function GameScreen({
   const [costs, setCosts] = useState(() => slotCosts(state.world)); // the build bar's cost circles
   const [ammo, setAmmo] = useState({ bullets: 0, queued: 0, forgeAt: null as number | null }); // #102
   const [underAttack, setUnderAttack] = useState(false); // drives the HUD's warning bell
+  const [prompts, setPrompts] = useState(NO_PROMPTS); // the tutorial's two screen-fixed words (#134)
   // When the last acknowledged dry pull was, or 0 before there has been one (#150). A timestamp
   // rather than a tally so `REFUSAL_MS` can be applied in the updater itself: a pull inside the floor
   // returns the value already held, and React bails out of the re-render — the same way every other
@@ -216,6 +255,16 @@ export function GameScreen({
   selectedRef.current = selected;
   equippedRef.current = equipped;
   menuOpenRef.current = menuOpen;
+
+  // Tell the tutorial what this player just did, and write it down if that landed a lesson (#134).
+  // Every call site is a thing *this* client does — a harvest it completed, a bullet it ordered, a
+  // building it placed, a key it pressed, a shot it took — which is the whole of what makes the
+  // tutorial per-player: a teammate has no route in, because nothing arriving off the wire is fed
+  // here at all. Persisted only on the events that teach something, so the hand mining a Metal a
+  // second stops writing the moment there is nothing left to learn from it.
+  const teach = useCallback((event: TutorialEvent) => {
+    if (observe(tutorialRef.current, event)) saveLessons(tutorialRef.current);
+  }, []);
 
   // Keyboard → held MoveInput, plus the build bar's 1–4, the menu's Escape and the map's zoom.
   // Nothing is sent per key.
@@ -255,6 +304,7 @@ export function GameScreen({
         if (!e.repeat) {
           equippedRef.current = !equippedRef.current;
           setEquipped(equippedRef.current);
+          teach({ did: "equip" }); // the keypress prompt 6 waits for (#134)
         }
         return;
       }
@@ -281,7 +331,7 @@ export function GameScreen({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, []);
+  }, [teach]);
 
   // The menu is a real modal — `showModal` is what puts it in the top layer and makes the match
   // behind it inert to the pointer — over a match that is still running. Nothing pauses: the
@@ -317,46 +367,53 @@ export function GameScreen({
   // off the world stream, so #85 is closed by where shots come from rather than by these agreeing
   // with the server's rules. What they still do is keep the socket from carrying reports the hub
   // would only throw away, and keep a held trigger from pacing itself into refusals.
-  const fireIfDue = useCallback((now: number) => {
-    const world = worldRef.current;
-    if (!world) return;
-    // Dying drops the trigger rather than merely refusing to pull it. The cadence gate is measured
-    // against the last real shot, and `RESPAWN_DELAY_MS` is forty times it, so a button still held
-    // while waiting — the natural thing to do — would satisfy the gate the instant you stood up and
-    // send a shot nobody asked for. Coming back up takes a fresh press, as it did when firing was a
-    // discrete click.
-    //
-    // This is the only thing that drops the left hold on a death, so it drops it only while the gun
-    // is up. A stowed hold stays armed and is merely refused — `liveHarvest` answers null for a corpse
-    // — and that is observable, not theoretical: `reviveSelf` respawns at arena centre
-    // (clientWorld.ts:244) and `BOOTSTRAP_PATCHES` seeds metal patches there (build.ts:110), well
-    // inside `INTERACT_REACH`, so a button held through a death can be mining again the moment you
-    // stand up. Kept because it is what mining did on its old button, not because it is invisible.
-    if (world.isDead()) {
-      leftHeldRef.current = false;
-      return;
-    }
-    // A selected buildable makes left-click a placement (#104). Read before the cadence, so holding
-    // over the build bar never spends it and costs the first shot after the bar is cleared.
-    if (selectedRef.current) return;
-    // A shot spends a bullet from the squad's pool, and the server refuses one it cannot pay for
-    // (#102). Read before the cadence for the same reason the build bar is: an empty pool must not
-    // cost the first shot after a bullet lands. The mirror is at worst one tick behind the pool it
-    // is gating on, so two players racing for the last bullet can both still send — and only one of
-    // them gets a projectile back.
-    if (world.ammo() <= 0) {
-      // The pull is refused, and the box says so (#150). Nothing else here does: the shot is the
-      // server's to fly since #80, so a refusal that returns quietly is a click with no trace on
-      // screen at all beyond the `0` that was already sitting there.
-      setRefusedAt((last) => (now - last < REFUSAL_MS ? last : now));
-      return;
-    }
-    if (now - lastAttackRef.current < RANGED_CADENCE_MS) return;
-    lastAttackRef.current = now;
-    const { camera, self } = aimRef.current;
-    const dir = aimDir(pointerRef.current, self, camera);
-    onAttackRef.current({ ...self }, dir);
-  }, []);
+  const fireIfDue = useCallback(
+    (now: number) => {
+      const world = worldRef.current;
+      if (!world) return;
+      // Dying drops the trigger rather than merely refusing to pull it. The cadence gate is measured
+      // against the last real shot, and `RESPAWN_DELAY_MS` is forty times it, so a button still held
+      // while waiting — the natural thing to do — would satisfy the gate the instant you stood up and
+      // send a shot nobody asked for. Coming back up takes a fresh press, as it did when firing was a
+      // discrete click.
+      //
+      // This is the only thing that drops the left hold on a death, so it drops it only while the gun
+      // is up. A stowed hold stays armed and is merely refused — `liveHarvest` answers null for a corpse
+      // — and that is observable, not theoretical: `reviveSelf` respawns at arena centre
+      // (clientWorld.ts:244) and `BOOTSTRAP_PATCHES` seeds metal patches there (build.ts:110), well
+      // inside `INTERACT_REACH`, so a button held through a death can be mining again the moment you
+      // stand up. Kept because it is what mining did on its old button, not because it is invisible.
+      if (world.isDead()) {
+        leftHeldRef.current = false;
+        return;
+      }
+      // A selected buildable makes left-click a placement (#104). Read before the cadence, so holding
+      // over the build bar never spends it and costs the first shot after the bar is cleared.
+      if (selectedRef.current) return;
+      // A shot spends a bullet from the squad's pool, and the server refuses one it cannot pay for
+      // (#102). Read before the cadence for the same reason the build bar is: an empty pool must not
+      // cost the first shot after a bullet lands. The mirror is at worst one tick behind the pool it
+      // is gating on, so two players racing for the last bullet can both still send — and only one of
+      // them gets a projectile back.
+      if (world.ammo() <= 0) {
+        // The pull is refused, and the box says so (#150). Nothing else here does: the shot is the
+        // server's to fly since #80, so a refusal that returns quietly is a click with no trace on
+        // screen at all beyond the `0` that was already sitting there.
+        setRefusedAt((last) => (now - last < REFUSAL_MS ? last : now));
+        return;
+      }
+      if (now - lastAttackRef.current < RANGED_CADENCE_MS) return;
+      lastAttackRef.current = now;
+      const { camera, self } = aimRef.current;
+      const dir = aimDir(pointerRef.current, self, camera);
+      onAttackRef.current({ ...self }, dir);
+      // Prompt 6's second half is taught by the pull, not by the bullet that comes back (#134). The
+      // report has gone; whether the server flies a projectile from it is its business, and a lesson
+      // that waited on the round trip would be owed on a shot the player has plainly already fired.
+      teach({ did: "shoot" });
+    },
+    [teach],
+  );
 
   // One placement out of the drag's queue, or none. The press and the held frames both come through
   // here, so a run is paced in exactly one place — `BUILD_CADENCE_MS` is `admitBuild`'s own floor,
@@ -364,36 +421,46 @@ export function GameScreen({
   //
   // The queue is what makes a fast drag whole: the pointer crosses tiles far quicker than ten a
   // second, so they wait here rather than being lost to the sample that overtook them.
-  const placeIfDue = useCallback((now: number) => {
-    const drag = dragRef.current;
-    const world = worldRef.current;
-    if (!drag || !world) return;
-    // The build bar taken mid-drag ends the gesture rather than switching what it lays. Every tile
-    // still queued was crossed while the old kind was up, and the new one was never asked for there.
-    if (selectedRef.current !== drag.kind) {
-      dragRef.current = null;
-      return;
-    }
-    if (now - drag.lastAt < BUILD_CADENCE_MS) return;
-    while (drag.next < drag.pending.length) {
-      const tile = drag.pending[drag.next++];
-      // The same rule the ghost paints and the server admits on, read off the mirrored bank — so a
-      // turret's price climbing under its own run (#101) is felt here as the run is laid.
-      const refusal = placementError(drag.kind, tile, world.ore, world.build, aimRef.current.self);
-      // Cost is the one refusal that ends the gesture instead of being stepped over. Anything else
-      // is a tile the run passes through, and stepping over it spends no cadence — a wall's 2×2
-      // footprint blocks the tile after every one it lays, and paying a cadence for each of those
-      // would halve the speed of every straight drag.
-      if (refusal === "unaffordable") {
+  const placeIfDue = useCallback(
+    (now: number) => {
+      const drag = dragRef.current;
+      const world = worldRef.current;
+      if (!drag || !world) return;
+      // The build bar taken mid-drag ends the gesture rather than switching what it lays. Every tile
+      // still queued was crossed while the old kind was up, and the new one was never asked for there.
+      if (selectedRef.current !== drag.kind) {
         dragRef.current = null;
         return;
       }
-      if (refusal !== null) continue;
-      drag.lastAt = now;
-      onBuildRef.current(drag.kind, tile);
-      return;
-    }
-  }, []);
+      if (now - drag.lastAt < BUILD_CADENCE_MS) return;
+      while (drag.next < drag.pending.length) {
+        const tile = drag.pending[drag.next++];
+        // The same rule the ghost paints and the server admits on, read off the mirrored bank — so a
+        // turret's price climbing under its own run (#101) is felt here as the run is laid.
+        const refusal = placementError(
+          drag.kind,
+          tile,
+          world.ore,
+          world.build,
+          aimRef.current.self,
+        );
+        // Cost is the one refusal that ends the gesture instead of being stepped over. Anything else
+        // is a tile the run passes through, and stepping over it spends no cadence — a wall's 2×2
+        // footprint blocks the tile after every one it lays, and paying a cadence for each of those
+        // would halve the speed of every straight drag.
+        if (refusal === "unaffordable") {
+          dragRef.current = null;
+          return;
+        }
+        if (refusal !== null) continue;
+        drag.lastAt = now;
+        onBuildRef.current(drag.kind, tile);
+        teach({ did: "build", kind: drag.kind, tile });
+        return;
+      }
+    },
+    [teach],
+  );
 
   // Track the CSS viewport size and size the backing store to device pixels (crisp HiDPI).
   // ResizeObserver reports content-box changes without a per-frame layout read; the loop
@@ -462,6 +529,30 @@ export function GameScreen({
         // one drawing. A frame that never gets as far as drawing floats nothing — the same terms a
         // miner's number is dropped on when nobody is looking.
         const mined = harvested?.kind === "mine" ? harvested.tile : null;
+        // And the fourth: the tutorial counts this player's own hand-mining off the same event
+        // (#134). Client-local by construction — the crossing fires on the client whose hand took
+        // the tile to nothing — which is exactly what "the player themselves, not a teammate" asks
+        // for, with no wire field and no server attribution.
+        if (mined) teach({ did: "mine" });
+        // What the tutorial has on screen this frame. Outside the draw with the harvest above it,
+        // because the two prompts on the HUD are owed whether or not a frame paints — and because
+        // the marks it hands `drawWorld` are read off the same camera `liveHarvest` resolves the
+        // cursor against, so a tooltip can never name a tile the button would not act on.
+        promptsRef.current = stepTutorial(tutorialRef.current, {
+          metal: world.metal(),
+          enemies: world.enemyCount(),
+          ore: world.ore,
+          build: world.build,
+          self: world.selfPos(),
+          camera: aimRef.current.camera,
+          viewport: { width: viewRef.current.w, height: viewRef.current.h },
+          cursor: overArenaRef.current
+            ? {
+                x: pointerRef.current.x + aimRef.current.camera.x,
+                y: pointerRef.current.y + aimRef.current.camera.y,
+              }
+            : null,
+        });
         // Held left-click is one of three things and never two of them at once: a run of buildables
         // when the bar has one selected (#104), a shot with the gun up (#103), a mine with it stowed
         // (#120) — that last one already spent, above, out of the same frame the other two are
@@ -543,6 +634,10 @@ export function GameScreen({
             // takes its spider off this very snapshot, so the puff has nothing to wait for (#116).
             puffs: world.deathMarks(clock, PUFF_MS),
             sprites: spriteCache.source(dpr),
+            // The tutorial's world-anchored half, straight off the step above (#134). The other
+            // two prompts travel no further than this component: they are screen-fixed chrome, and
+            // the HUD is where chrome lives.
+            tutorial: promptsRef.current,
           });
         }
       }
@@ -550,7 +645,7 @@ export function GameScreen({
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, [fireIfDue, placeIfDue]);
+  }, [fireIfDue, placeIfDue, teach]);
 
   useEffect(() => {
     let lastHp = PLAYER_MAX_HP;
@@ -604,6 +699,14 @@ export function GameScreen({
           ? shown
           : next;
       });
+      // The tutorial's two screen-fixed prompts (#134), mirrored on the HUD's own timer rather than
+      // set from the render loop: a string that has not changed returns the same object and React
+      // bails out, exactly as the power and ammo readouts above do, so a prompt standing for a
+      // minute costs the HUD one render rather than sixty a second.
+      setPrompts((shown) => {
+        const { ammo, banner } = promptsRef.current;
+        return shown.ammo === ammo && shown.banner === banner ? shown : { ammo, banner };
+      });
       // A downed player stops streaming position — peers hold its last pos as a corpse.
       if (!world.isDead()) {
         const pos = world.selfPos();
@@ -641,6 +744,7 @@ export function GameScreen({
   const trackPointer = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     pointerRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    overArenaRef.current = true; // the hover tooltips' only condition (#134)
     const drag = dragRef.current;
     if (!drag) return;
     // Every tile between this sample and the last, never only the one under the cursor: a pointer
@@ -651,8 +755,11 @@ export function GameScreen({
     for (const crossed of tilesBetween(drag.at, tile)) drag.pending.push(crossed);
     drag.at = tile;
   };
-  const endDrag = () => {
+  // The cursor has left the arena: the run it was laying goes, and so does whatever a hover tooltip
+  // was saying about the tile it was last over.
+  const leaveArena = () => {
     dragRef.current = null;
+    overArenaRef.current = false;
   };
   const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     trackPointer(e);
@@ -721,7 +828,7 @@ export function GameScreen({
         tabIndex={-1}
         onMouseMove={trackPointer}
         onMouseDown={onMouseDown}
-        onMouseLeave={endDrag}
+        onMouseLeave={leaveArena}
         onContextMenu={(e) => e.preventDefault()}
       />
       {/* Escape's menu (#100). Leave is the whole of it — ADR 0001 grants nothing else a place
@@ -774,7 +881,16 @@ export function GameScreen({
             type="button"
             className="ammo"
             aria-label="Forge a bullet"
-            onClick={onForge}
+            onClick={() => {
+              onForge();
+              // Only a click the squad can pay for teaches anything (#134). `enqueueForge` is a
+              // silent no-op below `BULLET_COST` (build.ts:429) — no bullet, no broadcast, nothing
+              // to see — so an unaffordable click that wrote the lesson down would suppress prompt
+              // 2 on this browser for good, before the bank had ever reached the figure the prompt
+              // is about. Read off the mirrored bank, which is the predicate the server admits the
+              // order on, exactly as prompt 5's placement reads `placementError`.
+              if ((worldRef.current?.metal() ?? 0) >= BULLET_COST) teach({ did: "forge" });
+            }}
             // Enter activates a button on *keydown*, so the OS's key repeat fires a click per
             // repeat — a held Enter ordered eight bullets in one press in a real browser. That is
             // the hold-to-repeat `game/forge` has no cadence and no `seq` to survive (#102), so it
@@ -811,8 +927,30 @@ export function GameScreen({
               {power.consumption}/{power.generation}
             </strong>
           </span>
+          {/* Prompt 2 (#134): the same ink mark the canvas puts on an ore tile, laid over the ammo
+              box, with the words beside it. It takes no pointer events and covers no part of the
+              button — the whole of the prompt is to say "click that", so anything that made it
+              harder to click would be working against itself. */}
+          {prompts.ammo && (
+            <span className="tutorial-ammo" role="status">
+              {highlightIcon ? (
+                <SpriteIcon subject={highlightIcon} px={AMMO_MARK_PX} className="tutorial-mark" />
+              ) : (
+                <span className="tutorial-mark tutorial-ring" />
+              )}
+              <span className="tutorial-words">{prompts.ammo}</span>
+            </span>
+          )}
         </div>
       </div>
+      {/* Prompt 6 (#134), which is the one prompt with nothing in the world to hang off: it is
+          about a key and then about a button, so it is a line on the screen. Nothing behind it is
+          made inert and nothing about it is timed — it is up until the thing it names is done. */}
+      {prompts.banner && (
+        <p className="tutorial-banner" role="status">
+          {prompts.banner}
+        </p>
+      )}
       {/* A slot is its buildable's sprite, its Metal cost in a circle on the top-left corner, and
           its one-word name underneath (#98). The words and the numerals are an ADR 0001 exception,
           asked for explicitly and recorded in the allowlist — the number keys stay gone. */}

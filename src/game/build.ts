@@ -312,6 +312,18 @@ export function resolveHarvest(tile: Tile, ore: OreGrid, build: BuildState | nul
   return oreAt(ore, tile) === "metal" ? { kind: "mine", tile } : null;
 }
 
+// What ore a tile *is*, as far as anything looking at it can tell — both kinds, and nothing at all
+// where a building covers the ground (#134).
+//
+// The same question `resolveHarvest` answers, asked the other way round. That one says what a
+// *button* would do, so power ore is nothing to it: there is no hand-mine path for Energy. A hover
+// has to name the tile whether or not a button could act on it, and it has to stay silent about ore
+// buried under a miner for the same reason the resolver gives that tile to the demolish button.
+export function oreUnder(tile: Tile, ore: OreGrid, build: BuildState | null): OreKind | null {
+  if (build?.occupancy.has(tileKey(tile))) return null;
+  return oreAt(ore, tile);
+}
+
 // --- The buildables ----------------------------------------------------------------------
 // One table drives the whole build path: the bar, the ghost's validity test, and server-side
 // admission all read it, so a new buildable is an entry here plus its own behaviour — never a

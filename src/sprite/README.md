@@ -178,6 +178,7 @@ the collision it stands for cannot drift apart. They are in code as `SPRITE_BOX`
 | `halo` | the self marker. Drawn **behind** your avatar and centred on its body, so make it wider than the player's 28 or it will not show | your call | 1 | your call | yes |
 | `lettering` | in-world: the hand-lettered sound effect struck where a shot connects and where an enemy dies. The facing is **which word** — one variant per entry in that module's own `WORDS`, and `drawWorld` hands the cache an unwrapped index so the set's size never leaves the module | 36 | one per word | 1 | yes |
 | `unpowered` | the hollow lightning over a turret holding a target it has no power to fire on | your call | 1 | **2+ — it flashes**, one frame per 400 ms | yes |
+| `highlight` | the tutorial's ink mark (#134): **a ring or arrow in the era's style**, laid over the one thing the game is pointing at. It hangs off the **centre** of its box, like `halo` and `unpowered`. **One mark, two hosts** — `drawWorld` blits it over a 15 u ore tile in the world and `SpriteIcon` draws it into a 64 px box over the HUD's 56 px ammo button — so it has to read at both, and it must be a *ring round* a thing rather than a thing itself | your call | 1 | your call | yes — a plain stroked circle stands in until it lands |
 | `grass` | the tufts scattered on the white floor | your call | variants | 1 | **not yet — see below** |
 | `warning` | HUD: a structure is under attack | your call | 1 | 2+ (flashes) | **not yet — see below** |
 

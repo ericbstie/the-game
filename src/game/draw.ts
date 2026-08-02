@@ -35,6 +35,7 @@ import {
   project,
   projectRect,
 } from "./minimap";
+import type { Say, TutorialMarks } from "./tutorial";
 import { clamp, PLAYER_MAX_HP } from "./world";
 
 // Pure canvas rendering: turn a WorldSnapshot into 2D draw calls in WORLD coordinates. The
@@ -157,6 +158,11 @@ export interface DrawOptions {
   // the reason a burst's lifetime is: the instant it is measured from is `ClientWorld`'s, and this
   // layer has never seen it.
   damageFlash?: number;
+  // The mini-tutorial's world-anchored prompts (#134) — `stepTutorial`'s own answer, handed over
+  // whole. Only the three that are *about* something standing in the world reach here; the ammo
+  // box's prompt and the gun's banner are screen-fixed chrome and stay in the HUD. Absent, none of
+  // it is drawn, which is every frame after a player has been through it once.
+  tutorial?: TutorialMarks;
 }
 
 // One thing standing on the floor, waiting for its turn to paint. `y` is its floor line — the
@@ -501,6 +507,14 @@ export function drawWorld(
   // included.
   for (const paint of overhead) paint();
 
+  // And the tutorial over even those (#134). A prompt is up only while a lesson is still owed, and
+  // while it is, it is the thing on screen the player most needs to be able to read — a sentence
+  // half behind a spider teaches nothing. It marks and annotates rather than standing on the floor,
+  // so it is over the sort for the reason the `+1` and the edge arrow are; being last of the world's
+  // marks is its own, and is what puts it clear of a bloodling's decal, a projectile crossing the
+  // sentence and a squadmate's name alike.
+  drawTutorial(ctx, options, blitOver);
+
   // The ghost paints last so it reads on top of whatever it would replace, and it paints as the
   // building itself — the same sprite, at the same tile — because #81 spends opacity on validity
   // and leaves nothing to spend on a second silhouette.
@@ -818,6 +832,159 @@ function drawFloats(
     ctx.fillText(FLOAT_TEXT, float.pos.x, y);
   }
   ctx.globalAlpha = 1;
+}
+
+// --- The mini-tutorial's marks (#134) --------------------------------------------------------
+// Three of the six prompts are about a thing standing in the world — an ore tile, whatever the
+// cursor is over, the turret the player just put up — so they move with the camera and are drawn
+// here. Nothing about them is timed and nothing about them gates an input: a prompt is words and a
+// mark, and the state that decides whether it is up at all lives in `tutorial.ts`.
+//
+// The words are the house style and nothing new: `WORLD_FONT`, stroked in paper and filled in ink,
+// exactly as a player's name and a miner's `+1` are, and for the same reason — the floor is white
+// and the sprites are solid ink, so unoutlined black over a spider is invisible.
+
+// How far above the thing it is about a prompt's last line sits, and how far apart its lines are.
+// Layout numbers rather than balance ones, and **provisional**: the ask fixes neither.
+const SAY_GAP = 10;
+const SAY_LINE = 15;
+// How wide a sentence runs before it wraps, in world units. Prompt 5 is the only one long enough to
+// reach it: at this width it breaks into three lines standing over a 30 u turret, where unwrapped it
+// would be one line two thirds of the screen across and off the edge of it wherever the turret is
+// not in the middle. **Provisional.**
+const SAY_WRAP = 240;
+// An inline icon's box. Between the font's cap height and the build bar's own 26 px slot — small
+// enough to sit inside a line of 12 px words, large enough that a 75 u generator scaled into it is
+// still recognisably the generator. **Provisional.**
+const SAY_ICON = 18;
+
+// One piece of a laid-out line: a run of words, or an icon standing between two of them. Runs are
+// merged as they are collected, so a sentence costs the frame a stroke and a fill per *line* rather
+// than per word.
+type SayPiece = { text: string; width: number } | { sprite: BakedSprite; width: number };
+
+interface SayLine {
+  pieces: SayPiece[];
+  width: number;
+}
+
+// Break a sentence into lines that fit `maxWidth`, resolving each inline icon as it goes. An icon
+// whose art has not landed is dropped rather than stood in for: the two in prompt 5 sit *beside* the
+// nouns they picture — "a ⟨generator icon⟩ generator" — so the sentence reads as written without
+// them, which is the same fallback discipline every entity in this file keeps.
+function laySay(
+  ctx: CanvasRenderingContext2D,
+  sprites: SpriteSource | undefined,
+  words: readonly Say[],
+  maxWidth: number,
+): SayLine[] {
+  const space = ctx.measureText(" ").width;
+  const lines: SayLine[] = [];
+  let line: SayLine = { pieces: [], width: 0 };
+  const wrap = (): void => {
+    if (line.pieces.length > 0) lines.push(line);
+    line = { pieces: [], width: 0 };
+  };
+  const add = (piece: SayPiece): void => {
+    if (line.pieces.length > 0 && line.width + space + piece.width > maxWidth) wrap();
+    const gap = line.pieces.length > 0 ? space : 0;
+    const last = line.pieces[line.pieces.length - 1];
+    if (last && "text" in last && "text" in piece) {
+      last.text += ` ${piece.text}`;
+      last.width += gap + piece.width;
+    } else line.pieces.push(piece);
+    line.width += gap + piece.width;
+  };
+  for (const span of words) {
+    if (typeof span === "string") {
+      for (const word of span.split(" ")) {
+        if (word) add({ text: word, width: ctx.measureText(word).width });
+      }
+    } else {
+      const sprite = sprites?.(span.icon, 0, 0);
+      if (sprite) add({ sprite, width: SAY_ICON });
+    }
+  }
+  wrap();
+  return lines;
+}
+
+// Write a laid-out sentence with its last line `baselineY` and the rest stacked above it, centred on
+// `centreX`. Anchored from the bottom because every prompt hangs *over* the thing it is about, so
+// the line nearest that thing is the one whose position is fixed.
+function saySay(
+  ctx: CanvasRenderingContext2D,
+  lines: readonly SayLine[],
+  centreX: number,
+  baselineY: number,
+): void {
+  const space = ctx.measureText(" ").width;
+  ctx.textAlign = "left"; // a line is laid piece by piece, so it is centred by arithmetic
+  ctx.lineWidth = 3;
+  ctx.lineJoin = "round";
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const y = baselineY - (lines.length - 1 - i) * SAY_LINE;
+    let x = centreX - line.width / 2;
+    for (const piece of line.pieces) {
+      if ("text" in piece) {
+        ctx.strokeStyle = PAPER;
+        ctx.strokeText(piece.text, x, y);
+        ctx.fillStyle = INK;
+        ctx.fillText(piece.text, x, y);
+      } else {
+        // Smoothing back on for these blits alone. An inline icon is the one thing in the frame
+        // drawn at a size other than the one it was baked at, and the nearest-neighbour resampling
+        // `imageSmoothingEnabled = false` buys everything else would shatter a 150 device-px
+        // generator squeezed into 18. Restored immediately, so the rule the rest of the frame is
+        // drawn under is never left off.
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(piece.sprite.image, x, y - SAY_ICON, SAY_ICON, SAY_ICON);
+        ctx.imageSmoothingEnabled = false;
+      }
+      x += piece.width + space;
+    }
+  }
+}
+
+function drawTutorial(
+  ctx: CanvasRenderingContext2D,
+  { tutorial, sprites }: DrawOptions,
+  blitOver: Blit,
+): void {
+  if (!tutorial) return;
+  const { ore, cursor, turret } = tutorial;
+  // Three null checks and out, which is what every frame after a player has been through the
+  // tutorial costs: `stepTutorial` keeps answering, and what it answers is nothing.
+  if (!ore && !cursor && !turret) return;
+  ctx.font = WORLD_FONT;
+  if (ore) {
+    const [x, y] = centreOf(ore.tile, TILE);
+    // **The one call the highlight sprite drops into** (ADR 0002). Until `src/sprite/highlight.ts`
+    // lands and the registry names it, this resolves to null and the mark falls back to a plain ink
+    // ring — the same fallback every entity in this file keeps until its own art arrives, so the
+    // tutorial is legible from the day it ships rather than from the day the art does.
+    const mark = sprites?.("highlight", 0, 0);
+    if (mark) blitOver(mark, x, y);
+    else {
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2;
+      strokeCircle(ctx, x, y, TILE);
+    }
+    saySay(ctx, laySay(ctx, sprites, [ore.words], SAY_WRAP), x, ore.tile.ty * TILE - SAY_GAP);
+  }
+  if (cursor) {
+    saySay(ctx, laySay(ctx, sprites, [cursor.words], SAY_WRAP), cursor.at.x, cursor.at.y - SAY_GAP);
+  }
+  if (turret) {
+    const side = (BUILDABLES.turret?.footprint ?? 1) * TILE;
+    saySay(
+      ctx,
+      laySay(ctx, sprites, turret.words, SAY_WRAP),
+      turret.tile.tx * TILE + side / 2,
+      turret.tile.ty * TILE - SAY_GAP,
+    );
+  }
 }
 
 // A small arrow at the viewport edge for each teammate the camera has left behind (#94), pointing

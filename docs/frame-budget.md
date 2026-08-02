@@ -48,11 +48,18 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > [#140](https://github.com/ericbstie/the-game/issues/140) has added a sixth — blood on the floor,
 > where a bloodling ran and where one went off — at **1.82 ms** at the ceiling its list is capped to.
 > It is the **largest mark on this page by a factor of three**, the first one that is *filled* rather
-> than stroked, the first that is **under** the sorted pass rather than over it, and the only one
-> whose count is a **ceiling rather than a rate** — every other mark rides a cadence, so its worst
+> than stroked, the first that is **under** the sorted pass rather than over it, and the first whose
+> count is a **ceiling rather than a rate** — every other mark up to it rides a cadence, so its worst
 > case is arithmetic; a decal rides how many bloodlings are on screen. It is also the first layer the
 > whole-frame instrument could actually resolve. See [What the blood on the floor
 > costs](#what-the-blood-on-the-floor-costs-140).
+>
+> [#134](https://github.com/ericbstie/the-game/issues/134) has added a seventh mark — the
+> mini-tutorial's three world-anchored prompts — at **0.20 ms** with all three up at once, which is a
+> ceiling rather than a rate for a reason of its own: every one of them is gone for good the moment
+> its lesson lands, so on almost every frame of almost every match it is not drawn. It is the first mark
+> in the frame that is **written** rather than struck, filled or blitted. See [What the tutorial's
+> prompts cost](#what-the-tutorials-prompts-cost-134).
 >
 > [#125](https://github.com/ericbstie/the-game/issues/125) has raised `ENEMY_CAP` from 240 to 500, so
 > **the enemy count in every figure below is no longer the cap**. It is worth **+2.40 ms** measured on
@@ -724,7 +731,7 @@ page: [#140](https://github.com/ericbstie/the-game/issues/140) is the first thin
 ground after the thing that made it has gone, so the count is the whole story.
 
 **The count is a ceiling, not a rate, and that is what makes this mark different from every other one
-here.** A shot line, a burst, a puff and a word all ride a cadence, so their worst case is arithmetic
+before it.** A shot line, a burst, a puff and a word all ride a cadence, so their worst case is arithmetic
 on constants the game already fixes. A decal rides how many bloodlings are on screen: at `ENEMY_CAP`
 500 a screen of them would owe **~13,000 marks inside one `BLOOD_FADE_MS`**, and nothing culled per
 frame saves a list that size. `src/game/blood.ts` caps it at **`BLOOD_CAP` 300** and drops the oldest
@@ -770,11 +777,64 @@ sprite has not landed yet (ADR 0002 — the harness is built before the art), so
 to the M2 circle, which is a `fill` and not a blit. When that sprite lands the blit count returns and
 the standing layer costs what it always did.
 
-**`bun run sprite:frame` still reports 353 blits and no timing at all.** It draws the demo world, not
-`ENEMY_CAP`, so it cannot price this layer and is not a substitute for the ladder above — what it is
+**`bun run sprite:frame` reports no timing at all, and this layer moves its blit count by nothing.** A
+decal is an arc closed and filled, never a `drawImage`, so however many are laid it cannot show up in
+that count. The frame it draws is the demo world rather than `ENEMY_CAP` besides, so it cannot price
+this layer and is not a substitute for the ladder above — what it is
 good for is the picture, and for this mark that is the whole point: it is the only instrument that
 shows the trail behind a running bloodling and the splat where one went off, in colour, at the four
 steps of its fade, on the white floor they have to read against.
+
+## What the tutorial's prompts cost (#134)
+
+**All three of the mini-tutorial's world-anchored prompts, up at the same time, are 0.20 ms — and on
+almost every frame of almost every match they cost nothing, because they are not drawn.**
+[#134](https://github.com/ericbstie/the-game/issues/134) marks an ore tile and writes over it, writes
+a tooltip at the cursor, and writes a wrapped three-line sentence with two inline icons over a
+turret. Each is up only while its lesson is still owed, and a lesson that has landed is written to
+`localStorage` and never taught again on that browser.
+
+**It is the first mark in this frame that is *written*.** #114's speed lines, #115's burst and #116's
+puff are strokes, priced by their pieces; #79's word is a blit, priced by its box; #142's veil is a
+composite, priced by the viewport; #140's blood is a fill, priced by its discs. A prompt is
+`strokeText` + `fillText` per run of words — the house style every name and `+1` already uses — and
+rule 1 has nothing to say about what one of those costs.
+At its worst the layer is **seven runs of words** (one for prompt 1, two for a wrapped tooltip, four
+for prompt 5's sentence broken around its two icons), **fourteen text calls**, one ring and two icon
+blits.
+
+Medians of seven runs, one container, dpr 2, at the governor's cap as it stands, through the probe
+`bun run frame:budget` prints as `the tutorial`.
+
+| | median of 7 | spread |
+| --- | ---: | ---: |
+| the tutorial, all three prompts | **0.200 ms** | 0.133–0.321 |
+
+**This is the loosest figure on this page, and it is a difference rather than a reading.** The probe
+draws the same empty world twice in the same session — once with the prompts and once without — so
+the noise on a ~1.8 ms baseline is of the same order as the layer being weighed. It is measured at
+**four times** the iterations every other layer gets for exactly that reason, and at 60 it produced a
+negative reading. Read it as *a couple of tenths of a millisecond at the ceiling*, not as a constant.
+
+**The ceiling is not a rate, and that is the whole of why it is affordable.** #140's decals are the
+other layer here bounded by a ceiling rather than a cadence, but theirs is a cap held against a count
+that would otherwise run away; this one is three prompts and no more, because there are only three of
+them. Prompts 3 and 4 are one tooltip and one tile is ever under the cursor, so the worst case above
+already assumes a frame in which a first-time player is hovering ore, has never mined, and has a
+turret up with no generator. The second match on that browser draws none of it.
+
+**`bun run sprite:frame` reports 356 blits, and the same frame with the prompts switched off reports
+354.** The two the prompts add are prompt 5's inline generator and power-ore icons, and they are the
+whole of what this layer costs that count. They are also the one place in the frame a bake is drawn
+at a size other than the one it was baked at, so `imageSmoothingEnabled` is turned back on around those two
+calls and off again immediately — nearest-neighbour would shatter a 150 device-px generator squeezed
+into 18. It cannot price a layer and is not a substitute for the probe above; what it is good for is
+the picture, and it is the only instrument that shows a prompt and the highlight together.
+
+**The highlight mark is a ring in the frame above, not art.** Its sprite ships under ADR 0002 with an
+agent of its own; until then `drawWorld` falls back to one stroked circle, exactly as every entity in
+this file falls back to its M2 shape. A baked mark replaces one stroked path with one blit, which
+rule 1 says is the cheaper of the two — this figure will not go up when the art lands.
 
 ## The rules
 

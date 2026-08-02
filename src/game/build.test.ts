@@ -34,6 +34,7 @@ import {
   metalRate,
   mulberry32,
   oreAt,
+  oreUnder,
   placementError,
   placeStructure,
   pushOutOfSolids,
@@ -990,6 +991,25 @@ describe("demolish", () => {
 
   test("bare ground under the cursor resolves to nothing at all", () => {
     expect(resolveHarvest({ tx: 0, ty: 0 }, ore, funded())).toBeNull();
+  });
+
+  // The other half of the same question (#134). `resolveHarvest` answers what a *button* would do,
+  // so power ore is nothing to it; a hover has to say what the tile *is*.
+  test("the ore under the cursor names power ore, which the harvest resolver does not", () => {
+    const powerTile = (() => {
+      for (const [key, kind] of ore) if (kind === "power") return untileKey(key);
+      throw new Error("no power ore");
+    })();
+    expect(resolveHarvest(powerTile, ore, funded())).toBeNull();
+    expect(oreUnder(powerTile, ore, funded())).toBe("power");
+    expect(oreUnder(metalTile, ore, funded())).toBe("metal");
+    expect(oreUnder({ tx: 0, ty: 0 }, ore, funded())).toBeNull();
+  });
+
+  test("the ore under the cursor is hidden by a building standing on it", () => {
+    const build = funded();
+    placeStructure(build, "miner", metalTile, MINER);
+    expect(oreUnder(metalTile, ore, build)).toBeNull();
   });
 
   test("the refund is exactly floor(cost × 20%)", () => {

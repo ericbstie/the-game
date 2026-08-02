@@ -1,20 +1,33 @@
 import { describe, expect, test } from "bun:test";
 import { BLOOD_FADE_MS, DROP_RADIUS, STAIN_RADIUS } from "../src/game/blood";
-import { INTERACT_REACH, resolveHarvest, tileCenter, tileKey } from "../src/game/build";
+import {
+  freshBuildState,
+  INTERACT_REACH,
+  insertStructure,
+  oreUnder,
+  resolveHarvest,
+  tileCenter,
+  tileKey,
+  tileOf,
+} from "../src/game/build";
 import { BLOODLING_HP } from "../src/game/enemies";
 import { FLOAT_RISE, oreFloatOrigin } from "../src/game/floats";
 import { PUFF_REACH } from "../src/game/fx";
 import { MINIMAP_COVERAGES, minimapWindow, oreCells, oreDensity } from "../src/game/minimap";
+import { POWER_WORDS } from "../src/game/tutorial";
 import {
   DEMO_CAMERA,
+  DEMO_HOVER,
   DEMO_MINED,
   DEMO_NOW,
   DEMO_SELF,
+  DEMO_TURRET,
   DEMO_VIEWPORT,
   demoBlood,
   demoBursts,
   demoFloats,
   demoPuffs,
+  demoTutorial,
   demoWorld,
 } from "./demo-world";
 
@@ -99,6 +112,36 @@ describe("the scene the harness paints", () => {
     expect(floats.filter((f) => f.id === null).map((f) => f.pos)).toEqual([
       oreFloatOrigin(DEMO_MINED),
     ]);
+  });
+
+  // The tutorial's three world-anchored prompts (#134). Each has to be on a case the shipped rule
+  // would actually fire on, or the picture shows a frame the game cannot produce.
+  test("raises its turret prompt over a turret that is standing in the scene", () => {
+    const turret = demoWorld().structures.find(
+      (s) => s.kind === "turret" && s.tile.tx === DEMO_TURRET.tx && s.tile.ty === DEMO_TURRET.ty,
+    );
+    expect(turret).toBeDefined();
+    // The unpowered one, which is what the sentence is about — and the only one drawing lightning.
+    expect(turret?.turret?.powered).toBe(false);
+  });
+
+  test("hovers a power tile with nothing standing on it", () => {
+    const world = demoWorld();
+    const build = freshBuildState(world.arena);
+    for (const s of world.structures) insertStructure(build, s);
+    expect(oreUnder(tileOf(DEMO_HOVER), world.ore, build)).toBe("power");
+  });
+
+  test("marks an ore tile and writes over one inside the viewport the harness captures", () => {
+    const marks = demoTutorial(demoWorld());
+    expect(marks.ore).not.toBeNull();
+    expect(marks.cursor?.words).toBe(POWER_WORDS);
+    for (const at of [tileCenter(marks.ore?.tile ?? DEMO_TURRET), marks.cursor?.at ?? DEMO_HOVER]) {
+      expect(at.x).toBeGreaterThan(DEMO_CAMERA.x);
+      expect(at.x).toBeLessThan(DEMO_CAMERA.x + DEMO_VIEWPORT.width);
+      expect(at.y).toBeGreaterThan(DEMO_CAMERA.y);
+      expect(at.y).toBeLessThan(DEMO_CAMERA.y + DEMO_VIEWPORT.height);
+    }
   });
 
   // Inside the frame the harness paints, or the picture answers nothing about a mark nobody sees.

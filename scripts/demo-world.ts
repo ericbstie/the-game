@@ -8,6 +8,8 @@ import {
 import {
   BUILDABLES,
   footprintCenter,
+  freshBuildState,
+  insertStructure,
   mulberry32,
   type OreGrid,
   TILE,
@@ -18,6 +20,7 @@ import type { BuildGhost } from "../src/game/draw";
 import { SHOT_STREAK } from "../src/game/draw";
 import { BLOODLING_HP, BLOODLING_RADIUS, ELITE_HP } from "../src/game/enemies";
 import { FLOAT_MS, type MetalFloat, minerFloatOrigin, oreFloatOrigin } from "../src/game/floats";
+import { freshTutorial, observe, stepTutorial, type TutorialMarks } from "../src/game/tutorial";
 import type { RenderedProjectile, Tile, Vec2, WorldSnapshot } from "../src/lobby/protocol";
 
 // A hand-built world for `sprite:frame` to paint. Not a fixture for `bun test` and not the real
@@ -337,6 +340,36 @@ export function demoFloats(world: WorldSnapshot, now: number): MetalFloat[] {
     // is the one that has to be legible mid-rise over the ore it came out of.
     { id: null, pos: oreFloatOrigin(DEMO_MINED), at: now - Math.round(FLOAT_MS / 2) },
   ];
+}
+
+// The turret the tutorial's prompt 5 is raised over, and the power ore its cursor tooltip is
+// hovering (#134). Both are chosen rather than derived, and both are checked in `demo-world.test`:
+// `DEMO_TURRET` is the scene's *unpowered* turret, which is the one the sentence is actually about,
+// and `DEMO_HOVER` is a power tile with nothing standing on it — exactly the two cases the shipped
+// prompts would fire on.
+export const DEMO_TURRET: Tile = { tx: 1066, ty: 1054 };
+export const DEMO_HOVER: Vec2 = { x: 1046 * TILE + TILE / 2, y: 1039 * TILE + TILE / 2 };
+
+// What the mini-tutorial has on screen in this frame (#134) — the game's own answer rather than a
+// hand-placed one. The build state is assembled from the very structures above, so the ore the mark
+// lands on is the one the shipped rule picks and the tooltip over the turret is the one it raises.
+// Three of the six prompts at once: the highlight and its words on an ore tile, a hover tooltip at
+// the cursor, and the wrapped sentence with its two inline icons over a turret.
+export function demoTutorial(world: WorldSnapshot): TutorialMarks {
+  const build = freshBuildState(world.arena);
+  for (const s of world.structures) insertStructure(build, s);
+  const tutorial = freshTutorial();
+  observe(tutorial, { did: "build", kind: "turret", tile: DEMO_TURRET });
+  return stepTutorial(tutorial, {
+    metal: 0,
+    enemies: 0,
+    ore: world.ore,
+    build,
+    self: world.players.find((p) => p.id === DEMO_SELF)?.pos ?? null,
+    camera: DEMO_CAMERA,
+    viewport: DEMO_VIEWPORT,
+    cursor: DEMO_HOVER,
+  });
 }
 
 function unit(from: Vec2, to: Vec2): Vec2 {

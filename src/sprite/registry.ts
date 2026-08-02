@@ -10,6 +10,7 @@ import grass from "./grass";
 import grunt from "./grunt";
 import gun from "./gun";
 import halo from "./halo";
+import highlight from "./highlight";
 import lettering from "./lettering";
 import miner from "./miner";
 import nest from "./nest";
@@ -55,7 +56,13 @@ export type SpriteName =
   | "gun" // HUD: the weapon — facing 0 stowed and hollow, facing 1 equipped and filled
   | "warning" // HUD: a structure is under attack
   | "reconnecting" // HUD: the socket dropped and the client is trying to get back in
-  | "unpowered"; // in-world: a turret with no energy
+  | "unpowered" // in-world: a turret with no energy
+  // The tutorial's ink mark (#134): one ring or arrow, drawn over an ore tile on the canvas and
+  // over the ammo box in the HUD. **One mark, two hosts**, so it has to read at both sizes — it is
+  // blitted at its own box in the world and at 44 px in the DOM. No entry in `SPRITE_BOX` below:
+  // like `halo` and `unpowered` it marks something rather than standing for it, so nothing in the
+  // simulation fixes its size and the box is its own agent's call.
+  | "highlight";
 
 // The box a sprite draws in, in CSS px — which is also world units, since the zoom is 1:1.
 // Every entry is *derived* from the size the entity already is in the simulation, so the art and
@@ -107,6 +114,7 @@ export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
   grunt,
   gun,
   halo,
+  highlight,
   lettering,
   miner,
   nest,

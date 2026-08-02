@@ -6,6 +6,7 @@ import {
   BUILD_CADENCE_MS,
   BUILD_SLOTS,
   BUILDABLES,
+  BULLET_COST,
   type BuildableSpec,
   FORGE_MS,
   footprintCenter,
@@ -1605,12 +1606,21 @@ function recordFrames(): { calls: DrawnCall[]; restore: () => void } {
     const into = this;
     const state: Record<string, unknown> = {};
     return new Proxy({} as Record<string, unknown>, {
-      get: (_target, name: string) =>
-        name in state
-          ? state[name]
-          : (...args: unknown[]) => {
-              calls.push({ fn: name, args, into });
-            },
+      get: (_target, name: string) => {
+        if (name in state) return state[name];
+        // The one call in the 2D API a recorder cannot merely record: the tutorial's sentences
+        // wrap (#134), so the draw path uses what comes back. A fixed width per character, as the
+        // spy in `draw.test.ts` uses, since nothing here is an assertion about a font metric.
+        if (name === "measureText") {
+          return (text: string) => {
+            calls.push({ fn: name, args: [text], into });
+            return { width: String(text).length * 6 };
+          };
+        }
+        return (...args: unknown[]) => {
+          calls.push({ fn: name, args, into });
+        };
+      },
       set: (_target, name: string, value) => {
         state[name] = value;
         return true;
@@ -1883,5 +1893,172 @@ describe("#136: hand-mining a whole Metal floats a +1 over the ore tile", () => 
     expect(first.args[1]).toBe(CURSOR_TILE.tx * TILE + TILE / 2); // centred on the tile...
     expect(first.args[2] as number).toBeLessThanOrEqual(CURSOR_TILE.ty * TILE); // ...off its top edge
     expect(first.args[1]).not.toBe(SPAWN.x); // and not over the player, who is a screen away from it
+  });
+});
+
+// #134: the mini-tutorial. Six prompts, each owed until the thing it teaches has been done, and
+// then never again on this browser. `tutorial.ts` holds every transition and is tested there; what
+// is tested here is the wiring — that the two screen-fixed prompts reach the HUD, that each is
+// raised and taken down by this client's own doing, and above all that **nothing freezes**.
+describe("#134: the mini-tutorial", () => {
+  beforeEach(() => localStorage.clear());
+
+  // An enemy appears on this client. Streamed rather than placed, because that is the only way one
+  // ever arrives — and it is what makes "a teammate's first enemy is not yours" a question about
+  // which client is looking rather than about a check.
+  const sight = (world: ClientWorld) =>
+    world.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        spawns: [{ id: "e1", kind: "grunt", pos: { x: SPAWN.x + 40, y: SPAWN.y }, hp: GRUNT_HP }],
+      },
+      Date.now(),
+    );
+
+  test("prompt 2 rides the shared bank, and goes when a bullet is ordered", async () => {
+    const world = armed();
+    renderMatch({}, world);
+    await nextFrames();
+    expect(screen.queryByText("Click to build ammo. You will need it!")).toBeNull();
+    world.build.bank.metal = BULLET_COST;
+    await nextFrames();
+    expect(screen.getByText("Click to build ammo. You will need it!")).toBeDefined();
+    fireEvent.click(screen.getByLabelText("Forge a bullet"));
+    await nextFrames();
+    expect(screen.queryByText("Click to build ammo. You will need it!")).toBeNull();
+  });
+
+  // A lesson is owed until the thing it teaches has *happened*. `enqueueForge` is a silent no-op
+  // below `BULLET_COST` (build.ts:429) — no bullet, no broadcast, no feedback — so a curious click
+  // at an empty bank must leave prompt 2 owed rather than marking it learned for good on this
+  // browser, which is the one failure the tutorial can never recover from.
+  test("a click the squad cannot pay for leaves prompt 2 owed", async () => {
+    const world = armed();
+    world.build.bank.metal = 0;
+    renderMatch({}, world);
+    await nextFrames();
+    fireEvent.click(screen.getByLabelText("Forge a bullet"));
+    world.build.bank.metal = BULLET_COST;
+    await nextFrames();
+    expect(screen.getByText("Click to build ammo. You will need it!")).toBeDefined();
+  });
+
+  test("prompt 6 waits for an enemy, then for the key, then for the trigger", async () => {
+    const world = armed();
+    const canvas = renderMatch({}, world);
+    await nextFrames();
+    expect(screen.queryByText("Press G to equip/unequip your gun")).toBeNull();
+    sight(world);
+    await nextFrames();
+    expect(screen.getByText("Press G to equip/unequip your gun")).toBeDefined();
+    equipGun();
+    await nextFrames();
+    expect(screen.queryByText("Press G to equip/unequip your gun")).toBeNull();
+    expect(screen.getByText("Left click to shoot")).toBeDefined();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await nextFrames();
+    expect(screen.queryByText("Left click to shoot")).toBeNull();
+  });
+
+  // The stance this ticket overturned outright: prompt 6 was written as "pause the game", and a
+  // live multiplayer world cannot be paused. A player is informed, never held still — so every
+  // input the match has is exercised *while* a prompt is on screen.
+  test("nothing freezes — every input stays live through a prompt", async () => {
+    const onAttack = mock(() => {});
+    const world = armed();
+    const moves = recordMoves(world);
+    const canvas = renderMatch({ onAttack }, world);
+    sight(world);
+    await nextFrames();
+    expect(screen.getByText("Press G to equip/unequip your gun")).toBeDefined();
+
+    fireEvent.keyDown(window, { key: "w" }); // movement is still stepped
+    await nextFrames();
+    expect(moves.at(-1)?.up).toBe(true);
+
+    fireEvent.keyDown(window, { key: "1" }); // the build bar still takes a slot
+    expect(screen.getByLabelText(BUILD_SLOTS[0]).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    equipGun(); // the key the prompt names still does what it says
+    await nextFrames();
+    expect(screen.getByText("Left click to shoot")).toBeDefined();
+
+    fireEvent.mouseDown(canvas, { button: 0 }); // and the trigger still pulls, on the same frame
+    expect(onAttack).toHaveBeenCalledTimes(1);
+  });
+
+  test("and a prompt asking for a mine never holds up the mine", async () => {
+    const onMine = mock(() => {});
+    const world = armed();
+    world.ore.set(tileKey(CURSOR_TILE), "metal"); // prompt 1 is up from the first frame
+    const canvas = renderMatch({ onMine }, world);
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await settle(HARVEST_WINDOW);
+    fireEvent.mouseUp(window);
+    expect(onMine).toHaveBeenCalled();
+  });
+
+  // Per player, and private. There is no route from a teammate's action into this client's
+  // tutorial: a building of theirs arrives as a delta, which teaches nobody anything, while the
+  // same building placed here is written down.
+  test("a teammate's generator teaches this player nothing; their own teaches them", async () => {
+    const world = armed();
+    world.build.bank.metal = 1_000;
+    world.ore.set(tileKey(CURSOR_TILE), "power");
+    const canvas = renderMatch({}, world);
+    world.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        builds: [{ id: "g1", kind: "generator", tile: { tx: 60, ty: 60 }, hp: 300 }],
+      },
+      Date.now(),
+    );
+    await nextFrames();
+    expect(localStorage.getItem("tutorial:learned") ?? "").not.toContain("energy");
+
+    fireEvent.keyDown(window, { key: "4" }); // the generator's own slot
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await nextFrames();
+    expect(localStorage.getItem("tutorial:learned")).toContain("energy");
+  });
+
+  test("seen once ever — a landed lesson is not taught again in the next match", async () => {
+    const world = armed();
+    const canvas = renderMatch({}, world);
+    sight(world);
+    await nextFrames();
+    equipGun();
+    fireEvent.mouseDown(canvas, { button: 0 });
+    await nextFrames();
+    cleanup();
+
+    const next = armed();
+    renderMatch({}, next);
+    sight(next);
+    await nextFrames();
+    expect(screen.queryByText("Press G to equip/unequip your gun")).toBeNull();
+    expect(screen.queryByText("Left click to shoot")).toBeNull();
+  });
+
+  test("with no store to read, the tutorial shows rather than being suppressed", async () => {
+    const store = globalThis.localStorage;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get() {
+        throw new Error("denied");
+      },
+    });
+    try {
+      const world = armed();
+      renderMatch({}, world);
+      sight(world);
+      await nextFrames();
+      expect(screen.getByText("Press G to equip/unequip your gun")).toBeDefined();
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    }
   });
 });
