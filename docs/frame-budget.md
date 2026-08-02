@@ -68,6 +68,12 @@ code the game runs. The HUD is not in it and never will be — it is DOM and CSS
 > the shape every name and `+1` already draws. See [What the way back to the door
 > costs](#what-the-way-back-to-the-door-costs-151).
 >
+> [#152](https://github.com/ericbstie/the-game/issues/152) has added a ninth — how much of the squad
+> is standing in the escape door, written for a player standing in it — and it is priced by
+> arithmetic for the same reason and by a wider margin: it is **half of #151's mark**, one run of
+> words and no path at all. See [What the count in the door
+> costs](#what-the-count-in-the-door-costs-152).
+>
 > [#125](https://github.com/ericbstie/the-game/issues/125) has raised `ENEMY_CAP` from 240 to 500, so
 > **the enemy count in every figure below is no longer the cap**. It is worth **+2.40 ms** measured on
 > an isolated probe — the largest single addition to this frame since the page was written, and the
@@ -883,6 +889,36 @@ The pointer is struck and written, never blitted, so the count cannot see it —
 what that instrument has to say here. What it is good for is the picture, and `--door` is the only
 way to get one: the reveal is a session latch the server flips, so no arrangement of the demo scene
 can produce it.
+
+## What the count in the door costs (#152)
+
+**Half of the mark above, and priced the same way.**
+[#152](https://github.com/ericbstie/the-game/issues/152) writes how much of the squad is standing in
+the escape door — `2 of 3` — once per frame and never more, and only on the frames a player is
+themselves standing in it.
+
+| | pieces | what it is one more of |
+| --- | --- | --- |
+| the count | one `strokeText` + `fillText` | a name label, of which the frame draws up to six |
+
+There is no second half: #151 pairs its figure with a four-segment path, and this mark is the run of
+words alone. Against #134's measured 0.200 ms for fourteen text calls, that is **~29 µs** — under the
+whole-frame instrument's noise floor, as every text layer on this page already is.
+
+Its **count is one, not a rate and not a ceiling**, which is the one thing that makes it cheaper than
+every mark above it can claim to be: the mark is a single line of type or it is nothing at all.
+
+It is also the **first mark in the frame that is screen-anchored** rather than drawn in the world —
+the corner map is a plate rather than a mark — so its cost does not move with the zoom the way every
+figure in [What the camera's zoom costs](#what-the-cameras-zoom-costs-92) does. The type is a CSS
+size divided by the zoom, so the glyphs rasterised are the same at 0.5× as at 3×.
+
+**`bun run sprite:frame --escape` reports 220 blits**, against the scene's usual 357 — the drop is
+the base, the spiders and the tutorial's marks being 15,400 u away rather than anything this mark
+does. It is written and never blitted, so the count cannot see it, exactly as it could not see #151's
+dart. What that instrument is for here is the picture, and `--escape` is the only way to one: the
+sign is drawn only for a player standing in the door and only against a lobby roster, and the demo
+scene carries neither.
 
 ## What the camera's zoom costs (#92)
 

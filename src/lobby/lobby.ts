@@ -33,7 +33,13 @@ import {
   spawnEnemyState,
   stepEnemies,
 } from "../game/enemies";
-import { generateWorld, insideExit, PLAYER_MAX_HP, revealsExit } from "../game/world";
+import {
+  type Escapee,
+  generateWorld,
+  PLAYER_MAX_HP,
+  revealsExit,
+  squadEscaped,
+} from "../game/world";
 import { DEFAULT_WORLD_SETTINGS, type WorldSettings } from "../game/worldSettings";
 import { generateCode, normalizeCode } from "./code";
 import {
@@ -602,7 +608,7 @@ export class LobbyHub {
     }
     this.broadcast(session, { type: "game/map-delta", ...delta });
 
-    if (session.worldInit && squadEscaped(session, session.worldInit.exit)) {
+    if (session.worldInit && squadEscaped(escapeSquad(session), session.worldInit.exit)) {
       this.endMatch(session, "escaped");
     } else if (squadWiped(session)) {
       this.endMatch(session, "wiped");
@@ -950,20 +956,20 @@ export class LobbyHub {
   }
 }
 
-// Has the whole squad escaped? A simultaneity check, not a per-player check-in: every connected
-// player must be alive AND standing in the door in this same instant.
-//
-// A downed player blocks it — they have to respawn and walk back, which is what "no one left
-// behind" means. A disconnected (in-grace) player does not block: the squad cannot be held
+// The squad the escape rule is judged on: everyone connected, as they were last reported. A downed
+// player is in it and blocks — they have to respawn and walk back, which is what "no one left
+// behind" means. A disconnected (in-grace) player is not in it at all: the squad cannot be held
 // hostage by someone else's dropped socket.
-function squadEscaped(session: SessionRecord, exit: Exit): boolean {
-  const squad = connectedPlayers(session);
-  if (squad.length === 0) return false; // an empty box escapes nothing
-  return squad.every((p) => {
-    if (!isAlive(session, p.id)) return false;
-    const pos = session.positions.get(p.id)?.pos;
-    return pos !== undefined && insideExit(pos, exit);
-  });
+//
+// The rule itself is `squadEscaped` in `game/world.ts`, where the client reads it too (#152). This
+// is the half of it only the server can assemble — which record of the squad is the live one —
+// and assembling it is all this does.
+function escapeSquad(session: SessionRecord): Escapee[] {
+  return connectedPlayers(session).map((p) => ({
+    pos: session.positions.get(p.id)?.pos,
+    // A player who has never reported HP counts as alive, exactly as `isAlive` reads it.
+    hp: session.health.get(p.id)?.hp ?? PLAYER_MAX_HP,
+  }));
 }
 
 // Has the squad been wiped? Every connected player dead at the same instant, evaluated on the

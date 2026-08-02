@@ -121,6 +121,46 @@ export function insideExit(pos: Vec2, exit: Exit): boolean {
   );
 }
 
+// One player as the escape rule sees them: where they were last known to be, if anywhere, and
+// whether they are still up. Deliberately not a `PlayerId` and not an `Avatar` — the two callers
+// hold different records of the same squad, and what they agree on is these two facts.
+export interface Escapee {
+  pos: Vec2 | undefined; // a player nobody has a position for has not reached the door
+  hp: number;
+}
+
+// How much of the squad is standing in the door, out of how much of it has to be — the escape rule,
+// counted rather than answered yes or no.
+//
+// **One measure, two readers** (#152), the same idiom `distanceToExit` carries for the reveal. The
+// server ends the match on `squadEscaped` below and the client writes this tally on screen, so a
+// sign that says the squad is whole and a match that has not ended cannot both be true.
+//
+// The squad handed in is **the connected squad**, and that is the callers' to assemble: a downed
+// player is in it and blocks (they have to respawn and walk back, which is what "no one left behind"
+// means), and a disconnected one is not in it at all (the squad cannot be held hostage by someone
+// else's dropped socket).
+export function escapeTally(
+  squad: readonly Escapee[],
+  exit: Exit,
+): { inside: number; needed: number } {
+  let inside = 0;
+  for (const player of squad) if (inEscape(player, exit)) inside++;
+  return { inside, needed: squad.length };
+}
+
+// Is this one player counted? Alive, somewhere, and that somewhere inside the door.
+export function inEscape(player: Escapee, exit: Exit): boolean {
+  return player.hp > 0 && player.pos !== undefined && insideExit(player.pos, exit);
+}
+
+// Has the whole squad escaped? A simultaneity check, not a per-player check-in: every one of them
+// alive AND standing in the door in this same instant. An empty box escapes nothing.
+export function squadEscaped(squad: readonly Escapee[], exit: Exit): boolean {
+  const { inside, needed } = escapeTally(squad, exit);
+  return needed > 0 && inside === needed;
+}
+
 // A circle the avatar cannot stand inside — an enemy, as the owner's client renders it.
 export interface Body {
   pos: Vec2;
