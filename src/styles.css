@@ -658,6 +658,45 @@ button:disabled {
   }
 }
 
+/* A refused trigger (#150). The box is struck through corner to corner and the strike fades out, so
+   a pull the pool could not pay for leaves a mark where the `0` it was refused over already sits. A
+   rule of ink, as everything else on this paper is: the count stays readable underneath, since it is
+   what the strike is pointing at.
+
+   Opacity and nothing else — no shift, no shake. That is what leaves `prefers-reduced-motion`
+   nothing to reduce here: `.signal` above can drop its blink and still show its condition, but this
+   mark *is* the acknowledgement, and stopping it would either delete the feature or leave the box
+   struck through for the rest of the match. A held trigger renews it faster than it can fade
+   (`REFUSAL_MS`), so a dry hold reads as one steady strike rather than a blink.
+
+   The length is provisional — long enough to be caught out of the corner of the eye, short enough
+   that the box is clear again well before the next bullet can be forged. */
+.banks .ammo-refused {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    to top right,
+    transparent calc(50% - 1.5px),
+    var(--ink) calc(50% - 1.5px),
+    var(--ink) calc(50% + 1.5px),
+    transparent calc(50% + 1.5px)
+  );
+  animation: ammo-refused 320ms linear forwards;
+  pointer-events: none;
+}
+
+@keyframes ammo-refused {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 .build-bar {
   position: absolute;
   bottom: 1rem;
