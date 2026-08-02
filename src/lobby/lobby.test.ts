@@ -870,8 +870,17 @@ describe("M3: enemy sim tick lifecycle", () => {
   test("a wave spawns grunts and a validated melee on one streams its hit", () => {
     const t = new Capture();
     const clock = new ManualScheduler();
-    // Fire the first wave almost at once, then step past it.
-    const hub = new LobbyHub(t, { tickMs: 10, firstWaveMs: 5, scheduler: clock, startingAmmo: 9 });
+    // Fire the first wave almost at once, then step past it. Fixed rng, because the draw that
+    // scatters a wave is the same one that picks each enemy's kind (#140): an unseeded hub hands
+    // this test a bloodling `BLOODLING_SHARE` of the time. 0.75 sits in the grunt band, and is not
+    // 0.5 — that is the zero-jitter midpoint, which stacks every spawn exactly on its nest.
+    const hub = new LobbyHub(t, {
+      tickMs: 10,
+      firstWaveMs: 5,
+      scheduler: clock,
+      startingAmmo: 9,
+      rng: () => 0.75,
+    });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
     clock.advance(30);
@@ -942,11 +951,14 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
     return expectMessage(found, type);
   }
 
-  // Two players in a started match, with the first wave already on the floor.
+  // Two players in a started match, with the first wave already on the floor. Fixed rng for the
+  // same reason as the melee test above: every assertion here reads a chase, and a bloodling — the
+  // top `BLOODLING_SHARE` of the same draw that scatters the wave (#140) — charges the body it is
+  // chasing and detonates on it instead.
   function matchWithWave() {
     const t = new Capture();
     const clock = new ManualScheduler();
-    const hub = new LobbyHub(t, { tickMs: 50, firstWaveMs: 1, scheduler: clock });
+    const hub = new LobbyHub(t, { tickMs: 50, firstWaveMs: 1, scheduler: clock, rng: () => 0.75 });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));
     const { code } = firstOf(t, "lobby/created");
     hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "Ben" }));
