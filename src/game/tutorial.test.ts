@@ -351,6 +351,30 @@ describe("seen once ever", () => {
     }
   });
 
+  test("a store that refuses the write teaches anyway, and simply forgets", () => {
+    // Quota exceeded: reads work and `setItem` alone throws. Failing toward teaching again — the
+    // tutorial shows, and this browser remembers nothing of it.
+    const store = globalThis.localStorage;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => store.getItem(key),
+        setItem() {
+          throw new Error("QuotaExceededError");
+        },
+      },
+    });
+    try {
+      const first = freshTutorial();
+      observe(first, { did: "mine" });
+      expect(() => saveLessons(first)).not.toThrow();
+      expect(loadLessons()).toEqual([]);
+      expect(stepTutorial(freshTutorial(loadLessons()), scene()).ore).not.toBeNull();
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    }
+  });
+
   test("a store holding nonsense teaches the whole tutorial rather than half of it", () => {
     localStorage.setItem("tutorial:learned", '["not-a-lesson", 7, null]');
     const tutorial: Tutorial = freshTutorial(loadLessons());

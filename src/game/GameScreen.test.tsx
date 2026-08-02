@@ -1825,6 +1825,21 @@ describe("#134: the mini-tutorial", () => {
     expect(screen.queryByText("Click to build ammo. You will need it!")).toBeNull();
   });
 
+  // A lesson is owed until the thing it teaches has *happened*. `enqueueForge` is a silent no-op
+  // below `BULLET_COST` (build.ts:429) — no bullet, no broadcast, no feedback — so a curious click
+  // at an empty bank must leave prompt 2 owed rather than marking it learned for good on this
+  // browser, which is the one failure the tutorial can never recover from.
+  test("a click the squad cannot pay for leaves prompt 2 owed", async () => {
+    const world = armed();
+    world.build.bank.metal = 0;
+    renderMatch({}, world);
+    await nextFrames();
+    fireEvent.click(screen.getByLabelText("Forge a bullet"));
+    world.build.bank.metal = BULLET_COST;
+    await nextFrames();
+    expect(screen.getByText("Click to build ammo. You will need it!")).toBeDefined();
+  });
+
   test("prompt 6 waits for an enemy, then for the key, then for the trigger", async () => {
     const world = armed();
     const canvas = renderMatch({}, world);

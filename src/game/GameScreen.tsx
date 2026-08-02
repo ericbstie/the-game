@@ -10,6 +10,7 @@ import {
   BUILD_CADENCE_MS,
   BUILD_SLOTS,
   BUILDABLES,
+  BULLET_COST,
   FORGE_MS,
   type HarvestTarget,
   INTERACT_REACH,
@@ -857,7 +858,13 @@ export function GameScreen({
             aria-label="Forge a bullet"
             onClick={() => {
               onForge();
-              teach({ did: "forge" }); // what prompt 2 was asking for (#134)
+              // Only a click the squad can pay for teaches anything (#134). `enqueueForge` is a
+              // silent no-op below `BULLET_COST` (build.ts:429) — no bullet, no broadcast, nothing
+              // to see — so an unaffordable click that wrote the lesson down would suppress prompt
+              // 2 on this browser for good, before the bank had ever reached the figure the prompt
+              // is about. Read off the mirrored bank, which is the predicate the server admits the
+              // order on, exactly as prompt 5's placement reads `placementError`.
+              if ((worldRef.current?.metal() ?? 0) >= BULLET_COST) teach({ did: "forge" });
             }}
             // Enter activates a button on *keydown*, so the OS's key repeat fires a click per
             // repeat — a held Enter ordered eight bullets in one press in a real browser. That is
