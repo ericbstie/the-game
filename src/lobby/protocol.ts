@@ -161,8 +161,10 @@ export interface WorldInit {
 // deaths stream as `game/map-delta` on the same INV-5 envelope at ~20 Hz.
 
 // A bloodling (#140) is the third: it runs at the squad and goes off, so it reaches the client as
-// a kind like any other and everything it does differently is in `enemies.ts`'s record.
-export type EnemyKind = "grunt" | "elite" | "bloodling";
+// a kind like any other and everything it does differently is in `enemies.ts`'s record. A spiderman
+// (#137) is the fourth, on the same terms — it comes in on the slant and throws cobweb, and both of
+// those are that record's too.
+export type EnemyKind = "grunt" | "elite" | "bloodling" | "spiderman";
 
 // A newly-spawned enemy, announced once so the client can create its render record (kind +
 // hp) before per-tick position deltas start flowing for it.
@@ -289,6 +291,26 @@ export interface MapDelta {
   // end of its reach.
   projectiles?: ProjectileSpawn[];
   spent?: string[];
+  // The spidermen that threw cobweb this tick (#137) — ids alone, on the same sparse terms as
+  // `deaths`, which is the entry this one is shaped after.
+  //
+  // **It has to be announced.** A burst is an authoritative rule resolved against live enemy
+  // positions, and ADR 0007 §"what cannot be derived" settles that class: a client re-running it
+  // against sprites `ENEMY_RENDER_DELAY_MS` behind the stream would reach a different answer, which
+  // ADR 0003 §3 forbids. No existing array carries it either — `hits` needs an enemy *taking*
+  // damage, `projectiles` is a launch a flight is derived from, and a spiderman survives its own
+  // burst so no `deaths` entry can carry it the way a bloodling's blast rides one.
+  //
+  // **What is not here is where.** The web is thrown all round the thrower, so its centre is that
+  // enemy's own position — a coordinate every client already holds and interpolates. Streaming it
+  // would re-send a number the receiver has, and worse: it would disagree with the drawing, since
+  // the client resolves the burst off its delayed buffer exactly as it resolves a death's.
+  //
+  // Nor is the **slow**, which needs nothing of its own. `WEB_SLOW` and `WEB_SLOW_MS` are constants
+  // both sides compile against, so a client told a burst happened knows everything about what it
+  // does — and it is that client's own avatar it applies it to, which is where the authority for
+  // player movement has always sat.
+  bursts?: string[];
   // The squad has found the door (#93). `WorldInit.exit` reached every client on the first frame,
   // so this says nothing about *where* it is — only that the squad has now earned the right to be
   // shown it. Sparse on the same terms as the bank, and more so: it flips once per match and never

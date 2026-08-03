@@ -161,6 +161,29 @@ game shipped at **222.1 KiB/s** before #84, and #84's own untrimmed float64 tick
 arena was before coordinates were trimmed. Server egress for a full squad is 6 × 20 × 3,834 B =
 **449 KiB/s**, and the compressor bill for that squad is **3.0% of one core** (up from 1.3%).
 
+### What #137 moved, and it is a field that had to be added
+
+[#137](https://github.com/ericbstie/the-game/issues/137) added the spiderman, whose cobweb burst
+goes off around the creature and leaves nothing behind. `MapDelta.bursts` is a `string[]` of the ids
+that threw this tick, shaped exactly after `deaths`.
+
+**The measured tick moved 3,834 → 3,885 B deflate, 74.9 → 75.9 KiB/s — +51 B/tick, +1.3%.**
+
+**It had to be a field, and the reason is the one ADR 0007 already settled.** A client holds every
+enemy's kind and position, so it could in principle notice a spiderman in range and burst it itself
+— but whether the burst happened is an authoritative rule resolved against live positions, and
+re-running it against sprites `ENEMY_RENDER_DELAY_MS` behind is what
+[ADR 0003](adr/0003-what-a-rendered-shot-guarantees.md) §3 forbids. Two clients would answer
+differently. No existing array carries it either: `hits` needs an enemy *taking* damage, a burst has
+none; `projectiles` is a launch a flight is derived from, and a burst does not fly; and a spiderman
+survives its own web, so there is no `deaths` entry for it to ride the way a bloodling's blast does.
+
+**What is not on the wire is where, and how hard.** The web is thrown all round the thrower, so its
+centre is that enemy's own position — a coordinate every client already holds and interpolates, and
+streaming it would both duplicate a number the receiver has and disagree with the drawing. `WEB_SLOW`,
+`WEB_SLOW_MS`, `WEB_DAMAGE` and `WEB_RADIUS` are constants both sides compile against. So the ids are
+the whole of it: derive-don't-stream, with only the fact that it happened on the wire.
+
 ## Where it went
 
 **Coordinate precision was ~55% of the baseline.** A single `moves` entry used to serialise as

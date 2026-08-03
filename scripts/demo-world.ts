@@ -18,7 +18,13 @@ import {
 import type { Mark } from "../src/game/clientWorld";
 import type { BuildGhost } from "../src/game/draw";
 import { SHOT_STREAK } from "../src/game/draw";
-import { BLOODLING_HP, BLOODLING_RADIUS, ELITE_HP } from "../src/game/enemies";
+import {
+  BLOODLING_HP,
+  BLOODLING_RADIUS,
+  ELITE_HP,
+  SPIDERMAN_HP,
+  SPIDERMAN_RADIUS,
+} from "../src/game/enemies";
 import { FLOAT_MS, type MetalFloat, minerFloatOrigin, oreFloatOrigin } from "../src/game/floats";
 import { freshTutorial, observe, stepTutorial, type TutorialMarks } from "../src/game/tutorial";
 import type { RenderedProjectile, Tile, Vec2, WorldSnapshot } from "../src/lobby/protocol";
@@ -154,6 +160,23 @@ export function demoWorld(): WorldSnapshot {
         frame: 0,
         radius: BLOODLING_RADIUS,
         hp: BLOODLING_HP,
+        flashing: false,
+      },
+      {
+        // One spiderman closing on the squad from the north (#137), on the same terms the bloodling
+        // above is here: unflashed and at full health, so this frame is the channel for judging its
+        // art at real size (ADR 0002 §5). It stands beside a grunt on purpose — the two share a 32
+        // box and pure ink, and telling them apart is the whole task the drawing was set.
+        //
+        // Facing 3 rather than a cardinal: this is the only creature in the game that never runs
+        // down the line it is looking at, and a facing off the axes is the one that shows it.
+        id: "e7",
+        kind: "spiderman",
+        pos: { x: 15_940, y: 15_420 },
+        facing: 3,
+        frame: 1,
+        radius: SPIDERMAN_RADIUS,
+        hp: SPIDERMAN_HP,
         flashing: false,
       },
     ],
@@ -457,7 +480,7 @@ export function demoCrowd(
   const crowd = [...world.enemies];
   for (let i = crowd.length; i < count; i++) {
     const elite = i % 5 === 0;
-    const kind = elite ? "elite" : i % 7 === 3 ? "bloodling" : "grunt";
+    const kind = elite ? "elite" : i % 7 === 3 ? "bloodling" : i % 11 === 5 ? "spiderman" : "grunt";
     crowd.push({
       id: `crowd${i}`,
       kind,
@@ -468,7 +491,13 @@ export function demoCrowd(
       facing: Math.floor(rng() * 8),
       frame: Math.floor(rng() * 2),
       radius: elite ? 24 : kind === "bloodling" ? BLOODLING_RADIUS : 16,
-      hp: elite ? ELITE_HP - 1 : kind === "bloodling" ? BLOODLING_HP - 1 : 17,
+      hp: elite
+        ? ELITE_HP - 1
+        : kind === "bloodling"
+          ? BLOODLING_HP - 1
+          : kind === "spiderman"
+            ? SPIDERMAN_HP - 1
+            : 17,
       flashing: false,
     });
   }

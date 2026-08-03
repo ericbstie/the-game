@@ -84,6 +84,55 @@ export const BLAST_DAMAGE = 40;
 // escalating, because nothing asked for a fourth curve.
 export const BLOODLING_SHARE = 0.1;
 
+// Spiderman (#137) — the fourth kind, and the only one that does not come at you down the straight
+// line: every step it takes is offset at an angle from that line, and when it is near enough it
+// throws cobweb all round itself. Every figure below is **provisional** except `WEB_SLOW_MS`, which
+// the ask states — only a played match can judge one, and a later change is a retune rather than a
+// correction — and each is derived off a number the game already fixes rather than picked freely.
+
+// How far off the straight line to its target each dash runs, and **the one knob the movement
+// has**: the speed below follows from it.
+//
+// One fixed side and never the other. Alternating sides is precisely the zig-zag path the ask rules
+// out, a side drawn per dash would cost the sim's rng a draw it does not otherwise take, and a
+// facing index carries no memory of which way the last dash leaned — so the drawing commits to one
+// lean too (`sprite/spiderman.ts`) and this is the sign that agrees with it.
+export const DASH_ANGLE = (35 * Math.PI) / 180;
+// Its dash speed, and the only speed it has: this kind never walks. Derived rather than chosen, off
+// the one number the slant makes interesting — a dash spends `cos(DASH_ANGLE)` of itself on closing
+// and the rest on going round you, so this is the speed at which it *arrives* at the elite's
+// ELITE_SPEED. Fast on the ground, no faster at reaching you, which is the whole trade.
+export const SPIDERMAN_SPEED = Math.round(ELITE_SPEED / Math.cos(DASH_ANGLE)); // 286
+// Half again a grunt's HP: fifteen shots at RANGED_DAMAGE where a grunt takes ten. It has to survive
+// its own approach, unlike a bloodling, because it is still there afterwards.
+export const SPIDERMAN_HP = GRUNT_HP * 1.5;
+export const SPIDERMAN_RADIUS = GRUNT_RADIUS; // a grunt's box, which is what the drawing is composed in
+// How near a player it comes before it throws. Four times the distance it would have to close to
+// bite one (PLAYER_RADIUS + SPIDERMAN_RADIUS), so the web is a thing thrown at you rather than
+// another way of chewing on you.
+export const WEB_TRIGGER = 4 * (PLAYER_RADIUS + SPIDERMAN_RADIUS);
+// How far the web reaches, which has to exceed the trigger by *some* margin for the reason
+// `BLAST_RADIUS` records: this sim throws on the position the hub relayed while the client judges
+// the catch on its own true one (it owns its health), and a player sprinting for 200 ms covers 52 u
+// between the two. The margin is 60 u — the same absolute allowance the blast leaves, because relay
+// drift is a distance and not a proportion — which also makes a burst a threat to anyone standing
+// near whoever set it off rather than to that player alone.
+export const WEB_RADIUS = WEB_TRIGGER + 60;
+// What one burst takes off a player caught in it. Well under the elite's bite, because unlike a
+// blast this one repeats: the thing that threw it is still alive.
+export const WEB_DAMAGE = 10;
+// What is left of a caught player's speed while the web holds them.
+export const WEB_SLOW = 0.5;
+// How long it holds them. **Not provisional** — the ask fixes it at 0.3 s.
+export const WEB_SLOW_MS = 300;
+// How long before it can throw again. It is what keeps a spiderman standing next to you from being
+// a permanent slow, so the feature is not defined without one.
+export const WEB_CADENCE_MS = 1_500;
+// The share of a nest's wave that comes out as spidermen, drawn off the same roll as the elite and
+// bloodling shares and from the band directly under the bloodlings' — so the three are bands of one
+// uniform draw and a wave still costs the sim exactly one number per enemy.
+export const SPIDERMAN_SHARE = 0.1;
+
 // Contact damage: an enemy touching a player deals `contactDamage` on its own `contactCadenceMs`.
 interface EnemyStats {
   hp: number;
@@ -114,6 +163,16 @@ const STATS: Record<EnemyKind, EnemyStats> = {
     hp: BLOODLING_HP,
     speed: BLOODLING_SPEED,
     radius: BLOODLING_RADIUS,
+    contactDamage: 6,
+    contactCadenceMs: 500,
+  },
+  // Its blow is `WEB_DAMAGE`, thrown from `WEB_TRIGGER` away. The ask says nothing about what it
+  // does once it is actually touching you or chewing a wall, so those take the grunt's rate rather
+  // than a number of their own.
+  spiderman: {
+    hp: SPIDERMAN_HP,
+    speed: SPIDERMAN_SPEED,
+    radius: SPIDERMAN_RADIUS,
     contactDamage: 6,
     contactCadenceMs: 500,
   },
@@ -330,6 +389,10 @@ export type EnemyTarget = { kind: "player"; id: PlayerId } | { kind: "structure"
 // radians and what is left of the leg. Absent until it first wanders. Both fields are server-only
 // and neither is announced — which is what keeps a nest's kind off the wire, since the only trace a
 // wanderer nest leaves is that its wave walks its own way instead of at somebody (ADR 0004).
+//
+// `webMs` counts down to a spiderman's next cobweb burst (#137), on the same injected `dtMs` the
+// bite cadence runs on. Absent until it first throws, and server-only like the two above: what the
+// client is told is that a burst happened, never how long until the next one.
 export interface Enemy {
   id: string;
   kind: EnemyKind;
@@ -339,6 +402,7 @@ export interface Enemy {
   target?: EnemyTarget;
   hunt?: PlayerId;
   wander?: { rad: number; ms: number };
+  webMs?: number;
 }
 
 // What a nest sends. A hunter nest fires waves committed to a player at any distance (#124); a
@@ -391,6 +455,10 @@ export interface EnemyEvents {
   // Structures chewed on this tick, and the ids of any that fell. Sparse, mirroring hits/deaths.
   structHits: StructureHit[];
   removals: string[];
+  // The spidermen that threw cobweb this tick (#137). Ids and nothing else — where the web landed
+  // is the position that enemy is already being streamed at, and a client resolves it off its own
+  // interpolated buffer exactly as it resolves a death's.
+  bursts: string[];
   // What was depicted this tick: turrets whose aim changed, the shots put in the air, and the
   // shots taken out of it. `projectiles` and `spent` are the whole of a shot's wire life — the
   // flight between them is derived on both sides (ADR 0007).
@@ -598,6 +666,7 @@ export function stepEnemies(
     dtMs,
     damaged: new Set<string>(),
     blasts: new Set<string>(),
+    bursts: new Set<string>(),
   };
   for (const enemy of state.enemies.values()) stepEnemy(enemy, context);
   // A bloodling that reached a player is taken off the field here, before `moves` is built, so it
@@ -626,6 +695,10 @@ export function stepEnemies(
       aims,
       projectiles,
       spent,
+      // A spiderman survives its own burst, so — unlike a bloodling's blast, which rides the death
+      // the client is already streamed — nothing else on the wire can carry this and it is its own
+      // event. What it is not is a body: the web leaves nothing behind and outlives nothing.
+      bursts: [...context.bursts],
       ...reapStructures(context),
     },
   };
@@ -643,6 +716,7 @@ interface StepContext {
   dtMs: number;
   damaged: Set<string>; // structure ids bitten this tick, resolved into hits/removals at the end
   blasts: Set<string>; // bloodlings that went off this tick, resolved into deaths at the end
+  bursts: Set<string>; // spidermen that threw cobweb this tick, announced as themselves
 }
 
 // Turn this tick's structure damage into wire events. A structure at 0 HP is simply removed —
@@ -713,12 +787,19 @@ function fireNestWave(
   const spawns: EnemySpawn[] = [];
   for (let i = 0; i < size; i++) {
     if (state.enemies.size >= state.settings.enemyCap) break; // cap governor holds the remainder
-    // One draw decides the kind, read as three bands: the elite share at the bottom, the bloodling
-    // share at the top, and a grunt for everything between them. One number per enemy rather than
-    // two, so a wave costs the sim's rng exactly what it always has.
+    // One draw decides the kind, read as four bands: the elite share at the bottom, the bloodling
+    // share at the top, the spiderman share directly under it, and a grunt for everything between
+    // them. One number per enemy however many kinds there are, so a wave costs the sim's rng exactly
+    // what it always has.
     const roll = state.rng();
     const kind: EnemyKind =
-      roll < share ? "elite" : roll >= 1 - BLOODLING_SHARE ? "bloodling" : "grunt";
+      roll < share
+        ? "elite"
+        : roll >= 1 - BLOODLING_SHARE
+          ? "bloodling"
+          : roll >= 1 - BLOODLING_SHARE - SPIDERMAN_SHARE
+            ? "spiderman"
+            : "grunt";
     // A nest walled in is a legitimate strategy, so a wave that lands inside a footprint still
     // spawns — the overlapping enemy is simply pushed clear.
     const at = pushOutOfSolids(build, jitter(nest.pos, state.rng), enemyRadius(kind));
@@ -1061,9 +1142,54 @@ function stepEnemy(enemy: Enemy, context: StepContext): void {
   const speed = enemySpeed(enemy.kind) * (context.dtMs / 1000);
   const engaged = acquire(enemy, context);
   // ENGAGED and HUNTING differ only in what `acquire` returned, never in how the step is taken.
-  if (engaged) stepToward(enemy, engaged.lead, speed, context);
+  if (engaged) stepToward(enemy, dashPoint(enemy, engaged.lead, speed), speed, context);
   else wander(enemy, speed, context);
   if (enemy.kind === "bloodling") fuse(enemy, context);
+  if (enemy.kind === "spiderman") throwWeb(enemy, context);
+}
+
+// Where this enemy actually steers, which for every kind but one is the point it is chasing.
+//
+// A spiderman comes at you on the slant (#137): its heading is the bearing to that point turned by
+// `DASH_ANGLE`, and the destination handed back is one step along it. Turned every tick and not once
+// per leg, which is what makes "each dash is offset at an angle from the straight line to the
+// player" true at every instant rather than only at the instant a leg began.
+//
+// Always the same way round, so the path is one converging curve and never a weave — the ask rules
+// out a zig-zag, and a zig-zag is exactly what a side that alternates draws. It still closes: a step
+// of `speed` shortens the gap by `speed × cos(DASH_ANGLE)`, and the sign is the one whose curve
+// agrees with the lean the sprite is drawn with.
+//
+// A point handed back rather than a position written, so the dash goes through `stepToward` like
+// every other movement in this module and a spiderman bashes a wall in its way exactly as a grunt
+// does. Called from the engaged path alone — see `wander` for why an undirected walk stays straight.
+function dashPoint(enemy: Enemy, lead: Vec2, speed: number): Vec2 {
+  if (enemy.kind !== "spiderman") return lead;
+  const dx = lead.x - enemy.pos.x;
+  const dy = lead.y - enemy.pos.y;
+  if (dx === 0 && dy === 0) return lead; // standing on it: no line to be offset from
+  const heading = Math.atan2(dy, dx) - DASH_ANGLE;
+  return { x: enemy.pos.x + Math.cos(heading) * speed, y: enemy.pos.y + Math.sin(heading) * speed };
+}
+
+// A spiderman's cobweb (#137): a player within `WEB_TRIGGER` and it throws, all round itself, then
+// waits out `WEB_CADENCE_MS` before it can throw again.
+//
+// Judged after the step for the reason a bloodling's fuse is, and on a *player* for the same one: it
+// is thrown at the squad, so a base standing next to one is not webbed. Deliberately not read off
+// `acquire` either — that answers what this enemy is *chasing*, and a burst is not a target: it goes
+// off all round the creature, so anyone near enough is caught.
+//
+// What it does to whoever is caught is not this module's to apply. The client owns its health and
+// judges the blow at its own true position (`lobby.ts`), and it owns its movement too — so the slow
+// is applied by that player's own client off the burst it is told about, on exactly the terms the
+// blast's damage already lands on.
+function throwWeb(enemy: Enemy, context: StepContext): void {
+  enemy.webMs = Math.max(0, (enemy.webMs ?? 0) - context.dtMs);
+  if (enemy.webMs > 0) return;
+  if (!nearestWithin(context.players, enemy.pos, WEB_TRIGGER)) return;
+  enemy.webMs = WEB_CADENCE_MS;
+  context.bursts.add(enemy.id);
 }
 
 // A bloodling's proximity fuse (#140): a player this close and it goes off, wherever it was headed.
@@ -1103,6 +1229,9 @@ function wander(enemy: Enemy, speed: number, context: StepContext): void {
     x: clamp(enemy.pos.x + Math.cos(enemy.wander.rad) * speed, edge, arena.width - edge),
     y: clamp(enemy.pos.y + Math.sin(enemy.wander.rad) * speed, edge, arena.height - edge),
   };
+  // Straight down the drawn heading, spiderman included: the slant is defined against the line to
+  // the *player*, and a wanderer has no player. Slanting here would also fight the clamp above,
+  // which keeps `wander.rad` inside the walls and would then be walked off by `DASH_ANGLE`.
   stepToward(enemy, to, speed, context);
 }
 

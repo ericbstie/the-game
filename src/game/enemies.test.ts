@@ -32,6 +32,7 @@ import {
   BLOODLING_RADIUS,
   BLOODLING_SHARE,
   BLOODLING_SPEED,
+  DASH_ANGLE,
   ELITE_HP,
   ELITE_SPEED,
   type Enemy,
@@ -62,10 +63,17 @@ import {
   RANGED_HALFWIDTH,
   RANGED_RANGE,
   SPAWN_GRACE_MS,
+  SPIDERMAN_HP,
+  SPIDERMAN_RADIUS,
+  SPIDERMAN_SHARE,
+  SPIDERMAN_SPEED,
   spawnEnemyState,
   stepEnemies,
   WANDER_LEG_MS,
   WANDERER_CHANCE_OUTER,
+  WEB_CADENCE_MS,
+  WEB_RADIUS,
+  WEB_TRIGGER,
   waveSize,
 } from "./enemies";
 import { ARENA, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
@@ -161,6 +169,7 @@ const settle = (
     aims: [],
     projectiles: [],
     spent: [],
+    bursts: [],
   };
   const held = new Map([...state.enemies].map(([id, e]) => [id, { ...e.pos }]));
   // Long enough for a full-reach shot to expire — 700 u at PROJECTILE_SPEED is 8 ticks — with room
@@ -175,6 +184,7 @@ const settle = (
     merged.spawns.push(...events.spawns);
     merged.hits.push(...events.hits);
     merged.deaths.push(...events.deaths);
+    merged.bursts.push(...events.bursts);
     merged.nests.push(...events.nests);
     merged.structHits.push(...events.structHits);
     merged.removals.push(...events.removals);
@@ -1017,13 +1027,20 @@ describe("#125: no safe centre, and the gradient it produces", () => {
 
   // A squad that never leaves spawn is fought there, and what fights it changes over the match:
   // hunter waves commit at any distance and arrive at once, while wanderers arrive by diffusion,
-  // which takes minutes from 14,000 u out. Observed at 5:00 for seeds 1, 2, 3: 149/121/131 hunters
-  // inside AGGRO_RADIUS of centre and not one wanderer.
+  // which takes minutes from 14,000 u out.
+  //
+  // **Re-recorded at #137**, which put a second kind as fast as a bloodling into the field and made
+  // the walk that much quicker: at 5:00 for seeds 1, 2, 3 it is now 131/81/108 hunters inside
+  // AGGRO_RADIUS of centre against 0/0/1 wanderers, where before it was 149/121/131 against none at
+  // all. So what is asserted is the gradient rather than an empty set — diffusion has barely started
+  // at 5:00, and the test below is the one that watches it arrive.
   test("a player standing at spawn is fought at spawn from the first waves", () => {
     for (const seed of [1, 2, 3]) {
       const s = runFor(seed, 5, player({ ...C }));
-      expect(near(s, C) - near(s, C, AGGRO_RADIUS, true)).toBeGreaterThan(0); // hunter waves
-      expect(near(s, C, AGGRO_RADIUS, true)).toBe(0); // and the walk has not got there yet
+      const wanderers = near(s, C, AGGRO_RADIUS, true);
+      const hunters = near(s, C) - wanderers;
+      expect(hunters).toBeGreaterThan(0); // hunter waves
+      expect(wanderers * 10).toBeLessThan(hunters); // and the walk is nowhere near them yet
     }
   });
 
@@ -2135,10 +2152,13 @@ describe("the bloodling (#140)", () => {
       const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => roll)), 6);
       return stepEnemies(s, [], [], DT).events.spawns.map((sp) => sp.kind);
     };
-    // The bloodling share sits at the top of the draw and the elite share at the bottom, so the
-    // two are independent bands of one uniform and the grunt is what is left between them.
+    // The bloodling share sits at the top of the draw and the elite share at the bottom, with the
+    // spiderman share directly under the bloodlings' since #137 — bands of one uniform, and the
+    // grunt is what is left between them.
     expect(mix(0.99)).toEqual(Array(DEFAULTS.waveSize.max).fill("bloodling"));
-    expect(mix(1 - BLOODLING_SHARE - 0.01)).toEqual(Array(DEFAULTS.waveSize.max).fill("grunt"));
+    expect(mix(1 - BLOODLING_SHARE - SPIDERMAN_SHARE - 0.01)).toEqual(
+      Array(DEFAULTS.waveSize.max).fill("grunt"),
+    );
     expect(mix(0.29)).toEqual(Array(DEFAULTS.waveSize.max).fill("elite"));
   });
 
@@ -2147,5 +2167,239 @@ describe("the bloodling (#140)", () => {
     const spawns = stepEnemies(s, [], [], DT).events.spawns;
     expect(spawns[0]).toMatchObject({ kind: "bloodling", hp: BLOODLING_HP });
     expect(enemyRadius("bloodling")).toBe(BLOODLING_RADIUS);
+  });
+});
+
+// #137. The Spiderman: it comes at you on the slant instead of down the straight line, and when it
+// is near enough it throws cobweb all round itself. What the sim owes is the angled step and the
+// burst announcement — the blow and the slow are the client's, because it owns its health and its
+// movement both.
+describe("the spiderman (#137)", () => {
+  const DT = 50;
+  const spiderman = (id: string, pos: Vec2, hp = SPIDERMAN_HP): Enemy => ({
+    id,
+    kind: "spiderman",
+    pos,
+    hp,
+    biteMs: 0,
+  });
+  const stepWith = (s: EnemyState, players: PlayerRef[], build: BuildState | null = null) =>
+    stepEnemies(s, players, [], DT, build).events;
+  // The angle between the step this enemy just took and the straight line it would have taken to
+  // `to` from where it started, in radians. Unsigned — which side the lean is on is asserted
+  // separately, by whether the same side comes out every time.
+  const offLine = (from: Vec2, moved: Vec2, to: Vec2): number => {
+    const step = Math.atan2(moved.y - from.y, moved.x - from.x);
+    const line = Math.atan2(to.y - from.y, to.x - from.x);
+    return Math.abs(Math.atan2(Math.sin(step - line), Math.cos(step - line)));
+  };
+  const gap = (from: Vec2, to: Vec2) => Math.hypot(to.x - from.x, to.y - from.y);
+  // Where every dash fixture starts, and inside AGGRO_RADIUS deliberately: the slant is the
+  // *engaged* step. Out of aggro and locked on nobody, a spiderman wanders, and a wanderer walks
+  // straight down its drawn heading — so a fixture parked out there would assert nothing about the
+  // dash whatever it measured.
+  const DASH_FROM = AGGRO_RADIUS - 300;
+
+  test("a dash runs at DASH_ANGLE off the straight line to the player, from any bearing", () => {
+    // Every compass bearing, because a lean that only held to the east would be a bug the one
+    // fixture that happened to face east could never see.
+    for (let i = 0; i < 8; i++) {
+      const bearing = (i / 8) * 2 * Math.PI;
+      const from = { x: C.x + Math.cos(bearing) * 800, y: C.y + Math.sin(bearing) * 800 };
+      const s = stateWith([spiderman("e1", { ...from })]);
+      stepWith(s, player({ ...C }));
+      expect(offLine(from, only(s).pos, C)).toBeCloseTo(DASH_ANGLE, 6);
+    }
+  });
+
+  test("and it is off the line — a grunt in the same place walks straight down it", () => {
+    const from = { x: C.x + 800, y: C.y };
+    const g = stateWith([grunt("e1", { ...from })]);
+    stepWith(g, player({ ...C }));
+    expect(offLine(from, only(g).pos, C)).toBeCloseTo(0, 6);
+    expect(DASH_ANGLE).toBeGreaterThan(0); // or the assertion above would be the same statement
+  });
+
+  // The other half of the ask, and the half an angle assertion alone would let through: a dash that
+  // runs at 90° is perfectly angled and never arrives.
+  test("the approach still closes distance, dash after dash, all the way in", () => {
+    const from = { x: C.x + DASH_FROM, y: C.y };
+    const s = stateWith([spiderman("e1", { ...from })]);
+    // Only while it is still approaching. A step of length `s` taken at a fixed angle off the radial
+    // line lands at `sqrt(d² + s² − 2ds·cos DASH_ANGLE)`, which stops being nearer than `d` once the
+    // gap drops under about `2s·cos DASH_ANGLE` — a couple of dozen units, deep inside throwing
+    // range. Circling once it has arrived is the movement working, not failing.
+    //
+    // Capped so a dash that converges too slowly, or not at all, fails here instead of spinning: the
+    // radial part of one step is `SPIDERMAN_SPEED × cos DASH_ANGLE`, which walks the gap down to the
+    // trigger in ~118 of them.
+    let last = gap(from, C);
+    let dashes = 0;
+    while (last >= WEB_TRIGGER && dashes < 200) {
+      stepWith(s, player({ ...C }));
+      const now = gap(only(s).pos, C);
+      expect(now).toBeLessThan(last); // every single dash, not just the run of them
+      last = now;
+      dashes++;
+    }
+    expect(last).toBeLessThan(WEB_TRIGGER); // and it gets all the way to throwing range
+  });
+
+  test("it closes at the elite's speed — the slant is what it pays for the extra ground", () => {
+    const from = { x: C.x + DASH_FROM, y: C.y };
+    const s = stateWith([spiderman("e1", { ...from })]);
+    stepWith(s, player({ ...C }));
+    // The whole step is its own speed; the part of it that is progress is the elite's.
+    expect(gap(from, only(s).pos)).toBeCloseTo((SPIDERMAN_SPEED * DT) / 1000, 6);
+    // Loose by a hundredth of a unit, from two structural slacks rather than any defect, pulling
+    // opposite ways: SPIDERMAN_SPEED is rounded up to a whole unit off `ELITE_SPEED / cos
+    // DASH_ANGLE`, worth +0.014 u a step, and one step's progress is the chord it actually walks
+    // rather than the radius `s · cos DASH_ANGLE` that approximates it, worth −0.022 u at this
+    // gap. Still fifty times tighter than the 2.6 u that separates this from the 14.3 u a
+    // straight-line dash would close, which is the thing it has to keep failing on.
+    expect(gap(from, C) - gap(only(s).pos, C)).toBeCloseTo((ELITE_SPEED * DT) / 1000, 1);
+  });
+
+  test("the lean never swaps sides, however long the chase runs — it is not a zig-zag", () => {
+    const s = stateWith([spiderman("e1", { x: C.x + DASH_FROM, y: C.y })]);
+    const sideOf = (from: Vec2, moved: Vec2, to: Vec2) =>
+      Math.sign((moved.x - from.x) * (to.y - from.y) - (moved.y - from.y) * (to.x - from.x));
+    const sides = new Set<number>();
+    for (let i = 0; i < 60; i++) {
+      const from = { ...only(s).pos };
+      stepWith(s, player({ ...C }));
+      sides.add(sideOf(from, only(s).pos, C));
+    }
+    expect(sides.size).toBe(1);
+  });
+
+  test("the web reaches wider than the trigger, so whoever set it off is inside it", () => {
+    // The same margin a blast leaves and for the same reason: the sim throws on the position the
+    // hub relayed, the client judges the catch on its own true one, and 200 ms of sprinting is 52 u.
+    expect(WEB_RADIUS).toBeGreaterThan(WEB_TRIGGER + PLAYER_SPEED * 0.2);
+  });
+
+  test("one within the trigger of a player throws, and the burst rides `bursts`", () => {
+    const s = stateWith([spiderman("e1", { x: C.x + WEB_TRIGGER - 1, y: C.y })]);
+    const events = stepWith(s, player({ ...C }));
+    expect(events.bursts).toEqual(["e1"]);
+    expect(s.enemies.size).toBe(1); // and it survives its own web, unlike a bloodling
+    expect(events.deaths).toEqual([]);
+    expect(events.moves).toHaveLength(1);
+  });
+
+  test("out of the trigger it throws nothing and just closes", () => {
+    const from = { x: C.x + 1_200, y: C.y };
+    const s = stateWith([spiderman("e1", { ...from })]);
+    const events = stepWith(s, player({ ...C }));
+    expect(events.bursts).toEqual([]);
+    expect(gap(only(s).pos, C)).toBeLessThan(gap(from, C));
+  });
+
+  test("it throws on its cadence and not every tick it stands in range", () => {
+    const s = stateWith([spiderman("e1", { x: C.x + WEB_TRIGGER - 1, y: C.y })]);
+    const held = { ...only(s).pos };
+    let thrown = 0;
+    const ticks = WEB_CADENCE_MS / DT;
+    for (let i = 0; i < 4 * ticks; i++) {
+      only(s).pos = { ...held }; // pinned: this is a test about the cadence, not about the walk
+      thrown += stepWith(s, player({ ...C })).bursts.length;
+    }
+    expect(thrown).toBe(4);
+  });
+
+  test("a burst is not a lock: anyone near enough is webbed, chased or not", () => {
+    const far = { x: C.x + 1_500, y: C.y };
+    const s = stateWith([spiderman("e1", { x: C.x + 900, y: C.y })]);
+    stepWith(s, [{ id: "chased", pos: far }]); // locks on the far one
+    expect(only(s).target).toEqual({ kind: "player", id: "chased" });
+    const events = stepWith(s, [
+      { id: "chased", pos: far },
+      { id: "bystander", pos: { x: only(s).pos.x + WEB_TRIGGER - 1, y: only(s).pos.y } },
+    ]);
+    expect(events.bursts).toEqual(["e1"]);
+  });
+
+  test("nothing but a player sets it off — it chews a structure like any other enemy", () => {
+    const MINER = BUILDABLES.miner as BuildableSpec;
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 10_000;
+    const at = { x: C.x + 5_000, y: C.y };
+    const miner = placeStructure(build, "miner", tileOf({ x: at.x - TILE, y: at.y - TILE }), MINER);
+    const s = stateWith([spiderman("e1", { x: at.x + 30, y: at.y })]);
+    for (let i = 0; i < 20; i++) expect(stepWith(s, [], build).bursts).toEqual([]);
+    expect(s.enemies.size).toBe(1);
+    expect(build.structures.get(miner.id)?.hp).toBeLessThan(MINER.hp);
+  });
+
+  test("a nest's wave carries them, drawn off the same roll as the other two shares", () => {
+    const mix = (roll: number) => {
+      const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => roll)), 6);
+      return stepEnemies(s, [], [], DT).events.spawns.map((sp) => sp.kind);
+    };
+    const band = 1 - BLOODLING_SHARE - SPIDERMAN_SHARE;
+    expect(mix(band)).toEqual(Array(DEFAULTS.waveSize.max).fill("spiderman"));
+    expect(mix(1 - BLOODLING_SHARE - 0.01)).toEqual(Array(DEFAULTS.waveSize.max).fill("spiderman"));
+    expect(mix(band - 0.01)).toEqual(Array(DEFAULTS.waveSize.max).fill("grunt")); // just under it
+    expect(mix(0.99)).toEqual(Array(DEFAULTS.waveSize.max).fill("bloodling")); // and just over
+  });
+
+  // The rng budget, which is the thing a fourth kind is most likely to break: the wave still costs
+  // exactly one draw per enemy, so every capture pinned to this sim's sequence stays where it was.
+  test("a fourth kind costs the sim's rng nothing — still one draw per enemy in a wave", () => {
+    let draws = 0;
+    const counting = () => {
+      draws++;
+      return 0.5;
+    };
+    const s = armed(onlyNestState(spawnEnemyState(worldInit(), counting)), 6);
+    draws = 0;
+    const spawns = stepEnemies(s, [], [], DT).events.spawns;
+    // Four a head across the whole tick: one for the kind and two for the jitter, exactly as before
+    // #137, plus the wander heading each of them draws on being stepped — `stepEnemies` spawns the
+    // wave and then steps it, the new arrivals included.
+    expect(draws).toBe(spawns.length * 4);
+  });
+
+  test("one spawns at SPIDERMAN_HP, and its radius rides the same record as the rest", () => {
+    const s = armed(
+      onlyNestState(spawnEnemyState(worldInit(), () => 1 - BLOODLING_SHARE - 0.01)),
+      6,
+    );
+    const spawns = stepEnemies(s, [], [], DT).events.spawns;
+    expect(spawns[0]).toMatchObject({ kind: "spiderman", hp: SPIDERMAN_HP });
+    expect(enemyRadius("spiderman")).toBe(SPIDERMAN_RADIUS);
+  });
+
+  test("a spawn announcement still carries nothing server-only — `webMs` never leaves the sim", () => {
+    const s = armed(
+      onlyNestState(spawnEnemyState(worldInit(), () => 1 - BLOODLING_SHARE - 0.01)),
+      6,
+    );
+    for (const spawn of stepEnemies(s, [], [], DT).events.spawns) {
+      expect(Object.keys(spawn).sort()).toEqual(["hp", "id", "kind", "pos"]);
+    }
+  });
+
+  // The purity claim, on the one kind that carries a countdown of its own. A `webMs` reached for in
+  // module scope, or a burst resolved out of a shared set, would make one of these read the other's.
+  test("two sims of one world step identically with spidermen in the field", () => {
+    const a = spawnEnemyState(worldInit(8), mulberry32(8));
+    const b = spawnEnemyState(worldInit(8), mulberry32(8));
+    // One planted in throwing range of the squad, because a nest-spawned one never gets there
+    // inside this run: the nests sit some 3,300 u out and a wanderer diffuses rather than advances.
+    // Without it the burst comparison below is two empty lists agreeing with each other.
+    for (const s of [a, b])
+      s.enemies.set("web", spiderman("web", { x: C.x + WEB_TRIGGER - 1, y: C.y }));
+    const squad = player({ ...C });
+    let bursts = 0;
+    for (let i = 0; i < 4_000; i++) {
+      const ea = stepEnemies(a, squad, [], DT).events;
+      const eb = stepEnemies(b, squad, [], DT).events;
+      expect(ea.bursts).toEqual(eb.bursts);
+      bursts += ea.bursts.length;
+    }
+    expect([...a.enemies.values()]).toEqual([...b.enemies.values()]);
+    expect(bursts).toBeGreaterThan(0); // not vacuous: webs were actually thrown
   });
 });
