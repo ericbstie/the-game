@@ -244,9 +244,30 @@ const spiderman: SpriteSubject = {
 
 // A point on the flattened plan, lifted clear of it. One function, so the lobes, the ring of feet
 // and the arms' reach cannot disagree about where the creature is pointing.
+//
+// `FIT` shrinks the whole animal about the floor point. Every reach and every height below was
+// hand-cut against a 32 box and the sum of them overran it: `sprite:sheet` measured six of the
+// sixteen bakes running into the edge of their box — facings 0, 3, 4 and 7, the ones whose arms and
+// tail lie flattest across the screen — where a grunt, an elite and a bloodling each measure none.
+// A bake that reaches the edge is shorn at it, so the hooks that name this creature were being cut
+// off in exactly the four facings that show them best.
+//
+// One factor here rather than a smaller `ARM_REACH`, because the arms are not the only thing over
+// the line — pulling them back alone still left bakes clipping on the abdomen. Scaling at the one
+// place every mark's position is computed keeps the proportions the drawing was composed with, and
+// deliberately does not touch the stroke widths: those were set against a grunt's hip so this
+// creature survives a dense ore patch, and a thinner line is the one thing that must not follow
+// from a smaller body.
+//
+// 0.76 is measured, not chosen: it is the largest value at which `sprite:sheet` reports no bake
+// touching its box at all. 0.78 still clips one. The cost is a creature about a quarter smaller
+// than it was drawn, which is a real loss of presence and is recorded in the review notes.
+const FIT = 0.76;
+
 function plan(bearing: number, radius: number, height: number): Point {
   const a = bearing * DEG;
-  return { x: Math.cos(a) * radius, y: Math.sin(a) * radius * PLAN - height };
+  const r = radius * FIT;
+  return { x: Math.cos(a) * r, y: Math.sin(a) * r * PLAN - height * FIT };
 }
 
 function from(origin: Point, bearing: number, radius: number, height: number): Point {
