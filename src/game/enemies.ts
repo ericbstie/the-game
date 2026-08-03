@@ -1423,13 +1423,7 @@ function addEnemy(state: EnemyState, kind: EnemyKind, pos: Vec2, hunt?: PlayerId
   const id = `e${state.nextId++}`;
   const hp = STATS[kind].hp;
   const enemy: Enemy = { id, kind, pos: { ...pos }, hp, biteMs: 0 };
-  if (hunt !== undefined) {
-    enemy.hunt = hunt;
-  } else {
-    // Wanderers start with a fixed heading derived from ID to avoid RNG draw on spawn.
-    const idNum = parseInt(id.slice(1));
-    enemy.wander = { rad: ((idNum * 0.618) % 1) * 2 * Math.PI, ms: WANDER_LEG_MS };
-  }
+  if (hunt !== undefined) enemy.hunt = hunt;
   state.enemies.set(id, enemy);
   return { id, kind, pos: { ...pos }, hp };
 }

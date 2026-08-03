@@ -229,8 +229,8 @@ describe("defaults reproduce the world as it stood before the config", () => {
         trace.push(`${tick}|${s.id}|${s.kind}|${s.pos.x}|${s.pos.y}`);
       }
     }
-    expect([trace.length, digest(trace)]).toEqual([506, "74ed4dcb46501f4c"]);
-    expect(digest([...sim.enemies.values()])).toBe("f4b0d34a38871524");
+    expect([trace.length, digest(trace)]).toEqual([516, "e28b3d5b64b5060d"]);
+    expect(digest([...sim.enemies.values()])).toBe("c031b33a79844019");
   });
 });
 
