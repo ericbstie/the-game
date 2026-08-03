@@ -32,10 +32,11 @@ import {
   letteringAt,
   PUFF_MS,
   SHOT_STREAK,
+  SHOT_WIDTH,
 } from "./draw";
 import { MARKER_INSET } from "./edgeMarker";
 import { FLOAT_MS, type MetalFloat } from "./floats";
-import { inkPuff, starburst } from "./fx";
+import { inkPuff, reticle, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_CLOSE_U,
   MINIMAP_COVERAGE_U,
@@ -67,6 +68,10 @@ interface Call {
   // escape count the size *is* part of the message — it is screen-fixed chrome, so it has to grow
   // in world units as the camera zooms out, and nothing about its position can say that.
   font: unknown;
+  // The pen, for a third: #154's aim mark is told apart from every other stroke in the frame by its
+  // tone and its weight alone, and its corners only close because the join is mitred.
+  width: unknown;
+  join: unknown;
 }
 const SPY_CHAR_WIDTH = 6;
 
@@ -84,6 +89,8 @@ function spyCtx() {
         stroke: ctx.strokeStyle,
         composite: ctx.globalCompositeOperation ?? "source-over",
         font: ctx.font,
+        width: ctx.lineWidth,
+        join: ctx.lineJoin,
       });
     };
   ctx = {
@@ -3155,5 +3162,130 @@ describe("the camera's zoom", () => {
     });
     expect(blits(zoomed)).toEqual(blits(plain));
     expect(zoomed.calls.length).toBe(plain.calls.length);
+  });
+});
+
+// #154: the mark under the pointer. The OS arrow is hidden over the arena (`.arena`, `styles.css`),
+// so this is the only thing on screen that says where the pointer is — and because `aimDir` takes a
+// shot's direction from that very point, it is also the only thing that says where a shot is aimed.
+//
+// What it has to survive is the floor it is read against: white paper over most of a frame, dense
+// black stipple over an ore patch. That is what the tone below is about, and it is why several of
+// these claims are about drawing state rather than about where the ink went.
+describe("the aim point's mark", () => {
+  // A point inside a tile and nowhere near its middle, so a mark laid out from the pointer rather
+  // than from the tile fails every claim below instead of landing on top of the right answer.
+  const AIM: Vec2 = { x: 1_303, y: 1_252 };
+  const AIM_TILE = tileOf(AIM);
+  const marked = (patch: Partial<DrawOptions> = {}) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport, aim: AIM, ...patch });
+    return ctx;
+  };
+  // Where the mark begins in a frame's log: the `beginPath` that opens it. Found from the first
+  // point of the first corner rather than from the end of the log, so a mark drawn in the wrong
+  // place fails these tests instead of quietly moving what they read.
+  const opensAt = (ctx: { calls: Call[] }) =>
+    ctx.calls.findIndex((c) => c.fn === "moveTo" && c.args[0] === reticle(AIM_TILE)[0][0].x) - 1;
+  const markCalls = (ctx: { calls: Call[] }) => ctx.calls.slice(opensAt(ctx));
+  const points = (ctx: { calls: Call[] }) =>
+    markCalls(ctx)
+      .filter((c) => c.fn === "moveTo" || c.fn === "lineTo")
+      .map((c) => c.args as [number, number]);
+  const struck = (ctx: { calls: Call[] }) => markCalls(ctx).filter((c) => c.fn === "stroke");
+
+  // A colour as its three channels, whichever of CSS's two hex forms it is written in.
+  const channels = (colour: string): [number, number, number] => {
+    const hex = colour.slice(1);
+    const wide =
+      hex.length === 3 ? [...hex].map((c) => c + c) : [0, 2, 4].map((i) => hex.slice(i, i + 2));
+    return wide.map((pair) => Number.parseInt(pair, 16)) as [number, number, number];
+  };
+
+  test("strikes the corners `fx.ts` lays out, around the tile the pointer is in", () => {
+    expect(points(marked())).toEqual(
+      reticle(AIM_TILE).flatMap((corner) => corner.map((p) => [p.x, p.y] as [number, number])),
+    );
+  });
+
+  // The author's first part, at the render layer: the mark snaps to grid spaces. `fx.ts` holds the
+  // geometry to the grid; what is checked here is that the *pointer* reaches it through `tileOf` and
+  // nothing else — so anywhere in a tile is the same mark, and no fraction of the pointer's position
+  // survives into it.
+  test("snaps to the grid — every pointer in one tile is marked identically", () => {
+    const anywhere = [
+      { x: AIM_TILE.tx * TILE, y: AIM_TILE.ty * TILE },
+      { x: AIM_TILE.tx * TILE + TILE / 2, y: AIM_TILE.ty * TILE + TILE / 2 },
+      { x: (AIM_TILE.tx + 1) * TILE - 0.01, y: (AIM_TILE.ty + 1) * TILE - 0.01 },
+    ];
+    for (const at of anywhere) {
+      expect(points(marked({ aim: at }))).toEqual(points(marked()));
+    }
+    // And the neighbouring tile is a different mark, or "snapped" would be indistinguishable from
+    // "drawn in one fixed place".
+    const over = { x: (AIM_TILE.tx + 1) * TILE + 1, y: AIM.y };
+    expect(points(marked({ aim: over }))).not.toEqual(points(marked()));
+  });
+
+  // The author's second part, and the half of this ticket no ink could be picked for. Ink alone
+  // vanishes into an ore patch, paper alone vanishes into the floor, and paper *under* ink — the
+  // idiom a player's name is cut out of its sprite with — held the mark together over both and was
+  // still not *found* on stipple by blind readers. None of those gets past the fact that the floor
+  // is exactly two tones and an ore patch is those two shuffled: whatever is picked out of them, the
+  // floor is already wearing it under the mark. Grey is a value the floor has nowhere.
+  test("is struck in grey — a tone neither the paper nor the ink of the floor can counterfeit", () => {
+    const tone = struck(marked())[0].stroke as string;
+    const [r, g, b] = channels(tone);
+    expect([g, b]).toEqual([r, r]); // no hue at all, so #76's grant of exactly two colours stands
+    // Far from both of the floor's own tones, which is the whole claim. Halfway is the maximum, and
+    // the band is what a retune of the value has room to move in without giving that up.
+    expect(Math.min(r, 255 - r)).toBeGreaterThan(96);
+  });
+
+  // Heavier than the ink the drawing is struck in, because it is not part of the drawing: everything
+  // else in this file is the picture, and this is the instrument the picture is aimed with.
+  test("is struck at one weight, heavier than the ink the rest of the frame is drawn in", () => {
+    const widths = struck(marked()).map((c) => c.width as number);
+    expect(new Set(widths).size).toBe(1);
+    expect(widths[0]).toBeGreaterThan(SHOT_WIDTH);
+  });
+
+  // One path and one stroke. Nothing composites, nothing is laid twice, and nothing is rimmed — the
+  // grey is the whole of how the mark is found, so there is no second pass left to pay for.
+  test("costs the frame one path and one stroke, with no compositing behind it", () => {
+    const ctx = marked();
+    expect(markCalls(ctx).filter((c) => c.fn === "beginPath")).toHaveLength(1);
+    expect(struck(ctx)).toHaveLength(1);
+    expect(ctx.calls.every((c) => c.composite === "source-over")).toBe(true);
+  });
+
+  // A corner is one polyline and not two strands, so its outer angle mitres shut. Struck as two
+  // separate segments it comes out notched by half a line width, which on a mark this size is most
+  // of what there is to see.
+  test("each corner is struck as one polyline, so its angle closes", () => {
+    const ctx = marked();
+    expect(markCalls(ctx).filter((c) => c.fn === "moveTo")).toHaveLength(reticle(AIM_TILE).length);
+    expect(struck(ctx)[0].join).toBe("miter");
+  });
+
+  // Nothing the frame draws may bury the pointer: the OS arrow this replaces was over every pixel on
+  // the screen, the corner map included.
+  test("paints over everything in the world and over the corner map", () => {
+    const ctx = marked({ selfId: "p1" });
+    expect(opensAt(ctx)).toBeGreaterThan(mapStart(ctx));
+  });
+
+  test("costs the frame nothing at all when there is no pointer to mark", () => {
+    const bare = spyCtx();
+    drawWorld(bare, world, { camera, viewport });
+    expect(bare.calls.some((c) => c.fn === "stroke" && c.join === "miter")).toBe(false);
+    expect(marked().calls.length).toBeGreaterThan(bare.calls.length);
+  });
+
+  // It is drawn last of the world's marks, so the state it leaves is what the next frame opens on.
+  // The alpha is the one thing nothing downstream sets before it draws.
+  test("leaves the frame's alpha as it found it", () => {
+    expect(marked().calls[0].alpha).toBe(1);
+    expect(marked().calls.at(-1)?.alpha).toBe(1);
   });
 });

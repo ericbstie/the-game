@@ -15,6 +15,7 @@ import { capture, measurementsIn } from "./headless";
 //   bun run sprite:frame --zoom 0.5 --enemies 500             # and the worst crowd it can hold
 //   bun run sprite:frame --door                               # the way back to a found door (#151)
 //   bun run sprite:frame --escape                             # the squad's count, from in the door (#152)
+//   bun run sprite:frame --aim 15620,15880                    # the aim mark on bare paper (#154)
 //
 // #77 §6 proved this needs no server, no lobby, no socket and no play-through. It is the only
 // channel that shows a sprite at the size and against the background a player actually sees it,
@@ -65,6 +66,10 @@ export interface FrameRequest {
   // camera with them. It also hands over the roster the count is taken against — a render input the
   // rest of this script's frames deliberately go without.
   escape: boolean;
+  // Where the pointer is, in world units, or null for the scene's own (#154). The mark struck around
+  // the tile it is in has to read over two floors — bare paper and dense black stipple — and a frame
+  // carries one pointer, so the second floor is a second render and this is what moves it there.
+  aim: { x: number; y: number } | null;
 }
 
 export interface Blit {
@@ -94,6 +99,7 @@ export function parseArgs(argv: string[]): FrameRequest {
   let enemies: number | null = null;
   let door = false;
   let inDoor = false;
+  let aim: { x: number; y: number } | null = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--door") door = true;
@@ -118,12 +124,14 @@ export function parseArgs(argv: string[]): FrameRequest {
       if (!Number.isInteger(enemies) || enemies <= 0) {
         throw new Error("--enemies must be a positive whole number");
       }
-    } else if (arg === "--at") {
+    } else if (arg === "--at" || arg === "--aim") {
       const pair = (argv[++i] ?? "").split(",").map(Number);
       if (pair.length !== 2 || pair.some((n) => !Number.isFinite(n))) {
-        throw new Error("--at wants x,y");
+        throw new Error(`${arg} wants x,y`);
       }
-      at = { x: pair[0], y: pair[1] };
+      const point = { x: pair[0], y: pair[1] };
+      if (arg === "--at") at = point;
+      else aim = point;
     } else if (arg === "--sprite") {
       const pair = argv[++i] ?? "";
       const split = pair.indexOf("=");
@@ -145,6 +153,7 @@ export function parseArgs(argv: string[]): FrameRequest {
     enemies,
     door,
     escape: inDoor,
+    aim,
   };
 }
 
@@ -170,7 +179,7 @@ export function entrySource(request: FrameRequest, modules = MODULES): string {
 import { drawWorld } from ${JSON.stringify(modules.draw)};
 import { createSpriteCache } from ${JSON.stringify(modules.cache)};
 import { SPRITES } from ${JSON.stringify(modules.registry)};
-import { DEMO_CAMERA, DEMO_ESCAPE_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBlood, demoBursts, demoConnected, demoCrowd, demoEscape, demoFloats, demoProjectiles, demoPuffs, demoTutorial, demoWorld } from ${JSON.stringify(modules.world)};
+import { DEMO_AIM, DEMO_CAMERA, DEMO_ESCAPE_CAMERA, DEMO_GHOST, DEMO_NOW, DEMO_SELF, DEMO_VIEWPORT, demoBlood, demoBursts, demoConnected, demoCrowd, demoEscape, demoFloats, demoProjectiles, demoPuffs, demoTutorial, demoWorld } from ${JSON.stringify(modules.world)};
 import { worldViewport } from ${JSON.stringify(modules.camera)};
 
 const dpr = ${request.dpr};
@@ -251,6 +260,11 @@ drawWorld(ctx, world, {
   // sentence with its two inline icons over a turret. The other three are the HUD's, and the HUD is
   // not in this frame.
   tutorial: demoTutorial(world),
+  // Where the pointer is (#154). The scene aims it into the densest metal in the frame, which is the
+  // floor the mark is at risk on; \`--aim\` puts it on bare paper, which is the other render this
+  // mark takes to review. Procedural ink under the player's own hand — no sprite sheet carries it,
+  // and no spy says whether a grey outline reads across black stipple (ADR 0002 §5).
+  aim: ${request.aim ? JSON.stringify(request.aim) : "DEMO_AIM"},
   // The real registry, so the frame is the game as it actually stands. Anything named on the
   // command line is layered over it — a sprite under review, or one nobody has wired yet.
   // Keyed on \`dpr × zoom\` and not on \`dpr\` (ADR 0008): a sprite is baked at the scale it is drawn
@@ -302,6 +316,7 @@ if (import.meta.main) {
     `enemies ${request.enemies === null ? "the scene's own" : `${request.enemies}, all on screen`}`,
   );
   console.log(`door    ${request.door ? "found — the pointer is up" : "not found yet"}`);
+  console.log(`aim     ${request.aim ? `${request.aim.x},${request.aim.y}` : "the scene's own"}`);
   console.log(`sprites ${Object.keys(request.sprites).join(", ") || "none"}`);
   console.log(`blits   ${result.blits.length}`);
   for (const blit of result.blits) {

@@ -149,6 +149,11 @@ interface Field {
 //   run right to an edge while other tiles leave a third of themselves bare.
 // - **Grade.** Every field mixes size classes, because evenly sized pieces read as a pattern of
 //   dots — crushed rock is fines around a few big pieces.
+//
+// The fines are sparse on purpose: sixteen grains across the twelve fields, one to three each and
+// none at all in field 9. Thinned from forty-four, because the count of separate small marks is what
+// "how dense is the grain" means at this size — a grain is one pixel, so the shards carry the mass
+// either way and only the stipple changes. Provisional.
 const FIELDS: readonly Field[] = [
   {
     chips: [
@@ -156,11 +161,7 @@ const FIELDS: readonly Field[] = [
       { shard: 2, x: 10.6, y: 4.6, r: 2.3, turn: 0.62 },
       { shard: 7, x: 12.4, y: 10.6, r: 1.7, turn: 0.33 },
     ],
-    grit: [
-      [8, 2, 2, 1],
-      [13, 1, 1, 1],
-      [1, 4, 1, 2],
-    ],
+    grit: [[1, 4, 1, 2]],
   },
   {
     chips: [
@@ -169,10 +170,7 @@ const FIELDS: readonly Field[] = [
     ],
     grit: [
       [2, 11, 2, 1],
-      [2, 12, 1, 1],
       [13, 12, 1, 1],
-      [6, 13, 1, 1],
-      [0, 7, 1, 1],
     ],
   },
   {
@@ -180,11 +178,7 @@ const FIELDS: readonly Field[] = [
       { shard: 3, x: 7.8, y: 6.4, r: 2.5, turn: 0.28 },
       { shard: 4, x: 3.6, y: 11.4, r: 2.0, turn: 0.55 },
     ],
-    grit: [
-      [12, 3, 1, 2],
-      [10, 10, 2, 1],
-      [5, 1, 1, 1],
-    ],
+    grit: [[12, 3, 1, 2]],
   },
   {
     chips: [
@@ -192,11 +186,7 @@ const FIELDS: readonly Field[] = [
       { shard: 0, x: 4.4, y: 10.6, r: 2.5, turn: 0.36 },
       { shard: 9, x: 3.6, y: 3.6, r: 2.0, turn: 0.68 },
     ],
-    grit: [
-      [8, 13, 2, 1],
-      [13, 12, 1, 1],
-      [0, 0, 1, 1],
-    ],
+    grit: [[0, 0, 1, 1]],
   },
   {
     chips: [
@@ -204,11 +194,7 @@ const FIELDS: readonly Field[] = [
       { shard: 2, x: 8.4, y: 7.2, r: 2.3, turn: 0.77 },
       { shard: 1, x: 12.0, y: 3.8, r: 2.0, turn: 0.41 },
     ],
-    grit: [
-      [6, 2, 1, 1],
-      [1, 5, 2, 1],
-      [13, 9, 1, 2],
-    ],
+    grit: [[13, 9, 1, 2]],
   },
   {
     chips: [
@@ -217,10 +203,7 @@ const FIELDS: readonly Field[] = [
     ],
     grit: [
       [2, 7, 2, 1],
-      [3, 8, 1, 1],
-      [5, 13, 1, 1],
       [0, 11, 1, 1],
-      [9, 13, 2, 1],
     ],
   },
   {
@@ -229,11 +212,9 @@ const FIELDS: readonly Field[] = [
       { shard: 4, x: 10.4, y: 4.2, r: 1.6, turn: 0.66 },
     ],
     grit: [
-      [7, 10, 2, 2],
-      [12, 11, 1, 1],
-      [3, 12, 1, 1],
       [13, 1, 1, 2],
       [0, 8, 1, 1],
+      [3, 12, 1, 1],
     ],
   },
   {
@@ -242,11 +223,7 @@ const FIELDS: readonly Field[] = [
       { shard: 0, x: 10.6, y: 10.6, r: 2.4, turn: 0.09 },
       { shard: 7, x: 12.6, y: 5.4, r: 1.9, turn: 0.79 },
     ],
-    grit: [
-      [6, 13, 1, 1],
-      [9, 1, 2, 1],
-      [1, 0, 1, 1],
-    ],
+    grit: [[9, 1, 2, 1]],
   },
   {
     chips: [
@@ -254,11 +231,7 @@ const FIELDS: readonly Field[] = [
       { shard: 6, x: 4.2, y: 4.8, r: 2.4, turn: 0.71 },
       { shard: 4, x: 12.2, y: 6.8, r: 1.8, turn: 0.18 },
     ],
-    grit: [
-      [10, 1, 1, 2],
-      [0, 2, 2, 1],
-      [13, 13, 1, 1],
-    ],
+    grit: [[0, 2, 2, 1]],
   },
   {
     chips: [
@@ -266,20 +239,11 @@ const FIELDS: readonly Field[] = [
       { shard: 5, x: 11.8, y: 12.4, r: 2.0, turn: 0.27 },
       { shard: 7, x: 6.4, y: 5.0, r: 2.2, turn: 0.85 },
     ],
-    grit: [
-      [2, 12, 1, 1],
-      [1, 1, 1, 1],
-      [13, 4, 1, 1],
-    ],
+    grit: [],
   },
   {
     chips: [{ shard: 0, x: 7.6, y: 7.2, r: 3.8, turn: 0.48 }],
-    grit: [
-      [13, 2, 1, 2],
-      [2, 12, 2, 1],
-      [12, 12, 1, 1],
-      [5, 1, 1, 1],
-    ],
+    grit: [[2, 12, 2, 1]],
   },
   {
     chips: [
@@ -290,8 +254,6 @@ const FIELDS: readonly Field[] = [
     grit: [
       [11, 5, 2, 1],
       [13, 10, 1, 1],
-      [7, 0, 1, 1],
-      [0, 6, 1, 2],
     ],
   },
 ];

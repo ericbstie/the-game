@@ -251,3 +251,170 @@ more shards sit in a cell's middle than across its seam.
   note is not them. What was looked at: `bun run sprite:frame` at dpr 1 and 2, `ore:seams` at dpr 3
   as a magnified patch, and a hand-built shape harness — a solid 5×5, a ring with a one-tile hole,
   and a staircase — which is what the "one outline, not nine" test looks like as a picture.
+
+## #154 — fewer dots per tile, and a blind reviewer who had never seen the old one
+
+The author asked for the ore's stipple drawn sparser: *"fewer dots inside each ore tile"*, same
+number of ore tiles, each one lighter grain. Asked how much, they said **"three or slightly less
+dense"**. The ask arrived out of #154, where a gray aim reticle had to read over a patch — but the
+sprite was not designed against that ticket, and the reticle's legibility is not what this round
+was judged on.
+
+### What changed
+
+**`grit` only.** Every `chips` entry, `SHARD_WEIGHT`, `seamChips`, `fieldOf` and the tiled contract
+are byte-identical. `grit` is what this file calls the fines and what the `Grain` type is; the
+chips are the mineral mass that rounds 1 and 3 established as the only thing separating ore from
+grass. Cutting chips would attack that separator to serve a density request the fines can answer.
+
+**44 grit entries → 16 (−64%); 65 grain pixels → 26 (−60%).** Per field: `3→1, 5→2, 3→1, 3→1,
+3→1, 5→2, 5→3, 3→1, 3→1, 3→0, 4→1, 4→2`. Provisional.
+
+Cut proportionally rather than uniformly, because a constant mass per tile is the rhythm the field
+list exists to break: field 6 (this file's "nearly all fines") keeps the most at 3, field 9 drops to
+0 so a field with no fines at all now exists, and field 10 (the single lump) stays sparse. Ink/box
+across the 2,304 bakes went **10.7–27.6% → 8.4–27.6%** — the mass range widened downward rather
+than flattening. Survivors keep the margin and grade mix: 6× `2x1`, 4× `1x2`, 6× `1x1`, over both
+edges and interiors.
+
+### A pre-existing defect, removed by accident
+
+`[7, 10, 2, 2]` in field 6 was **a 2×2 square**, which lines 133–135 forbid outright — the one in
+the set. It was among the grains dropped, so the file's statement about itself is now true. Nothing
+was added to replace it.
+
+### Measured
+
+A real 16×16-tile viewport parked over the densest patch `generateOre(ARENA, 1)` grows, drawn
+through the shipped `drawWorld`, mean ink per device pixel over 63 interior tiles. The instrument
+reproduces this file's recorded `ore:seams` numbers exactly on the before side, which is what
+validates it.
+
+| | before | after |
+|---|---|---|
+| patch interior ink, dpr 1 | 0.4087 | 0.3980 |
+| patch interior ink, dpr 2 | 0.4091 | 0.3984 |
+| patch interior ink, dpr 3 | 0.4093 | 0.3986 |
+| seam fold deficit, dpr 1 | 1.107× | 1.087× |
+| boundary edge, dpr 1 | 0.0038 | 0.0038 |
+| adjacent identical | 0 of 168 | 0 of 168 |
+| ink ratio vs a grass tuft, dpr 1/2/3 | 3.55× / 2.64× / 2.37× | 3.45× / 2.60× / 2.34× |
+
+No seam lattice appeared, the ragged boundary is untouched, no bake draws nothing, and #106's
+provisional 2× ore-vs-grass separation still clears at every dpr.
+
+### The finding the author volunteered against their own change
+
+**Cutting the dots by 64% moves patch ink by 2.6% relative.** The grain was ~2.4% of a tile's area;
+the shards are the other ~38 points of the 40.9% a patch measures. At dpr 1 and dpr 2 the before and
+after are close to indistinguishable at 1:1 — the change is plainly visible only under dpr-3
+magnification.
+
+"Fewer dots" was delivered literally and exactly. But a patch that is *measurably* less inky is not
+what the grain can buy, and no amount of thinning it will be. That lever is the shards, and pulling
+it costs the ore/grass separation above. **That is an author decision and was not made here.**
+
+### The blind review, verbatim
+
+One reviewer, given only the images and a neutral brief — five renders (the butted-tile patch at
+dpr 1/2/3 and two whole game frames), told only that the game is black ink on white paper. It was
+never told what had changed, that anything had changed, or that a previous version existed. It
+therefore cannot speak to before-and-after, and nothing below should be read as doing so.
+
+> **1. What material does each texture depict?**
+> **dpr1**: Looks like dirt or gravel — a rough, granular ground surface. The marks are small enough
+> at this scale that they read as a general grainy texture rather than distinct elements.
+> **dpr2**: Still dirt/gravel/rocky ground — same material as dpr1. The scattered black shapes are
+> larger relative to the view, but maintain the same scattered, granular aesthetic.
+> **dpr3**: Still dirt/gravel/rocky ground. At this resolution the individual polygon shapes are
+> distinct enough that you can see them as separate facets or stones, but it still reads as a
+> cohesive ground surface.
+>
+> **2. Same material at different resolutions?**
+> The material identity stays consistent, but the **readability changes significantly**. At dpr1 it's
+> nearly illegible — just black noise. At dpr2 it's starting to read as texture. At dpr3 it's
+> actually clear what's happening (scattered polygonal elements). The character of "what is this made
+> of" doesn't shift, but the level of visual clarity does.
+>
+> **3. Ground textures in the full frames.**
+> Three distinct: scattered black polygons (the main playable ground/dirt areas), reading as
+> rocky/gravelly terrain; a brick/checkerboard pattern (the structure on the lower left), clearly a
+> constructed wall or building; and a red and white dotted pattern (the ore/power deposits), distinct
+> from ground, reading as a resource overlay. All three read differently at a glance — I can tell
+> them apart without close study.
+>
+> **4. Repetitive stamping or tiling?**
+> No obvious repeated stamp unit. The scattered black polygons vary in size and shape across the
+> surface. The distribution appears continuous rather than tiled. The pattern doesn't have a visible
+> seam or "I see this shape again right here" moment.
+>
+> **5. Visible grids, lattices, or seam lines?**
+> No visible seam lines or grid structure. The polygons create an implicit cellular pattern (like a
+> Voronoi diagram), but there are no drawn lines separating the cells. The texture is continuous.
+>
+> **6. Hand-drawn or algorithmically generated?**
+> **Algorithmically generated.** The polygon distribution is too regular and uniform to be
+> hand-drawn. It has the signature look of a Voronoi diagram or noise function mapped to polygonal
+> cells. A hand-drawn version would cluster, vary in density, and show intentional compositional
+> choices. This is procedurally consistent.
+>
+> **7. Weak, unconvincing, or badly drawn.**
+> **The dpr1 resolution is essentially unreadable.** At that scale it's just black noise — it doesn't
+> read as ground at all, just as static or corruption. If players ever see this texture at dpr1
+> resolution in the actual game, it will look broken.
+> **Lack of texture variation is monotonous.** Every ground patch uses identical polygon-scatter
+> pattern. There's no visual variety suggesting different terrain types (sand vs dirt vs rock, etc.).
+> This could feel bland across large play areas.
+> **The polygon pattern is visually noisy in a way that doesn't match the clean pen-line aesthetic of
+> the rest of the art.** The creatures, structures, and UI elements are all crisp line-work. This
+> texture is chaotic speckle. It creates tonal contrast that might read as unintended.
+
+### What was taken, and what was not
+
+**Confirmed, and worth recording as confirmed.** Questions 4 and 5 are the two this file has spent
+three rounds defending, and a reviewer who had never been told they were at stake found neither
+defect: no repeated stamp, no lattice, no seam. #87's two-axis `fieldOf` and the `seamChips` are
+still doing their jobs after the fines were cut by two thirds — which was the live risk of this
+change and the reason the round was run.
+
+**"It reads as dirt or gravel, not as metal ore." Taken as accurate, and not fixed here.** This
+tile carries no legend and nothing beside it to compare against (#76 §1); the game teaches what it
+is by where it is and what mining it pays. "Granular mineral ground" is as close as a 15 px pure-ink
+tile gets, and the reviewer separating it cleanly from wall and from power ore (question 3) is the
+property that actually matters.
+
+**"Algorithmically generated — too regular and uniform, like a Voronoi diagram." Recorded, and
+disagreed with.** The ten silhouettes in `SHARDS` are hand-cut and deliberately lopsided, and the
+twelve `FIELDS` are hand-placed with mass, margin and grade varied on purpose — lines 143–151 exist
+because uniformity is exactly the tell being avoided. The measurement disagrees too: ink/box across
+the bakes ranges 8.4–27.6%, better than 3:1 between the lightest and heaviest tile, which is not a
+uniform distribution. A reviewer reading procedural generation into a hand-cut set is a real signal
+about how the drawing lands, but the stated cause is not the cause, and no change follows from it
+that the file has not already tried and rejected.
+
+**"dpr 1 is essentially unreadable — black noise." Recorded, not acted on, and flagged as
+unattributable.** Two things about it. It is **not a regression**: measured patch ink at dpr 1 moved
+0.4087 → 0.3980, and the reviewer never saw the old tile, so nothing here licenses blaming this
+change. And the images it judged include a magnified butted-tile harness, not what a player's
+viewport shows. But this file already warns that dpr 1 is an ordinary monitor and that an earlier
+version read as uniform pepper there, so a second independent voice saying "pepper at dpr 1" is the
+same complaint arriving twice from different directions, and it is left standing rather than
+explained away. **What it wants is a legibility judgement at dpr 1 against a real viewport, which
+is its own round and was not run.**
+
+**"Monotonous — no variety between terrain types." Not a finding about this sprite.** There is one
+ground and one ore by design; a second terrain type is a game that does not exist.
+
+**"Chaotic speckle against a clean pen-line aesthetic." Recorded, and it is the tension #106
+already resolved in the other direction** — bolder ink was asked for *as ink*, which is what
+`SHARD_WEIGHT` is. Cutting the fines moves the tile toward this reviewer's complaint rather than
+away from it, so the change and the finding agree on direction even though neither knew of the
+other.
+
+### Left open
+
+**Whether `src/sprite/ore-power.ts` wants the same cut.** It does not have the same mark: no
+`fillRect` grain and no whole-pixel dots at all. Its nearest equivalent is `chips` (line 186),
+0–2 unlit ink fragments per cell drawn as `blob()` quadratic curves at radius 1.2–2.3 — curved and
+anti-aliased where metal's grain is deliberately hard-edged. Whether that patch also reads too dense
+is a judgement about a different drawing, and it was not made.
