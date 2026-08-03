@@ -207,14 +207,18 @@ describe("defaults reproduce the world as it stood before the config", () => {
     expect(digest(nestLayout(ARENA, 2_178_503_905))).toBe("ec74e6c856a21d53");
   });
 
-  // **Re-captured at #140, which is the one row of this describe that is no longer the pre-config
-  // figure.** A bloodling is a third kind in every wave, so a given seed spawns something this
-  // capture had never seen, and the ones that reach the squad take themselves off the field — which
-  // is why the *count* moved too: 500 was the cap holding, and 516 is the cap holding while sixteen
-  // bloodlings blew themselves up and let sixteen more spawn behind them (53 bloodlings, 65 elites,
-  // 398 grunts). Nothing about the rng changed: the kind still costs one draw per enemy, which is
-  // why the three rows above — the init, the ore grid and the nest layout, the ones that are derived
-  // on both sides of the wire — are the pre-config captures untouched.
+  // **Re-captured at #140 and again at #137, which is the one row of this describe that is no longer
+  // the pre-config figure.** A bloodling was a third kind in every wave and a spiderman is now a
+  // fourth, so a given seed spawns something each capture had never seen. #140 moved the *count* as
+  // well — 500 was the cap holding, 516 is the cap holding while sixteen bloodlings blew themselves
+  // up and let sixteen more spawn behind them — and #137 leaves it exactly there, because a spiderman
+  // survives everything it does and takes nobody's place at the cap. The composition is what moved:
+  // 348 grunts, 65 elites, 53 bloodlings, 50 spidermen.
+  //
+  // Nothing about the rng changed either time: a kind still costs one draw per enemy however many
+  // bands that draw is read as, which is why the count is untouched here and why the three rows
+  // above — the init, the ore grid and the nest layout, the ones derived on both sides of the wire —
+  // are the pre-config captures.
   test("the sim spawns the same waves, at the same places, over five minutes", () => {
     const world = generateWorld(players(3), { rng: mulberry32(4_242) });
     const sim = spawnEnemyState(world, mulberry32(11));
@@ -225,8 +229,8 @@ describe("defaults reproduce the world as it stood before the config", () => {
         trace.push(`${tick}|${s.id}|${s.kind}|${s.pos.x}|${s.pos.y}`);
       }
     }
-    expect([trace.length, digest(trace)]).toEqual([516, "8b4c2b2b320a2a6f"]);
-    expect(digest([...sim.enemies.values()])).toBe("84d8ada91020fdc8");
+    expect([trace.length, digest(trace)]).toEqual([516, "e28b3d5b64b5060d"]);
+    expect(digest([...sim.enemies.values()])).toBe("c031b33a79844019");
   });
 });
 

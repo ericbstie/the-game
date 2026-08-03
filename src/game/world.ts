@@ -63,14 +63,20 @@ export function generateWorld(players: SpawnPlayer[], options: WorldOptions = {}
 
 // Integrate one Avatar by dtMs from its held input, clamped inside the walls. Pure — it
 // returns a fresh Vec2 and never mutates its argument.
-export function stepPos(pos: Vec2, input: MoveInput, dtMs: number, arena: Arena): Vec2 {
+//
+// `scale` is what is left of the avatar's speed — the game's first movement modifier, and a
+// parameter rather than state because this function is where "how fast a player moves" already
+// lives. It defaults to 1, so nothing that has never been slowed has to know it exists. What may
+// slow an avatar, and for how long, is deliberately not here: `ClientWorld` owns that, on the same
+// footing it owns the avatar's health.
+export function stepPos(pos: Vec2, input: MoveInput, dtMs: number, arena: Arena, scale = 1): Vec2 {
   let dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
   let dy = (input.down ? 1 : 0) - (input.up ? 1 : 0);
   if (dx === 0 && dy === 0) return { x: pos.x, y: pos.y };
   const len = Math.hypot(dx, dy);
   dx /= len;
   dy /= len;
-  const dt = dtMs / 1000;
+  const dt = (dtMs / 1000) * scale;
   return {
     x: clamp(pos.x + dx * PLAYER_SPEED * dt, PLAYER_RADIUS, arena.width - PLAYER_RADIUS),
     y: clamp(pos.y + dy * PLAYER_SPEED * dt, PLAYER_RADIUS, arena.height - PLAYER_RADIUS),

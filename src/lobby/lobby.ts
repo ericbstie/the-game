@@ -555,6 +555,7 @@ export class LobbyHub {
     if (events.spawns.length > 0) delta.spawns = events.spawns;
     if (events.hits.length > 0) delta.hits = events.hits;
     if (events.deaths.length > 0) delta.deaths = events.deaths;
+    if (events.bursts.length > 0) delta.bursts = events.bursts;
     if (events.nests.length > 0) delta.nests = events.nests;
     if (events.structHits.length > 0) delta.structHits = events.structHits;
     if (events.aims.length > 0) delta.aims = events.aims;
