@@ -1,197 +1,214 @@
 import type { SpriteSubject } from "./sheet";
 
-// The spiderman (#137): the one that comes at you in diagonal dashes and then bursts cobweb all
-// round itself. It is the fourth creature in the set and the third drawn in pure ink, so the whole
-// job is a silhouette a player can name while a grunt and an elite are on the same screen.
+// The spiderman (#137): the one that comes at you in slanted dashes and, once it is near enough,
+// bursts cobweb all round itself. It is the fourth creature in the set and the third drawn in pure
+// ink, so the whole job is a silhouette a player can name while grunts and elites are on the same
+// screen.
 //
-// **Its two behaviours are the drawing.**
+// **What it is: a long-bodied hunter with two raised grappling arms.** A heavy pear of an abdomen
+// trailing behind, a small low head end in front, a pinched waist between them, and above all a
+// **pair of thick hooked forelimbs** thrown out ahead of the body and held clear of the floor. The
+// six walking legs are short and tucked in under the mass. Every mark on it is a rubber hose of
+// varying thickness — nothing here is a spike, a spatter or a point.
 //
-// - **The burst is the bristle.** Seven stout ink spines stand out of the abdomen on every bearing
-//   at once, and that burr is what makes this creature nameable at 32 px. The web itself cannot be
-//   drawn here — it is an event that leaves nothing behind, and the spiderman survives its own
-//   (#137) — so what the sprite carries is the animal that throws it, spiked outward in all
-//   directions. Every other mass in the game is smooth; this one is not, and that is the whole tell.
-// - **The dash is angled off the straight line**, so the creature is angled off its own: the body
-//   is thrown out to one side, and the legs on that side brace wide while the other side gathers
-//   under it — a drift, held. Every other creature in the set is symmetric about its heading. This
-//   is the only oblique silhouette in the game.
+// **The burst cannot be drawn, so the drawing is the arms.** The web is an event that leaves nothing
+// behind and the creature survives its own (#137), so a baked sprite can only ever carry *the animal
+// that throws it*. A first attempt drew that animal as a burr — stout spines standing off the
+// abdomen on every bearing — reasoning that a burst standing still is a bristle. It read as an ink
+// blot, because **radiating black points is already this game's language for impact**: the lettering
+// bursts, the death puffs, the torn edges on ore. A creature drawn in the effects alphabet is a
+// legibility bug. So the thing that says *it throws* is anatomy instead: an animal built to reach
+// past its own body, with grappling arms it holds up and forward and a silk-heavy abdomen behind.
 //
 // **How it is told apart from the other three, which is the whole task.**
 //
-// | | mass | limbs | axis |
+// | | mass | limbs | outline |
 // | --- | --- | --- | --- |
-// | grunt | a dot | eight long wires, wide and low | symmetric |
-// | elite | a huge two-lobed carcass, low, in a 48 box | eight short and thick | symmetric |
-// | bloodling | a round sack over a body — purple and green | six short and clawed | symmetric |
-// | this | **a spiked burr**, humped over the legs | eight, mid-weight | **oblique** |
+// | grunt | a dot | eight long thin wires on a wide open ring | a sparse radiating star |
+// | elite | a huge two-lobed carcass in a 48 box | eight short posts | one heavy blob, low and wide |
+// | bloodling | a round sack over a body — purple and green | six short clawed | a coloured circle |
+// | this | **a pear with a waist**, long and directional | **two big hooked arms, held up and forward**, over six short tucked legs | **a closed comma with two hooks off the front** |
 //
-// **The body is one path, not two masses.** Two ellipses were tried first and they fused: at 32 px a
-// head and an abdomen each large enough to read are each large enough to touch the other, and what
-// came out was a lump. So the body is one arced spine filled at a width hand-cut along its length,
-// which puts a small head lobe at the front and the big abdomen behind it under a single contour and
-// no interior line. **The pinch between them is a waist on paper and not on screen** — at this size
-// the two lobes are closer together than the sum of their radii, so the union closes over it. It is
-// kept because it shapes the outline; it is not a mark a player will see, and nothing here depends
-// on it.
+// The grunt is the hard pair and it is the one this drawing is composed against: same 32 px box,
+// same pure ink, no colour and no readable face at either. Three separators, all in silhouette:
 //
-// **The ore floor set the weight.** Measured on a dense metal patch, a grunt's 1.3–1.7 px legs
-// disappear into the stipple almost entirely while the elite's mass survives it, so a purely wiry
-// drawing at 32 px is one a player cannot find when it matters. The ink here is carried by the
-// humped body; the legs are mid-weight, between the grunt's wires and the elite's posts.
+// - **Density.** A grunt is mostly white — a dot on wires. This is mostly ink: one contiguous body
+//   carries the middle of the box, and the legs are short enough to stay under it.
+// - **Span.** A grunt's ring of feet is about 28 px across inside a 32 px box. This one's is about
+//   21, and the only things reaching further are the two arms, which reach *forward* and not
+//   sideways.
+// - **Where the ink points.** A grunt radiates evenly on every bearing and has no direction in its
+//   outline. This one is an arrow: heavy behind, narrow in front, two hooks off the front corner.
 //
-// The projection is the hybrid #76 fixes for spiders: **the body is upright**, seen head-on, while
-// **everything that says where the creature points lies flat**, seen from above — the ring of feet,
-// the reach of each leg, and the bearing the abdomen is swung out along. They all turn on the one
-// flattened plan, so none of them can disagree about the heading.
+// **The facing is carried by the outline, not by a face.** There is none to spend — the head lobe
+// tops out about 7 px, which puts an eye at two or three device pixels, and a paper round that size
+// on a black curve is the specular highlight nothing else in this game has (the bloodling's
+// arithmetic, and it lands the same way here). So the eight bearings are one shape rotating, and
+// three things turn together on one flattened plan to make that read:
 //
-// **There is no face, and that follows the bloodling's arithmetic rather than the spiders'.** The
-// two spiders wear paper eyes because each is one black mass wide enough to hold a pair — the
-// elite's head is 14 px inside a 48 px box. The widest this head lobe gets is 7, which puts an eye
-// at two or three device pixels, and at that size a paper round on a black curve is the specular
-// highlight nothing else in this game has. The front is marked by the two raised forelimbs instead,
-// in silhouette, which is what survives at real size.
+// - **The two lobes trade places**, the near one drawn low and the far one high, exactly as the
+//   elite's do. Coming at you the head end hangs low and forward off a high abdomen; going away, the
+//   abdomen is the near mass and drops, and the head end is a small bump above it. The pair is never
+//   level, because the waist rides higher than either lobe and both fall away from it by different
+//   amounts.
+// - **The tail points.** The abdomen is a pear whose tip runs back along the plan, so the body is a
+//   comma that swings round the box as the creature turns — long across the screen, foreshortened
+//   into a stack coming at you or leaving.
+// - **The arms lead.** They are the longest thing on the animal and they always reach along the
+//   heading, so whichever way it is going, two hooks stand out of the front of the silhouette.
+//
+// **The lean is structural, and its sign is the sim's.** A spiderman never runs at what it is
+// chasing: `dashPoint` turns its heading off the bearing to its target by `DASH_ANGLE`, always the
+// same way round (`game/enemies.ts:99` and `:1153`), so the player is permanently off to one side of
+// where it is going. The drawing agrees — the fore end is cranked toward that side while the abdomen
+// trails down the line of travel, and the legs on the outside of the drift brace wide while the
+// inside ones gather. It is the only oblique creature in the game.
+//
+// **The projection is the hybrid #76 fixes for the spiders.** The masses are upright, seen head-on;
+// everything that says where the creature points — the lobes' swing, the ring of feet, the arms'
+// reach — lies flat on one flattened plan, so none of them can disagree about the heading.
+//
+// **Weight, measured.** On a dense metal-ore patch a grunt's 1.3–1.7 px legs all but vanish into the
+// stipple at dpr 1 while the elite's mass survives it. Nothing here is drawn thinner than a grunt's
+// hip: the arms run 3.4 → 2.0 and the walking legs 2.6 → 1.6, between the grunt's wires and the
+// elite's posts. The blind review of the burr version complained about shape and never about
+// weight, so that finding is kept.
 
-// **32 is an assumption, not a derivation.** Every other box in `SPRITE_BOX` comes off a radius the
-// simulation already fixes, and this kind's `STATS` entry does not exist yet — #137 leaves the radius
-// to whoever writes it. Drawn against the grunt's class, `GRUNT_RADIUS * 2`, because that is what
-// "a spider that dashes at you" is beside a grunt and an elite. If the radius lands somewhere else,
-// this number moves with it and the drawing is composed in whatever box it names.
 const SIZE = 32;
 const FACINGS = 8;
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
 
-// #73 fixed the convention: `angle = facing / 8 × 2π` on a canvas whose y points down, so 0 = E,
-// 2 = S with the forelimbs reaching at the player, 4 = W, 6 = N showing the humped abdomen.
-const heading = (facing: number) => (facing / FACINGS) * 360;
-
 const INK = "#000000";
 
-// Enemies are blitted **centred** on their position, not stood on it (`draw.ts` `blitOver`), so the
-// flat ring of feet is the floor contact: it sits near the middle of the box and the body rises
+// #73 fixed the convention: `angle = facing / 8 × 2π` on a canvas whose y points down, so 0 = E,
+// 2 = S coming at the player, 4 = W, 6 = N going away.
+const bearingOf = (facing: number) => (facing / FACINGS) * 360;
+
+// Enemies are blitted **centred** on their position, not stood on it (`draw.ts` `blitOver`): the
+// flat ring of feet is the floor contact, so it sits near the middle of the box and the body rises
 // out of it.
-const FLOOR = { x: 16, y: 20.4 };
+const FLOOR = { x: 16, y: 20.6 };
 
 // How much of a plan-space offset survives into screen y.
-const PLAN = 0.56;
+const PLAN = 0.46;
 
-// **The drift, in one number.** The abdomen is swung this far off the line the creature is running
-// down, to one fixed side. It cannot alternate: a facing is a compass bearing and carries no memory
-// of which way the last dash was angled, so the drawing commits to one lean and holds it.
-// Provisional — a number only a played match can judge.
-const SWING = 38;
+// **The drift, in degrees.** The fore end is cranked this far off the line the creature is running
+// down, toward the side its target sits on. One fixed side and never the other: a facing index is a
+// compass bearing and carries no memory of which way the last dash leaned, and `DASH_ANGLE` is one
+// fixed sign for exactly the same reason. Provisional — a number only a played match can judge.
+const LEAN = 16;
 
-// The two ends of the body, on the plan and above it. The head end barely leaves the plan origin
-// and the abdomen end is mostly *lift* rather than reach, because a body built out of plan offsets
-// alone collapses to nothing in the facings that point at or away from the viewer — there the two
-// ends foreshorten toward each other and the animal becomes a disc.
-const NOSE = { reach: 4.6, lift: 2.2 };
-const TAIL = { reach: 7.2, lift: 6.8 };
-
-// The abdomen rides a shallower plan than the legs. It still swings between near and far as the
-// creature turns, which is a heading signal and is kept; at the full plan it costs so much headroom
-// in the facings that carry it away from the viewer that the bristle leaves the box.
-const TAIL_PLAN = 0.34;
-
-// **The body arches, and that is what stops the drawing growing a second head.** A first cut reared
-// the abdomen straight up on a stalk, and every eye reads the topmost lump on a creature as its
-// head: at facing 2 — walking *at* the player — the tail sat at the top of the box and the animal
-// read as walking away. So the body is an arc instead. It leaves the jaws low and forward, humps
-// over the abdomen and comes back *down* behind, which puts the widest part of the mass at the top
-// of every silhouette, where the eye will read it as a body and not as a face.
+// The body, as two lobes swept out of one waist. Heights are above the ring of feet; reaches are
+// along the plan.
 //
-// The arch is also what keeps the creature from collapsing in the facings that run at or away from
-// the viewer, where the two ends foreshorten toward each other and a straight body would be a disc.
-const CREST = 6.8; // how far above the chord between the two ends the arc is pulled
-const CREST_AT = 0.6; // and where along it, so the hump sits over the abdomen and not the waist
-const ABDOMEN_AT = 0.66; // where along the body the abdomen is widest, and so where the bristle seats
+// The waist rides highest and both lobes fall away from it — the head end forward and well below,
+// the abdomen back and a little above. That difference is what stops the two lobes going level in
+// the facings that run straight at or away from the viewer, where the plan offsets foreshorten to
+// nothing and a body built out of plan alone collapses into a disc.
+const WAIST_RIDE = 7.4;
+const HEAD_DROP = 3.6; // the head end's height below the waist
+const TAIL_RISE = 1.6; // and the abdomen tip's above it
+const HEAD_REACH = 8.6;
+const TAIL_REACH = 10.4;
+const NECK = 2; // the width at the waist, and the pinch that makes the body two masses
 
-// The body's width down its own length: how far along the spine, and the full width there. Hand-cut
-// — a head lobe, the pinch of a waist, and the abdomen that carries the bristle.
-const BODY: [at: number, width: number][] = [
-  [0, 2.2],
-  [0.12, 6.4],
-  [0.22, 7.0],
-  [0.36, 3.2],
-  [0.52, 9.0],
-  [0.66, 10.0],
-  [0.86, 5.8],
-  [1, 2.0],
+// Width down each lobe, from the waist outward: `[how far along, how wide there]`. Hand-cut — a
+// small blunt head in front, and behind it a pear that carries most of the creature's ink and comes
+// to a point. The point is the silk end, and it is the cheapest thing that makes the outline an
+// arrow rather than an ellipse.
+const HEAD_SHAPE: [at: number, wide: number][] = [
+  [0, NECK],
+  [0.5, 6.2],
+  [0.8, 5.4],
+  [1, 2.4],
+];
+const TAIL_SHAPE: [at: number, wide: number][] = [
+  [0, NECK],
+  [0.42, 9.6],
+  [0.74, 8.4],
+  [1, 1.6],
 ];
 
-// **The bristle: the burst, standing still.** Seven stout ink spines radiate from the abdomen in
-// every direction, and they are the single mark that makes this creature nameable at 32 px. A smooth
-// mass is what the elite and the bloodling both are; a burr is not, and no amount of tuning a smooth
-// outline was going to separate the three. It is also the only honest way to draw *bursts cobweb all
-// round itself* on a creature that survives its own burst: the web is an event with nothing left
-// behind (#137), so what the sprite can carry is the animal that throws it, spiked outward on every
-// bearing at once.
+// The near lobe grows this much as the creature turns toward the viewer and the far one shrinks by
+// it, which is the last of the depth cue once the plan has foreshortened.
+const SWELL = 0.07;
+
+// **The arms: the two marks that name this creature.** They leave the shoulders, bow out wide over a
+// raised elbow, come back in past the head end and finish in a hook that curls toward the other arm.
+// The pair encloses white paper between them, which is the one counter in this silhouette and the
+// thing that makes them read as *grasping* rather than as two more limbs.
 //
-// Seven, because an odd count has no rotation that comes out mirror-symmetric, and stout because a
-// spine thinner than about a logical pixel is an intermittent grey smear at real size. Their lengths
-// are uneven on purpose — an even fringe is a gear, not an animal.
-const SPINES = [4.4, 3.4, 4.0, 3.2, 4.3, 3.6, 3.8];
-const SPINE_W = 0.95; // half-width where it leaves the mass
-const SPINE_ROOT = 0.5; // how far in from the outline it starts, so the two fills meet with no seam
-// Held in the abdomen's own frame, so the bristle travels with the mass rather than crawling round
-// it as the creature turns — the lesson the bloodling's sack records.
-const SPINE_PHASE = 0.42;
+// They are separated from the walking legs by four things at once: half again as long, a third
+// thicker, held clear of the floor at every point, and taking no part in the gait. The arch is
+// spent clearing the ring of feet and never the body — an arm that towers over the abdomen makes
+// the top of the silhouette point away from the heading, which is exactly backwards in the facings
+// that run at the viewer.
+const ARM_SPREAD = 24; // degrees each arm sits off the fore end's own bearing
+const ARM_BOW = 14; // and how much further out the elbow swings before the reach comes back in
+const ARM_HOOK_IN = 16; // degrees the wrist gathers back toward the creature's own line
+const ARM_REACH = 14.2;
+const ARM_ELBOW_AT = 0.5; // how far out along the arm the elbow sits
+const ARM_ELBOW_RISE = 5.4; // and how high it is carried above the plan
+const ARM_TIP_LIFT = 1.8; // the hook is held this far off the floor
+const ARM_SHOULDER = 3.2; // where the arm leaves the body, inside the fill so the two meet with no seam
+const ARM_W = [3.4, 3, 2.1]; // shoulder, elbow, wrist
+const HOOK_LEN = 3.4;
+const HOOK_TURN = 74; // degrees the hook curls off the direction the arm was already going
+const HOOK_W = 1.8;
 
-const HIP_R = 2.6;
-const HIP_LIFT = 4.0; // the hip starts up inside the body, so the two fills meet with no seam
-
-// Mid-weight: heavier than a grunt's 1.7 → 1.3 wires, lighter than the posts an elite carries. A
-// leg thinner than about a logical pixel is an intermittent grey smear at real size.
-const LEG_HIP_W = 2.5;
-const LEG_TIP_W = 1.5;
-const LEG_BELLY = 0.18; // a hose swells at the belly of its curve, but only just
+const HIP_R = 2.4;
+const HIP_LIFT = 5.2; // the hip starts up inside the body, so the two fills meet with no seam
+const LEG_W = [2.6, 2.4, 1.6]; // hip, knee, foot — between a grunt's wires and an elite's posts
 
 interface Leg {
   spread: number; // degrees off the heading
   reach: number;
   bow: number; // degrees the knee swings wide of the leg's line — the arch, seen from above
   hook: number; // and degrees the foot hooks back from it
-  knee: number; // how high the arch peaks
-  lift: number; // how far the tip is held off the floor — nonzero only for the forelimbs
-  drive: boolean; // which half of the bound this limb takes
+  arch: number; // how high the knee is carried
+  tripod: boolean; // which half of the alternating gait
+  // What the mirrored copy does differently. An exact mirror is the tell of a generated drawing, and
+  // the facings that run straight at or away from the viewer would otherwise carry one.
+  skew: number;
+  slack: number;
 }
 
-// One side of the creature, front to back. The forelimb comes first and is the only one that never
-// touches the ground: it is thrown forward at whatever the spiderman is running at, and it is what
-// marks the front now that the face is gone.
-//
-// The arch peaks hard and close in. A grunt's leg is a long low bow that reads as stilts; this one
-// is a steep tent, which is what a crouch looks like from above.
+// Three pairs, short and tucked in. The reach is deliberately well inside the grunt's 11.6–14.0:
+// this creature's ink is its body, and a wide open fan of feet is the one silhouette in the set
+// that is already taken.
 const LEGS: Leg[] = [
-  { spread: 26, reach: 12.2, bow: 7, hook: -8, knee: 6.8, lift: 3.6, drive: false },
-  { spread: 68, reach: 12.6, bow: 15, hook: -10, knee: 4.8, lift: 0, drive: true },
-  { spread: 114, reach: 12.8, bow: -13, hook: 12, knee: 5.0, lift: 0, drive: false },
-  { spread: 158, reach: 11.6, bow: -20, hook: 18, knee: 4.2, lift: 0, drive: true },
+  { spread: 78, reach: 10.4, bow: 12, hook: -8, arch: 4.4, tripod: true, skew: 3, slack: 0.96 },
+  { spread: 122, reach: 10.8, bow: 2, hook: 6, arch: 4.8, tripod: false, skew: -2.5, slack: 1.03 },
+  { spread: 160, reach: 9.6, bow: -14, hook: 14, arch: 4, tripod: true, skew: 3.5, slack: 0.955 },
 ];
 
-// **The asymmetry is structural, not sprinkled.** The other three sprites carry a hand's worth of
-// per-leg slop to break the mirror symmetry that gives a generated drawing away. Here the creature
-// is genuinely lopsided because it is drifting: the side the tail swung out to braces — legs opened
-// wider and planted further out, carrying the turn — and the other side gathers under the body.
+// The drift, in the legs. The side the fore end turns *away* from is the outside of the slide and
+// takes the creature's weight, so it plants wider and further out; the inside gathers under the
+// body. Structural rather than sprinkled: this animal is genuinely lopsided because it never runs
+// down the line it is looking at.
 const BRACE_REACH = 1.08;
-const BRACE_SPREAD = 8;
-const GATHER_REACH = 0.88;
-const GATHER_SPREAD = -6;
+const BRACE_SPREAD = 7;
+const GATHER_REACH = 0.9;
+const GATHER_SPREAD = -5;
 
-// The bound, in two frames. Frame 0 is where the cycle parks whenever an enemy is not moving (#81),
-// so it is the frame most often on screen and it is the **loaded** one: legs gathered under the
-// body, forelimbs drawn back and high, abdomen at its steepest. Frame 1 is the launch.
+// The dash, in two frames. Frame 0 is where the cycle parks whenever an enemy is not moving (#81),
+// so it is the frame most often on screen, and it is the **gathered** one: the body sits back over
+// the hind legs and the arms are drawn in and carried high. Frame 1 is the reach.
 //
-// The two poses move **against each other** rather than together. A first cut that dropped every
-// mass by a pixel read, to an eye that had not been told, as legs flickering under a body that never
-// moved — the bloodling records the same finding. So the nose goes forward and down while the tail
-// swings back and drops less, which straightens the animal out; and the forelimbs throw forward as
-// the driving legs push back.
-const STRIDE = 16; // degrees a driving leg carries fore or aft
-const NOSE_PITCH = { reach: 2.0, lift: 1.5 };
-const TAIL_UNCOCK = { reach: 1.8, lift: 2.6 };
-const FORE_THROW = 1.1; // the forelimbs reach this much further in the launch
-const FORE_DROP = 1.8; // and come this much nearer the floor
+// The two poses move **against each other** rather than together, or a fresh eye sees no motion at
+// all: a first cut of the bloodling dropped every mass by a pixel and read as scratchy legs
+// flickering under a body that never moved. So the body slides forward as the arms stretch out and
+// drop, while the abdomen swings back against it and the planted tripod pushes the other way.
+const LUNGE = 1.5; // how far the whole body carries forward along the heading
+const BOB = 1; // and how far it drops onto the planted legs
+const TAIL_TRAIL = 1.6; // the abdomen tip is left this much further behind
+const ARM_THROW = 1.14; // the arms reach this much further
+const ARM_FALL = 2.2; // and the hooks come this much nearer the floor
+const STRIDE = 18; // degrees a swinging leg carries fore or aft
+const PHASE = [-0.45, 0.55];
+const LIFT = 1.8; // how far a swinging foot comes off the floor
+const GATHER = 0.87; // and how far it is pulled in toward the body
 
 interface Point {
   x: number;
@@ -204,196 +221,184 @@ const spiderman: SpriteSubject = {
   facings: FACINGS,
   frames: 2,
   draw(ctx, _size, facing, frame) {
-    const bearing = heading(facing);
-    const launch = frame === 1 ? 1 : 0;
+    const bearing = bearingOf(facing);
+    const reach = frame === 1 ? 1 : 0;
+    const toward = Math.sin(bearing * DEG); // +1 coming at the player, -1 going away
+    const fore = bearing + LEAN;
+
+    // The whole animal carries forward and drops onto the planted tripod between the two frames.
+    const shift = plan(bearing, LUNGE * reach, BOB * reach);
 
     ctx.fillStyle = INK;
 
     for (const leg of LEGS) {
-      drawLimb(ctx, bearing, leg, false, launch);
-      drawLimb(ctx, bearing, leg, true, launch);
+      walk(ctx, bearing, leg, false, frame, shift);
+      walk(ctx, bearing, leg, true, frame, shift);
     }
 
-    const nose = at(
-      bearing,
-      NOSE.reach + NOSE_PITCH.reach * launch,
-      NOSE.lift - NOSE_PITCH.lift * launch,
-    );
-    const tail = at(
-      bearing + 180 + SWING,
-      TAIL.reach + TAIL_UNCOCK.reach * launch,
-      TAIL.lift - TAIL_UNCOCK.lift * launch,
-      TAIL_PLAN,
-    );
-    drawBody(ctx, nose, tail);
+    body(ctx, bearing, fore, toward, reach, shift);
+
+    for (const side of [-1, 1] as const) arm(ctx, fore, side, reach, shift);
   },
 };
 
-// A point on the flattened plan, lifted clear of it. One function, so the feet, the reach of a
-// forelimb and the bearing the body is swung out along cannot drift apart.
-function at(bearingDeg: number, radius: number, height: number, plan = PLAN): Point {
-  const a = bearingDeg * DEG;
-  return {
-    x: FLOOR.x + Math.cos(a) * radius,
-    y: FLOOR.y + Math.sin(a) * radius * plan - height,
-  };
+// A point on the flattened plan, lifted clear of it. One function, so the lobes, the ring of feet
+// and the arms' reach cannot disagree about where the creature is pointing.
+function plan(bearing: number, radius: number, height: number): Point {
+  const a = bearing * DEG;
+  return { x: Math.cos(a) * radius, y: Math.sin(a) * radius * PLAN - height };
 }
 
-function unit(from: Point, to: Point): Point {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const len = Math.hypot(dx, dy) || 1;
-  return { x: dx / len, y: dy / len };
+function from(origin: Point, bearing: number, radius: number, height: number): Point {
+  const p = plan(bearing, radius, height);
+  return { x: origin.x + p.x, y: origin.y + p.y };
 }
 
-const BODY_STEPS = 48;
-
-// The body: one arced spine, filled as the **union of the discs swept along it**, radius read off
-// `BODY` at each step.
-//
-// A union rather than an offset outline, and that is not a style choice. The first cut walked the
-// spine and pushed a pair of points out either side, which is what the legs do — but a leg is thin
-// against its own curvature and this body is not. Where the arch bends hardest the half-width
-// exceeds the radius of curvature, so the inner edge folds through itself and fills the concavity,
-// and the outline that came out was a slab with a bite taken out of one side. A swept disc cannot
-// fold, and it rounds both ends for nothing.
-function drawBody(ctx: CanvasRenderingContext2D, nose: Point, tail: Point): void {
-  const control = {
-    x: nose.x + (tail.x - nose.x) * CREST_AT,
-    y: nose.y + (tail.y - nose.y) * CREST_AT - CREST,
-  };
+// The body: two lobes swept out of one waist and filled as a single path, so what comes out is their
+// union under one contour — no interior line, and no white nick where two separate fills meet.
+function body(
+  ctx: CanvasRenderingContext2D,
+  bearing: number,
+  fore: number,
+  toward: number,
+  reach: number,
+  shift: Point,
+): void {
+  const root = { x: FLOOR.x + shift.x, y: FLOOR.y + shift.y };
+  const waist = from(root, 0, 0, WAIST_RIDE);
+  const head = from(root, fore, HEAD_REACH, WAIST_RIDE - HEAD_DROP);
+  const tail = from(
+    root,
+    bearing + 180,
+    TAIL_REACH + TAIL_TRAIL * reach,
+    WAIST_RIDE + TAIL_RISE - shift.y * 0.5,
+  );
 
   ctx.beginPath();
-  for (let i = 0; i <= BODY_STEPS; i++) {
-    const t = i / BODY_STEPS;
-    const u = 1 - t;
-    const x = u * u * nose.x + 2 * u * t * control.x + t * t * tail.x;
-    const y = u * u * nose.y + 2 * u * t * control.y + t * t * tail.y;
-    const r = widthAt(t) / 2;
+  sweep(ctx, waist, head, HEAD_SHAPE, 1 + toward * SWELL);
+  sweep(ctx, waist, tail, TAIL_SHAPE, 1 - toward * SWELL);
+  ctx.fill();
+}
+
+const SWEEP_STEPS = 22;
+
+// A lobe, as the union of the discs swept along its spine. A union rather than an offset outline,
+// and that is not a style choice: an offset pair of edges folds through itself wherever the
+// half-width exceeds the radius of curvature, which on a mass this fat is everywhere, and what comes
+// out is a slab with a bite in one side. A swept disc cannot fold, and it rounds both ends for free.
+function sweep(
+  ctx: CanvasRenderingContext2D,
+  root: Point,
+  tip: Point,
+  shape: [number, number][],
+  scale: number,
+): void {
+  for (let i = 0; i <= SWEEP_STEPS; i++) {
+    const t = i / SWEEP_STEPS;
+    const x = root.x + (tip.x - root.x) * t;
+    const y = root.y + (tip.y - root.y) * t;
+    const r = (widthAt(shape, t) * scale) / 2;
     ctx.moveTo(x + r, y);
     ctx.arc(x, y, r, 0, TAU);
   }
-  ctx.fill();
-
-  const u = 1 - ABDOMEN_AT;
-  const seat = {
-    x: u * u * nose.x + 2 * u * ABDOMEN_AT * control.x + ABDOMEN_AT * ABDOMEN_AT * tail.x,
-    y: u * u * nose.y + 2 * u * ABDOMEN_AT * control.y + ABDOMEN_AT * ABDOMEN_AT * tail.y,
-  };
-  drawBristle(ctx, seat, widthAt(ABDOMEN_AT) / 2, unit(nose, tail));
 }
 
-function widthAt(t: number): number {
-  for (let i = 1; i < BODY.length; i++) {
-    const [to, wide] = BODY[i];
+function widthAt(shape: [number, number][], t: number): number {
+  for (let i = 1; i < shape.length; i++) {
+    const [to, wide] = shape[i];
     if (t > to) continue;
-    const [from, thin] = BODY[i - 1];
-    return thin + (wide - thin) * ((t - from) / (to - from));
+    const [at, thin] = shape[i - 1];
+    return thin + (wide - thin) * ((t - at) / (to - at));
   }
-  return BODY[BODY.length - 1][1];
+  return shape[shape.length - 1][1];
 }
 
-// The spines, struck outward from the abdomen's middle: each starts inside the fill and ends clear
-// of the outline, so it is a spike *on* the mass rather than a whisker beside it.
-function drawBristle(
+// A rubber hose of varying thickness, swept as discs along a polyline. Every limb on this creature
+// is one of these: the joints come out round, the tip comes out round, and no stroke can fold
+// through itself or trail off the mass it left as a loose whisker.
+function hose(ctx: CanvasRenderingContext2D, spine: Point[], widths: number[]): void {
+  ctx.beginPath();
+  for (let bone = 0; bone < spine.length - 1; bone++) {
+    const a = spine[bone];
+    const b = spine[bone + 1];
+    const steps = Math.max(4, Math.round(Math.hypot(b.x - a.x, b.y - a.y) * 1.6));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const r = (widths[bone] + (widths[bone + 1] - widths[bone]) * t) / 2;
+      const x = a.x + (b.x - a.x) * t;
+      const y = a.y + (b.y - a.y) * t;
+      ctx.moveTo(x + r, y);
+      ctx.arc(x, y, r, 0, TAU);
+    }
+  }
+  ctx.fill();
+}
+
+// One grappling arm: shoulder buried in the body, elbow raised and swung outboard, wrist reaching
+// past the head end, and a hook curling back off the tip. The hook is the whole difference between a
+// limb and a spike — a point carrying on outward is a spine, and a point that turns back is a claw.
+function arm(
   ctx: CanvasRenderingContext2D,
-  seat: Point,
-  radius: number,
-  along: Point,
+  fore: number,
+  side: -1 | 1,
+  reach: number,
+  shift: Point,
 ): void {
-  const turn = Math.atan2(along.y, along.x) + SPINE_PHASE;
-  for (let i = 0; i < SPINES.length; i++) {
-    const a = turn + (i / SPINES.length) * TAU;
-    const cos = Math.cos(a);
-    const sin = Math.sin(a);
-    const from = { x: seat.x + cos * radius * SPINE_ROOT, y: seat.y + sin * radius * SPINE_ROOT };
-    const to = { x: seat.x + cos * (radius + SPINES[i]), y: seat.y + sin * (radius + SPINES[i]) };
-    ctx.beginPath();
-    ctx.moveTo(from.x - sin * SPINE_W, from.y + cos * SPINE_W);
-    ctx.lineTo(to.x, to.y);
-    ctx.lineTo(from.x + sin * SPINE_W, from.y - cos * SPINE_W);
-    ctx.closePath();
-    ctx.fill();
-  }
+  const root = { x: FLOOR.x + shift.x, y: FLOOR.y + shift.y };
+  const out = fore + side * ARM_SPREAD;
+  const span = ARM_REACH * (1 + (ARM_THROW - 1) * reach);
+
+  const shoulder = from(root, out, ARM_SHOULDER, WAIST_RIDE - HEAD_DROP * 0.7);
+  const elbow = from(
+    root,
+    out + side * ARM_BOW,
+    span * ARM_ELBOW_AT,
+    ARM_ELBOW_RISE - shift.y * 0.4,
+  );
+  const wrist = from(root, out - side * ARM_HOOK_IN, span, ARM_TIP_LIFT + ARM_FALL * (1 - reach));
+
+  hose(ctx, [shoulder, elbow, wrist], ARM_W);
+
+  const away = Math.atan2(wrist.y - elbow.y, wrist.x - elbow.x) - side * HOOK_TURN * DEG;
+  const claw = { x: wrist.x + Math.cos(away) * HOOK_LEN, y: wrist.y + Math.sin(away) * HOOK_LEN };
+  hose(ctx, [wrist, claw], [HOOK_W * 1.7, HOOK_W * 0.7]);
 }
 
-function drawLimb(
+// One walking leg: hip buried in the body, one arch over a knee, foot on a narrow flattened ring.
+function walk(
   ctx: CanvasRenderingContext2D,
   bearing: number,
   leg: Leg,
   mirrored: boolean,
-  launch: number,
+  frame: number,
+  shift: Point,
 ): void {
   const side = mirrored ? -1 : 1;
-  // The tail swings out to the positive bearing, so that is the braced side and its mirror gathers.
-  const braced = !mirrored;
-  const spread = leg.spread * side + (braced ? BRACE_SPREAD : GATHER_SPREAD) * side;
+  // The fore end cranks toward +side, so -side is the outside of the drift and takes the weight.
+  const braced = mirrored;
+  const spread =
+    leg.spread * side + (mirrored ? leg.skew : 0) + (braced ? BRACE_SPREAD : GATHER_SPREAD) * side;
   const bow = leg.bow * side;
-  const hook = leg.hook * side;
+  const hooked = leg.hook * side;
+  // Mirroring flips which tripod a leg belongs to, which is exactly the alternating gait: the front
+  // and back of one side swing with the middle of the other, and three feet are down at all times.
+  const tripod = mirrored ? !leg.tripod : leg.tripod;
+  const phase = PHASE[tripod ? frame : 1 - frame];
+  const swing = side * STRIDE * phase;
+  const lifted = Math.max(phase, 0);
+  const span =
+    leg.reach *
+    (mirrored ? leg.slack : 1) *
+    (braced ? BRACE_REACH : GATHER_REACH) *
+    (1 + (GATHER - 1) * lifted);
 
-  // A stride is fore-and-aft, so it opens or closes the angle to the heading. Rotating both sides
-  // the same way would walk the creature sideways. Mirroring flips which half of the bound a limb
-  // takes, which is the alternating gait a spider actually runs on.
-  const drives = mirrored ? !leg.drive : leg.drive;
-  const phase = drives ? launch * 2 - 1 : 1 - launch * 2;
-  const swing = side * STRIDE * phase * (leg.lift > 0 ? 0.5 : 1);
+  const root = { x: FLOOR.x + shift.x * 0.4, y: FLOOR.y + shift.y * 0.4 };
+  const kneeAt = bearing + spread + bow + swing * 0.4;
+  const hip = from(root, bearing + spread, HIP_R, HIP_LIFT);
+  const knee = from(root, kneeAt, span * 0.58, leg.arch + LIFT * lifted * 0.6);
+  const foot = from(root, bearing + spread + bow + hooked + swing, span, LIFT * lifted);
 
-  const thrown = leg.lift > 0 ? 1 + (FORE_THROW - 1) * launch : 1 + 0.07 * phase;
-  const reach = leg.reach * (braced ? BRACE_REACH : GATHER_REACH) * thrown;
-  const tipLift = Math.max(leg.lift - FORE_DROP * launch, 0) + (drives ? 0 : 0.9 * (1 - launch));
-
-  const kneeAngle = bearing + spread + bow + swing * 0.4;
-  const knee = leg.knee + (leg.lift > 0 ? 0 : 0.8 * Math.max(phase, 0));
-
-  const hip = at(bearing + spread, HIP_R, HIP_LIFT);
-  const rise = at((bearing + spread + kneeAngle) / 2, reach * 0.24, knee * 0.72);
-  const peak = at(kneeAngle, reach * 0.56, knee);
-  const tip = at(bearing + spread + bow + hook + swing, reach, tipLift);
-
-  hose(ctx, hip, rise, peak, tip);
-}
-
-const CURVE_STEPS = 16;
-
-function curveAt(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
-  const u = 1 - t;
-  return {
-    x: u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x,
-    y: u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y,
-  };
-}
-
-function slopeAt(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
-  const u = 1 - t;
-  return {
-    x: 3 * u * u * (p1.x - p0.x) + 6 * u * t * (p2.x - p1.x) + 3 * t * t * (p3.x - p2.x),
-    y: 3 * u * u * (p1.y - p0.y) + 6 * u * t * (p2.y - p1.y) + 3 * t * t * (p3.y - p2.y),
-  };
-}
-
-// A rubber hose that thins toward the tip. Stroking would give a constant-width tube with a blunt
-// end, which at this size reads as a tentacle rather than a leg — the taper is the whole
-// difference, so the hose is filled as a shape instead.
-function hose(ctx: CanvasRenderingContext2D, p0: Point, p1: Point, p2: Point, p3: Point): void {
-  const near: Point[] = [];
-  const far: Point[] = [];
-  for (let i = 0; i <= CURVE_STEPS; i++) {
-    const t = i / CURVE_STEPS;
-    const p = curveAt(p0, p1, p2, p3, t);
-    const d = slopeAt(p0, p1, p2, p3, t);
-    const length = Math.hypot(d.x, d.y) || 1;
-    const half = (LEG_HIP_W + (LEG_TIP_W - LEG_HIP_W) * t) / 2 + LEG_BELLY * Math.sin(Math.PI * t);
-    const nx = (-d.y / length) * half;
-    const ny = (d.x / length) * half;
-    near.push({ x: p.x + nx, y: p.y + ny });
-    far.push({ x: p.x - nx, y: p.y - ny });
-  }
-  ctx.beginPath();
-  ctx.moveTo(near[0].x, near[0].y);
-  for (let i = 1; i < near.length; i++) ctx.lineTo(near[i].x, near[i].y);
-  for (let i = far.length - 1; i >= 0; i--) ctx.lineTo(far[i].x, far[i].y);
-  ctx.closePath();
-  ctx.fill();
+  hose(ctx, [hip, knee, foot], LEG_W);
 }
 
 export default spiderman;

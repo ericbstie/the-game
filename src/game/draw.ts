@@ -24,7 +24,7 @@ import { BUILDABLES, footprintCenter, type OreGrid, oreAt, TILE, tileKey, tileOf
 import { type Camera, isVisible, type Viewport } from "./camera";
 import { HIT_FLASH_MS, type Mark } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
-import { BLOODLING_HP, ELITE_HP, GRUNT_HP } from "./enemies";
+import { BLOODLING_HP, ELITE_HP, GRUNT_HP, SPIDERMAN_HP } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
 import { BURST_REACH, inkPuff, PUFF_REACH, reticle, SHOT_DASH, speedLines, starburst } from "./fx";
 import {
@@ -337,12 +337,14 @@ const MAP_ORE_FILL = 0.8;
 const MAP_DOOR_MIN = 2;
 
 // One colour per enemy kind; the elite reads darker and, with its larger radius, distinct. The
-// bloodling's is the dark purple of the carapace it is drawn with (#140), so the fallback shape and
-// the sprite that replaces it are the same creature.
+// bloodling's is the dark purple of the carapace it is drawn with (#140) and the spiderman's is the
+// flat ink its whole silhouette is struck in (#137), so in each case the fallback shape and the
+// sprite that replaces it are the same creature.
 const ENEMY_COLORS: Record<EnemyKind, string> = {
   grunt: "#e8643c",
   elite: "#a01f1f",
   bloodling: "#4b2569",
+  spiderman: "#000000",
 };
 
 // What "full health" means for each kind, so a bar can be withheld from anything undamaged. Read
@@ -352,6 +354,7 @@ const ENEMY_MAX_HP: Record<EnemyKind, number> = {
   grunt: GRUNT_HP,
   elite: ELITE_HP,
   bloodling: BLOODLING_HP,
+  spiderman: SPIDERMAN_HP,
 };
 
 // Ore reads as ground texture, not as an entity: muted enough to sit under everything drawn on

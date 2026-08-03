@@ -44,6 +44,10 @@ import {
   PROJECTILE_FLIGHT_MS,
   PROJECTILE_RANGE,
   PROJECTILE_SPEED,
+  WEB_DAMAGE,
+  WEB_RADIUS,
+  WEB_SLOW,
+  WEB_SLOW_MS,
 } from "./enemies";
 import { freshGait, type Gait, updateFacing } from "./facing";
 import { interpolateAt, type PosSample } from "./interpolate";
@@ -175,6 +179,10 @@ export class ClientWorld {
   // Client clock, stamped when the bullet at the head of the forge queue was last seen to start.
   // Null while nothing is forging. See `forgeStartedAt`.
   private forgeAt: number | null = null;
+  // When the cobweb the owner is caught in lets go (#137), on this client's own clock. An instant
+  // and not a countdown, exactly as `lastDamageAt` and `forgeAt` are: nothing has to be advanced
+  // each frame, a second burst simply moves it, and it lapses on its own with nothing to clear it.
+  private webbedUntil = Number.NEGATIVE_INFINITY;
 
   // `initialHp` carries the owner's HP across a reconnect rebuild (a fresh world defaults to full).
   // Without it, a mid-match reconnect would reset to full and the report loop could relay that heal
@@ -224,7 +232,7 @@ export class ClientWorld {
   stepSelf(dtMs: number, input: MoveInput, now: number): void {
     const self = this.avatars.get(this.selfId);
     if (!self) return;
-    const stepped = stepPos(self.pos, input, dtMs, this.arena);
+    const stepped = stepPos(self.pos, input, dtMs, this.arena, this.speedScale(now));
     const slid = slidePos(this.build, self.pos, stepped, PLAYER_RADIUS);
     const pushed = pushOutOfBodies(slid, PLAYER_RADIUS, this.enemyBodies(now), this.arena);
     // Re-clamp: a shove must not push you through a wall you were standing against.
@@ -302,6 +310,35 @@ export class ClientWorld {
     if (Math.hypot(at.x - self.pos.x, at.y - self.pos.y) > BLAST_RADIUS) return;
     this.selfHp = Math.max(0, this.selfHp - BLAST_DAMAGE);
     this.lastDamageAt = now;
+  }
+
+  // One spiderman's cobweb going off at `at` (#137). The owner takes `WEB_DAMAGE` if it is standing
+  // inside the web and is held at `WEB_SLOW` of its speed until `WEB_SLOW_MS` has run out, both
+  // measured from its body's centre exactly as a blast's damage is, and a dead owner takes neither.
+  //
+  // **Both ends on their own, and neither leaves anything to unwind.** The blow is one subtraction,
+  // not a rate; the hold is an instant in the future that `speedScale` simply walks past. There is
+  // nothing on the wire and nothing in this class that could lift either early or leave one standing.
+  //
+  // No cadence guard of its own, unlike contact damage: the thrower's own `WEB_CADENCE_MS` is what
+  // paces it, and `applyMapDelta` drops a stale delta before it reaches here.
+  private web(at: Vec2, now: number): void {
+    if (this.selfHp <= 0) return;
+    const self = this.avatars.get(this.selfId);
+    if (!self) return;
+    if (Math.hypot(at.x - self.pos.x, at.y - self.pos.y) > WEB_RADIUS) return;
+    this.selfHp = Math.max(0, this.selfHp - WEB_DAMAGE);
+    this.lastDamageAt = now;
+    // Refreshed rather than extended: two webs at once are one web, and a second one landing late in
+    // the first always leaves a full `WEB_SLOW_MS` rather than stacking into a longer hold.
+    this.webbedUntil = now + WEB_SLOW_MS;
+  }
+
+  // What is left of the owner's speed this frame — `WEB_SLOW` while a cobweb still holds it, and 1
+  // otherwise. The single reader of the web's clock, so "the slow ends on its own" is a comparison
+  // rather than a rule anyone has to remember to run.
+  private speedScale(now: number): number {
+    return now < this.webbedUntil ? WEB_SLOW : 1;
   }
 
   hp(): number {
@@ -389,6 +426,15 @@ export class ClientWorld {
         if (enemy.kind === "bloodling") this.blast(where, now);
       }
       this.enemies.delete(id);
+    }
+    // The cobwebs thrown this tick (#137). Sampled on the *delayed* clock, like a death's mark and
+    // unlike a hit's: the thrower is still alive and still on screen, so the web goes off around the
+    // point its sprite is actually standing on rather than the point the stream has reached. An id
+    // this client has never seen is ignored, on the same terms `moves` ignores one.
+    for (const id of delta.bursts ?? []) {
+      const enemy = this.enemies.get(id);
+      if (!enemy) continue;
+      this.web(interpolateAt(enemy.buffer, now - ENEMY_RENDER_DELAY_MS) ?? { ...enemy.pos }, now);
     }
     for (const nd of delta.nests ?? []) {
       const nest = this.nests.find((n) => n.id === nd.id);
