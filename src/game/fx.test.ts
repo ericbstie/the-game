@@ -1,11 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import type { Vec2 } from "../lobby/protocol";
+import type { Tile, Vec2 } from "../lobby/protocol";
+import { TILE, tileCenter, tileOrigin } from "./build";
 import { ELITE_RADIUS, GRUNT_RADIUS } from "./enemies";
 import {
+  AIM_ARM,
+  AIM_ARM_TILES,
+  AIM_REACH,
+  AIM_TILES,
   BURST_REACH,
   inkPuff,
   type Lobe,
   PUFF_REACH,
+  reticle,
   SHOT_DASH,
   SHOT_GAP,
   type Strand,
@@ -358,5 +364,133 @@ describe("the ink puff struck where an enemy dies", () => {
         to: round(l.to),
       }));
     expect(shape(inkPuff(AT), AT)).toEqual(shape(inkPuff(ORIGIN), ORIGIN));
+  });
+});
+
+// #154: the mark under the pointer. Its whole job is to be found at a glance in a frame full of ink
+// and to say which tile is being pointed at, so every claim below is about the silhouette — where it
+// stands on the grid, what it leaves clear, and that it cannot be read as one of the two radial
+// marks struck a few units away from it.
+describe("the reticle marking the aim point", () => {
+  const AT: Tile = { tx: 321, ty: 1_271 };
+  const points = (tile: Tile) => reticle(tile).flat();
+
+  // The whole of "it snaps to grid spaces": every point struck is a corner of the tile grid, so the
+  // mark is ruled by the same lines the floor is and can be nowhere but on them. This is what fails
+  // if the mark is ever laid out from the pointer's own position again.
+  test("every point it strikes lands on a tile boundary, so the mark is on the grid", () => {
+    for (const p of points(AT)) {
+      expect(p.x % TILE).toBe(0);
+      expect(p.y % TILE).toBe(0);
+    }
+  });
+
+  // The block it outlines, stated as tiles: the corners are the block's own, and the block is
+  // centred on the tile the cursor is over.
+  test("it outlines the odd block of tiles centred on the tile the cursor is over", () => {
+    expect(AIM_TILES % 2).toBe(1); // or there is no middle tile for it to be centred on
+    const half = (AIM_TILES - 1) / 2;
+    const origin = tileOrigin({ tx: AT.tx - half, ty: AT.ty - half });
+    const far = tileOrigin({ tx: AT.tx + half + 1, ty: AT.ty + half + 1 });
+    const xs = points(AT).map((p) => p.x);
+    const ys = points(AT).map((p) => p.y);
+    expect(Math.min(...xs)).toBe(origin.x);
+    expect(Math.min(...ys)).toBe(origin.y);
+    expect(Math.max(...xs)).toBe(far.x);
+    expect(Math.max(...ys)).toBe(far.y);
+  });
+
+  test("it is four corners of that block, each two arms meeting at the corner", () => {
+    const struck = reticle(AT);
+    const middle = tileCenter(AT);
+    expect(struck.length).toBe(4);
+    for (const corner of struck) {
+      expect(corner.length).toBe(3);
+      const [start, bend, end] = corner;
+      // The bend is the block's own corner: both arms run in from it, one along each axis.
+      expect(Math.abs(bend.x - middle.x)).toBeCloseTo(AIM_REACH, 9);
+      expect(Math.abs(bend.y - middle.y)).toBeCloseTo(AIM_REACH, 9);
+      expect(start.y).toBeCloseTo(bend.y, 9);
+      expect(end.x).toBeCloseTo(bend.x, 9);
+      expect(Math.abs(start.x - bend.x)).toBeCloseTo(AIM_ARM, 9);
+      expect(Math.abs(end.y - bend.y)).toBeCloseTo(AIM_ARM, 9);
+    }
+    // One corner per quadrant, and no two in the same one.
+    const quadrants = struck.map(
+      (c) => `${Math.sign(c[1].x - middle.x)},${Math.sign(c[1].y - middle.y)}`,
+    );
+    expect(new Set(quadrants).size).toBe(4);
+  });
+
+  // The author's third part: it is not a fully enclosed square. Each edge of the block is struck
+  // over its outer tiles and left open over its middle one, so what is read is four corners rather
+  // than a box outline — which is a shape the game already spends on a building's footprint.
+  test("the middle of each edge is open, so it is never a closed square", () => {
+    const gap = (AIM_TILES - 2 * AIM_ARM_TILES) * TILE;
+    expect(gap).toBeGreaterThan(0);
+    expect(2 * AIM_ARM).toBeLessThan(AIM_TILES * TILE); // the two arms never meet along an edge
+    // Nothing is struck across the middle of an edge: on each axis the mark's points fall in two
+    // bands, one at each end, and the whole `gap` between them is bare.
+    const middle = tileCenter(AT);
+    for (const p of points(AT)) {
+      expect(Math.max(Math.abs(p.x - middle.x), Math.abs(p.y - middle.y))).toBeCloseTo(
+        AIM_REACH,
+        9,
+      );
+      expect(Math.min(Math.abs(p.x - middle.x), Math.abs(p.y - middle.y))).toBeGreaterThanOrEqual(
+        gap / 2,
+      );
+    }
+  });
+
+  // The point being aimed at is what the player is reading, and the mark is a frame around it rather
+  // than a blot on it: the outline stands a whole tile clear of the tile it marks, on every side.
+  test("the tile it marks is left bare, so what is being aimed at shows through", () => {
+    expect(AIM_REACH).toBeGreaterThan(TILE / 2);
+    const clear = AIM_REACH - TILE / 2;
+    expect(clear).toBeGreaterThanOrEqual(TILE);
+  });
+
+  // Three blind reads of an earlier cut failed to find the mark on ore, and the fault was the length
+  // of its strokes rather than their colour: an arm was 6 u where the floor's own splinters run
+  // longer. Ore is generated one `TILE` at a time (`src/sprite/ore-metal.ts`), so a tile is the scale
+  // of the coarsest thing the floor can lay — and an arm shorter than one is a stroke the stipple can
+  // counterfeit, whatever it is drawn in.
+  test("an arm is a whole tile, so no splinter of ore can be mistaken for one", () => {
+    expect(AIM_ARM).toBeGreaterThanOrEqual(TILE);
+    expect(AIM_ARM % TILE).toBe(0); // or the arms' ends would come off the grid the mark snaps to
+  });
+
+  // The burst on a connect (#115) and the puff on a death (#116) are struck in the same pen a few
+  // units away from this one, and a shot aimed at a spider puts all three in one place. They are
+  // told apart by shape or not at all: those two radiate from their point, and this one does not.
+  // It is also what keeps the mark honest about a shot that travels (#80) — nothing here reaches
+  // toward anything, so nothing here promises an arrival.
+  test("nothing it strikes runs through the point it marks", () => {
+    const middle = tileCenter(AT);
+    for (const corner of reticle(AT)) {
+      const bearings = corner.map((p) => Math.atan2(p.y - middle.y, p.x - middle.x));
+      expect(new Set(bearings.map((b) => b.toFixed(6))).size).toBe(3);
+    }
+  });
+
+  // The mark frames what is aimed at rather than blotting it, and once it is snapped what it frames
+  // is a *tile* — a body stands where it stands and the grid cannot be asked to clear it. A grunt on
+  // the marked tile is inside the opening; an elite is wider than the whole block, and its outline
+  // crosses each arm 0.85 u from the arm's inner end, which is the trade the snap makes.
+  test("the opening holds a body standing on the tile it marks", () => {
+    expect(AIM_REACH).toBeGreaterThan(GRUNT_RADIUS);
+    // Where an elite's silhouette meets the block's edge, measured from the middle of that edge —
+    // inside the opening the mark leaves there, so what it crosses is the last unit of an arm.
+    const clipped = Math.sqrt(ELITE_RADIUS ** 2 - AIM_REACH ** 2);
+    expect(clipped).toBeLessThan(((AIM_TILES - 2 * AIM_ARM_TILES) * TILE) / 2 + 1);
+  });
+
+  test("it is the same mark wherever on the grid it is struck", () => {
+    const shape = (tile: Tile) => {
+      const middle = tileCenter(tile);
+      return reticle(tile).map((c) => c.map((p) => ({ x: p.x - middle.x, y: p.y - middle.y })));
+    };
+    expect(shape(AT)).toEqual(shape({ tx: 0, ty: 0 }));
   });
 });

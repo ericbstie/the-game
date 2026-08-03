@@ -26,7 +26,7 @@ import { HIT_FLASH_MS, type Mark } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
 import { BLOODLING_HP, ELITE_HP, GRUNT_HP } from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
-import { BURST_REACH, inkPuff, PUFF_REACH, SHOT_DASH, speedLines, starburst } from "./fx";
+import { BURST_REACH, inkPuff, PUFF_REACH, reticle, SHOT_DASH, speedLines, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_U,
   MINIMAP_MARGIN,
@@ -135,6 +135,10 @@ export interface DrawOptions {
   // already aged to `PUFF_MS`. Handed in for the same reason the bursts are: the clock a puff is
   // judged on is that class's, and this layer has never seen it.
   puffs?: readonly Mark[];
+  // Where the pointer is, in world units (#154), or nothing. The mark is struck around the tile this
+  // point falls in — not at the point — so the caller hands over the position and this layer does the
+  // snapping, keeping the one conversion `cursorTile` and `aimDir` already share.
+  aim?: Vec2;
   // Baked art, or nothing. Absent — in a test, or before the first sprite lands — every entity
   // falls back to its shape, which is what keeps this one draw path the only one.
   sprites?: SpriteSource;
@@ -257,6 +261,24 @@ const FLOAT_TEXT = "+1"; // one whole Metal, stated literally — #99 asks for n
 // dpr 1. The weight is shared by the trail so the whole mark reads as one hand. Exported for
 // `scripts/shot-ink.ts`, which cannot measure the mark's coverage against a width of its own.
 export const SHOT_WIDTH = 2;
+
+// The aim mark's tone (#154), and the only grey the board carries. **Provisional.**
+//
+// Exactly halfway, and that is the whole of the argument. The floor is *two-tone*: every pixel of it
+// is 255 or 0, and an ore patch is those two shuffled rather than a third value in between — so the
+// "~40% ink" a patch measures is not a tone anything on screen actually is. 128 is the one value
+// that stands 127 away from every pixel either floor can put under the mark, which no ink and no
+// paper-rimmed ink can be. Ink, paper, and paper-rimmed ink were each tried and each was found on
+// the open floor and lost on stipple by blind readers.
+//
+// A **value, not a hue** — so #76's grant of two colours is untouched. `BLOOD` below is the stated
+// exception because it is a colour; this is the absence of one.
+const AIM = "#808080";
+
+// How thick the mark is struck, in world units. **Provisional.** Heavier than `SHOT_WIDTH` because
+// it is the instrument rather than the drawing — it has to be found before it is read — and light
+// enough that a 45 u outline stays an outline instead of closing into a bar.
+const AIM_WIDTH = 3;
 
 // Blood (#140), and the one place the black-and-white theme is broken on purpose. #76 grants the
 // game two colours and this is neither of them — it is a stated exception, and it earns it by being
@@ -583,6 +605,10 @@ export function drawWorld(
   // world coordinates only because that is the space this whole file paints in. Without a player
   // to centre on there is no window and nothing is drawn at all.
   if (self) drawMinimap(ctx, world, self, options);
+
+  // Over the map as well as over the world. It is the player's own hand, and a mark you can lose
+  // behind a plate is one you have to hunt for on the frame you most need it.
+  drawAim(ctx, options);
 
   // Last of all, and only ever on the dying player's own screen. It falls over the map too — a
   // player who is down is out of the fight, and reading the arena is part of the fight.
@@ -1367,6 +1393,42 @@ function drawMinimap(
   ctx.lineWidth = MAP_RULE * px;
   ctx.strokeStyle = INK;
   ctx.strokeRect(win.x, win.y, win.size, win.size);
+}
+
+// The mark under the pointer (#154). `fx.ts` lays out the geometry; this strikes it.
+//
+// **Struck around the tile the pointer is in rather than at the pointer**, off `tileOf` — the very
+// call `cursorTile` makes, on the very world position it makes it on. `fx.ts` says why the mark is
+// snapped; what it buys here is that the mark cannot name a tile a click would not act on, because
+// there is one conversion and one input.
+//
+// **Grey, and the only grey on the board.** The floor is white paper and an ore patch is dense black
+// stipple (#106) — the same two tones the whole drawing is made of — so a mark cut out of either of
+// them is a mark the floor is already wearing somewhere under it. Ink, paper, and paper-rimmed ink
+// were each tried and each was found on the open floor and lost on stipple by blind readers. `AIM`
+// is what leaves that argument behind; there is nothing else here spending anything on contrast.
+//
+// **Drawn whatever the gun is doing**, which is a choice and not a reading of the ticket. Hiding the
+// OS arrow is unconditional over `.arena`, and left-click still mines and lays buildings with the
+// gun down (#120) — so a mark that came and went with the weapon would leave a player pointing at
+// 15 u tiles with nothing on screen at all. The ask hides one cursor and owes exactly one back.
+//
+// One path, eight segments, no lifetime, no list and no cull: there is one pointer and it is up on
+// every frame. Not culled alone among the marks in this file — every other one is a point in a
+// 31,200² arena and almost always off screen, while this one is under the player's own hand.
+function drawAim(ctx: CanvasRenderingContext2D, { aim }: DrawOptions): void {
+  if (!aim) return;
+  ctx.beginPath();
+  for (const corner of reticle(tileOf(aim))) {
+    ctx.moveTo(corner[0].x, corner[0].y);
+    for (let i = 1; i < corner.length; i++) ctx.lineTo(corner[i].x, corner[i].y);
+  }
+  // Set rather than inherited: a corner is a right angle and the last thing to touch the join was a
+  // player's name, which rounds it (`paintOverhead`). Rounded, the four points come off the mark.
+  ctx.lineJoin = "miter";
+  ctx.strokeStyle = AIM;
+  ctx.lineWidth = AIM_WIDTH;
+  ctx.stroke();
 }
 
 // The damage readout for one entity, sitting above whatever was drawn for it. Nothing at full

@@ -16,6 +16,7 @@ import {
   placeStructure,
   TILE,
   tileKey,
+  tileOf,
 } from "./build";
 import { ClientWorld } from "./clientWorld";
 import { SHAKE_MS } from "./damageFx";
@@ -2160,5 +2161,130 @@ describe("#92: the wheel zooms the camera", () => {
         new Set([...before].map((width) => width / 2)),
       );
     });
+  });
+});
+
+// #154: the aim point gets a mark of its own, because the OS arrow that used to be it is hidden over
+// the arena. Everything here is read out of the ink for the reason the map's zoom is: the mark never
+// reaches the DOM, so what was drawn is the only place it is visible.
+describe("#154: the pointer is marked on the canvas", () => {
+  let drawn: { calls: DrawnCall[]; restore: () => void };
+
+  beforeEach(() => {
+    drawn = recordFrames();
+  });
+  afterEach(() => drawn.restore());
+
+  // Far enough off the spawn that a mark at the avatar rather than at the pointer fails, inside the
+  // 800 × 600 viewport `recordFrames` stands up, and well off its own tile's middle — so a mark that
+  // drifted with the pointer inside the tile would show up as a different answer.
+  const POINTER = { x: 430, y: 320 };
+  const POINTER_TILE = tileOf(POINTER);
+
+  // The tile the aim mark was struck around, read back out of the ink. It is the last path the frame
+  // strokes, and it is symmetric about the tile it marks, so the middle of its extent is that tile's
+  // own middle.
+  function markedTile(calls: DrawnCall[], into: HTMLElement): Tile | null {
+    const ours = calls.filter((c) => c.into === (into as HTMLCanvasElement));
+    const struck = ours.findLastIndex((c) => c.fn === "stroke");
+    if (struck < 0) return null;
+    const opened = ours.findLastIndex((c, i) => i < struck && c.fn === "beginPath");
+    const points = ours
+      .slice(opened, struck)
+      .filter((c) => c.fn === "moveTo" || c.fn === "lineTo")
+      .map((c) => c.args as [number, number]);
+    if (points.length === 0) return null;
+    const span = (axis: 0 | 1) => {
+      const all = points.map((p) => p[axis]);
+      return (Math.min(...all) + Math.max(...all)) / 2;
+    };
+    return tileOf({ x: span(0), y: span(1) });
+  }
+
+  test("the mark stands on the tile the pointer is in", async () => {
+    const canvas = renderMatch();
+    fireEvent.mouseMove(canvas, { clientX: POINTER.x, clientY: POINTER.y });
+    await nextFrames();
+    expect(markedTile(drawn.calls, canvas)).toEqual(POINTER_TILE);
+  });
+
+  // The whole of the ask: the point a shot is aimed at is legible without the OS cursor. `aimDir` is
+  // what a shot is fired along, so the mark is the aim only if the shot goes into the very tile the
+  // mark is drawn around — and the mark is read off the canvas rather than off the number it was
+  // drawn from.
+  test("a shot is fired into the tile the mark stands on", async () => {
+    const world = armed();
+    const shots: Vec2[] = [];
+    const canvas = renderMatch({ onAttack: (_pos: Vec2, dir: Vec2) => shots.push(dir) }, world);
+    equipGun();
+    fireEvent.mouseMove(canvas, { clientX: POINTER.x, clientY: POINTER.y });
+    await nextFrames();
+    fireEvent.mouseDown(canvas, { button: 0, clientX: POINTER.x, clientY: POINTER.y });
+    fireEvent.mouseUp(window, { button: 0 });
+    const self = world.selfPos() as Vec2;
+    const tile = markedTile(drawn.calls, canvas) as Tile;
+    expect(shots).toHaveLength(1);
+    // How far the shot's own line passes from the middle of that tile. Inside the tile's half
+    // diagonal, the line crosses the tile — which is what "the shot goes where the mark says" means
+    // once the mark is snapped to the grid rather than floating on the point.
+    const middle = { x: tile.tx * TILE + TILE / 2, y: tile.ty * TILE + TILE / 2 };
+    const to = { x: middle.x - self.x, y: middle.y - self.y };
+    const along = to.x * shots[0].x + to.y * shots[0].y;
+    const off = Math.hypot(to.x - along * shots[0].x, to.y - along * shots[0].y);
+    expect(off).toBeLessThan((TILE * Math.SQRT2) / 2);
+    expect(shots[0]).toEqual(aimDir(POINTER, self, { x: 0, y: 0 }));
+  });
+
+  // The other half of "it does not move where a click lands": the tile under the cursor drives the
+  // build ghost, the mine and the demolish, and the mark is drawn from the very expression those
+  // read. A mark on one tile and a click on another would be a worse cursor than the arrow.
+  test("the tile a click mines is the tile the mark stands on", async () => {
+    const world = new ClientWorld(init, "me");
+    world.ore.set(tileKey(POINTER_TILE), "metal");
+    const onMine = mock(() => {});
+    const canvas = renderMatch({ onMine }, world); // the gun is stowed, so left-click mines
+    fireEvent.mouseMove(canvas, { clientX: POINTER.x, clientY: POINTER.y });
+    fireEvent.mouseDown(canvas, { button: 0, clientX: POINTER.x, clientY: POINTER.y });
+    await settle(HARVEST_WINDOW);
+    fireEvent.mouseUp(window, { button: 0 });
+    expect(onMine).toHaveBeenCalledWith(POINTER_TILE);
+    expect(markedTile(drawn.calls, canvas)).toEqual(POINTER_TILE);
+  });
+
+  // #142 swings the view a blow is painted through and never the camera the cursor is read against,
+  // so the mark has to be laid out against the true one — or a hit would slide the mark off the tile
+  // a click is still landing on, which is the one thing this mark may never do.
+  test("a blow that shakes the screen never drags the mark off that tile", async () => {
+    const world = armed();
+    const canvas = renderMatch({}, world);
+    fireEvent.mouseMove(canvas, { clientX: POINTER.x, clientY: POINTER.y });
+    world.applyMapDelta(
+      {
+        tick: 1,
+        moves: [],
+        spawns: [
+          {
+            id: "e1",
+            kind: "grunt",
+            pos: { x: SPAWN.x + PLAYER_RADIUS + GRUNT_RADIUS, y: SPAWN.y },
+            hp: GRUNT_HP,
+          },
+        ],
+      },
+      Date.now(),
+    );
+    await settle(20); // inside the swing
+    expect(markedTile(drawn.calls, canvas)).toEqual(POINTER_TILE);
+  });
+
+  // The gun is stowed when you spawn and left-click mines (#120), so there is no shot to aim — and
+  // the mark is drawn anyway. It has to be: the OS arrow is hidden over the whole arena whatever the
+  // gun is doing, so a mark that came and went with the weapon would leave a player digging ore and
+  // laying walls with nothing on screen to point with.
+  test("the pointer is marked with the gun stowed too", async () => {
+    const canvas = renderMatch(); // no `equipGun`
+    fireEvent.mouseMove(canvas, { clientX: POINTER.x, clientY: POINTER.y });
+    await nextFrames();
+    expect(markedTile(drawn.calls, canvas)).toEqual(POINTER_TILE);
   });
 });

@@ -389,6 +389,12 @@ button:disabled {
      than flashing the old dark ground. */
   background: var(--paper);
   touch-action: none;
+  /* The pointer is drawn on the canvas from here in (#154) — `drawWorld` strikes an aim mark around
+     the tile it is over — so the OS arrow would be a second cursor standing beside the first, and
+     the borrowed one says nothing about where a shot is aimed. Scoped to the arena alone: the HUD's
+     plates, Escape's menu, the lobby and the end screen are DOM over or beside this canvas, none of
+     them carries a mark of its own, and every one of them keeps the cursor the OS gives it. */
+  cursor: none;
 }
 
 .game-header {

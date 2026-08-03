@@ -671,6 +671,17 @@ export function GameScreen({
             // Aged the same way, on the same frame clock, and judged without that delay — a death
             // takes its spider off this very snapshot, so the puff has nothing to wait for (#116).
             puffs: world.deathMarks(clock, PUFF_MS),
+            // Where the pointer is, so the frame can mark it (#154). The *true* camera, exactly as
+            // the ghost's tile above is: the mark and the ghost are one gesture and have to hold
+            // together, and a mark laid out against the swung view would be the one thing on screen
+            // that a blow slid out from under the cursor.
+            //
+            // The same expression `cursorTile` and `aimDir` read the pointer through, handed over
+            // whole rather than converted a second time here — which is what makes the mark unable
+            // to disagree with the click it stands for. Before the first `mousemove` that is the
+            // canvas origin, and the mark stands there: it says where the game believes the pointer
+            // is, and a click made without moving would be spent at exactly that tile.
+            aim: pointerWorld(pointerRef.current, camera, zoom),
             // **Not `scale`** (ADR 0008). A re-bake is 10.6 ms for the eager set and up to 130.7 ms
             // once a 0.5× screen's ore is in it, so re-keying the cache on every frame of a wheel
             // gesture is not affordable. `bakeZoom` holds the scale the bakes in hand were made at

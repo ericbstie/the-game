@@ -13,6 +13,7 @@ describe("parseArgs", () => {
     expect(request.at).toBeNull();
     expect(request.map).toBe(MINIMAP_COVERAGE_U);
     expect(request.damage).toBe(Number.POSITIVE_INFINITY); // a frame with no blow behind it
+    expect(request.aim).toBeNull(); // the scene's own pointer, which is over its densest metal
   });
 
   test("takes the corner map's zoom, so a level can be looked at (#110)", () => {
@@ -49,6 +50,15 @@ describe("parseArgs", () => {
   test("puts the camera where asked, so an edge-only sprite can be looked at", () => {
     expect(parseArgs(["--at", "0,0"]).at).toEqual({ x: 0, y: 0 });
     expect(() => parseArgs(["--at", "0"])).toThrow(/x,y/);
+  });
+
+  // The aim mark (#154) is struck around the tile the pointer is in, and a frame has exactly one
+  // pointer — so the two floors it has to read over, bare paper and dense ore, are two renders and
+  // not one. This is what moves it between them.
+  test("puts the pointer where asked, so the aim mark can be looked at on either floor (#154)", () => {
+    expect(parseArgs(["--aim", "15620,15880"]).aim).toEqual({ x: 15_620, y: 15_880 });
+    expect(() => parseArgs(["--aim", "15620"])).toThrow(/x,y/);
+    expect(() => parseArgs(["--aim", "here,there"])).toThrow(/x,y/);
   });
 
   test("refuses an unknown argument rather than silently ignoring it", () => {
@@ -196,5 +206,15 @@ describe("entrySource", () => {
     const source = entrySource(parseArgs([]), modules);
     expect(source).toContain("demoBlood");
     expect(source).toContain("blood: demoBlood(world, DEMO_NOW)");
+  });
+
+  // The aim mark is procedural ink under the pointer, and the one question about it a spy cannot
+  // answer is whether it reads over the two floors at once — bare paper and dense black stipple. The
+  // scene aims it into the ore, which is the harder of the two; `--aim` is the paper.
+  test("carries the aim mark, so the pointer can be looked at on both floors (#154)", () => {
+    expect(entrySource(parseArgs([]), modules)).toContain("aim: DEMO_AIM");
+    expect(entrySource(parseArgs(["--aim", "15620,15880"]), modules)).toContain(
+      'aim: {"x":15620,"y":15880}',
+    );
   });
 });

@@ -1,4 +1,5 @@
-import type { Vec2 } from "../lobby/protocol";
+import type { Tile, Vec2 } from "../lobby/protocol";
+import { TILE, tileCenter } from "./build";
 
 // The cartoon-FX layer #78 asks for. Speed lines trailing a shot (#114) are the first slice of it;
 // the starburst on impact (#115) and the ink puff on death (#116) belong here beside them.
@@ -239,4 +240,74 @@ export function inkPuff(at: Vec2): Lobe[] {
     });
   }
   return struck;
+}
+
+// The mark under the pointer (#154): the outline of a block of tiles standing around the tile the
+// cursor is over, broken open in the middle of each edge.
+//
+// **It snaps to the grid rather than floating at the pointer, and that is what it is for.** The
+// point the pointer is on is a place the game has no other name for; the tile it is in is the thing
+// a click acts on — the ghost previews it, `resolveHarvest` mines or demolishes it, and both read it
+// off the same conversion `aimDir` takes a shot's direction from. A mark on the grid says which tile
+// that is, which is more than a mark on the point could, and it lands on the same lines the floor is
+// already ruled by rather than at an angle to them.
+//
+// **A frame around the aim rather than a star on it**, which is also what tells it apart from the
+// two marks it will share a spot with. A shot aimed at a spider that is being hit puts this, #115's
+// burst and #116's puff within a few units of each other; both of those radiate from their point,
+// every stroke here runs around it, and none of them points at anything.
+//
+// That is what keeps it honest about the shot. Since #80 a shot is a body the server flies: it takes
+// real time to arrive and can miss a spider that walks out of the way — so a mark that reached
+// toward the target, or led it, would promise something the sim does not. This one says which tile
+// the pointer is in, which is exactly what `aimDir` and `cursorTile` read, and all that is claimed.
+//
+// The middle is left open for the reason the burst's is: what is being aimed at is what the player
+// is reading, and a blot on it would be the one drawing that hides the thing it is about.
+
+// The block the mark outlines, in tiles a side, and how much of each edge each corner's arm covers.
+// Both **provisional**; that the block is odd and that an arm is a whole number of tiles are not —
+// an even block has no middle tile to be centred on, and an arm that stopped inside a tile would put
+// the mark's ends off the grid it is snapped to.
+//
+// Three because it is the smallest odd block that leaves the marked tile untouched: the outline
+// stands one whole tile clear of it on every side, so what is being aimed at is never under ink.
+//
+// One tile per arm is what settles the opening, and the opening is the whole of the mark's silhouette
+// — struck as a closed square it reads as a building's footprint, which is a thing the game already
+// draws. Each edge is three tiles, the corners take the outer two, and the middle one is the gap.
+//
+// **An arm is a whole `TILE` long because that is the scale of the coarsest thing the floor can
+// lay.** Ore is generated one tile at a time and its largest shard reaches about 7 u
+// (`src/sprite/ore-metal.ts`), so a stroke a whole tile long is one no splinter can counterfeit —
+// which is the measured lesson of the arms of 6 u that three blind reads failed to find on stipple.
+export const AIM_TILES = 3;
+export const AIM_ARM_TILES = 1;
+
+// How far the outline stands from the middle of the tile it marks, in world units, and how long each
+// arm runs. Derived, so a retune of either count above carries them.
+export const AIM_REACH = (AIM_TILES * TILE) / 2;
+export const AIM_ARM = AIM_ARM_TILES * TILE;
+
+// One corner as the three points its two arms run through, so `draw.ts` strikes each as a single
+// polyline and the joint mitres shut. Struck as two strands instead, the outer corner comes out
+// notched by half a line width — which is most of the visual weight of a mark this size.
+//
+// Every point it returns is a whole multiple of `TILE` on both axes: the block's own corners, and
+// the tile boundaries an arm's length in from them. That is the grid snap, and it is checkable.
+export function reticle(tile: Tile): Vec2[][] {
+  const middle = tileCenter(tile);
+  const corners: Vec2[][] = [];
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      const x = middle.x + sx * AIM_REACH;
+      const y = middle.y + sy * AIM_REACH;
+      corners.push([
+        { x: x - sx * AIM_ARM, y },
+        { x, y },
+        { x, y: y - sy * AIM_ARM },
+      ]);
+    }
+  }
+  return corners;
 }

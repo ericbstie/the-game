@@ -4,8 +4,10 @@ import {
   freshBuildState,
   INTERACT_REACH,
   insertStructure,
+  oreAt,
   oreUnder,
   resolveHarvest,
+  TILE,
   tileCenter,
   tileKey,
   tileOf,
@@ -13,11 +15,18 @@ import {
 import { computeCamera } from "../src/game/camera";
 import { BLOODLING_HP } from "../src/game/enemies";
 import { FLOAT_RISE, oreFloatOrigin } from "../src/game/floats";
-import { PUFF_REACH } from "../src/game/fx";
-import { MINIMAP_COVERAGES, minimapWindow, oreCells, oreDensity } from "../src/game/minimap";
+import { AIM_REACH, AIM_TILES, PUFF_REACH } from "../src/game/fx";
+import {
+  MINIMAP_COVERAGE_U,
+  MINIMAP_COVERAGES,
+  minimapWindow,
+  oreCells,
+  oreDensity,
+} from "../src/game/minimap";
 import { POWER_WORDS } from "../src/game/tutorial";
 import { escapeTally, insideExit, squadEscaped } from "../src/game/world";
 import {
+  DEMO_AIM,
   DEMO_CAMERA,
   DEMO_ESCAPE_CAMERA,
   DEMO_HOVER,
@@ -94,6 +103,61 @@ describe("the scene the harness paints", () => {
     expect(world.structures.some((s) => tileKey(s.tile) === tileKey(DEMO_MINED))).toBe(false);
     const centre = tileCenter(DEMO_MINED);
     expect(Math.hypot(centre.x - self.pos.x, centre.y - self.pos.y)).toBeLessThan(INTERACT_REACH);
+  });
+
+  // #154's mark is struck around the tile the pointer is in, and the one question about it a spy
+  // cannot answer is whether a grey outline still reads over a floor that is already black. That is
+  // what this scene's pointer is for: it stands in the densest metal in the frame, which is the case
+  // the mark is at risk in — bare paper needs no picture, because there a grey rule has the sheet to
+  // itself.
+  test("aims its pointer into an ore patch, which is the floor the aim mark is at risk on", () => {
+    const world = demoWorld();
+    const tile = tileOf(DEMO_AIM);
+    expect(oreAt(world.ore, tile)).toBe("metal");
+    // And a patch rather than one tile in open ground. The outline runs on the *edge* of the block
+    // around that tile, so what has to be ore is the block, not only the tile in the middle of it.
+    const half = (AIM_TILES - 1) / 2;
+    let covered = 0;
+    for (let dy = -half; dy <= half; dy++) {
+      for (let dx = -half; dx <= half; dx++) {
+        if (oreAt(world.ore, { tx: tile.tx + dx, ty: tile.ty + dy })) covered++;
+      }
+    }
+    expect(covered / AIM_TILES ** 2).toBeGreaterThan(0.7);
+  });
+
+  // Clear of everything else the scene draws, the corner map's own plate included, and inside the
+  // frame. A mark half behind a spider — or over the map's white plate — says nothing about the
+  // floor, which is the only thing this picture is asked about.
+  test("stands its pointer clear of everything else in the scene, and inside the frame", () => {
+    const world = demoWorld();
+    // Measured from the middle of the tile the mark snaps to rather than from the pointer, because
+    // that is what the outline is actually built around, plus a tile of slack for the stroke.
+    const middle = tileCenter(tileOf(DEMO_AIM));
+    const struck = AIM_REACH + TILE;
+    for (const enemy of world.enemies) {
+      expect(Math.hypot(middle.x - enemy.pos.x, middle.y - enemy.pos.y)).toBeGreaterThan(
+        struck + enemy.radius,
+      );
+    }
+    for (const player of world.players) {
+      expect(Math.hypot(middle.x - player.pos.x, middle.y - player.pos.y)).toBeGreaterThan(
+        struck + player.radius,
+      );
+    }
+    expect(middle.x).toBeGreaterThan(DEMO_CAMERA.x + struck);
+    expect(middle.x).toBeLessThan(DEMO_CAMERA.x + DEMO_VIEWPORT.width - struck);
+    expect(middle.y).toBeGreaterThan(DEMO_CAMERA.y + struck);
+    expect(middle.y).toBeLessThan(DEMO_CAMERA.y + DEMO_VIEWPORT.height - struck);
+    const self = world.players.find((p) => p.id === DEMO_SELF);
+    if (!self) throw new Error(`the scene has no ${DEMO_SELF} for the map to centre on`);
+    const plate = minimapWindow(self.pos, DEMO_CAMERA, DEMO_VIEWPORT, MINIMAP_COVERAGE_U);
+    const overPlate =
+      middle.x + struck > plate.x &&
+      middle.x - struck < plate.x + plate.size &&
+      middle.y + struck > plate.y &&
+      middle.y - struck < plate.y + plate.size;
+    expect(overPlate).toBe(false);
   });
 
   // Inside the frame the harness paints, with room above it for the whole rise, or the picture
