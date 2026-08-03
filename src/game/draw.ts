@@ -275,10 +275,16 @@ export const SHOT_WIDTH = 2;
 // exception because it is a colour; this is the absence of one.
 const AIM = "#808080";
 
-// How thick the mark is struck, in world units. **Provisional.** Heavier than `SHOT_WIDTH` because
-// it is the instrument rather than the drawing — it has to be found before it is read — and light
-// enough that a 45 u outline stays an outline instead of closing into a bar.
-const AIM_WIDTH = 3;
+// How thick the mark is struck, in world units. **Provisional**, and already retuned once: heavier
+// than `SHOT_WIDTH` because it is the instrument rather than the drawing — it has to be found before
+// it is read — and light enough that a 45 u outline stays an outline instead of closing into a bar.
+//
+// Cut at 3 first. A blind reader given the whole frame over a dense patch found the mark only after
+// a deliberate hunt, called it "thin, small", and picked out two of the four corners; at 5 the same
+// read landed on it unprompted, called it "fairly obvious — the eye lands there quickly", named it a
+// targeting reticle, and found three. **The fourth corner is still lost where the stipple runs
+// densest**, which is the honest residual and is recorded on #154 rather than drawn over.
+const AIM_WIDTH = 5;
 
 // Blood (#140), and the one place the black-and-white theme is broken on purpose. #76 grants the
 // game two colours and this is neither of them — it is a stated exception, and it earns it by being
