@@ -29,8 +29,13 @@ import {
   nestLayout,
   PROJECTILE_FLIGHT_MS,
   PROJECTILE_SPEED,
+  SPIDERMAN_HP,
   spawnEnemyState,
   stepEnemies,
+  WEB_DAMAGE,
+  WEB_RADIUS,
+  WEB_SLOW,
+  WEB_SLOW_MS,
 } from "./enemies";
 import { SEED_FACING } from "./facing";
 import { ARENA, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
@@ -1516,5 +1521,101 @@ describe("#140: a bloodling's blast lands on the client that was near it", () =>
     w.applyMapDelta({ tick: 3, moves: [["b1", 400, 300]] }, 1000 + ENEMY_RENDER_DELAY_MS);
     dies(w, 1000 + ENEMY_RENDER_DELAY_MS, 4);
     expect(w.hp()).toBe(PLAYER_MAX_HP);
+  });
+});
+
+// #137. The client side of a spiderman's cobweb. The sim announces the burst and nothing else, so
+// the owner judges both halves itself — the blow against its own health, the hold against its own
+// movement — on exactly the terms the blast above is judged on.
+describe("#137: a spiderman's cobweb lands on the client that was caught in it", () => {
+  const FRAME = 100;
+  const FULL_STEP = (PLAYER_SPEED * FRAME) / 1000;
+  // Thrown from straight above the owner, so a rightward walk only ever opens the gap and
+  // `pushOutOfBodies` stays out of what these tests measure.
+  const inside = { x: 400, y: 300 - (WEB_RADIUS - 1) };
+  const outside = { x: 400, y: 300 - (WEB_RADIUS + 1) };
+  const spidermanAt = (w: ClientWorld, pos: Vec2, tick = 1) =>
+    w.applyMapDelta(
+      { tick, moves: [], spawns: [{ id: "s1", kind: "spiderman", pos, hp: SPIDERMAN_HP }] },
+      0,
+    );
+  const throws = (w: ClientWorld, now: number, tick = 2) =>
+    w.applyMapDelta({ tick, moves: [], bursts: ["s1"] }, now);
+  // One frame of held input, which is the only place the hold shows up at all.
+  const walked = (w: ClientWorld, now: number) => {
+    const from = w.selfPos()?.x ?? 0;
+    w.stepSelf(FRAME, held("right"), now);
+    return (w.selfPos()?.x ?? 0) - from;
+  };
+
+  test("one thrown inside the web takes WEB_DAMAGE off the owner", () => {
+    const w = new ClientWorld(init(), "self");
+    spidermanAt(w, inside);
+    throws(w, 1000);
+    expect(w.hp()).toBe(PLAYER_MAX_HP - WEB_DAMAGE);
+    expect(w.damagedAt()).toBe(1000); // and shakes the screen, exactly as a bite or a blast does
+  });
+
+  test("one thrown outside it takes neither the blow nor the hold", () => {
+    const w = new ClientWorld(init(), "self");
+    spidermanAt(w, outside);
+    throws(w, 1000);
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
+    expect(walked(w, 1000)).toBeCloseTo(FULL_STEP, 6);
+  });
+
+  // "Both end on their own" is the ask's own claim, so the recovery is read off the clock rather
+  // than assumed: nothing runs to lift the hold, and the frame WEB_SLOW_MS lands on is full speed.
+  test("it holds the owner at WEB_SLOW and lets go the instant WEB_SLOW_MS is up", () => {
+    const w = new ClientWorld(init(), "self");
+    spidermanAt(w, inside);
+    throws(w, 1000);
+    expect(walked(w, 1000)).toBeCloseTo(FULL_STEP * WEB_SLOW, 6);
+    expect(walked(w, 1000 + WEB_SLOW_MS - 1)).toBeCloseTo(FULL_STEP * WEB_SLOW, 6);
+    expect(walked(w, 1000 + WEB_SLOW_MS)).toBeCloseTo(FULL_STEP, 6);
+  });
+
+  // The claim `web` makes in so many words: two webs at once are one web. A second landing late in
+  // the first leaves a full WEB_SLOW_MS measured from *it*, never the two laid end to end.
+  test("a second web inside the first refreshes the hold rather than stacking onto it", () => {
+    const w = new ClientWorld(init(), "self");
+    spidermanAt(w, inside);
+    throws(w, 1000);
+    throws(w, 1200, 3);
+    expect(walked(w, 1200 + WEB_SLOW_MS - 1)).toBeCloseTo(FULL_STEP * WEB_SLOW, 6); // past the first
+    expect(walked(w, 1200 + WEB_SLOW_MS)).toBeCloseTo(FULL_STEP, 6); // and not 1000 + 2 × WEB_SLOW_MS
+    expect(w.hp()).toBe(PLAYER_MAX_HP - 2 * WEB_DAMAGE); // the blow, unlike the hold, does land twice
+  });
+
+  test("a dead owner takes neither, exactly as they take no bite", () => {
+    const w = new ClientWorld(init(), "self", 0);
+    spidermanAt(w, inside);
+    throws(w, 1000);
+    expect(w.hp()).toBe(0);
+    expect(walked(w, 1000)).toBeCloseTo(FULL_STEP, 6);
+  });
+
+  test("a burst from an id this client has never seen is ignored, not thrown on", () => {
+    const w = new ClientWorld(init(), "self");
+    expect(() => w.applyMapDelta({ tick: 1, moves: [], bursts: ["ghost"] }, 1000)).not.toThrow();
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
+    expect(walked(w, 1000)).toBeCloseTo(FULL_STEP, 6);
+  });
+
+  // Sampled on the *delayed* clock, like a death's mark and unlike a hit's: the thrower is still
+  // alive and still on screen, so the web goes off round the point its sprite is standing on.
+  test("the web is measured where the spider is drawn, not where the stream has got to", () => {
+    const w = new ClientWorld(init(), "self");
+    spidermanAt(w, { x: 400 + WEB_RADIUS * 2, y: 300 });
+    // Two samples a render delay apart: by `now` the stream has it on top of the owner, but the
+    // drawing is still a delay behind, out past the web.
+    w.applyMapDelta({ tick: 2, moves: [["s1", 400 + WEB_RADIUS * 2, 300]] }, 1000);
+    w.applyMapDelta({ tick: 3, moves: [["s1", 400, 300]] }, 1000 + ENEMY_RENDER_DELAY_MS);
+    throws(w, 1000 + ENEMY_RENDER_DELAY_MS, 4);
+    expect(w.hp()).toBe(PLAYER_MAX_HP);
+    // And once the drawing has caught up the same throw does land, so the miss above is the delay
+    // rather than a web that reaches nobody.
+    throws(w, 1000 + 2 * ENEMY_RENDER_DELAY_MS, 5);
+    expect(w.hp()).toBe(PLAYER_MAX_HP - WEB_DAMAGE);
   });
 });

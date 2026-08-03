@@ -32,6 +32,7 @@ import {
   BLOODLING_RADIUS,
   BLOODLING_SHARE,
   BLOODLING_SPEED,
+  DASH_ANGLE,
   ELITE_HP,
   ELITE_SPEED,
   type Enemy,
@@ -62,18 +63,17 @@ import {
   RANGED_HALFWIDTH,
   RANGED_RANGE,
   SPAWN_GRACE_MS,
-  spawnEnemyState,
   SPIDERMAN_HP,
   SPIDERMAN_RADIUS,
   SPIDERMAN_SHARE,
   SPIDERMAN_SPEED,
+  spawnEnemyState,
   stepEnemies,
-  DASH_ANGLE,
   WANDER_LEG_MS,
+  WANDERER_CHANCE_OUTER,
   WEB_CADENCE_MS,
   WEB_RADIUS,
   WEB_TRIGGER,
-  WANDERER_CHANCE_OUTER,
   waveSize,
 } from "./enemies";
 import { ARENA, PLAYER_RADIUS, PLAYER_SPEED } from "./world";
@@ -2194,6 +2194,11 @@ describe("the spiderman (#137)", () => {
     return Math.abs(Math.atan2(Math.sin(step - line), Math.cos(step - line)));
   };
   const gap = (from: Vec2, to: Vec2) => Math.hypot(to.x - from.x, to.y - from.y);
+  // Where every dash fixture starts, and inside AGGRO_RADIUS deliberately: the slant is the
+  // *engaged* step. Out of aggro and locked on nobody, a spiderman wanders, and a wanderer walks
+  // straight down its drawn heading — so a fixture parked out there would assert nothing about the
+  // dash whatever it measured.
+  const DASH_FROM = AGGRO_RADIUS - 300;
 
   test("a dash runs at DASH_ANGLE off the straight line to the player, from any bearing", () => {
     // Every compass bearing, because a lean that only held to the east would be a bug the one
@@ -2218,29 +2223,45 @@ describe("the spiderman (#137)", () => {
   // The other half of the ask, and the half an angle assertion alone would let through: a dash that
   // runs at 90° is perfectly angled and never arrives.
   test("the approach still closes distance, dash after dash, all the way in", () => {
-    const from = { x: C.x + 2_000, y: C.y };
+    const from = { x: C.x + DASH_FROM, y: C.y };
     const s = stateWith([spiderman("e1", { ...from })]);
+    // Only while it is still approaching. A step of length `s` taken at a fixed angle off the radial
+    // line lands at `sqrt(d² + s² − 2ds·cos DASH_ANGLE)`, which stops being nearer than `d` once the
+    // gap drops under about `2s·cos DASH_ANGLE` — a couple of dozen units, deep inside throwing
+    // range. Circling once it has arrived is the movement working, not failing.
+    //
+    // Capped so a dash that converges too slowly, or not at all, fails here instead of spinning: the
+    // radial part of one step is `SPIDERMAN_SPEED × cos DASH_ANGLE`, which walks the gap down to the
+    // trigger in ~118 of them.
     let last = gap(from, C);
-    for (let i = 0; i < 200; i++) {
+    let dashes = 0;
+    while (last >= WEB_TRIGGER && dashes < 200) {
       stepWith(s, player({ ...C }));
       const now = gap(only(s).pos, C);
       expect(now).toBeLessThan(last); // every single dash, not just the run of them
       last = now;
+      dashes++;
     }
     expect(last).toBeLessThan(WEB_TRIGGER); // and it gets all the way to throwing range
   });
 
   test("it closes at the elite's speed — the slant is what it pays for the extra ground", () => {
-    const from = { x: C.x + 2_000, y: C.y };
+    const from = { x: C.x + DASH_FROM, y: C.y };
     const s = stateWith([spiderman("e1", { ...from })]);
     stepWith(s, player({ ...C }));
     // The whole step is its own speed; the part of it that is progress is the elite's.
     expect(gap(from, only(s).pos)).toBeCloseTo((SPIDERMAN_SPEED * DT) / 1000, 6);
-    expect(gap(from, C) - gap(only(s).pos, C)).toBeCloseTo((ELITE_SPEED * DT) / 1000, 3);
+    // Loose by a hundredth of a unit, from two structural slacks rather than any defect, pulling
+    // opposite ways: SPIDERMAN_SPEED is rounded up to a whole unit off `ELITE_SPEED / cos
+    // DASH_ANGLE`, worth +0.014 u a step, and one step's progress is the chord it actually walks
+    // rather than the radius `s · cos DASH_ANGLE` that approximates it, worth −0.022 u at this
+    // gap. Still fifty times tighter than the 2.6 u that separates this from the 14.3 u a
+    // straight-line dash would close, which is the thing it has to keep failing on.
+    expect(gap(from, C) - gap(only(s).pos, C)).toBeCloseTo((ELITE_SPEED * DT) / 1000, 1);
   });
 
   test("the lean never swaps sides, however long the chase runs — it is not a zig-zag", () => {
-    const s = stateWith([spiderman("e1", { x: C.x + 2_000, y: C.y })]);
+    const s = stateWith([spiderman("e1", { x: C.x + DASH_FROM, y: C.y })]);
     const sideOf = (from: Vec2, moved: Vec2, to: Vec2) =>
       Math.sign((moved.x - from.x) * (to.y - from.y) - (moved.y - from.y) * (to.x - from.x));
     const sides = new Set<number>();
@@ -2334,8 +2355,10 @@ describe("the spiderman (#137)", () => {
     const s = armed(onlyNestState(spawnEnemyState(worldInit(), counting)), 6);
     draws = 0;
     const spawns = stepEnemies(s, [], [], DT).events.spawns;
-    // One for the kind and two for the jitter, per enemy, exactly as before #137.
-    expect(draws).toBe(spawns.length * 3);
+    // Four a head across the whole tick: one for the kind and two for the jitter, exactly as before
+    // #137, plus the wander heading each of them draws on being stepped — `stepEnemies` spawns the
+    // wave and then steps it, the new arrivals included.
+    expect(draws).toBe(spawns.length * 4);
   });
 
   test("one spawns at SPIDERMAN_HP, and its radius rides the same record as the rest", () => {
@@ -2363,6 +2386,11 @@ describe("the spiderman (#137)", () => {
   test("two sims of one world step identically with spidermen in the field", () => {
     const a = spawnEnemyState(worldInit(8), mulberry32(8));
     const b = spawnEnemyState(worldInit(8), mulberry32(8));
+    // One planted in throwing range of the squad, because a nest-spawned one never gets there
+    // inside this run: the nests sit some 3,300 u out and a wanderer diffuses rather than advances.
+    // Without it the burst comparison below is two empty lists agreeing with each other.
+    for (const s of [a, b])
+      s.enemies.set("web", spiderman("web", { x: C.x + WEB_TRIGGER - 1, y: C.y }));
     const squad = player({ ...C });
     let bursts = 0;
     for (let i = 0; i < 4_000; i++) {

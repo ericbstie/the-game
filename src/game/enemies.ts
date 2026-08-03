@@ -1162,7 +1162,7 @@ function stepEnemy(enemy: Enemy, context: StepContext): void {
 //
 // A point handed back rather than a position written, so the dash goes through `stepToward` like
 // every other movement in this module and a spiderman bashes a wall in its way exactly as a grunt
-// does.
+// does. Called from the engaged path alone — see `wander` for why an undirected walk stays straight.
 function dashPoint(enemy: Enemy, lead: Vec2, speed: number): Vec2 {
   if (enemy.kind !== "spiderman") return lead;
   const dx = lead.x - enemy.pos.x;
@@ -1229,8 +1229,10 @@ function wander(enemy: Enemy, speed: number, context: StepContext): void {
     x: clamp(enemy.pos.x + Math.cos(enemy.wander.rad) * speed, edge, arena.width - edge),
     y: clamp(enemy.pos.y + Math.sin(enemy.wander.rad) * speed, edge, arena.height - edge),
   };
-  const target = dashPoint(enemy, to, speed);
-  stepToward(enemy, target, speed, context);
+  // Straight down the drawn heading, spiderman included: the slant is defined against the line to
+  // the *player*, and a wanderer has no player. Slanting here would also fight the clamp above,
+  // which keeps `wander.rad` inside the walls and would then be walked off by `DASH_ANGLE`.
+  stepToward(enemy, to, speed, context);
 }
 
 // What an enemy is engaged with: where it is, and where the enemy steers for it. The two differ
