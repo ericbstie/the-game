@@ -106,11 +106,11 @@ const LEAN = 16;
 // the abdomen back and a little above. That difference is what stops the two lobes going level in
 // the facings that run straight at or away from the viewer, where the plan offsets foreshorten to
 // nothing and a body built out of plan alone collapses into a disc.
-const WAIST_RIDE = 7.4;
-const HEAD_DROP = 3.4; // the head end's height below the waist
-const TAIL_RISE = 1.5; // and the abdomen tip's above it
-const HEAD_REACH = 8.4;
-const TAIL_REACH = 11.8;
+const WAIST_RIDE = 7.6;
+const HEAD_DROP = 4.4; // the head end's height below the waist
+const TAIL_RISE = 1.4; // and the abdomen tip's above it
+const HEAD_REACH = 7.2;
+const TAIL_REACH = 12;
 const NECK = 2.6; // the width at the waist, and the pinch that makes the body two masses
 
 // Width down each lobe, from the waist outward: `[how far along, how wide there]`. Hand-cut — a
@@ -119,15 +119,15 @@ const NECK = 2.6; // the width at the waist, and the pinch that makes the body t
 // arrow rather than an ellipse.
 const HEAD_SHAPE: [at: number, wide: number][] = [
   [0, NECK],
-  [0.5, 7.8],
-  [0.8, 6.7],
-  [1, 2.6],
+  [0.45, 5.8],
+  [0.78, 5],
+  [1, 2.2],
 ];
 const TAIL_SHAPE: [at: number, wide: number][] = [
   [0, NECK],
-  [0.42, 13.2],
-  [0.74, 11.2],
-  [1, 1.8],
+  [0.4, 11.8],
+  [0.72, 10],
+  [1, 1.6],
 ];
 
 // The near lobe grows this much as the creature turns toward the viewer and the far one shrinks by
@@ -146,11 +146,11 @@ const SWELL = 0.07;
 // that run at the viewer.
 const ARM_SPREAD = 24; // degrees each arm sits off the fore end's own bearing
 const ARM_BOW = 14; // and how much further out the elbow swings before the reach comes back in
-const ARM_HOOK_IN = 16; // degrees the wrist gathers back toward the creature's own line
-const ARM_REACH = 9.8;
+const ARM_HOOK_IN = 20; // degrees the wrist gathers back toward the creature's own line
+const ARM_REACH = 10;
 const ARM_ELBOW_AT = 0.5; // how far out along the arm the elbow sits
-const ARM_ELBOW_RISE = 5.2; // and how high it is carried above the plan
-const ARM_TIP_LIFT = 1.6; // the hook is held this far off the floor
+const ARM_ELBOW_RISE = 6.8; // and how high it is carried above the plan
+const ARM_TIP_LIFT = 1.5; // the hook is held this far off the floor
 const ARM_SHOULDER = 2.6; // where the arm leaves the body, inside the fill so the two meet with no seam
 const ARM_W = [3.4, 3, 2.1]; // shoulder, elbow, wrist
 const HOOK_LEN = 3.4;
@@ -200,9 +200,9 @@ const GATHER_SPREAD = -5;
 // all: a first cut of the bloodling dropped every mass by a pixel and read as scratchy legs
 // flickering under a body that never moved. So the body slides forward as the arms stretch out and
 // drop, while the abdomen swings back against it and the planted tripod pushes the other way.
-const LUNGE = 1; // how far the whole body carries forward along the heading
+const LUNGE = 0.6; // how far the whole body carries forward along the heading
 const BOB = 0.8; // and how far it drops onto the planted legs
-const TAIL_TRAIL = 1.1; // the abdomen tip is left this much further behind
+const TAIL_TRAIL = 1.2; // the abdomen tip is left this much further behind
 const ARM_THROW = 1.14; // the arms reach this much further
 const ARM_FALL = 1.8; // and the hooks come this much nearer the floor
 const STRIDE = 18; // degrees a swinging leg carries fore or aft
