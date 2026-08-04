@@ -69,6 +69,11 @@ legibility problem wearing a wrong explanation, and it was not chased as an anat
 
 ## What changed between the two reviews
 
+**Superseded by "Round 4" below: the fit scale this section describes is gone, and every geometry
+number in it now describes a drawing that is no longer shipped.** The section is left as written —
+it is the record of what was measured and decided at the time, and its closing paragraph called the
+outcome correctly.
+
 One thing, and it was not something either reviewer raised — it came from the harness.
 
 **The drawing ran over the edge of its box.** `sprite:sheet` measured **six of the sixteen bakes
@@ -258,3 +263,65 @@ Advisory, per ADR 0002 §3 — the reviewer's findings are recorded and travel w
 final call is the author's, made by looking at the work in the game. This ships with the facing
 finding **open**, twice-reported and not closed, and with the author's own doubt recorded above that
 the fit scale has cost the creature presence.
+
+## Round 4 — the doubt was right, and the creature was re-cut at full size (#173)
+
+**This supersedes the geometry in "What changed between the two reviews" and the coverage numbers in
+"The finding this ships with open".** The fit scale is gone. Its cost was not a suspicion in the end;
+it was measured, and it was worse than "a quarter smaller".
+
+**What the doubt turned out to be.** A blind reader was shown `sprite:frame --zoom 0.5 --enemies
+500` and asked one question — how many visually distinct kinds of creature it could count. It
+answered **three**, and the spiderman was not one of them. Its counts for the other three landed
+inside their true ranges (elite ~99, grunt 312, bloodling ~57; spidermen 31, and absent). Blit
+counts confirmed the spidermen were drawn. They were being read as grunts.
+
+**Why the scale did more damage than its size suggests.** `FIT` multiplied *positions* and spared
+*widths* — the stroke tables and the two lobe width tables — which was the right instinct about
+stroke weight and the wrong one about the body. Scaling one and not the other does not shrink a
+shape, it **reproportions** it. The abdomen went from 10.4 long by 9.6 wide to 7.9 by 9.6 and the
+head end from 8.6 by 6.2 to 6.5 by 6.2: both lobes ended up wider than they were long. Round 1's
+reader called the result *"a solid black, amorphous blob"* and was describing exactly that, one
+version before the scale was even applied to make it worse.
+
+**What replaced it.** Positions are written at the size they render at. The box is fitted by the two
+things that actually set the width in the flat facings — the arms' forward reach and the abdomen
+tip's trail — and the mass was moved into the abdomen, which is nearly free horizontally because a
+lobe's fat middle sits inboard of its own tip.
+
+**Measured, all 16 bakes at dpr 2, before → after:**
+
+| | before | after | grunt |
+| --- | --- | --- | --- |
+| coverage, device px | 32–51 × 28–40 | 34–58 × 33–47 | 45–55 × 37–44 |
+| covered px per bake | 730 | 958 | 919 |
+| ink, all bakes | 9,271 | 12,491 | 8,623 |
+| ink as a share of covered | 79% | 81% | 59% |
+| tightest margin, horizontal | 1 | **2** | 3 |
+| tightest margin, vertical | 11 | **4** | 2 |
+
+No bake touches its box, which was the ticket's first check. The creature now covers slightly more
+of its box than a grunt covers of its own, and carries **45% more ink** — at dpr 1, where the
+separation matters most, its ink share is 62% against the grunt's 33%.
+
+**One thing was found and fixed inside this change, and it is worth recording because it nearly
+shipped.** The first pass put the recovered size into *both* lobes and grew the head end to 7.8
+wide. That buried the two grappling arms inside the body mass — the one mark that names this
+creature stopped appearing in the silhouette at all, and the sheet went back to a bigger version of
+the same blob. The head end has to stay small and low, and the arm arch has to clear it. That is now
+a stated constraint in the source rather than an accident of the numbers.
+
+**What is not claimed.** A comment on #173 asks whether the re-cut should be judged against the
+**elite** as well as the grunt, noting that the two pull opposite ways — separating from the grunt
+wants more ink, separating from the elite wants less. The author has not taken a position and this
+change does not settle it. It was composed against the grunt, which is what the ask and the sprite's
+own header name.
+
+**What the author is unsure of.** The two arms do not read as *two* at real size. `PLAN` is 0.46, so
+`ARM_SPREAD`'s 24 degrees survives as about a pixel of screen separation, and the pair closes into
+one forward mass with two hooks on its tip — the white counter between them, which the source
+claimed as "the one counter in this silhouette", is not there at 32 px. What reads is the mass and
+the hooks. The claim has been corrected in the source rather than left standing.
+
+The facing finding from rounds 1–3 was not addressed here and stays **open**. Nothing in this change
+was aimed at it.
