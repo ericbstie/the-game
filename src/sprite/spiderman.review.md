@@ -302,7 +302,7 @@ lobe's fat middle sits inboard of its own tip.
 
 No bake touches its box, which was the ticket's first check. The creature now covers slightly more
 of its box than a grunt covers of its own, and carries **45% more ink** — at dpr 1, where the
-separation matters most, its ink share is 62% against the grunt's 33%.
+separation matters most, its ink share is 62.6% against the grunt's 32.6%.
 
 **One thing was found and fixed inside this change, and it is worth recording because it nearly
 shipped.** The first pass put the recovered size into *both* lobes and grew the head end to 7.8
