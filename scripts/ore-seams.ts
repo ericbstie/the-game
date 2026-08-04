@@ -104,9 +104,13 @@ const ctx = canvas.getContext("2d");
 ctx.setTransform(DPR, 0, 0, DPR, -camera.x * DPR, -camera.y * DPR);
 
 const cache = createSpriteCache(SPRITES);
+// Every field \`WorldSnapshot\` declares, because this literal lives in a template string and so is
+// the one world the compiler never sees: \`drawProjectiles\` reads \`.length\` unguarded (#80), and a
+// field added after this script was written surfaces as a page that measures nothing rather than
+// as a type error (#166).
 drawWorld(ctx, {
-  arena: ARENA, players: [], enemies: [], nests: [], structures: [],
-  exit: { x: -1000, y: -1000, width: 1, height: 1 }, ore,
+  arena: ARENA, players: [], enemies: [], nests: [], structures: [], projectiles: [],
+  exit: { x: -1000, y: -1000, width: 1, height: 1 }, exitRevealed: false, ore,
 }, { camera, viewport, sprites: cache.source(DPR), dpr: DPR });
 
 const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
