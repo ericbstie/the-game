@@ -69,6 +69,11 @@ legibility problem wearing a wrong explanation, and it was not chased as an anat
 
 ## What changed between the two reviews
 
+**Superseded by "Round 4" below: the fit scale this section describes is gone, and every geometry
+number in it now describes a drawing that is no longer shipped.** The section is left as written —
+it is the record of what was measured and decided at the time, and its closing paragraph called the
+outcome correctly.
+
 One thing, and it was not something either reviewer raised — it came from the harness.
 
 **The drawing ran over the edge of its box.** `sprite:sheet` measured **six of the sixteen bakes
@@ -258,3 +263,185 @@ Advisory, per ADR 0002 §3 — the reviewer's findings are recorded and travel w
 final call is the author's, made by looking at the work in the game. This ships with the facing
 finding **open**, twice-reported and not closed, and with the author's own doubt recorded above that
 the fit scale has cost the creature presence.
+
+## Round 4 — the doubt was right, and the creature was re-cut at full size (#173)
+
+**This supersedes the geometry in "What changed between the two reviews" and the coverage numbers in
+"The finding this ships with open".** The fit scale is gone. Its cost was not a suspicion in the end;
+it was measured, and it was worse than "a quarter smaller".
+
+**What the doubt turned out to be.** A blind reader was shown `sprite:frame --zoom 0.5 --enemies
+500` and asked one question — how many visually distinct kinds of creature it could count. It
+answered **three**, and the spiderman was not one of them. Its counts for the other three landed
+inside their true ranges (elite ~99, grunt 312, bloodling ~57; spidermen 31, and absent). Blit
+counts confirmed the spidermen were drawn. They were being read as grunts.
+
+**Why the scale did more damage than its size suggests.** `FIT` multiplied *positions* and spared
+*widths* — the stroke tables and the two lobe width tables — which was the right instinct about
+stroke weight and the wrong one about the body. Scaling one and not the other does not shrink a
+shape, it **reproportions** it. The abdomen went from 10.4 long by 9.6 wide to 7.9 by 9.6 and the
+head end from 8.6 by 6.2 to 6.5 by 6.2: both lobes ended up wider than they were long. Round 1's
+reader called the result *"a solid black, amorphous blob"* and was describing exactly that, one
+version before the scale was even applied to make it worse.
+
+**What replaced it.** Positions are written at the size they render at. The box is fitted by the two
+things that actually set the width in the flat facings — the arms' forward reach and the abdomen
+tip's trail — and the mass was moved into the abdomen, which is nearly free horizontally because a
+lobe's fat middle sits inboard of its own tip.
+
+**Measured, all 16 bakes at dpr 2, before → after:**
+
+| | before | after | grunt |
+| --- | --- | --- | --- |
+| coverage, device px | 32–51 × 28–40 | 34–58 × 33–47 | 45–55 × 37–44 |
+| covered px per bake | 730 | 958 | 919 |
+| ink, all bakes | 9,271 | 12,491 | 8,623 |
+| ink as a share of covered | 79% | 81% | 59% |
+| tightest margin, horizontal | 1 | **2** | 3 |
+| tightest margin, vertical | 11 | **4** | 2 |
+
+No bake touches its box, which was the ticket's first check. The creature now covers slightly more
+of its box than a grunt covers of its own, and carries **45% more ink** — at dpr 1, where the
+separation matters most, its ink share is 62.6% against the grunt's 32.6%.
+
+**One thing was found and fixed inside this change, and it is worth recording because it nearly
+shipped.** The first pass put the recovered size into *both* lobes and grew the head end to 7.8
+wide. That buried the two grappling arms inside the body mass — the one mark that names this
+creature stopped appearing in the silhouette at all, and the sheet went back to a bigger version of
+the same blob. The head end has to stay small and low, and the arm arch has to clear it. That is now
+a stated constraint in the source rather than an accident of the numbers.
+
+**What is not claimed.** A comment on #173 asks whether the re-cut should be judged against the
+**elite** as well as the grunt, noting that the two pull opposite ways — separating from the grunt
+wants more ink, separating from the elite wants less. The author has not taken a position and this
+change does not settle it. It was composed against the grunt, which is what the ask and the sprite's
+own header name.
+
+**What the author is unsure of.** The two arms do not read as *two* at real size. `PLAN` is 0.46, so
+`ARM_SPREAD`'s 24 degrees survives as about a pixel of screen separation, and the pair closes into
+one forward mass with two hooks on its tip — the white counter between them, which the source
+claimed as "the one counter in this silhouette", is not there at 32 px. What reads is the mass and
+the hooks. The claim has been corrected in the source rather than left standing.
+
+The facing finding from rounds 1–3 was not addressed here and stays **open**. Nothing in this change
+was aimed at it.
+
+### Round 4's two blind reads, verbatim
+
+Two readers, each given an image and a neutral brief and nothing else. Neither was told a change had
+been made, what it was meant to achieve, or that a spiderman existed.
+
+#### The played frame — the read the ticket asked for
+
+`sprite:frame --zoom 0.5 --enemies 500`, one question: *how many visually distinct kinds of creature
+can you count, and roughly how many of each.* The same brief that produced the verdict this re-cut
+answers.
+
+It named four kinds. **The spiderman was again not one of them** — its four were the elite ("a large,
+heavy, solid-black round/oval mass… two white oval eyes", 100–130 against a true 100), the grunt ("a
+much smaller body with 6–8 very long, thin legs radiating outward in a star/asterisk pattern",
+350–450 against a true 312), the bloodling ("a bright-green upper cap and dark-violet lower cap",
+40–50 against a true 57), and a one-off it could not place.
+
+But it did not miss the creature this time. Under *what it could not classify*, unprompted:
+
+> a compact, rounder, mostly-legless black blob appears repeatedly (e.g. 865,170–915,215;
+> 1070,240–1120,285; 85,585–120,615) — smaller and stubbier than Kind B's "starburst" pose but
+> matching its core body size and its total lack of facial markings. I read this as **Kind B in a
+> different leg/gait pose** (medium-high confidence, not certain) rather than a fifth kind
+
+**All three of those positions are spidermen.** Checked rather than assumed: the identical scene was
+re-rendered with the spiderman module swapped for one that draws nothing (`--sprite
+spiderman=<blank>`), and the two frames diffed. The changed pixels cluster at, among others, x
+884–900 y 181–197, x 1086–1151 y 254–278, and x 88–106 y 592–612 — the reader's three examples. Its
+one-off fourth kind is **not** a spiderman; no cluster falls within 100 px of it.
+
+So the creature went from **absent** to **seen repeatedly, described accurately, and offered as a
+candidate kind before being resolved into the grunt with the reader's own uncertainty attached**.
+That is a real move and it is not the finish. It ships as an open finding.
+
+The reader's stated grounds for merging it — *"matching its core body size"* — is the one part that
+does not survive checking. At 7× on the played frame the spiderman is a closed solid mass on stubby
+legs and the grunt is an open radiating star around a dot several times smaller; the masses are not
+comparable. What the same crop does show is that the live confusion risk points at the **elite**,
+which is also a closed solid mass — larger, and with eyes. That is evidence on #173's open elite
+question and deliberately not an answer to it.
+
+#### The sheet — ADR 0002's four checks
+
+> **What is it.** A blobby, faceless arthropod — a large teardrop/oval mass (abdomen) fused to a
+> smaller lobe from which 3–4 thin, tapering rubber-hose legs radiate downward… If I had to name it:
+> a spider or tick — an insectoid grunt, not a humanoid.
+>
+> **1930s NYC ink-cartoon style.** Partially. What matches: pure black silhouette on white, zero
+> gradient fills, no colour, and the legs have genuine rubber-hose taper with soft rounded joints.
+> What breaks it: (a) no face — every Fleischer/early-Disney-era character, however monstrous, gets
+> legible eyes; this is an anonymous mass, unreadable as a "character." (b) The edges are not hard
+> ink lines — every silhouette has a soft anti-aliased grey halo 2–4px wide.
+>
+> **Artefacts.** […] Three genuine enclosed holes survived the check […] all three sit in the same
+> body location (the leg/mouth junction) and all three are in frame 2 only — never frame 1, and
+> never in the other five facings. That reads as one systematic gap in whatever draw step renders
+> that joint for frame 2, not three random glitches. No stray marks exist anywhere else on the
+> sheet.
+>
+> **Cut off at tile edge?** No, checked two ways. […] the smallest gap across all 16 sprites is
+> 38px, none near zero or negative — no evidence of clipping anywhere.
+>
+> **Frame consistency and motion.** Reads as one creature in two poses. Diffing facing-1 frame1 vs
+> frame2 (aligned masks): 1081 of 12,350 pixels differ (8.8%), and 860 of those (80%) are in the leg
+> region vs. only 172 in the head/body region […] consistent with a weight-shift/settle on a step.
+> This is a coherent, natural-reading walk cycle, not an identity break.
+>
+> **Facings.** […] **6 of 8** carry a legible bearing; the other 2 are visually distinct from all the
+> rest but don't commit to a direction.
+>
+> **Colour.** None. Exhaustive scan of all 2,505,600 pixels found 256 distinct colours, every one
+> with R=G=B.
+
+It also read the caption and set it aside without being asked to: *"The sheet's own caption calls the
+file 'spiderman,' but nothing drawn supports a humanoid reading; that label is the filename trap the
+brief warned about."* Rounds 1 and 2 needed telling.
+
+### The holes are real, and the re-cut made them smaller rather than larger
+
+Checked before recording, because a reported hole and a concave pocket open to the background look
+identical in a crop, and round 3's reviewer got exactly this wrong. A flood fill from the image
+border was run on both the shipped sheet and the one on `main`, at three thresholds.
+
+**The reviewer is right.** All three of its holes reproduce, to the pixel and to the peak brightness
+it quoted — 17 px at x 254–258 (peak 121), 18 px at x 363–366 (peak 143), 11 px at x 780–782 (peak
+69). At the contact grid's magnification those are one to two baked device pixels each at dpr 2.
+
+The comparison that decides whether this change caused them:
+
+| enclosed in-sprite pockets, flood fill from the border | before | after |
+| --- | --- | --- |
+| contact grid, the same two facings | **87 px and 85 px, peak 255** | 18 px and 17 px, peak 143 / 121 |
+| magnified panel | 448 px, peak 169 | 64 px, peak 60 |
+| flip strip | 3 × 31 px, peak 123 | none |
+
+The two pure-white holes are gone, the magnified panel's pocket is down to a single baked pixel of
+dark grey, and the flip strip is clean. This is the residue #178 is open on, in the same class and
+materially reduced — and the re-cut was not aimed at it, so the improvement is a side effect and not
+a fix. **What the reviewer adds that #178 does not have is where it is**: the leg/head junction, in
+the reach frame only. #178 assumes the tail, from #171's diagnosis. The border flood fill is also the
+instrument #178 says does not exist — it locates the residue without moving the bake's box.
+
+### The author's call
+
+Ships, per ADR 0002 §3. The ticket's first check holds — no bake touches its box — and the second,
+the look at it beside a grunt in a played frame, is what this section records.
+
+**Two findings ship open, and neither is closed by this change:**
+
+- **The creature still resolves into the grunt population for a blind reader.** It is now visible and
+  correctly described where before it was not seen at all; it is not yet counted as its own kind.
+- **The facings.** Rounds 1–3 read 3 of 8, then 5, then 5. Round 4 reads **6 of 8**. That is a
+  different reader with a different instrument, so it is recorded as a fourth data point and not as a
+  finding closed.
+
+One thing this change is measurably worse at, and it is not in either read: `LUNGE` is the only
+motion constant that shrank in rendered terms, 1.14 to 0.6 — the width it bought is what let the
+reach frame fit the box. The sheet reviewer judged the two frames a coherent walk cycle anyway, but
+it never saw the old one.

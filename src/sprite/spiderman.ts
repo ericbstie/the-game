@@ -35,13 +35,13 @@ import type { SpriteSubject } from "./sheet";
 // - **Density.** A grunt is mostly white — a dot on wires. This is mostly ink: one contiguous body
 //   carries the middle of the box, and the legs are short enough to stay under it.
 // - **Span.** A grunt's ring of feet is about 28 px across inside a 32 px box. This one's is about
-//   21, and the only things reaching further are the two arms, which reach *forward* and not
+//   18, and the only things reaching further are the two arms, which reach *forward* and not
 //   sideways.
 // - **Where the ink points.** A grunt radiates evenly on every bearing and has no direction in its
 //   outline. This one is an arrow: heavy behind, narrow in front, two hooks off the front corner.
 //
 // **The facing is carried by the outline, not by a face.** There is none to spend — the head lobe
-// tops out about 7 px, which puts an eye at two or three device pixels, and a paper round that size
+// tops out about 6 px, which puts an eye at two or three device pixels, and a paper round that size
 // on a black curve is the specular highlight nothing else in this game has (the bloodling's
 // arithmetic, and it lands the same way here). So the eight bearings are one shape rotating, and
 // three things turn together on one flattened plan to make that read:
@@ -70,7 +70,7 @@ import type { SpriteSubject } from "./sheet";
 //
 // **Weight, measured.** On a dense metal-ore patch a grunt's 1.3–1.7 px legs all but vanish into the
 // stipple at dpr 1 while the elite's mass survives it. Nothing here is drawn thinner than a grunt's
-// hip: the arms run 3.4 → 2.0 and the walking legs 2.6 → 1.6, between the grunt's wires and the
+// hip: the arms run 3.4 → 2.1 and the walking legs 2.6 → 1.6, between the grunt's wires and the
 // elite's posts. The blind review of the burr version complained about shape and never about
 // weight, so that finding is kept.
 
@@ -106,12 +106,12 @@ const LEAN = 16;
 // the abdomen back and a little above. That difference is what stops the two lobes going level in
 // the facings that run straight at or away from the viewer, where the plan offsets foreshorten to
 // nothing and a body built out of plan alone collapses into a disc.
-const WAIST_RIDE = 7.4;
-const HEAD_DROP = 3.6; // the head end's height below the waist
-const TAIL_RISE = 1.6; // and the abdomen tip's above it
-const HEAD_REACH = 8.6;
-const TAIL_REACH = 10.4;
-const NECK = 2; // the width at the waist, and the pinch that makes the body two masses
+const WAIST_RIDE = 7.6;
+const HEAD_DROP = 4.4; // the head end's height below the waist
+const TAIL_RISE = 1.4; // and the abdomen tip's above it
+const HEAD_REACH = 7.2;
+const TAIL_REACH = 12;
+const NECK = 2.6; // the width at the waist, and the pinch that makes the body two masses
 
 // Width down each lobe, from the waist outward: `[how far along, how wide there]`. Hand-cut — a
 // small blunt head in front, and behind it a pear that carries most of the creature's ink and comes
@@ -119,14 +119,14 @@ const NECK = 2; // the width at the waist, and the pinch that makes the body two
 // arrow rather than an ellipse.
 const HEAD_SHAPE: [at: number, wide: number][] = [
   [0, NECK],
-  [0.5, 6.2],
-  [0.8, 5.4],
+  [0.45, 6.2],
+  [0.78, 5.4],
   [1, 2.4],
 ];
 const TAIL_SHAPE: [at: number, wide: number][] = [
   [0, NECK],
-  [0.42, 9.6],
-  [0.74, 8.4],
+  [0.4, 11.8],
+  [0.72, 10],
   [1, 1.6],
 ];
 
@@ -137,28 +137,38 @@ const SWELL = 0.07;
 // **The arms: the two marks that name this creature.** They leave the shoulders, bow out wide over a
 // raised elbow, come back in past the head end and finish in a hook that curls toward the other arm.
 // The pair encloses white paper between them, which is the one counter in this silhouette and the
-// thing that makes them read as *grasping* rather than as two more limbs.
+// thing that makes them read as *grasping* rather than as two more limbs — that counter is claimed
+// rather than measured, and at real size it does not survive: `PLAN` is 0.46, so `ARM_SPREAD`'s 24
+// degrees buys about a pixel of screen separation and the pair closes into one forward mass with
+// two hooks on its tip. What reads is the mass and the hooks, not the count.
 //
 // They are separated from the walking legs by four things at once: half again as long, a third
-// thicker, held clear of the floor at every point, and taking no part in the gait. The arch is
-// spent clearing the ring of feet and never the body — an arm that towers over the abdomen makes
-// the top of the silhouette point away from the heading, which is exactly backwards in the facings
-// that run at the viewer.
+// thicker, held clear of the floor at every point, and taking no part in the gait.
+//
+// **The arch has to clear the head lobe, and that is what sizes the head end.** The arms are the
+// only mark that names this creature, and they are buried the moment the mass in front of the waist
+// grows tall enough to swallow them: a pass with the head end at 7.8 wide and the elbow at 5.2 lost
+// them entirely, and the silhouette went back to being the blob the fit scale had made of it. So
+// the head end is kept short and dropped well below the waist, and the elbow rides over it. What
+// the arch must still not clear is the **abdomen** — an arm that towers over that puts the top of
+// the silhouette behind the heading, which is exactly backwards in the facings that run at the
+// viewer. It does not come close: the abdomen's crown sits around 14 above the floor and the elbow
+// at 6.8.
 const ARM_SPREAD = 24; // degrees each arm sits off the fore end's own bearing
 const ARM_BOW = 14; // and how much further out the elbow swings before the reach comes back in
-const ARM_HOOK_IN = 16; // degrees the wrist gathers back toward the creature's own line
-const ARM_REACH = 14.2;
+const ARM_HOOK_IN = 20; // degrees the wrist gathers back toward the creature's own line
+const ARM_REACH = 10;
 const ARM_ELBOW_AT = 0.5; // how far out along the arm the elbow sits
-const ARM_ELBOW_RISE = 5.4; // and how high it is carried above the plan
-const ARM_TIP_LIFT = 1.8; // the hook is held this far off the floor
-const ARM_SHOULDER = 3.2; // where the arm leaves the body, inside the fill so the two meet with no seam
+const ARM_ELBOW_RISE = 6.8; // and how high it is carried above the plan
+const ARM_TIP_LIFT = 1.5; // the hook is held this far off the floor
+const ARM_SHOULDER = 2.6; // where the arm leaves the body, inside the fill so the two meet with no seam
 const ARM_W = [3.4, 3, 2.1]; // shoulder, elbow, wrist
 const HOOK_LEN = 3.4;
 const HOOK_TURN = 74; // degrees the hook curls off the direction the arm was already going
 const HOOK_W = 1.8;
 
-const HIP_R = 2.4;
-const HIP_LIFT = 5.2; // the hip starts up inside the body, so the two fills meet with no seam
+const HIP_R = 1.9;
+const HIP_LIFT = 4.6; // the hip starts up inside the body, so the two fills meet with no seam
 const LEG_W = [2.6, 2.4, 1.6]; // hip, knee, foot — between a grunt's wires and an elite's posts
 
 interface Leg {
@@ -178,9 +188,9 @@ interface Leg {
 // this creature's ink is its body, and a wide open fan of feet is the one silhouette in the set
 // that is already taken.
 const LEGS: Leg[] = [
-  { spread: 78, reach: 10.4, bow: 12, hook: -8, arch: 4.4, tripod: true, skew: 3, slack: 0.96 },
-  { spread: 122, reach: 10.8, bow: 2, hook: 6, arch: 4.8, tripod: false, skew: -2.5, slack: 1.03 },
-  { spread: 160, reach: 9.6, bow: -14, hook: 14, arch: 4, tripod: true, skew: 3.5, slack: 0.955 },
+  { spread: 78, reach: 8.4, bow: 12, hook: -8, arch: 3.6, tripod: true, skew: 3, slack: 0.96 },
+  { spread: 122, reach: 8.8, bow: 2, hook: 6, arch: 3.9, tripod: false, skew: -2.5, slack: 1.03 },
+  { spread: 160, reach: 7.8, bow: -14, hook: 14, arch: 3.3, tripod: true, skew: 3.5, slack: 0.955 },
 ];
 
 // The drift, in the legs. The side the fore end turns *away* from is the outside of the slide and
@@ -200,14 +210,14 @@ const GATHER_SPREAD = -5;
 // all: a first cut of the bloodling dropped every mass by a pixel and read as scratchy legs
 // flickering under a body that never moved. So the body slides forward as the arms stretch out and
 // drop, while the abdomen swings back against it and the planted tripod pushes the other way.
-const LUNGE = 1.5; // how far the whole body carries forward along the heading
-const BOB = 1; // and how far it drops onto the planted legs
-const TAIL_TRAIL = 1.6; // the abdomen tip is left this much further behind
+const LUNGE = 0.6; // how far the whole body carries forward along the heading
+const BOB = 0.8; // and how far it drops onto the planted legs
+const TAIL_TRAIL = 1.2; // the abdomen tip is left this much further behind
 const ARM_THROW = 1.14; // the arms reach this much further
-const ARM_FALL = 2.2; // and the hooks come this much nearer the floor
+const ARM_FALL = 1.8; // and the hooks come this much nearer the floor
 const STRIDE = 18; // degrees a swinging leg carries fore or aft
 const PHASE = [-0.45, 0.55];
-const LIFT = 1.8; // how far a swinging foot comes off the floor
+const LIFT = 1.5; // how far a swinging foot comes off the floor
 const GATHER = 0.87; // and how far it is pulled in toward the body
 
 interface Point {
@@ -256,29 +266,39 @@ const spiderman: SpriteSubject = {
 // A point on the flattened plan, lifted clear of it. One function, so the lobes, the ring of feet
 // and the arms' reach cannot disagree about where the creature is pointing.
 //
-// `FIT` shrinks the whole animal about the floor point. Every reach and every height below was
-// hand-cut against a 32 box and the sum of them overran it: `sprite:sheet` measured six of the
-// sixteen bakes running into the edge of their box — facings 0, 3, 4 and 7, the ones whose arms and
-// tail lie flattest across the screen — where a grunt, an elite and a bloodling each measure none.
-// A bake that reaches the edge is shorn at it, so the hooks that name this creature were being cut
-// off in exactly the four facings that show them best.
+// **Every position above is written at the size it renders at.** It was not always. A `FIT = 0.76`
+// multiplied every radius and height here, because the drawing as first cut overran its box:
+// `sprite:sheet` measured six of the sixteen bakes touching the edge, where a grunt, an elite and a
+// bloodling each measure none.
 //
-// One factor here rather than a smaller `ARM_REACH`, because the arms are not the only thing over
-// the line — pulling them back alone still left bakes clipping on the abdomen. Scaling at the one
-// place every mark's position is computed keeps the proportions the drawing was composed with, and
-// deliberately does not touch the stroke widths: those were set against a grunt's hip so this
-// creature survives a dense ore patch, and a thinner line is the one thing that must not follow
-// from a smaller body.
+// **That scale fitted the box and broke the animal, and not only by making it small.** It multiplied
+// *positions* and deliberately spared *widths* — the stroke tables and the two lobe width tables —
+// so the abdomen went from 10.4 long by 9.6 wide to 7.9 by 9.6, and the head end from 8.6 by 6.2 to
+// 6.5 by 6.2. A lobe wider than it is long is a disc, and two discs joined at a waist are a blob.
+// A blind reader shown 500 enemies at zoom 0.5 and asked only how many kinds of creature it could
+// count answered three, and this was not one of them — while its counts for the other three landed
+// inside their true ranges. The spidermen were being read as grunts (#173).
 //
-// 0.76 is measured, not chosen: it is the largest value at which `sprite:sheet` reports no bake
-// touching its box at all. 0.78 still clips one. The cost is a creature about a quarter smaller
-// than it was drawn, which is a real loss of presence and is recorded in the review notes.
-const FIT = 0.76;
-
+// So the box is fitted by the geometry now. Only two things set the width in the four facings that
+// lie flattest across the screen — the arms reaching forward and the abdomen tip trailing back —
+// and those two are the ones cut to fit. The mass went into the abdomen instead, which is where the
+// density separator lives and which is nearly free horizontally: a lobe's fat middle sits inboard
+// of its own tip, so widening it moves the top and bottom of the silhouette and not the ends.
+//
+// **Measured, all 16 bakes at dpr 2.** Coverage runs 34–58 device px wide against 33–47 tall, from
+// 32–51 against 28–40; ink is 12,491 device px, from 9,271. No bake touches its box — the tightest
+// margin is 2 px horizontal and 4 vertical, against the grunt's own 3 and 2, so this drawing sits
+// no closer to its edges than the creature it is composed against. At dpr 1 it is 1 and 2 against
+// the grunt's 1 and 1.
+//
+// **The frame-1 excursion is what the margin was spent on.** `LUNGE` and `ARM_THROW` both push the
+// silhouette forward while `LUNGE` cancels most of `TAIL_TRAIL` at the back, so the reach frame used
+// to grow at one end only and the box had to hold a lopsided pose. A smaller `LUNGE` spreads that
+// growth across both ends; it is the cheapest px of width on the animal, because it costs motion
+// between the frames rather than anything in the silhouette.
 function plan(bearing: number, radius: number, height: number): Point {
   const a = bearing * DEG;
-  const r = radius * FIT;
-  return { x: Math.cos(a) * r, y: Math.sin(a) * r * PLAN - height * FIT };
+  return { x: Math.cos(a) * radius, y: Math.sin(a) * radius * PLAN - height };
 }
 
 function from(origin: Point, bearing: number, radius: number, height: number): Point {
