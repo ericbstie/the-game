@@ -107,11 +107,11 @@ const LEAN = 16;
 // the facings that run straight at or away from the viewer, where the plan offsets foreshorten to
 // nothing and a body built out of plan alone collapses into a disc.
 const WAIST_RIDE = 7.4;
-const HEAD_DROP = 3.6; // the head end's height below the waist
-const TAIL_RISE = 1.6; // and the abdomen tip's above it
-const HEAD_REACH = 8.6;
-const TAIL_REACH = 10.4;
-const NECK = 2; // the width at the waist, and the pinch that makes the body two masses
+const HEAD_DROP = 3.4; // the head end's height below the waist
+const TAIL_RISE = 1.5; // and the abdomen tip's above it
+const HEAD_REACH = 8.4;
+const TAIL_REACH = 11.8;
+const NECK = 2.6; // the width at the waist, and the pinch that makes the body two masses
 
 // Width down each lobe, from the waist outward: `[how far along, how wide there]`. Hand-cut — a
 // small blunt head in front, and behind it a pear that carries most of the creature's ink and comes
@@ -119,15 +119,15 @@ const NECK = 2; // the width at the waist, and the pinch that makes the body two
 // arrow rather than an ellipse.
 const HEAD_SHAPE: [at: number, wide: number][] = [
   [0, NECK],
-  [0.5, 6.2],
-  [0.8, 5.4],
-  [1, 2.4],
+  [0.5, 7.8],
+  [0.8, 6.7],
+  [1, 2.6],
 ];
 const TAIL_SHAPE: [at: number, wide: number][] = [
   [0, NECK],
-  [0.42, 9.6],
-  [0.74, 8.4],
-  [1, 1.6],
+  [0.42, 13.2],
+  [0.74, 11.2],
+  [1, 1.8],
 ];
 
 // The near lobe grows this much as the creature turns toward the viewer and the far one shrinks by
@@ -147,18 +147,18 @@ const SWELL = 0.07;
 const ARM_SPREAD = 24; // degrees each arm sits off the fore end's own bearing
 const ARM_BOW = 14; // and how much further out the elbow swings before the reach comes back in
 const ARM_HOOK_IN = 16; // degrees the wrist gathers back toward the creature's own line
-const ARM_REACH = 14.2;
+const ARM_REACH = 9.8;
 const ARM_ELBOW_AT = 0.5; // how far out along the arm the elbow sits
-const ARM_ELBOW_RISE = 5.4; // and how high it is carried above the plan
-const ARM_TIP_LIFT = 1.8; // the hook is held this far off the floor
-const ARM_SHOULDER = 3.2; // where the arm leaves the body, inside the fill so the two meet with no seam
+const ARM_ELBOW_RISE = 5.2; // and how high it is carried above the plan
+const ARM_TIP_LIFT = 1.6; // the hook is held this far off the floor
+const ARM_SHOULDER = 2.6; // where the arm leaves the body, inside the fill so the two meet with no seam
 const ARM_W = [3.4, 3, 2.1]; // shoulder, elbow, wrist
 const HOOK_LEN = 3.4;
 const HOOK_TURN = 74; // degrees the hook curls off the direction the arm was already going
 const HOOK_W = 1.8;
 
-const HIP_R = 2.4;
-const HIP_LIFT = 5.2; // the hip starts up inside the body, so the two fills meet with no seam
+const HIP_R = 1.9;
+const HIP_LIFT = 4.6; // the hip starts up inside the body, so the two fills meet with no seam
 const LEG_W = [2.6, 2.4, 1.6]; // hip, knee, foot — between a grunt's wires and an elite's posts
 
 interface Leg {
@@ -178,9 +178,9 @@ interface Leg {
 // this creature's ink is its body, and a wide open fan of feet is the one silhouette in the set
 // that is already taken.
 const LEGS: Leg[] = [
-  { spread: 78, reach: 10.4, bow: 12, hook: -8, arch: 4.4, tripod: true, skew: 3, slack: 0.96 },
-  { spread: 122, reach: 10.8, bow: 2, hook: 6, arch: 4.8, tripod: false, skew: -2.5, slack: 1.03 },
-  { spread: 160, reach: 9.6, bow: -14, hook: 14, arch: 4, tripod: true, skew: 3.5, slack: 0.955 },
+  { spread: 78, reach: 8.4, bow: 12, hook: -8, arch: 3.6, tripod: true, skew: 3, slack: 0.96 },
+  { spread: 122, reach: 8.8, bow: 2, hook: 6, arch: 3.9, tripod: false, skew: -2.5, slack: 1.03 },
+  { spread: 160, reach: 7.8, bow: -14, hook: 14, arch: 3.3, tripod: true, skew: 3.5, slack: 0.955 },
 ];
 
 // The drift, in the legs. The side the fore end turns *away* from is the outside of the slide and
@@ -200,14 +200,14 @@ const GATHER_SPREAD = -5;
 // all: a first cut of the bloodling dropped every mass by a pixel and read as scratchy legs
 // flickering under a body that never moved. So the body slides forward as the arms stretch out and
 // drop, while the abdomen swings back against it and the planted tripod pushes the other way.
-const LUNGE = 1.5; // how far the whole body carries forward along the heading
-const BOB = 1; // and how far it drops onto the planted legs
-const TAIL_TRAIL = 1.6; // the abdomen tip is left this much further behind
+const LUNGE = 1; // how far the whole body carries forward along the heading
+const BOB = 0.8; // and how far it drops onto the planted legs
+const TAIL_TRAIL = 1.1; // the abdomen tip is left this much further behind
 const ARM_THROW = 1.14; // the arms reach this much further
-const ARM_FALL = 2.2; // and the hooks come this much nearer the floor
+const ARM_FALL = 1.8; // and the hooks come this much nearer the floor
 const STRIDE = 18; // degrees a swinging leg carries fore or aft
 const PHASE = [-0.45, 0.55];
-const LIFT = 1.8; // how far a swinging foot comes off the floor
+const LIFT = 1.5; // how far a swinging foot comes off the floor
 const GATHER = 0.87; // and how far it is pulled in toward the body
 
 interface Point {
@@ -255,30 +255,9 @@ const spiderman: SpriteSubject = {
 
 // A point on the flattened plan, lifted clear of it. One function, so the lobes, the ring of feet
 // and the arms' reach cannot disagree about where the creature is pointing.
-//
-// `FIT` shrinks the whole animal about the floor point. Every reach and every height below was
-// hand-cut against a 32 box and the sum of them overran it: `sprite:sheet` measured six of the
-// sixteen bakes running into the edge of their box — facings 0, 3, 4 and 7, the ones whose arms and
-// tail lie flattest across the screen — where a grunt, an elite and a bloodling each measure none.
-// A bake that reaches the edge is shorn at it, so the hooks that name this creature were being cut
-// off in exactly the four facings that show them best.
-//
-// One factor here rather than a smaller `ARM_REACH`, because the arms are not the only thing over
-// the line — pulling them back alone still left bakes clipping on the abdomen. Scaling at the one
-// place every mark's position is computed keeps the proportions the drawing was composed with, and
-// deliberately does not touch the stroke widths: those were set against a grunt's hip so this
-// creature survives a dense ore patch, and a thinner line is the one thing that must not follow
-// from a smaller body.
-//
-// 0.76 is measured, not chosen: it is the largest value at which `sprite:sheet` reports no bake
-// touching its box at all. 0.78 still clips one. The cost is a creature about a quarter smaller
-// than it was drawn, which is a real loss of presence and is recorded in the review notes.
-const FIT = 0.76;
-
 function plan(bearing: number, radius: number, height: number): Point {
   const a = bearing * DEG;
-  const r = radius * FIT;
-  return { x: Math.cos(a) * r, y: Math.sin(a) * r * PLAN - height * FIT };
+  return { x: Math.cos(a) * radius, y: Math.sin(a) * radius * PLAN - height };
 }
 
 function from(origin: Point, bearing: number, radius: number, height: number): Point {
