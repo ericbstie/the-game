@@ -231,6 +231,15 @@ const spiderman: SpriteSubject = {
 
     ctx.fillStyle = INK;
 
+    // One path for the whole animal, filled once. Every part is a run of same-winding discs, so the
+    // nonzero rule takes their union and the outer boundary is exactly what eleven separate fills
+    // produced — but the joins between parts come out solid. Two filled paths meeting along a
+    // near-tangent each cover about half of the boundary pixels, and two half-covered composites do
+    // not sum to opaque: that is the light seam #171 found through the tail, and it was latent at
+    // every other join too. The bloodling closed the same artefact the same way (#171,
+    // `bloodling.review.md`).
+    ctx.beginPath();
+
     for (const leg of LEGS) {
       walk(ctx, bearing, leg, false, frame, shift);
       walk(ctx, bearing, leg, true, frame, shift);
@@ -239,6 +248,8 @@ const spiderman: SpriteSubject = {
     body(ctx, bearing, fore, toward, reach, shift);
 
     for (const side of [-1, 1] as const) arm(ctx, fore, side, reach, shift);
+
+    ctx.fill();
   },
 };
 
@@ -275,8 +286,8 @@ function from(origin: Point, bearing: number, radius: number, height: number): P
   return { x: origin.x + p.x, y: origin.y + p.y };
 }
 
-// The body: two lobes swept out of one waist and filled as a single path, so what comes out is their
-// union under one contour — no interior line, and no white nick where two separate fills meet.
+// The body: two lobes swept out of one waist. Adds to the caller's path and does not fill — the
+// whole animal is one contour, so there is no interior line here or anywhere the limbs meet it.
 function body(
   ctx: CanvasRenderingContext2D,
   bearing: number,
@@ -295,10 +306,8 @@ function body(
     WAIST_RIDE + TAIL_RISE - shift.y * 0.5,
   );
 
-  ctx.beginPath();
   sweep(ctx, waist, head, HEAD_SHAPE, 1 + toward * SWELL);
   sweep(ctx, waist, tail, TAIL_SHAPE, 1 - toward * SWELL);
-  ctx.fill();
 }
 
 const SWEEP_STEPS = 22;
@@ -336,9 +345,9 @@ function widthAt(shape: [number, number][], t: number): number {
 
 // A rubber hose of varying thickness, swept as discs along a polyline. Every limb on this creature
 // is one of these: the joints come out round, the tip comes out round, and no stroke can fold
-// through itself or trail off the mass it left as a loose whisker.
+// through itself or trail off the mass it left as a loose whisker. Adds to the caller's path and
+// does not fill, so a limb fuses with the mass it grows out of instead of compositing against it.
 function hose(ctx: CanvasRenderingContext2D, spine: Point[], widths: number[]): void {
-  ctx.beginPath();
   for (let bone = 0; bone < spine.length - 1; bone++) {
     const a = spine[bone];
     const b = spine[bone + 1];
@@ -352,7 +361,6 @@ function hose(ctx: CanvasRenderingContext2D, spine: Point[], widths: number[]): 
       ctx.arc(x, y, r, 0, TAU);
     }
   }
-  ctx.fill();
 }
 
 // One grappling arm: shoulder buried in the body, elbow raised and swung outboard, wrist reaching

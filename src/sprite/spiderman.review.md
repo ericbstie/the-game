@@ -115,6 +115,107 @@ fill in the tail/neck region… a run of `(102,102,102)`-ish pixels bisecting wh
 **Colour.** Passes again, independently: *"I scanned every pixel in the file for any channel
 divergence >10 — zero colored pixels found."*
 
+## Round 3 — the seam, half closed and half left (#171)
+
+**Superseded below: the diagnosis in "The seam: checked, real, and left" was half right.** It named
+the cause correctly — two filled paths meeting along a near-tangent, each covering about half of the
+boundary pixels — but concluded that closing it "means moving the arm or the abdomen". It does not,
+or not entirely. The compositing half closes with no geometry moved at all.
+
+`draw` was issuing **eleven separate `beginPath()`/`fill()` pairs per frame** — body 1, arms 4,
+legs 6 — all in one `INK` fill with no strokes anywhere. The tail is where the artefact became
+visible; every other join carried it latently. Every subpath is a disc laid down as `moveTo` +
+`arc(…, 0, TAU)`, so they all wind the same way and the nonzero rule takes their union. `hose` and
+`body` now add to the caller's path, and `draw` wraps the whole animal in one `beginPath()`/`fill()`.
+
+Two filled paths compositing give `a + b(1-a)`, which is **less** than their true union wherever the
+two coverages are disjoint inside a pixel. That is the whole artefact, and it is why the union is
+darker rather than lighter.
+
+**Measured, all 16 bakes.** Grey falls in every one, ink rises in every one, and ink goes from 77%
+to 79% of covered pixels. Read as baked pixels at the seam itself, `.` (near-white) became `o`
+(mid), and one `+` became solid ink.
+
+**The silhouette is unchanged in 14 of 16 bakes.** Two lose one device pixel of width at dpr 2 —
+facing 1 frame 0 and facing 5 frame 0, both 34 wide to 33. That is the same defect read from the
+other side: the outermost lane was being lifted over the coverage threshold by compositing that put
+down more ink than the geometry actually covers. The union reports honest coverage. The author
+predicted all 16 would be identical and was wrong; it is recorded because the prediction was made
+on the ticket before it was checked.
+
+**What is left, and why.** The seam is reduced, not closed. With one path and one fill, parts can no
+longer composite against each other, so the residue is genuine geometry — a hairline where neither
+mass quite covers the pixel. Two closures were found and both were declined here:
+
+- **A hairline stroke of the same path in the same ink.** Measured: `lineWidth` 0.3 is the smallest
+  that closes the seam completely. It closes it globally too — grey per bake goes 173 → 231 and ink
+  drops 79% → 74%, because stroking feathers every edge on the creature. A local interior seam
+  traded for a softer outline everywhere is the wrong trade for a pure-ink silhouette.
+- **Seating the overlapping parts deeper.** No silhouette cost in principle, since a buried joint is
+  interior, but it moves the geometry the facing read is carried by.
+
+Shipped as the union alone, with the residue filed rather than guessed at.
+
+### What the third reviewer said, verbatim
+
+Given only the sheet and a neutral brief — no mention of a seam, a tail, or which frame to look at.
+It corrected the brief's own claim that the sheet carries a tinted-background row; it does not.
+
+> **A. Interior seam/hole in the "reach" (second) frame — present in 4 of 8 facings, absent in the
+> other 4.** An automated scan for non-black pixels fully enclosed by black fill turned up exactly
+> this cluster of defects and nothing else on the sheet, which lets me be confident this is the
+> complete list:
+>
+> - **Panel 1 (contact grid), row 2 (reach), column 2** (a diagonal facing, head to the upper-left)
+>   — a clean **white triangular notch** cut all the way through the silhouette, in the tail near
+>   where it bends toward the trailing foot shape, roughly two-thirds of the way along the tail.
+>   **Severity 4/5** — visible on a normal look at the panel, not just under zoom.
+> - **Panel 1, row 2, column 3** (the facing with the head at top, body straight down) — the same
+>   kind of clean white notch, at the lower-left where the front legs meet the torso. **Severity
+>   4/5**.
+> - **Panel 1, row 2, column 1** — a fainter grey smudge (not broken through to white) inside the
+>   tail, same general area. **Severity 2/5** — needs a close look to catch.
+> - **Panel 1, row 2, column 4** — a small grey sliver in the tail, similar to column 1. **Severity
+>   2/5**.
+> - **Panel 3 (magnified), right-hand box** (the reach frame) — the same defect as column 2 above,
+>   shown at large scale: a diagonal streak of grey pixels running through the solid tail mass,
+>   parallel to and just inside the tail's true edge. **Severity 3/5** in this panel alone —
+>   noticeable on a careful look, not the first thing that jumps out.
+> - **Panel 4 (flip strip)** — the same faint mark from column 1 recurs in every reach-frame
+>   instance (3 of the 6 sprites in the strip). **Severity 1/5**.
+>
+> **B. Asymmetry between facings that should mirror each other.** […] column 4's tail is noticeably
+> longer and more stretched-out than a flip of column 2 would produce, and column 8 is similarly
+> more elongated than a flip of column 6. **Severity 2/5**.
+>
+> Distinct directions I could actually tell apart: […] about **5 of the 8** read as genuinely
+> distinct. The other three (facings 6, 7, 8) collapse toward a single "compact blob with legs"
+> silhouette.
+
+### Where this reviewer is wrong, checked rather than argued
+
+**There is no white notch, and nothing is cut through the silhouette.** The reviewer's own
+instrument is the same one that failed here in round 2: a "fully enclosed by black" test cannot tell
+an enclosed hole from a **concave pocket open to the background**, and a real gap between the tail
+and a leg is the latter.
+
+Checked with a flood fill from the image border, which is the test that distinguishes them: any
+non-ink pixel the flood cannot reach is genuinely enclosed. Across the whole 1,800×1,392 sheet the
+only enclosed regions are the four panel backgrounds and the counters of letters in the captions —
+`e`, `a`, `o` and the like, 6×9 to 7×9 px each. **No sprite on either the before or the after sheet
+contains an enclosed region.** The severity-4 finding is a real feature of the drawing described as
+a defect.
+
+One thing the flood fill does confirm: before the union there was a genuinely enclosed 8×8 block of
+mid grey — one baked pixel at 8× magnification — inside the magnified reach frame. After the union
+it is no longer enclosed. That single pixel is the seam the round-2 reviewer saw, and the automated
+sweep that reported "23 pixels" missed it for the reason round 2 already recorded.
+
+**The facing finding (5 of 8) is not disputed and is now third-reported.** It is the same finding
+round 1 and round 2 raised, and it stays open — see below. The mirror asymmetry is real: the facings
+are not mirrored, they are eight independent bearings through one plan, so a flip of one is not
+expected to reproduce another.
+
 ## The seam: checked, real, and left
 
 An automated sweep of the whole sheet for interior greys — a mid-tone pixel whose neighbours three
