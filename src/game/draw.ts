@@ -303,6 +303,15 @@ export const BLOOD_BANDS = 4;
 const BAR_HEIGHT = 4;
 const BAR_GAP = 3; // clear paper between the top of the drawing and the bar above it
 
+// The self halo, hanging over your own head and rising and falling on the spot (#160). All three
+// are provisional — they are what a played match judges, and a later value is a retune.
+//
+// The bounce is applied here rather than baked, so the sprite stays one still frame: baking it
+// would cost a bake per phase and quantise the motion to however many were made (ADR 0008).
+const HALO_LIFT = 7; // from the top of the figure to the halo's resting centre
+const HALO_BOB = 1.5; // how far it rides either side of that
+const HALO_BOB_MS = 2600; // one full rise and fall — "slowly", and slower than any other motion
+
 // Your own screen while you are down. A second full-viewport pass costs about what the paper fill
 // does (~1.6 ms), which is affordable for exactly the reason `docs/frame-budget.md` rule 2 gives:
 // only the dying player's own client draws it, and only for the 20 s they are down.
@@ -511,6 +520,7 @@ export function drawWorld(
   // after every body, because a halo is wider than the figure it marks and would otherwise cover a
   // squadmate's name — see `paintOverhead`.
   const overhead: (() => void)[] = [];
+  const halos: (() => void)[] = [];
   // The teammates this frame draws an edge arrow for instead of a body (#94).
   const beyond: Avatar[] = [];
 
@@ -528,6 +538,7 @@ export function drawWorld(
       y: a.pos.y,
       paint: () => paintAvatar(ctx, a, a.id === options.selfId, sprites, blit, blitOver),
     });
+    if (a.id === options.selfId) halos.push(() => paintSelfHalo(a, sprites, blitOver, now));
     overhead.push(() => paintOverhead(ctx, a, sprites));
   }
 
@@ -568,6 +579,11 @@ export function drawWorld(
   // marks land on the same spot, the one the win condition hangs on is the one left legible.
   const self = world.players.find((p) => p.id === options.selfId);
   if (self) drawExitPointer(ctx, world, self, options);
+
+  // The halo before any of them, and in a pass of its own rather than beside its owner's label:
+  // with both in one loop the self halo would paint after a *neighbour's* name, which is the thing
+  // "no halo may paint after any label" has ruled out since the halo shipped.
+  for (const paint of halos) paint();
 
   // Names last of everything in the world. They are on ADR 0001's short allowlist — almost nothing
   // else may be written on screen — so nothing the world draws is allowed to obscure one, the `+1`
@@ -1834,8 +1850,6 @@ function paintAvatar(
   // that marks the avatar has to aim here and not at `pos`, which is now the ground under it.
   const bodyY = avatar.pos.y - (sprite ? sprite.size / 2 : 0);
   const halo = isSelf ? sprites?.("halo", 0, 0) : null;
-  // Behind the avatar, so a glow reads as a glow around it rather than a veil over its face.
-  if (halo) blitOver(halo, avatar.pos.x, bodyY);
   if (sprite) blit(sprite, avatar.pos.x, avatar.pos.y);
   else {
     ctx.fillStyle = SLOT_COLORS[(avatar.slot - 1) % SLOT_COLORS.length];
@@ -1848,15 +1862,35 @@ function paintAvatar(
   }
 }
 
+// Your own marker: an angel halo over your head, rising and falling on the spot (#160).
+//
+// Drawn after every body is down, which is how it answers the requirement its old shape answered
+// by staying outside your silhouette — an enemy standing on top of you cannot paint over it. The
+// bounce is a `now`-driven offset rather than baked frames, so the sprite stays one still.
+function paintSelfHalo(
+  avatar: Avatar,
+  sprites: SpriteSource | undefined,
+  blitOver: Blit,
+  now: number,
+): void {
+  const halo = sprites?.("halo", 0, 0);
+  if (!halo) return;
+  const body = sprites?.("player", avatar.facing, avatar.frame)?.size ?? avatar.radius * 2;
+  // Subtracted, so it starts by rising: screen y grows downward, and a marker that dropped first
+  // reads as falling off the head rather than floating over it.
+  const bob = HALO_BOB * Math.sin((now / HALO_BOB_MS) * Math.PI * 2);
+  blitOver(halo, avatar.pos.x, avatar.pos.y - body - HALO_LIFT - bob);
+}
+
 // A player's bar and name, drawn in a pass of their own after every body has painted.
 //
-// The pass exists because of the halo. It is centred on the *body*, which a foot-anchored sprite
-// puts half a sprite above `pos`, and it is nearly twice the player's width — so it reaches higher
-// than the figure does and spills well outside it. Painted in the Y-sorted pass, a squadmate
-// standing a little above you had their name land inside your ring, which reads as your own name
-// against the one marker that is supposed to mean "this is you". Two things fix it and neither is
-// enough alone: the offset has to clear the halo rather than the sprite, and no halo may paint
-// after any label.
+// The pass exists because of the halo, and #160 moved the halo into it. Painted in the Y-sorted
+// pass, a squadmate standing a little above you had their name land inside your marker, which
+// reads as your own name against the one mark that is supposed to mean "this is you". The halo
+// hangs above the head now, which is exactly where the labels were, so the fix is a stacking
+// order rather than an offset: head, halo at the top of its bounce, bar, name. Drawing the halo
+// here rather than among the bodies also settles the requirement it carried in its old shape —
+// an enemy standing on top of you cannot paint over it, because every body is already down.
 function paintOverhead(
   ctx: CanvasRenderingContext2D,
   avatar: Avatar,
@@ -1865,8 +1899,10 @@ function paintOverhead(
   const sprite = sprites?.("player", avatar.facing, avatar.frame);
   const halo = sprites?.("halo", 0, 0);
   const body = sprite ? sprite.size : avatar.radius * 2;
-  // Every label clears the halo, not only your own: the one that reads wrong is a *neighbour's*.
-  const reach = Math.max(body, (halo ? halo.size : 0) / 2 + body / 2);
+  // Measured to the *top* of the bounce, and applied to every player rather than only the one
+  // wearing the halo: a label sized to the resting height would hop as the halo rose, and the
+  // label that reads wrong is a neighbour's.
+  const reach = body + (halo ? HALO_LIFT + HALO_BOB + halo.size / 2 : 0);
   const top = avatar.pos.y - reach;
   // The bar rides above the drawing and the name above the bar. The band the bar occupies is
   // reserved whether or not one is showing, so a label does not hop as a player takes a hit.
