@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildPage, measurementsIn, pageErrorIn } from "./headless";
+import { assertPageRan, buildPage, measurementsIn, pageErrorIn } from "./headless";
 
 // Nothing here rasterises: `bun test` has no browser, and CI has none either. What these cover is
 // the part of #174 that is decidable without one — that the hook is in the page at all, and that a
@@ -54,5 +54,20 @@ describe("pageErrorIn", () => {
 
   test("a sink of pure whitespace is not an error", () => {
     expect(pageErrorIn(dumped("", "\n  \n"))).toBeNull();
+  });
+});
+
+// The one line that turns a dead page into the caller's error. It lives here rather than inline in
+// `capture` because everything either side of it needs a browser, and this does not.
+describe("assertPageRan", () => {
+  test("raises the throw, naming what was being rendered", () => {
+    expect(() =>
+      assertPageRan(dumped("", "TypeError: nope\n    at f (x:1)"), "ore-metal seams"),
+    ).toThrow(/ore-metal seams threw in the page:\nTypeError: nope\n    at f \(x:1\)/);
+  });
+
+  test("says nothing about a page that ran, whether or not it measured anything", () => {
+    expect(() => assertPageRan(dumped(""), "a frame")).not.toThrow();
+    expect(() => assertPageRan(dumped('{"ink":3}'), "a frame")).not.toThrow();
   });
 });

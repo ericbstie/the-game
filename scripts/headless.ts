@@ -89,10 +89,7 @@ export async function capture(request: Capture): Promise<string> {
       `file://${page}`,
     ]);
     const dom = run.stdout.toString();
-    // Before the caller ever looks for measurements. A page that threw wrote none, and an absence
-    // is what every caller reports — naming the sink rather than the cause (#166, #174).
-    const threw = pageErrorIn(dom);
-    if (threw) throw new Error(`${request.label} threw in the page:\n${threw}`);
+    assertPageRan(dom, request.label);
     return dom;
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -120,4 +117,14 @@ export function measurementsIn(dom: string): unknown | null {
 export function pageErrorIn(dom: string): string | null {
   const threw = sinkText(dom, "page-error").trim();
   return threw ? threw : null;
+}
+
+// Raised before the caller ever looks for measurements. A page that threw wrote none, and an
+// absence is what every caller reports — naming the sink rather than the cause (#166, #174).
+//
+// Split out of `capture` so the message is reachable from a test: everything either side of it
+// needs a browser, and `bun test` has none.
+export function assertPageRan(dom: string, label: string): void {
+  const threw = pageErrorIn(dom);
+  if (threw) throw new Error(`${label} threw in the page:\n${threw}`);
 }
