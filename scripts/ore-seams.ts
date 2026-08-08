@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { capture, measurementsIn } from "./headless";
 
 // Measure whether an ore patch is seamless inside and ragged at its edge — the two requirements
@@ -50,7 +51,8 @@ export function parseArgs(argv: string[]): SeamsRequest {
     } else if (arg === "--out") out = argv[++i] ?? "";
     else if (arg !== "--json") throw new Error(`unknown argument ${arg}`);
   }
-  return { dpr, kind, out: out ?? join(process.cwd(), `ore-seams-${kind}.png`) };
+  // Default into `dist/`, which is already ignored: running the instrument must not dirty the tree.
+  return { dpr, kind, out: out ?? join(process.cwd(), "dist", `ore-seams-${kind}.png`) };
 }
 
 export interface Reading {
@@ -211,6 +213,8 @@ document.getElementById("measurements").textContent = JSON.stringify({
 }
 
 export async function measure(request: SeamsRequest): Promise<Reading> {
+  // `--screenshot` writes nothing and says nothing when its directory is missing.
+  mkdirSync(dirname(request.out), { recursive: true });
   const dom = await capture({
     entry: entrySource(request),
     out: request.out,
