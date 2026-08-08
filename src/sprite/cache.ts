@@ -87,6 +87,15 @@ export interface SpriteCache {
   // budget. A caller that asks twice gets two budgets, and one that never asks again keeps drawing
   // whatever it has.
   source(scale: number): SpriteSource;
+
+  // Bake variants that have nothing in hand *at all*, spending at most `budgetMs`, and report how
+  // many are still bare. Zero means every variant in the registry has a bake, which is the
+  // condition #162 is after: with something in hand everywhere, no later bake is a first bake, and
+  // the per-frame budget above governs everything that follows.
+  //
+  // Deliberately not `source`: this is not a frame and must not open one. Call it from wherever
+  // there is time to spend — the lobby — rather than from the render loop.
+  warm(scale: number, budgetMs: number): number;
 }
 
 type Bake = (
@@ -206,6 +215,34 @@ export function createSpriteCache(
     return { image: flash.image, size: (pixels + 2 * flashRim(flash.scale)) / flash.scale };
   };
 
+  // Every variant the registry declares, fewest-first by sprite. #162: the two tiled ore sprites
+  // are 4,608 of the 4,762, and the whole rest of the cast is ~81 ms at `ZOOM_DEFAULT` against
+  // 3.7 s for the ore — so warming in this order puts everything a match opens on in hand almost
+  // at once and leaves the long tail running behind it. Built once, then walked.
+  interface Variant {
+    key: string;
+    subject: SpriteSubject;
+    facing: number;
+    frame: number;
+  }
+  let every: Variant[] | null = null;
+  const everyVariant = (): Variant[] => {
+    if (every) return every;
+    const found: Variant[] = [];
+    const fewestFirst = Object.entries(subjects)
+      .filter((entry): entry is [SpriteName, SpriteSubject] => Boolean(entry[1]))
+      .sort(([, a], [, b]) => a.facings * a.frames - b.facings * b.frames);
+    for (const [name, subject] of fewestFirst) {
+      for (let frame = 0; frame < subject.frames; frame++) {
+        for (let facing = 0; facing < subject.facings; facing++) {
+          found.push({ key: `${name}/${facing}/${frame}`, subject, facing, frame });
+        }
+      }
+    }
+    every = found;
+    return every;
+  };
+
   return {
     source(scale) {
       if (!Number.isFinite(scale) || scale <= 0) {
@@ -214,6 +251,28 @@ export function createSpriteCache(
       bakedScale = scale;
       spent = 0;
       return source;
+    },
+
+    warm(scale, budgetMs) {
+      if (!Number.isFinite(scale) || scale <= 0) {
+        throw new Error(`bake scale must be a positive number, got ${scale}`);
+      }
+      const started = now();
+      let bare = 0;
+      for (const variant of everyVariant()) {
+        // Anything already held counts, whatever scale it was made at: a held bake resamples
+        // (ADR 0009), so what this is removing is the *first* bake, not a stale one.
+        if (baked.has(variant.key)) continue;
+        if (now() - started >= budgetMs) {
+          bare++;
+          continue;
+        }
+        baked.set(variant.key, {
+          image: bake(variant.subject, scale, variant.facing, variant.frame),
+          scale,
+        });
+      }
+      return bare;
     },
   };
 }

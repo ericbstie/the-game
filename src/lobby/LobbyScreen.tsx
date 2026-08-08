@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MAX_ARENA_SIDE } from "../game/build";
 import { MIN_ARENA_SIDE } from "../game/enemies";
+import { canBake, spriteCache, WARM_BUDGET_MS, warmScale } from "../game/spriteCache";
 import {
   knobValue,
   parseWorldSettings,
@@ -9,6 +10,7 @@ import {
   withKnob,
   worldKnobs,
 } from "../game/worldSettings";
+import { ZOOM_DEFAULT } from "../game/zoom";
 import type { LobbyState } from "./client";
 import type { PublicPlayer } from "./protocol";
 
@@ -19,10 +21,38 @@ interface LobbyScreenProps {
   onSettings: (settings: WorldSettings) => void;
 }
 
+// #162. Bake the registry while the squad is still gathering, which is the one stretch of the app
+// with time to spend and nothing being drawn. A match opened after a moment here pays no first
+// bake; the cost it removes is 3.8 s of bakes at `ZOOM_DEFAULT`, of which 3.7 s is the two tiled
+// ore sprites, so the order the cache warms in — everything else first — is what makes a short
+// lobby worth anything at all.
+//
+// One turn per macrotask rather than one long block: the lobby stays responsive, and a squad that
+// starts immediately simply gets however much was ready. Nothing here is drawn from and nothing
+// waits on it, so stopping half way is a smaller cache and not a broken frame.
+function useWarmSprites(): void {
+  useEffect(() => {
+    if (!canBake()) return;
+    const scale = warmScale(window.devicePixelRatio || 1, ZOOM_DEFAULT);
+    let stopped = false;
+    let timer = 0;
+    const turn = () => {
+      if (stopped) return;
+      if (spriteCache.warm(scale, WARM_BUDGET_MS) > 0) timer = window.setTimeout(turn, 0);
+    };
+    timer = window.setTimeout(turn, 0);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+}
+
 // The lobby screen: shareable code, the Squad roster, and the world the next match is built from.
 // Every seat 1..maxPlayers is shown; occupied seats mark the host and you, and grey out during a
 // disconnect grace. Only the host sees Start — it drops the whole Squad into the match.
 export function LobbyScreen({ state, onLeave, onStart, onSettings }: LobbyScreenProps) {
+  useWarmSprites();
   const snapshot = state.snapshot;
   if (!snapshot) return null;
   const seats = Array.from({ length: snapshot.maxPlayers }, (_, i) => i + 1);
