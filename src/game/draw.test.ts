@@ -533,12 +533,15 @@ describe("drawWorld with sprites", () => {
       sprites: stubSprites({ ...everything, halo: 40 }),
     });
     const halo = blits(ctx).find((b) => b.tag.startsWith("halo"));
-    // The avatar stands at y 1100 in a 28 px box, so its body centres on 1086 — and the 40 px halo
-    // hangs off that centre rather than off the feet.
-    expect(halo).toEqual({ tag: "halo/0/0", x: 1080, y: 1066, width: 40, height: 40 });
+    // The avatar stands at y 1100 in a 28 px box, so the top of the figure is 1072 — and the 40 px
+    // halo hangs `HALO_LIFT` above that, off its own centre rather than off the feet. At `now` 0
+    // the bounce is at rest, so this is the resting height.
+    expect(halo).toEqual({ tag: "halo/0/0", x: 1080, y: 1045, width: 40, height: 40 });
   });
 
-  test("paints the halo behind the avatar, so a glow does not veil the face", () => {
+  // #160: it is a halo above the head, not a ring round the body. The old mark centred on the body
+  // is exactly what a blind reviewer offered as a candidate for the tutorial's "look here".
+  test("hangs the marker clear above the head, not around the body", () => {
     const ctx = spyCtx();
     const one: WorldSnapshot = {
       ...standing,
@@ -552,7 +555,62 @@ describe("drawWorld with sprites", () => {
       viewport,
       sprites: stubSprites({ ...everything, halo: 40 }),
     });
-    expect(blits(ctx).map((b) => b.tag)).toEqual(["halo/0/0", "player/2/0"]);
+    const halo = blits(ctx).find((b) => b.tag.startsWith("halo"));
+    const figureTop = 1100 - 28;
+    const bodyCentre = 1100 - 28 / 2;
+    // The mark hangs off its centre, and that centre is above the top of the figure — not on the
+    // body, which is where the ring it replaced sat. Asserted on the centre rather than the box:
+    // the box carries the sprite's own padding, and `HALO_LIFT` is tuned against its ink.
+    const centre = (halo?.y ?? 0) + (halo?.height ?? 0) / 2;
+    expect(centre).toBeLessThan(figureTop);
+    expect(centre).toBeLessThan(bodyCentre - 28 / 2);
+  });
+
+  // The bounce is a draw-time offset on one bake (ADR 0008), so it has to actually move with the
+  // clock — and come back, rather than drifting away.
+  test("rides up and down on the clock, over one still frame", () => {
+    const at = (now: number) => {
+      const ctx = spyCtx();
+      const one: WorldSnapshot = {
+        ...standing,
+        players: [standing.players[0]],
+        enemies: [],
+        nests: [],
+      };
+      drawWorld(ctx, one, {
+        selfId: "p1",
+        camera,
+        viewport,
+        now,
+        sprites: stubSprites({ ...everything, halo: 40 }),
+      });
+      const halo = blits(ctx).find((b) => b.tag.startsWith("halo"));
+      return { y: halo?.y ?? 0, tag: halo?.tag };
+    };
+    const rest = at(0);
+    const quarter = at(650); // a quarter of HALO_BOB_MS — the top of the rise
+    const half = at(1300);
+    expect(quarter.y).toBeLessThan(rest.y); // up the screen
+    expect(half.y).toBeCloseTo(rest.y, 5); // and back through where it started
+    expect(at(2600).y).toBeCloseTo(rest.y, 5); // one full period returns
+    expect(quarter.tag).toBe("halo/0/0"); // still the one baked frame throughout
+  });
+
+  test("paints the halo after the avatar, so nothing standing on you can cover it", () => {
+    const ctx = spyCtx();
+    const one: WorldSnapshot = {
+      ...standing,
+      players: [standing.players[0]],
+      enemies: [],
+      nests: [],
+    };
+    drawWorld(ctx, one, {
+      selfId: "p1",
+      camera,
+      viewport,
+      sprites: stubSprites({ ...everything, halo: 40 }),
+    });
+    expect(blits(ctx).map((b) => b.tag)).toEqual(["player/2/0", "halo/0/0"]);
   });
 
   test("drops the stand-in ring once the halo sprite exists", () => {
@@ -1139,14 +1197,13 @@ describe("name labels", () => {
     expect(ctx.calls.indexOf(stroked[0])).toBeLessThan(ctx.calls.indexOf(filled[0]));
   });
 
-  // The halo is centred on the *body* — half a sprite above `pos` — and is nearly twice the
-  // player's width, so it reaches higher than the figure does. A label offset by the sprite's own
-  // height lands inside it.
+  // The halo hangs above the head (#160), which is where the labels already were, so the label has
+  // to clear the whole of it — measured at the top of the bounce, not at rest.
   test("clears the halo's reach, not just the sprite's", () => {
     const ctx = spyCtx();
     drawWorld(ctx, two, { camera, viewport, selfId: "p1", sprites });
     const label = ctx.calls.find((c) => c.fn === "fillText" && c.args[0] === "Ana");
-    const haloTop = 1100 - 28 / 2 - 52 / 2; // bodyY − half the halo box
+    const haloTop = 1100 - 28 - 7 - 1.5 - 52 / 2; // figure top − lift − bob − half the halo box
     expect(label?.args[2]).toBeLessThan(haloTop);
   });
 
