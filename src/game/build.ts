@@ -236,7 +236,7 @@ export function mulberry32(seed: number): () => number {
 // harvest progress to zero — client-local, at HAND_MINE_RATE, `harvest.ts` — and asks once, for
 // the one whole Metal it just earned.
 
-export const HAND_MINE_RATE = 1; // metal per second held
+export const HAND_MINE_RATE = 2; // metal per second held
 
 // How far short of a whole harvest two honest reports may land, and the only reason the floor below
 // is not the harvest's full length. A client spends its progress from render-frame deltas and
