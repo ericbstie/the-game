@@ -22,8 +22,15 @@ describe("parseArgs", () => {
     expect(request).toEqual({
       dpr: 1,
       kind: "metal",
-      out: join(process.cwd(), "ore-seams-metal.png"),
+      out: join(process.cwd(), "dist", "ore-seams-metal.png"),
     });
+  });
+
+  // #175: the default has to land somewhere `.gitignore` already covers, or running the
+  // instrument dirties the working tree.
+  test("writes nowhere near the repo root unless told to", () => {
+    expect(parseArgs([]).out.startsWith(join(process.cwd(), "dist"))).toBe(true);
+    expect(parseArgs(["--out", "elsewhere.png"]).out).toBe("elsewhere.png");
   });
 
   test("takes the kind and the ratio the fold is wanted at", () => {
