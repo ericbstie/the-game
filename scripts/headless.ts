@@ -28,6 +28,22 @@ export function resolveHeadlessShell(root = BROWSERS_ROOT): string {
   return shell;
 }
 
+// A page that throws writes the throw here, and `capture` turns it into the error the caller sees.
+// Installed before the bundle so a throw at module scope is caught too, and it keeps the *first*
+// error: a page that dies usually goes on to fail in other ways, and the first one is the cause.
+//
+// `window.onerror` rather than `--enable-logging=stderr` because it is the only one of the two that
+// carries a stack (#174). The exit status is no help at all — it is 0 whether the page throws or
+// not, measured on this exact launch.
+const ERROR_HOOK = `
+var sink = document.getElementById("page-error");
+var keep = function (what) { if (!sink.textContent) sink.textContent = what; };
+addEventListener("error", function (e) { keep(String((e.error && e.error.stack) || e.message)); });
+addEventListener("unhandledrejection", function (e) {
+  keep(String((e.reason && e.reason.stack) || e.reason));
+});
+`;
+
 export function buildPage(bundle: string): string {
   return `<!doctype html>
 <meta charset="utf-8">
@@ -35,6 +51,8 @@ export function buildPage(bundle: string): string {
 <style>html,body{margin:0;background:#d8d8d8}canvas{display:block}</style>
 <canvas id="sheet"></canvas>
 <pre id="measurements" hidden></pre>
+<pre id="page-error" hidden></pre>
+<script>${ERROR_HOOK}</script>
 <script>${bundle.replaceAll("</script", "<\\/script")}</script>
 `;
 }
@@ -70,20 +88,43 @@ export async function capture(request: Capture): Promise<string> {
       `--window-size=${request.width},${request.height}`,
       `file://${page}`,
     ]);
-    return run.stdout.toString();
+    const dom = run.stdout.toString();
+    assertPageRan(dom, request.label);
+    return dom;
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
 }
 
-// Read back whatever the page wrote into its measurement sink.
-export function measurementsIn(dom: string): unknown | null {
-  const found = dom.match(/<pre id="measurements"[^>]*>([\s\S]*?)<\/pre>/);
-  if (!found) return null;
-  const json = found[1]
+function sinkText(dom: string, id: string): string {
+  const found = dom.match(new RegExp(`<pre id="${id}"[^>]*>([\\s\\S]*?)</pre>`));
+  if (!found) return "";
+  return found[1]
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">")
     .replaceAll("&quot;", '"')
     .replaceAll("&amp;", "&");
+}
+
+// Read back whatever the page wrote into its measurement sink.
+export function measurementsIn(dom: string): unknown | null {
+  const json = sinkText(dom, "measurements");
   return json.trim() ? JSON.parse(json) : null;
+}
+
+// What the page threw, stack and all, or null if it ran to the end. Distinct from measuring
+// nothing: a page is allowed to write no measurements, and that is not this.
+export function pageErrorIn(dom: string): string | null {
+  const threw = sinkText(dom, "page-error").trim();
+  return threw ? threw : null;
+}
+
+// Raised before the caller ever looks for measurements. A page that threw wrote none, and an
+// absence is what every caller reports — naming the sink rather than the cause (#166, #174).
+//
+// Split out of `capture` so the message is reachable from a test: everything either side of it
+// needs a browser, and `bun test` has none.
+export function assertPageRan(dom: string, label: string): void {
+  const threw = pageErrorIn(dom);
+  if (threw) throw new Error(`${label} threw in the page:\n${threw}`);
 }
