@@ -116,3 +116,17 @@ approximation of a server rule left to gate on (4 — the cadence, ammo and deat
 only to keep the socket from carrying reports the hub would refuse), and no named non-answer (5).
 The #102 amendment above goes too: a turret's fire is a per-shot event now, so a shot the pool
 refused is a shot with no event, and the client is told by the absence rather than by a count.
+
+## Amendment — turrets spend no ammo (2026-08-08, [#155](https://github.com/ericbstie/the-game/issues/155))
+
+The #102 amendment above is withdrawn in full. A turret takes nothing from the squad's pool and
+nothing from the bank: power is the only price of its fire, which is what
+[#80](https://github.com/ericbstie/the-game/issues/80) assumed when it wrote "turrets spend energy,
+not ammo — a turret miss wastes time, not Metal".
+
+Both cases that amendment named close with it, because neither has anything left to be about. There
+is no scarce bullet to attribute to one turret rather than another, and no fire withheld over a
+pool the mirror has not caught up with. The invariant in decision 1 is unconditional for turrets on
+the same terms as for everyone else.
+
+The pool remains exactly as it was for players. What changed is who draws on it.

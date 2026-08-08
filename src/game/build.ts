@@ -360,6 +360,13 @@ export const GENERATOR_OUTPUT = 400; // energy/s of ceiling each standing genera
 // any size it turns out to be. Missing is the whole of what #80 adds, and a turret is the only
 // place it bites; compensating it away in the damage would leave the game where it was with a
 // flight simulation bolted on. Both are provisional as they always were — a later change is a retune.
+//
+// **What a miss costs is time, and only time (#155).** A turret's shot is free: it takes nothing
+// from the squad's ammo pool and nothing from the bank, so the unpriceable miss rate above is not
+// an economic quantity at all — it stretches the ceiling out, and stops there. Between #102 and
+// #155 a turret did spend a bullet, which put a Metal price on every miss and contradicted #80's
+// own scoping; `enemies.test.ts` "#155: a turret's shot costs no Metal and no bullet" is what now
+// makes bringing that back a failure. The price of a turret's fire is power — see the draw below.
 export const TURRET_RANGE = 700;
 export const TURRET_DAMAGE = 4;
 export const TURRET_CADENCE_MS = 200;
@@ -422,7 +429,8 @@ export interface TurretRuntime {
 
 // --- Ammo ---------------------------------------------------------------------------------
 // The squad's bullets, and the forge that makes them. One pool for the whole squad: a bullet
-// belongs to whichever shot is admitted first, not to whoever paid for it.
+// belongs to whichever shot is admitted first, not to whoever paid for it. Players draw on it and
+// turrets do not — a turret's shot is priced in power alone (#155).
 
 // What a bullet costs and how long it takes to forge. Provisional, like every balance number: a
 // later value is a retune, not a correction.

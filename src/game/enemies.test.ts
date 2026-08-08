@@ -1717,9 +1717,11 @@ describe("M4-T8: a turret shoots the nearest enemy, through walls, and sieges ne
   });
 });
 
-// #102 stage 4. A turret's shot is a bullet out of the squad's pool, not a free one — the same
-// pool a player shoots from, taken by whichever shot is admitted first.
-describe("#102: a turret spends the squad's bullets", () => {
+// #155. A turret's shot is free: power is the only price, and the ammo pool and the Metal bank are
+// a player's alone. #102 made a turret spend a bullet, which contradicted #80's own scoping and
+// went unnoticed because nothing here asserted what a shot costs. These are that assertion — the
+// point of them is that re-introducing the spend is a named failure rather than a silent one.
+describe("#155: a turret's shot costs no Metal and no bullet", () => {
   const TURRET = BUILDABLES.turret as BuildableSpec;
   const ORIGIN = { x: C.x + 5_000, y: C.y };
 
@@ -1732,53 +1734,85 @@ describe("#102: a turret spends the squad's bullets", () => {
     const turrets = Array.from({ length: count }, (_, i) =>
       placeStructure(build, "turret", tileOf({ x: ORIGIN.x + i * TILE * 3, y: ORIGIN.y }), TURRET),
     );
-    return { build, turrets };
+    // Read after placement: putting the turrets up is itself a Metal cost, and what is under test
+    // is what happens to the bank from here on.
+    return { build, turrets, banked: build.bank.metal };
   };
-  // A sponge in range of every turret, so nothing dies and the pool is the only variable.
+  // A sponge in range of every turret, so nothing dies and the banks are the only variable.
   const sponge = () => stateWith([grunt("e1", { x: ORIGIN.x + 100, y: ORIGIN.y }, 1_000_000)]);
   const fire = (s: EnemyState, build: BuildState, dtMs = TURRET_CADENCE_MS) =>
     stepEnemies(s, [], [], dtMs, build).events;
 
-  test("a shot takes one bullet out of the pool", () => {
+  test("a shot takes nothing out of the pool", () => {
     const { build } = armed(3);
     fire(sponge(), build, 0);
-    expect(build.ammo.bullets).toBe(2);
-  });
-
-  test("an empty pool holds the turret's fire rather than letting it shoot free", () => {
-    const { build } = armed(0);
-    const s = sponge();
-    expect(fire(s, build, 0).projectiles).toEqual([]);
-    expect(only(s).hp).toBe(1_000_000);
-    expect(build.ammo.bullets).toBe(0); // and the pool is not driven negative
-  });
-
-  test("the held fire is not a spent shot — a bullet arriving is fired at once", () => {
-    const { build } = armed(0);
-    const s = sponge();
-    fire(s, build, 0);
-    build.ammo.bullets = 1;
-    expect(fire(s, build, 0).projectiles).toHaveLength(1);
-  });
-
-  test("one bullet between two ready turrets is fired by exactly one of them", () => {
-    const { build } = armed(1, 2);
-    expect(fire(sponge(), build, 0).projectiles).toHaveLength(1);
-    expect(build.ammo.bullets).toBe(0);
-  });
-
-  test("a turret with nothing to shoot at spends nothing", () => {
-    const { build } = armed(3);
-    fire(stateWith([grunt("e1", { x: ORIGIN.x + TURRET_RANGE + 100, y: ORIGIN.y })]), build, 0);
     expect(build.ammo.bullets).toBe(3);
   });
 
-  test("a turret cooling down spends nothing either", () => {
-    const { build } = armed(3);
+  test("a shot takes nothing out of the Metal bank", () => {
+    const { build, banked } = armed(3);
+    fire(sponge(), build, 0);
+    expect(build.bank.metal).toBe(banked);
+  });
+
+  // "at any cadence or hit rate": nothing is taken at launch, so neither can reach the banks. The
+  // sponge is unkillable and stands still, so every one of these shots connects.
+  test("sustained fire at cadence moves neither bank", () => {
+    const { build, banked } = armed(3, 4);
     const s = sponge();
-    fire(s, build, 0);
-    fire(s, build, TURRET_CADENCE_MS - 1);
-    expect(build.ammo.bullets).toBe(2);
+    for (let t = 0; t < 50; t++) fire(s, build, TURRET_CADENCE_MS);
+    expect(build.ammo.bullets).toBe(3);
+    expect(build.bank.metal).toBe(banked);
+  });
+
+  // The other half of "at any hit rate", on the geometry #80 proved a turret misses on: an elite
+  // crossing at its own speed at the far end of the reach outruns the shot. What it cost to fire
+  // is settled at launch, so the banks cannot notice whether it landed.
+  test("a shot that misses costs no more than one that connects", () => {
+    const { build, turrets, banked } = armed(3);
+    const from = structureCenter(turrets[0]);
+    const start = { x: from.x + TURRET_RANGE, y: from.y };
+    const elite: Enemy = { id: "e1", kind: "elite", pos: { ...start }, hp: 10_000, biteMs: 0 };
+    const s = stateWith([elite]);
+    let launched = 0;
+    for (let t = 0; t < 40; t++) {
+      elite.pos = { x: start.x, y: start.y + ((ELITE_SPEED * 50) / 1000) * t };
+      launched += fire(s, build, 50).projectiles.length;
+    }
+    expect(launched).toBeGreaterThan(0); // or "nothing connected" is true of nothing fired
+    expect(elite.hp).toBe(10_000); // nothing connected
+    expect(build.ammo.bullets).toBe(3);
+    expect(build.bank.metal).toBe(banked);
+  });
+
+  test("an empty pool no longer holds a turret's fire", () => {
+    const { build } = armed(0);
+    const s = sponge();
+    expect(fire(s, build, 0).projectiles).toHaveLength(1);
+    expect(build.ammo.bullets).toBe(0); // and firing did not drive it negative
+  });
+
+  test("one bullet between two ready turrets is fired by both", () => {
+    const { build } = armed(1, 2);
+    expect(fire(sponge(), build, 0).projectiles).toHaveLength(2);
+    expect(build.ammo.bullets).toBe(1);
+  });
+
+  // Power is the only brake left, so it has to still be one. The mirror of the M4-T9 box below,
+  // asserted here against an empty pool so neither can be mistaken for the other's reason.
+  test("power, not ammo, is what stops a turret firing", () => {
+    const { build } = armed(0);
+    build.power.generation = 0;
+    const s = sponge();
+    expect(fire(s, build, 0).projectiles).toEqual([]);
+    expect(only(s).hp).toBe(1_000_000);
+  });
+
+  test("a turret with nothing to shoot at costs nothing", () => {
+    const { build, banked } = armed(3);
+    fire(stateWith([grunt("e1", { x: ORIGIN.x + TURRET_RANGE + 100, y: ORIGIN.y })]), build, 0);
+    expect(build.ammo.bullets).toBe(3);
+    expect(build.bank.metal).toBe(banked);
   });
 });
 
@@ -2016,7 +2050,7 @@ describe("a turret's fire travels, and can miss (#80)", () => {
     build.ammo.bullets = 10_000;
     build.power.generation = 10_000;
     const turret = placeStructure(build, "turret", tileOf({ x: C.x, y: C.y }), TURRET);
-    return { build, from: structureCenter(turret) };
+    return { build, turret, from: structureCenter(turret) };
   };
 
   test("the tick a turret fires applies no damage — the shot has to get there first", () => {
@@ -2041,15 +2075,16 @@ describe("a turret's fire travels, and can miss (#80)", () => {
   // The mirror of the player-side box, and asserted the same way: an elite crossing at its own
   // speed at the far end of the turret's reach is not hit, and standing there it is.
   const turretAgainst = (drift: Vec2): number => {
-    const { build, from } = armed();
+    const { build, turret, from } = armed();
     const start = { x: from.x + TURRET_RANGE, y: from.y };
     const elite: Enemy = { id: "e1", kind: "elite", pos: { ...start }, hp: 10_000, biteMs: 0 };
     const s = stateWith([elite]);
     stepEnemies(s, [], [], DT, build); // acquired, powered, and one shot already away
-    // The pool is emptied so the turret cannot take a second shot while the first is still in the
-    // air: this is a test about one flight, and `TURRET_CADENCE_MS` is shorter than a full-reach
-    // one. Cutting the *grid* would not do it — power is sticky to the target, not to the ceiling.
-    build.ammo.bullets = 0;
+    // The cadence is held open so the turret cannot take a second shot while the first is still in
+    // the air: this is a test about one flight, and `TURRET_CADENCE_MS` is shorter than a
+    // full-reach one. Neither emptying the pool (a turret spends none — #155) nor cutting the grid
+    // (power is sticky to the target, not to the ceiling) would do it.
+    if (turret.turret) turret.turret.cooldownMs = Number.MAX_SAFE_INTEGER;
     for (let t = 1; s.projectiles.size > 0 && t <= 40; t++) {
       elite.pos = { x: start.x + drift.x * t, y: start.y + drift.y * t };
       stepEnemies(s, [], [], DT, build);
