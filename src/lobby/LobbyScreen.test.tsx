@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MAX_ARENA_SIDE } from "../game/build";
 import { MIN_ARENA_SIDE } from "../game/enemies";
+import { spriteCache, warmScale } from "../game/spriteCache";
 import {
   DEFAULT_WORLD_SETTINGS,
   knobValue,
@@ -9,6 +10,8 @@ import {
   withKnob,
   worldKnobs,
 } from "../game/worldSettings";
+import { ZOOM_DEFAULT } from "../game/zoom";
+import type { SpriteCache } from "../sprite/cache";
 import type { LobbyState } from "./client";
 import { LobbyScreen } from "./LobbyScreen";
 import type { LobbySnapshot } from "./protocol";
@@ -343,5 +346,71 @@ describe("the world controls", () => {
     fireEvent.change(nests, { target: { value: "" } });
     expect(nests.getAttribute("aria-describedby")).toBeNull();
     expect(screen.queryByText(/must be/i)).toBeNull();
+  });
+});
+
+// #162. The lobby is where the sprite cache is warmed, because it is the one stretch of the app
+// with time to spend and nothing being drawn. Without this, removing the call is silent: every
+// other test on this screen passes with the warm-up gone.
+//
+// happy-dom returns null from `getContext('2d')`, which is exactly what `canBake` is there to
+// notice, so the context is stubbed for the length of the test to get past that gate.
+describe("warming the sprite cache (#162)", () => {
+  const withCanvas = async (run: () => Promise<void> | void) => {
+    const proto = HTMLCanvasElement.prototype as unknown as { getContext: unknown };
+    const real = proto.getContext;
+    proto.getContext = () => ({}) as CanvasRenderingContext2D;
+    try {
+      await run();
+    } finally {
+      proto.getContext = real;
+    }
+  };
+
+  const spyingOnWarm = async (run: (calls: number[]) => Promise<void> | void) => {
+    const calls: number[] = [];
+    const real = spriteCache.warm;
+    (spriteCache as { warm: SpriteCache["warm"] }).warm = (scale) => {
+      calls.push(scale);
+      return 0; // nothing left bare, so one turn is the whole of it
+    };
+    try {
+      await run(calls);
+    } finally {
+      (spriteCache as { warm: SpriteCache["warm"] }).warm = real;
+    }
+  };
+
+  test("starts warming while the squad is still gathering", async () => {
+    await withCanvas(() =>
+      spyingOnWarm(async (calls) => {
+        render(<LobbyScreen state={state} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(calls.length).toBeGreaterThan(0);
+        // At the scale a match opens on, which is the only one a bake can cover (ADR 0008).
+        expect(calls[0]).toBe(warmScale(window.devicePixelRatio || 1, ZOOM_DEFAULT));
+      }),
+    );
+  });
+
+  test("bakes nothing when there is nothing to bake into", async () => {
+    await spyingOnWarm(async (calls) => {
+      render(<LobbyScreen state={state} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(calls).toEqual([]);
+    });
+  });
+
+  test("stops when the lobby goes away, rather than baking into a match", async () => {
+    await withCanvas(() =>
+      spyingOnWarm(async (calls) => {
+        const view = render(
+          <LobbyScreen state={state} onLeave={mock()} onStart={mock()} onSettings={mock()} />,
+        );
+        view.unmount();
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(calls).toEqual([]);
+      }),
+    );
   });
 });

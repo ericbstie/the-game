@@ -1044,6 +1044,36 @@ tiles that have never been baked at any scale, and those are first bakes. That i
 here, and it is bounded by how much new world crosses the screen rather than by the size of the
 sprite set.
 
+**[#162](https://github.com/ericbstie/the-game/issues/162) took the cold cache out of play, and did
+not take it out of the first seconds.** The cache is now warmed from the lobby — the one stretch of
+the app with time to spend and nothing being drawn — in slices of `WARM_BUDGET_MS`, one per
+macrotask, at `ZOOM_DEFAULT × dpr`. Once a variant has *any* bake in hand, no later ask for it is a
+first bake, so the paragraph above stops describing normal play: the burst it names is what a squad
+pays only by starting the instant the lobby appears.
+
+What that costs, measured through the shipped cache at dpr 2, warming the whole registry:
+
+| | 0.5× | 1× (`ZOOM_DEFAULT`) | 3× |
+| --- | ---: | ---: | ---: |
+| whole registry, in one block | 4,900 ms | 3,787 ms | 23,181 ms |
+| — the two tiled ore sprites | 4,705 ms | 3,706 ms | 22,054 ms |
+| — everything else together | ~195 ms | **~81 ms** | ~1,127 ms |
+| warming in 12 ms slices: turns | 193 | 269 | 319 |
+| warming in 12 ms slices: wall time | 2.5 s | 3.7 s | 4.4 s |
+
+**The registry is 4,762 bakes and 4,608 of them are ore.** `TILED_FACINGS = MASKS × CELLS × CELLS`
+is 2,304 per tiled sprite (`src/sprite/tiled.ts`), so the ore dominates every figure here. That is
+why the warm-up runs fewest-variants-first: the whole visible cast is in hand inside the first turn
+or two, and the tiles follow.
+
+**A slice cannot be bounded below the worst single bake in it, because a bake in flight is not
+preemptible.** The budget decides whether to *start* another one. At `ZOOM_DEFAULT` the mean ore
+bake is 0.87 ms and the worst observed was **59.3 ms** — against the 4.1 ms this page previously
+recorded as the largest single bake, which was the nest at 3× and not an ore tile. A slice
+therefore overshoots: 139.8 ms was the worst turn observed at `ZOOM_DEFAULT`. It lands in the
+lobby, where nothing is being drawn and no input is waiting on a frame, which is the whole reason
+the warm-up runs there rather than in the render loop.
+
 ### What the bakes hold
 
 Residency goes as the square of the scale, so this is the axis where zooming *out* is the cheap

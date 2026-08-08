@@ -536,7 +536,7 @@ export function drawWorld(
     }
     standing.push({
       y: a.pos.y,
-      paint: () => paintAvatar(ctx, a, a.id === options.selfId, sprites, blit, blitOver),
+      paint: () => paintAvatar(ctx, a, a.id === options.selfId, sprites, blit),
     });
     if (a.id === options.selfId) halos.push(() => paintSelfHalo(a, sprites, blitOver, now));
     overhead.push(() => paintOverhead(ctx, a, sprites));
@@ -1843,7 +1843,6 @@ function paintAvatar(
   isSelf: boolean,
   sprites: SpriteSource | undefined,
   blit: Blit,
-  blitOver: Blit,
 ): void {
   const sprite = sprites?.("player", avatar.facing, avatar.frame);
   // Where the body actually is. A foot-anchored sprite stands *above* its position, so anything

@@ -378,3 +378,73 @@ describe("SpriteName", () => {
     for (const name of names) expect(sprites(name, 0, 0)).toBeNull();
   });
 });
+
+// #162. Warming is what makes "there is always a bake in hand" true, and that is the whole point:
+// with something held everywhere, no bake during play is a first bake, so the per-frame budget
+// above governs every one of them.
+describe("warming the whole registry before play", () => {
+  // Ore declared FIRST, deliberately: only the sort can put the cast in front of it, so a test
+  // that passes here cannot be passing on declaration order.
+  const registry = { ore: subject("ore", 15, 100, 1), player: subject("player", 28, 8, 2) };
+
+  test("bakes every variant the registry declares, given the time", () => {
+    const m = metered(1);
+    const cache = createSpriteCache(registry, m.bake, m.derive, { now: m.now });
+    expect(cache.warm(2, 10_000)).toBe(0);
+    expect(m.baked.length).toBe(8 * 2 + 100);
+  });
+
+  test("stops at its budget and says how much is left, rather than running long", () => {
+    const m = metered(1);
+    const cache = createSpriteCache(registry, m.bake, m.derive, { now: m.now });
+    expect(cache.warm(2, 20)).toBe(8 * 2 + 100 - 20);
+    expect(m.baked.length).toBe(20);
+  });
+
+  test("picks up where it left off, so turns add up to the whole registry", () => {
+    const m = metered(1);
+    const cache = createSpriteCache(registry, m.bake, m.derive, { now: m.now });
+    let bare = cache.warm(2, 20);
+    while (bare > 0) bare = cache.warm(2, 20);
+    expect(m.baked.length).toBe(8 * 2 + 100);
+    expect(cache.warm(2, 20)).toBe(0); // and a warm cache is free to warm again
+  });
+
+  // The sprites a match opens on must not be stuck behind 4,608 ore bakes. Ordering by how many
+  // variants a sprite declares is what puts the whole visible cast in hand in the first turn.
+  test("warms the sprites with fewest variants first, so the cast lands before the tiles", () => {
+    const m = metered(1);
+    const cache = createSpriteCache(registry, m.bake, m.derive, { now: m.now });
+    cache.warm(2, 16);
+    expect(m.baked.every((tag) => tag.startsWith("player/"))).toBe(true);
+    expect(m.baked.length).toBe(16);
+  });
+
+  test("never re-bakes what is already in hand, at whatever scale it was made", () => {
+    const m = metered(1);
+    const cache = createSpriteCache(registry, m.bake, m.derive, { now: m.now });
+    cache.source(3)("player" as SpriteName, 0, 0); // one variant, baked at another scale entirely
+    m.baked.length = 0;
+    cache.warm(2, 10_000);
+    expect(m.baked.length).toBe(8 * 2 + 100 - 1);
+    expect(m.baked.some((tag) => tag === "player/0/0@2")).toBe(false); // and not re-made at 2
+  });
+
+  // It is not a frame and must not open one: a warm-up that reset the frame's budget would let the
+  // next frame re-bake without limit.
+  test("does not open a frame's bake budget", () => {
+    const m = metered(1);
+    const cache = createSpriteCache(registry, m.bake, m.derive, { budgetMs: 4, now: m.now });
+    cache.warm(2, 10_000);
+    m.baked.length = 0;
+    const frame = cache.source(3); // every ask below is a re-bake now, and the budget is 4
+    for (let i = 0; i < 8; i++) frame("ore" as SpriteName, i, 0);
+    expect(m.baked.length).toBe(4);
+  });
+
+  test("refuses a scale no frame could be painted at", () => {
+    const cache = createSpriteCache(registry);
+    expect(() => cache.warm(0, 10)).toThrow(/positive number/);
+    expect(() => cache.warm(Number.NaN, 10)).toThrow(/positive number/);
+  });
+});

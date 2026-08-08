@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LobbyState } from "../lobby/client";
 import type { Arena, BuildableKind, MoveInput, PlayerId, Tile, Vec2 } from "../lobby/protocol";
-import { createSpriteCache } from "../sprite/cache";
 import reconnectingIcon from "../sprite/reconnecting";
 import { SPRITES } from "../sprite/registry";
 import { SpriteIcon } from "../sprite/SpriteIcon";
@@ -39,6 +38,7 @@ import {
   NO_MOVE,
 } from "./input";
 import { MINIMAP_COVERAGE_U, nextMinimapCoverage } from "./minimap";
+import { spriteCache } from "./spriteCache";
 import {
   freshTutorial,
   loadLessons,
@@ -93,11 +93,6 @@ const BUILD_NAMES: Record<BuildableKind, string> = {
 // Before the world exists the squad has nothing standing, which is exactly the registry price.
 const slotCosts = (world: ClientWorld | undefined): number[] =>
   BUILD_SLOTS.map((kind) => world?.buildCost(kind) ?? BUILDABLES[kind]?.cost ?? 0);
-
-// One cache for the app: a baked sprite depends on the display, not on which screen is mounted.
-// It bakes nothing until something is drawn, so importing this costs nothing under `bun test`,
-// where there is no canvas to bake into.
-const spriteCache = createSpriteCache(SPRITES);
 
 // A run of buildables being laid by a held left-click (#104). `at` is the far end of the path the
 // cursor has walked, so each pointer sample only has to fill the gap since the last one; `pending`
