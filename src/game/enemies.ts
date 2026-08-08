@@ -21,7 +21,6 @@ import {
   pushOutOfSolids,
   removeStructure,
   type Structure,
-  spendBullet,
   structureBlocking,
   structureCenter,
   structureRadius,
@@ -982,10 +981,9 @@ function stepTurrets(
     }
     const target = engaged.get(turret.id);
     if (!runtime.powered || !target || runtime.cooldownMs > 0) continue;
-    // The last precondition, and the one that is squad-wide: a turret shoots the same bullets a
-    // player does, and an empty pool holds its fire. Taken before the cadence is charged, so
-    // holding fire costs the turret nothing and the first bullet forged is fired at once.
-    if (!spendBullet(build.ammo)) continue;
+    // Power is the whole price of a shot, and the gate above is the whole of it (#155). A turret
+    // takes nothing from the squad's ammo pool and nothing from the bank, so an empty pool does
+    // not hold its fire and a miss costs time rather than Metal.
     runtime.cooldownMs = TURRET_CADENCE_MS;
     const at = target.enemy?.pos ?? target.nest?.pos;
     if (!at) continue;

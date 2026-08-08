@@ -212,6 +212,11 @@ depend on the rate. It is the largest economic consequence of this ticket and it
 here, because `BULLET_COST` is not among the numbers #80 put in scope. Named so it is not
 discovered.
 
+> **Resolved by [#155](https://github.com/ericbstie/the-game/issues/155) (2026-08-08).** `stepTurrets`
+> no longer calls `spendBullet`: a turret's shot costs no Metal and no bullet, so a miss wastes time
+> and nothing else. The paragraph above stands as the record of what #80 left behind; the waste it
+> names no longer exists. See ADR 0003's amendment of the same date.
+
 **A reconnecting client sees no shot that was already in the air.** `game/enemy-init` carries no
 projectiles, deliberately: a flight is 389 ms and a reconnect is not, so the keyframe would be
 carrying something that had landed before it arrived. The `hits` those shots cause still stream, so

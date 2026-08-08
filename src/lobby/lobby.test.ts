@@ -2331,16 +2331,16 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
     });
   });
 
-  // #102 stage 4. A turret shoots the squad's bullets, not free ones — the same pool a player
-  // spends from, so the two genuinely compete for the last one.
+  // #155. A turret shoots free: power is the whole price, and the squad's pool is the players'
+  // alone. #102 made the two compete for the last bullet; this is the end-to-end proof that they
+  // no longer do, over the wire the client actually reads.
   //
   // The turret is stood in front of a nest with no wave ever due, which is what makes the pool the
   // only variable: a nest is a legitimate target that is always there, never moves and is damaged
-  // by nothing else in the match, so every `nests` delta below is a turret shot and each one is
-  // a bullet. The player shoots from the arena centre, at least 3,600 u from the nearest nest
-  // (#123's inner bound) and far beyond her own 700 u reach, so her ray can never touch the same
-  // observable.
-  describe("stage 4: turrets draw from the squad's pool", () => {
+  // by nothing else in the match, so every `nests` delta below is a turret shot. The player shoots
+  // from the arena centre, at least 3,600 u from the nearest nest (#123's inner bound) and far
+  // beyond her own 700 u reach, so her ray can never touch the same observable.
+  describe("#155: a turret's fire is priced in power, not the squad's pool", () => {
     const CENTRE = { x: ARENA.width / 2, y: ARENA.height / 2 };
     const NO_WAVE = 10_000_000; // no grunt ever spawns; the nest is the turret's only target
 
@@ -2429,40 +2429,31 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
       return { x: (to.x - from.x) / len, y: (to.y - from.y) / len };
     };
 
-    test("a turret's shot comes out of the pool a player shoots from", () => {
-      const { t, hub, clock, nest } = besieging({ startingAmmo: 2 });
+    test("an empty pool does not hold the turret's fire", () => {
+      const { t, hub, clock, nest } = besieging({ startingAmmo: 0 });
       // The tick the turret fires on, plus the four its shot needs to cross the ~300 u to the
-      // nest (#80). The cadence has come round again by then, so the pool has paid for a second
-      // shot still in the air — the first entry is the one this test is about.
+      // nest (#80).
       clock.advance(TICK * 5);
-      expect(nestHps(t)).toEqual([nest.hp - TURRET_DAMAGE]);
-      expect(ammoStream(t)[0]).toBe(1);
-      hub.dispose();
-    });
-
-    test("an empty pool holds the turret's fire — it does not shoot free", () => {
-      const { t, hub, clock, nest } = besieging({ startingAmmo: 0 });
-      clock.advance(TURRET_CADENCE_MS * 10);
       expectEngaged(t, nest);
-      expect(nestHps(t)).toEqual([]);
-      hub.dispose();
-    });
-
-    test("and the first bullet the forge delivers is the one it fires", () => {
-      const { t, hub, clock, nest } = besieging({ startingAmmo: 0 });
-      clock.advance(TURRET_CADENCE_MS * 10);
-      hub.handleMessage("s1", JSON.stringify({ type: "game/forge" }));
-      clock.advance(FORGE_MS);
-      clock.advance(TICK * 5); // and the shot it fired has to cross the ground to the nest (#80)
       expect(nestHps(t)).toEqual([nest.hp - TURRET_DAMAGE]);
       hub.dispose();
     });
 
-    // The race, both ways round, on one bullet. The turret spends on the tick and a player spends
-    // the instant their report is admitted, so which of the two happens first is the whole test —
-    // and it is the ordering of these two statements, not any rule about who outranks whom.
-    test("a player who asks before the tick takes the last bullet, and the turret holds fire", () => {
+    test("a besieging turret never touches the pool, however long it fires", () => {
+      const { t, hub, clock, nest } = besieging({ startingAmmo: 2 });
+      clock.advance(TURRET_CADENCE_MS * 20);
+      expect(nestHps(t).length).toBeGreaterThan(1); // it really did keep firing
+      expect(nestHps(t)[0]).toBe(nest.hp - TURRET_DAMAGE);
+      expect(ammoStream(t)).toEqual([]); // and the squad was never told its pool moved
+      hub.dispose();
+    });
+
+    // The race #102 created, run the other way: the turret fires many times over on one bullet,
+    // and the player's shot is still there to take afterwards.
+    test("a turret firing leaves the player's bullet where it was", () => {
       const { t, hub, clock, nest } = besieging({ startingAmmo: 1 });
+      clock.advance(TURRET_CADENCE_MS * 10);
+      expect(nestHps(t).length).toBeGreaterThan(1);
       hub.handleMessage(
         "s1",
         JSON.stringify({
@@ -2472,28 +2463,9 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
           seq: 1,
         }),
       );
-      clock.advance(TURRET_CADENCE_MS * 10);
-      expect(herShots(t)).toHaveLength(1); // hers, and only hers
-      expectEngaged(t, nest);
-      expect(nestHps(t)).toEqual([]); // the turret found the pool empty
-      hub.dispose();
-    });
-
-    test("a turret that took it on the tick leaves the player's next shot refused", () => {
-      const { t, hub, clock, nest } = besieging({ startingAmmo: 1 });
       clock.advance(TICK);
-      hub.handleMessage(
-        "s1",
-        JSON.stringify({
-          type: "game/attack",
-          pos: CENTRE,
-          dir: aimAt(CENTRE, { x: CENTRE.x + 1, y: CENTRE.y }),
-          seq: 1,
-        }),
-      );
-      clock.advance(TURRET_CADENCE_MS * 10);
-      expect(nestHps(t)).toEqual([nest.hp - TURRET_DAMAGE]); // one shot, from the one bullet
-      expect(herShots(t)).toEqual([]); // and nothing left for her
+      expect(herShots(t)).toHaveLength(1); // hers, out of the bullet no turret took
+      expect(ammoStream(t)).toEqual([0]); // and that is the one and only spend
       hub.dispose();
     });
   });
