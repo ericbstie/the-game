@@ -383,7 +383,9 @@ describe("SpriteName", () => {
 // with something held everywhere, no bake during play is a first bake, so the per-frame budget
 // above governs every one of them.
 describe("warming the whole registry before play", () => {
-  const registry = { player: subject("player", 28, 8, 2), ore: subject("ore", 15, 100, 1) };
+  // Ore declared FIRST, deliberately: only the sort can put the cast in front of it, so a test
+  // that passes here cannot be passing on declaration order.
+  const registry = { ore: subject("ore", 15, 100, 1), player: subject("player", 28, 8, 2) };
 
   test("bakes every variant the registry declares, given the time", () => {
     const m = metered(1);
