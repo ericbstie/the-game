@@ -32,6 +32,14 @@ import {
   BLOODLING_RADIUS,
   BLOODLING_SHARE,
   BLOODLING_SPEED,
+  BROOD_COOLDOWN_MS,
+  BROOD_RADIUS,
+  BROOD_SIZE,
+  BROOD_WINDUP_MS,
+  BROODLING_HP,
+  BROODLORD_HP,
+  BROODLORD_SHARE,
+  BROODLORD_SPEED,
   DASH_ANGLE,
   ELITE_HP,
   ELITE_SPEED,
@@ -996,11 +1004,14 @@ describe("#125: no safe centre, and the gradient it produces", () => {
   // How many enemies are close enough to `at` to be an encounter. `wanderersOnly` drops everything a
   // hunter nest committed to a player, so what is left is the ambient walk rather than a wave aimed
   // at the squad — the only discriminator needed, since a hunter's commitment is set at spawn.
+  // A broodling is never counted as a wanderer, whatever its `hunt` says (#138). It did not walk
+  // here: it was born here, by a Broodlord that had already closed on the player, so counting it as
+  // the undirected walk arriving would say the opposite of what happened.
   const near = (s: EnemyState, at: Vec2, radius = AGGRO_RADIUS, wanderersOnly = false): number =>
     [...s.enemies.values()].filter(
       (e) =>
         Math.hypot(e.pos.x - at.x, e.pos.y - at.y) <= radius &&
-        (!wanderersOnly || e.hunt === undefined),
+        (!wanderersOnly || (e.hunt === undefined && e.kind !== "broodling")),
     ).length;
 
   test("the cap is the density dial, and it is 500", () => {
@@ -2191,7 +2202,9 @@ describe("the bloodling (#140)", () => {
     // spiderman share directly under the bloodlings' since #137 — bands of one uniform, and the
     // grunt is what is left between them.
     expect(mix(0.99)).toEqual(Array(DEFAULTS.waveSize.max).fill("bloodling"));
-    expect(mix(1 - BLOODLING_SHARE - SPIDERMAN_SHARE - 0.01)).toEqual(
+    // Below the spiderman band is the Broodlord's since #138, and the grunt is what is left under
+    // all three.
+    expect(mix(1 - BLOODLING_SHARE - SPIDERMAN_SHARE - BROODLORD_SHARE - 0.01)).toEqual(
       Array(DEFAULTS.waveSize.max).fill("grunt"),
     );
     expect(mix(0.29)).toEqual(Array(DEFAULTS.waveSize.max).fill("elite"));
@@ -2375,7 +2388,7 @@ describe("the spiderman (#137)", () => {
     const band = 1 - BLOODLING_SHARE - SPIDERMAN_SHARE;
     expect(mix(band)).toEqual(Array(DEFAULTS.waveSize.max).fill("spiderman"));
     expect(mix(1 - BLOODLING_SHARE - 0.01)).toEqual(Array(DEFAULTS.waveSize.max).fill("spiderman"));
-    expect(mix(band - 0.01)).toEqual(Array(DEFAULTS.waveSize.max).fill("grunt")); // just under it
+    expect(mix(band - 0.01)).toEqual(Array(DEFAULTS.waveSize.max).fill("broodlord")); // under it
     expect(mix(0.99)).toEqual(Array(DEFAULTS.waveSize.max).fill("bloodling")); // and just over
   });
 
@@ -2436,5 +2449,153 @@ describe("the spiderman (#137)", () => {
     }
     expect([...a.enemies.values()]).toEqual([...b.enemies.values()]);
     expect(bursts).toBeGreaterThan(0); // not vacuous: webs were actually thrown
+  });
+});
+
+// #138. The Broodlord: it chases slower than a grunt, closes to a radius, stands still for a
+// windup, and bears three broodlings. Only while chasing a player — never while wandering, and
+// never at a structure.
+describe("the broodlord and its brood (#138)", () => {
+  const DT = 50;
+  const broodlord = (id: string, pos: Vec2, hp = BROODLORD_HP): Enemy => ({
+    id,
+    kind: "broodlord",
+    pos,
+    hp,
+    biteMs: 0,
+  });
+  const step = (s: EnemyState, players: PlayerRef[], build: BuildState | null = null) =>
+    stepEnemies(s, players, [], DT, build).events;
+  const brood = (s: EnemyState) => [...s.enemies.values()].filter((e) => e.kind === "broodling");
+  // Standing right where the Broodlord already is, so it is inside BROOD_RADIUS from the first tick.
+  const at = { x: C.x + 5_000, y: C.y };
+  const chased = () => [player({ x: at.x + 40, y: at.y })].flat();
+
+  test("it is the one chaser slower than a grunt", () => {
+    expect(BROODLORD_SPEED).toBeLessThan(GRUNT_SPEED);
+  });
+
+  test("a broodling has a fifth of a grunt's HP", () => {
+    expect(BROODLING_HP).toBe(GRUNT_HP / 5);
+  });
+
+  test("it stands still through the windup rather than closing", () => {
+    const s = stateWith([broodlord("e1", { ...at })]);
+    const players = chased();
+    step(s, players); // inside the radius: the windup starts and it stops
+    const held = { ...(only(s).pos as Vec2) };
+    for (let i = 0; i < Math.floor(BROOD_WINDUP_MS / DT) - 1; i++) step(s, players);
+    expect(only(s).pos).toEqual(held); // not one unit of travel through the whole windup
+    expect(brood(s)).toHaveLength(0); // and nothing born yet
+  });
+
+  test("the brood lands when the windup is up, three of them", () => {
+    const s = stateWith([broodlord("e1", { ...at })]);
+    const players = chased();
+    let born: EnemySpawn[] = [];
+    for (let i = 0; i <= Math.ceil(BROOD_WINDUP_MS / DT); i++) born = step(s, players).spawns;
+    expect(born).toHaveLength(BROOD_SIZE);
+    expect(born.every((sp) => sp.kind === "broodling")).toBe(true);
+    expect(born.every((sp) => sp.hp === BROODLING_HP)).toBe(true);
+    expect(brood(s)).toHaveLength(BROOD_SIZE);
+  });
+
+  // The whole point of announcing them through `spawns`: a client that missed nothing renders a
+  // broodling exactly as it renders a grunt out of a nest, with no special casing and no wire change.
+  test("the brood is announced through the same spawns path a nest's wave uses", () => {
+    const s = stateWith([broodlord("e1", { ...at })]);
+    const players = chased();
+    let born: EnemySpawn[] = [];
+    for (let i = 0; i <= Math.ceil(BROOD_WINDUP_MS / DT); i++) born = step(s, players).spawns;
+    for (const sp of born) {
+      expect(Object.keys(sp).sort()).toEqual(["hp", "id", "kind", "pos"]); // nothing extra on the wire
+      expect(s.enemies.get(sp.id)?.kind).toBe("broodling");
+    }
+  });
+
+  test("it waits out the cooldown before bearing again", () => {
+    const s = stateWith([broodlord("e1", { ...at })]);
+    const players = chased();
+    const runFor = (ms: number) => {
+      let total = 0;
+      for (let i = 0; i < Math.ceil(ms / DT); i++) total += step(s, players).spawns.length;
+      return total;
+    };
+    runFor(BROOD_WINDUP_MS + DT); // the first brood
+    expect(brood(s)).toHaveLength(BROOD_SIZE);
+    runFor(BROOD_COOLDOWN_MS - DT * 2); // and nothing through the cooldown
+    expect(brood(s)).toHaveLength(BROOD_SIZE);
+    runFor(BROOD_COOLDOWN_MS + BROOD_WINDUP_MS);
+    expect(brood(s).length).toBeGreaterThan(BROOD_SIZE); // then a second one
+  });
+
+  test("it bears nothing while wandering, however long it walks", () => {
+    const s = stateWith([broodlord("e1", { ...at })]);
+    for (let i = 0; i < Math.ceil(((BROOD_WINDUP_MS + BROOD_COOLDOWN_MS) * 2) / DT); i++) {
+      expect(step(s, []).spawns).toEqual([]); // no players at all
+    }
+    expect(brood(s)).toHaveLength(0);
+  });
+
+  test("it bears nothing at a structure — a wall is not something to birth at", () => {
+    const build = freshBuildState(ARENA);
+    build.bank.metal = 1_000_000;
+    placeStructure(
+      build,
+      "wall",
+      tileOf({ x: at.x + 40, y: at.y }),
+      BUILDABLES.wall as BuildableSpec,
+    );
+    const s = stateWith([broodlord("e1", { ...at })]);
+    for (let i = 0; i < Math.ceil((BROOD_WINDUP_MS + BROOD_COOLDOWN_MS) / DT); i++) {
+      expect(step(s, [], build).spawns).toEqual([]);
+    }
+    expect(brood(s)).toHaveLength(0);
+  });
+
+  test("it closes rather than bearing while the player is still out of reach", () => {
+    const far = { x: at.x + BROOD_RADIUS + 400, y: at.y };
+    const s = stateWith([broodlord("e1", { ...at })]);
+    const players = [player(far)].flat();
+    const before = { ...(only(s).pos as Vec2) };
+    expect(step(s, players).spawns).toEqual([]);
+    expect(only(s).pos.x).toBeGreaterThan(before.x); // it moved toward them
+  });
+
+  // A nest may roll a Broodlord; it may never roll a broodling. That is what lets a broodling on
+  // screen mean a Broodlord is or was nearby.
+  test("a nest can roll a broodlord and can never roll a broodling", () => {
+    const kinds = new Set<string>();
+    for (let i = 0; i <= 100; i++) {
+      const roll = i / 100;
+      const s = armed(onlyNestState(spawnEnemyState(worldInit(), () => roll)), 6);
+      for (const sp of stepEnemies(s, [], [], DT).events.spawns) kinds.add(sp.kind);
+    }
+    expect(kinds.has("broodlord")).toBe(true);
+    expect(kinds.has("broodling")).toBe(false);
+  });
+
+  test("the brood competes with the nests for ENEMY_CAP rather than spawning past it", () => {
+    const s = stateWith([broodlord("e1", { ...at })]);
+    s.settings = { ...s.settings, enemyCap: 1 }; // the Broodlord alone already fills it
+    const players = chased();
+    for (let i = 0; i <= Math.ceil(BROOD_WINDUP_MS / DT); i++) step(s, players);
+    expect(brood(s)).toHaveLength(0);
+    expect(s.enemies.size).toBe(1);
+  });
+
+  // The rng budget is pinned by the test above this describe, and a brood must not touch it: a
+  // wave's draws are what every capture in this file is anchored to.
+  test("bearing a brood costs the sim's rng nothing", () => {
+    let draws = 0;
+    const counting = () => {
+      draws++;
+      return 0.5;
+    };
+    const s = stateWith([broodlord("e1", { ...at })], counting);
+    const players = chased();
+    for (let i = 0; i <= Math.ceil(BROOD_WINDUP_MS / DT); i++) step(s, players);
+    expect(brood(s)).toHaveLength(BROOD_SIZE); // it really did bear
+    expect(draws).toBe(0); // and drew nothing to do it
   });
 });

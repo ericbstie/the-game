@@ -24,7 +24,14 @@ import { BUILDABLES, footprintCenter, type OreGrid, oreAt, TILE, tileKey, tileOf
 import { type Camera, isVisible, type Viewport } from "./camera";
 import { HIT_FLASH_MS, type Mark } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
-import { BLOODLING_HP, ELITE_HP, GRUNT_HP, SPIDERMAN_HP } from "./enemies";
+import {
+  BLOODLING_HP,
+  BROODLING_HP,
+  BROODLORD_HP,
+  ELITE_HP,
+  GRUNT_HP,
+  SPIDERMAN_HP,
+} from "./enemies";
 import { FLOAT_MS, FLOAT_RISE, type MetalFloat } from "./floats";
 import { BURST_REACH, inkPuff, PUFF_REACH, reticle, SHOT_DASH, speedLines, starburst } from "./fx";
 import {
@@ -354,6 +361,10 @@ const ENEMY_COLORS: Record<EnemyKind, string> = {
   elite: "#a01f1f",
   bloodling: "#4b2569",
   spiderman: "#000000",
+  // Both struck in flat ink like the spiderman, so the fallback shape and the sprite that replaces
+  // it are the same creature. The radius is what tells them apart before the art lands (#138).
+  broodlord: "#000000",
+  broodling: "#000000",
 };
 
 // What "full health" means for each kind, so a bar can be withheld from anything undamaged. Read
@@ -364,6 +375,8 @@ const ENEMY_MAX_HP: Record<EnemyKind, number> = {
   elite: ELITE_HP,
   bloodling: BLOODLING_HP,
   spiderman: SPIDERMAN_HP,
+  broodlord: BROODLORD_HP,
+  broodling: BROODLING_HP,
 };
 
 // Ore reads as ground texture, not as an entity: muted enough to sit under everything drawn on

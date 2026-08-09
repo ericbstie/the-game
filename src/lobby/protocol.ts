@@ -164,7 +164,7 @@ export interface WorldInit {
 // a kind like any other and everything it does differently is in `enemies.ts`'s record. A spiderman
 // (#137) is the fourth, on the same terms — it comes in on the slant and throws cobweb, and both of
 // those are that record's too.
-export type EnemyKind = "grunt" | "elite" | "bloodling" | "spiderman";
+export type EnemyKind = "grunt" | "elite" | "bloodling" | "spiderman" | "broodlord" | "broodling";
 
 // A newly-spawned enemy, announced once so the client can create its render record (kind +
 // hp) before per-tick position deltas start flowing for it.

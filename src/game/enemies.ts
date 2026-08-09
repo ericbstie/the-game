@@ -132,6 +132,46 @@ export const WEB_CADENCE_MS = 1_500;
 // uniform draw and a wave still costs the sim exactly one number per enemy.
 export const SPIDERMAN_SHARE = 0.1;
 
+// --- The Broodlord and its brood (#138) -------------------------------------------------------
+//
+// A chaser that closes and then stops to birth. Every number here is provisional except the
+// broodling's HP, which the ask fixes at a fifth of a grunt's — a later value for any of the rest
+// is a retune, not a correction.
+
+// Slower than a grunt, which is the ask: it is the thing you can outrun and should not ignore.
+export const BROODLORD_SPEED = Math.round(GRUNT_SPEED * 0.6);
+// Four grunts' worth. It has to survive long enough to be worth stopping, since stopping is what it
+// does, and a brood it never lives to lay is not a mechanic.
+export const BROODLORD_HP = GRUNT_HP * 4;
+// The biggest thing in the game that walks; a nest at 96 is the only larger box.
+export const BROODLORD_RADIUS = 26;
+// How near the player it is chasing it comes before it stops and starts a brood. Well outside
+// biting range (PLAYER_RADIUS + BROODLORD_RADIUS), so a brood is laid *at* you rather than on top
+// of you, and the broodlings are what closes the last of the distance.
+export const BROOD_RADIUS = 3 * (PLAYER_RADIUS + BROODLORD_RADIUS);
+// It stands still for this long before the brood lands — the tell that gives a player time to read
+// what is about to happen and act on it.
+export const BROOD_WINDUP_MS = 1_000;
+// And this long before it can begin another.
+export const BROOD_COOLDOWN_MS = 5_000;
+// How many come out of one brood. There is no cap on a Broodlord's live brood; `enemyCap` is the
+// only bound, and it is shared with the nests.
+export const BROOD_SIZE = 3;
+// The share of a nest's wave that comes out as Broodlords, in a band of the same single roll every
+// other kind is drawn from. **A nest can never roll a broodling** — only a Broodlord makes those,
+// so a broodling on screen means a Broodlord is or was nearby.
+export const BROODLORD_SHARE = 0.06;
+
+// A fifth of a grunt's HP — the one broodling number the ask fixes rather than leaves provisional.
+export const BROODLING_HP = GRUNT_HP / 5;
+// Faster than the thing that bore it: the brood is the part of a Broodlord that can catch you.
+export const BROODLING_SPEED = Math.round(GRUNT_SPEED * 1.15);
+// The smallest creature in the game, at half a grunt's box.
+export const BROODLING_RADIUS = 9;
+// Where the brood lands, as a fraction of the parent's radius past its own edge: far enough out
+// that three of them are not born inside each other, near enough to read as having come from it.
+export const BROOD_SPREAD = 1.6;
+
 // Contact damage: an enemy touching a player deals `contactDamage` on its own `contactCadenceMs`.
 interface EnemyStats {
   hp: number;
@@ -173,6 +213,23 @@ const STATS: Record<EnemyKind, EnemyStats> = {
     speed: SPIDERMAN_SPEED,
     radius: SPIDERMAN_RADIUS,
     contactDamage: 6,
+    contactCadenceMs: 500,
+  },
+  broodlord: {
+    hp: BROODLORD_HP,
+    speed: BROODLORD_SPEED,
+    radius: BROODLORD_RADIUS,
+    // It bites like a grunt. What it is for is the brood, not the bite, and giving it an elite's
+    // jaws as well would make the thing you are meant to walk away from the thing you cannot.
+    contactDamage: 6,
+    contactCadenceMs: 500,
+  },
+  broodling: {
+    hp: BROODLING_HP,
+    speed: BROODLING_SPEED,
+    radius: BROODLING_RADIUS,
+    // Half a grunt's bite, because they arrive three at a time.
+    contactDamage: 3,
     contactCadenceMs: 500,
   },
 };
@@ -402,6 +459,10 @@ export interface Enemy {
   hunt?: PlayerId;
   wander?: { rad: number; ms: number };
   webMs?: number;
+  // A Broodlord's brood clock, server-only like every timer above it. `broodMs` counts down the
+  // windup it stands still through; `broodCoolMs` counts down the wait before it may start another.
+  broodMs?: number;
+  broodCoolMs?: number;
 }
 
 // What a nest sends. A hunter nest fires waves committed to a player at any distance (#124); a
@@ -666,8 +727,17 @@ export function stepEnemies(
     damaged: new Set<string>(),
     blasts: new Set<string>(),
     bursts: new Set<string>(),
+    // A brood joins this tick's wave announcements, which is what makes it need no wire change:
+    // `EnemySpawn` says nothing about where an enemy came from (#138).
+    bear: (kind, at) => {
+      if (state.enemies.size >= state.settings.enemyCap) return; // the cap is shared with the nests
+      spawns.push(addEnemy(state, kind, at));
+    },
   };
-  for (const enemy of state.enemies.values()) stepEnemy(enemy, context);
+  // Collected first, so a brood born this tick is not itself stepped until the next one — the
+  // parent's list is the one being walked, and adding to `state.enemies` inside the walk would
+  // step a creature that has not been announced yet on some iteration orders and not others.
+  for (const enemy of [...state.enemies.values()]) stepEnemy(enemy, context);
   // A bloodling that reached a player is taken off the field here, before `moves` is built, so it
   // is reported once — as a death — exactly as an enemy killed by a shot is. Its own kind is the
   // only thing that kills it this way, and the blast it deals is not this module's to apply: the
@@ -716,6 +786,11 @@ interface StepContext {
   damaged: Set<string>; // structure ids bitten this tick, resolved into hits/removals at the end
   blasts: Set<string>; // bloodlings that went off this tick, resolved into deaths at the end
   bursts: Set<string>; // spidermen that threw cobweb this tick, announced as themselves
+  // What a Broodlord's brood is born through (#138). Injected rather than reached for, exactly as
+  // `rng` is: an enemy that spawns enemies is a new source, and this keeps the module pure while
+  // letting the brood ride the `spawns` array a nest's wave already uses. A client that missed
+  // nothing renders them with no special casing.
+  bear: (kind: EnemyKind, pos: Vec2) => void;
 }
 
 // Turn this tick's structure damage into wire events. A structure at 0 HP is simply removed —
@@ -786,10 +861,13 @@ function fireNestWave(
   const spawns: EnemySpawn[] = [];
   for (let i = 0; i < size; i++) {
     if (state.enemies.size >= state.settings.enemyCap) break; // cap governor holds the remainder
-    // One draw decides the kind, read as four bands: the elite share at the bottom, the bloodling
-    // share at the top, the spiderman share directly under it, and a grunt for everything between
-    // them. One number per enemy however many kinds there are, so a wave costs the sim's rng exactly
-    // what it always has.
+    // One draw decides the kind, read as bands: the elite share at the bottom, the bloodling share
+    // at the top, then the spiderman's and the Broodlord's stacked under it, and a grunt for
+    // everything between them. One number per enemy however many kinds there are, so a wave costs
+    // the sim's rng exactly what it always has.
+    //
+    // **There is no broodling band and there must never be one** (#138): only a Broodlord makes
+    // those, which is what lets a broodling on screen mean a Broodlord is or was nearby.
     const roll = state.rng();
     const kind: EnemyKind =
       roll < share
@@ -798,7 +876,9 @@ function fireNestWave(
           ? "bloodling"
           : roll >= 1 - BLOODLING_SHARE - SPIDERMAN_SHARE
             ? "spiderman"
-            : "grunt";
+            : roll >= 1 - BLOODLING_SHARE - SPIDERMAN_SHARE - BROODLORD_SHARE
+              ? "broodlord"
+              : "grunt";
     // A nest walled in is a legitimate strategy, so a wave that lands inside a footprint still
     // spawns — the overlapping enemy is simply pushed clear.
     const at = pushOutOfSolids(build, jitter(nest.pos, state.rng), enemyRadius(kind));
@@ -1139,6 +1219,12 @@ function stepEnemy(enemy: Enemy, context: StepContext): void {
   enemy.biteMs = Math.max(0, enemy.biteMs - context.dtMs);
   const speed = enemySpeed(enemy.kind) * (context.dtMs / 1000);
   const engaged = acquire(enemy, context);
+  // The one behaviour that *replaces* the shared step rather than adding to it. `fuse` and
+  // `throwWeb` both run after the creature has moved and leave it moving; a Broodlord in its windup
+  // has to stand still, which nothing before #138 needed to express. Asked before the step rather
+  // than undoing it after, because a step already taken cannot be untaken without the position
+  // having briefly been wrong.
+  if (brood(enemy, engaged, context)) return;
   // ENGAGED and HUNTING differ only in what `acquire` returned, never in how the step is taken.
   if (engaged) stepToward(enemy, dashPoint(enemy, engaged.lead, speed), speed, context);
   else wander(enemy, speed, context);
@@ -1203,6 +1289,52 @@ function throwWeb(enemy: Enemy, context: StepContext): void {
 // player is not a place anybody is standing.
 function fuse(enemy: Enemy, context: StepContext): void {
   if (nearestWithin(context.players, enemy.pos, BLAST_TRIGGER)) context.blasts.add(enemy.id);
+}
+
+// A Broodlord's brood (#138). Returns whether it held the creature still this tick, which is the
+// one thing no other kind's behaviour does — see the call site.
+//
+// It bears **only while chasing a player**: a structure it has locked onto is not a reason to
+// stop, and a wanderer has nobody to bear at. The windup is the tell — a second of standing still
+// is what gives a player time to read what is coming and leave.
+function brood(enemy: Enemy, engaged: Engagement | null, context: StepContext): boolean {
+  if (enemy.kind !== "broodlord") return false;
+  enemy.broodCoolMs = Math.max(0, (enemy.broodCoolMs ?? 0) - context.dtMs);
+
+  if (enemy.broodMs !== undefined && enemy.broodMs > 0) {
+    enemy.broodMs -= context.dtMs;
+    if (enemy.broodMs > 0) return true; // still winding up, and still standing
+    enemy.broodMs = undefined;
+    enemy.broodCoolMs = BROOD_COOLDOWN_MS;
+    bearBrood(enemy, context);
+    return true; // the tick it lays is a tick it does not walk
+  }
+
+  const chasing = enemy.target?.kind === "player" ? engaged : null;
+  if (!chasing || enemy.broodCoolMs > 0) return false;
+  if (Math.hypot(chasing.pos.x - enemy.pos.x, chasing.pos.y - enemy.pos.y) > BROOD_RADIUS) {
+    return false; // not near enough yet: keep closing
+  }
+  enemy.broodMs = BROOD_WINDUP_MS;
+  return true;
+}
+
+// Where the brood lands: evenly around the parent, on a ring just outside its own edge, starting
+// from the bearing it is facing. Placed rather than drawn from `rng` deliberately — a wave's rng
+// budget is one draw per enemy and pinned by a test, and a brood that spent draws would move every
+// later number in the sequence.
+function bearBrood(enemy: Enemy, context: StepContext): void {
+  const reach = enemyRadius("broodlord") + BROOD_SPREAD * enemyRadius("broodling");
+  const edge = enemyRadius("broodling");
+  const { arena } = context;
+  for (let i = 0; i < BROOD_SIZE; i++) {
+    const bearing = (i / BROOD_SIZE) * 2 * Math.PI;
+    const at = {
+      x: clamp(enemy.pos.x + Math.cos(bearing) * reach, edge, arena.width - edge),
+      y: clamp(enemy.pos.y + Math.sin(bearing) * reach, edge, arena.height - edge),
+    };
+    context.bear("broodling", pushOutOfSolids(context.build, at, edge));
+  }
 }
 
 // One step of an undirected walk: hold a heading for WANDER_LEG_MS, then draw another. The heading
