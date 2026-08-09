@@ -330,24 +330,25 @@ describe("admitMine", () => {
     expect(total(1)).toBeLessThanOrEqual(honest * (1 + MINE_JITTER_MS / ORE_HARVEST_MS));
   });
 
-  // #109 drops the hand rate to 1, and #130 spends it as one harvested tile a second: through
-  // `creditMetal` a ten-second dig is worth exactly ten Metal — a fifth of a miner, as before.
-  test("mines one metal a second, so a ten-second hold banks ten whole Metal", () => {
-    expect(HAND_MINE_RATE).toBe(1);
+  // #109 drops the hand rate to 1 and #130 spends it as one harvested tile a second; #186 raises it
+  // to 2. Through `creditMetal` a ten-second dig is worth exactly HAND_MINE_RATE × 10 Metal.
+  test("mines HAND_MINE_RATE metal a second, so a ten-second hold banks that many whole Metal", () => {
+    expect(HAND_MINE_RATE).toBe(2);
     const guard = freshMineGuard();
     const build = freshBuildState(ARENA);
     for (let t = ORE_HARVEST_MS; t <= 10_000; t += ORE_HARVEST_MS) {
       creditMetal(build, admitMine(guard, { tile: metal, seq: t }, atTile(metal), grid, t));
     }
-    expect(build.bank.metal).toBe(10);
+    expect(build.bank.metal).toBe(10 * HAND_MINE_RATE);
   });
 });
 
-// #96: income is structural rather than manual. Hand-mining used to be twice a miner; it is now
-// half of one. Both sides of the comparison are run through the real paths and the same
+// #96 set hand-mining at half a standing miner's trickle. #186 retuned HAND_MINE_RATE to 2 without
+// retuning MINER_TRICKLE, so the two now pay the same rate — a consequence of that retune, not a
+// new decision about the ratio itself. Both sides still run through the real paths and the same
 // `creditMetal`, so what is asserted is the ratio the bank is actually paid over one held stretch —
 // not two constants divided by each other.
-describe("#96: a standing miner out-earns a hand-miner two to one", () => {
+describe("#96/#186: a standing miner and a hand-miner now pay the same rate", () => {
   const ore = generateOre(ARENA, SEED);
   const metal = untileKey([...ore.entries()].find(([, kind]) => kind === "metal")?.[0] as number);
   const HELD_MS = 10_000;
@@ -375,10 +376,10 @@ describe("#96: a standing miner out-earns a hand-miner two to one", () => {
     return build.bank.metal - before;
   }
 
-  test("over the same ten seconds, the miner banks exactly twice what the digging does", () => {
+  test("over the same ten seconds, the miner banks exactly what the digging does", () => {
     const hand = byHand();
     expect(hand).toBeGreaterThan(0);
-    expect(byMiner()).toBe(2 * hand);
+    expect(byMiner()).toBe(hand);
   });
 });
 
