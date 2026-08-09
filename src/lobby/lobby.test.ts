@@ -879,16 +879,20 @@ describe("M3: enemy sim tick lifecycle", () => {
       firstWaveMs: 5,
       scheduler: clock,
       startingAmmo: 9,
-      rng: () => 0.75,
+      // 0.73 rather than 0.75: #138 put the Broodlord's band at [0.74, 0.80), and these tests pin
+      // the roll to get a *grunt*. A Broodlord stands still to bear, which a chase test reads as a
+      // failure to chase.
+      rng: () => 0.73,
     });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
     clock.advance(30);
 
-    // Grab a grunt the first wave spawned, straight off the stream.
+    // Grab a grunt the first wave spawned, straight off the stream. Asked for by kind since #138:
+    // the wave carries Broodlords now, and this test is about a melee on a grunt.
     const target = deltas(t)
       .flatMap((d) => (d.msg as Extract<ServerMessage, { type: "game/map-delta" }>).spawns ?? [])
-      .at(0);
+      .find((sp) => sp.kind === "grunt");
     expect(target?.kind).toBe("grunt");
     if (!target) throw new Error("no spawn");
 
@@ -958,7 +962,7 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
   function matchWithWave() {
     const t = new Capture();
     const clock = new ManualScheduler();
-    const hub = new LobbyHub(t, { tickMs: 50, firstWaveMs: 1, scheduler: clock, rng: () => 0.75 });
+    const hub = new LobbyHub(t, { tickMs: 50, firstWaveMs: 1, scheduler: clock, rng: () => 0.73 });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));
     const { code } = firstOf(t, "lobby/created");
     hub.handleMessage("s2", JSON.stringify({ type: "lobby/join", code, name: "Ben" }));
@@ -967,13 +971,16 @@ describe("#75: a disconnected player stops pulling aggro at once", () => {
     return { t, hub, clock, code };
   }
 
-  // A grunt of the opening wave, straight off the stream. Any of them will do: since #125 there is
-  // no radius at which an un-aggroed enemy stops, so every spawn moves.
+  // A grunt of the opening wave, straight off the stream. Any *grunt* will do: since #125 there is
+  // no radius at which an un-aggroed enemy stops, so every spawn moves. The kind is asked for
+  // rather than taken from the front of the wave because #138 put a Broodlord in the bands, and a
+  // Broodlord in its windup deliberately stands still — which is the one thing these tests read as
+  // a failure to chase.
   function firstSpawn(t: Capture): EnemySpawn {
     const spawned = t.sent
       .flatMap(({ msg }) => (msg.type === "game/map-delta" ? (msg.spawns ?? []) : []))
-      .at(0);
-    if (!spawned) throw new Error("the first wave spawned nothing");
+      .find((sp) => sp.kind === "grunt");
+    if (!spawned) throw new Error("the first wave spawned no grunt");
     return spawned;
   }
 
@@ -1816,7 +1823,7 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
       firstWaveMs: 5,
       startingMetal: 1_000,
       startingAmmo: 9, // these are weapon tests; the pool is #102's own business
-      rng: () => 0.75,
+      rng: () => 0.73,
     });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
     const me = created(t).you.id;
@@ -1853,7 +1860,7 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
       firstWaveMs: 5,
       startingMetal: 1_000,
       startingAmmo: 9, // these are weapon tests; the pool is #102's own business
-      rng: () => 0.75,
+      rng: () => 0.73,
     });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));
     const code = created(t).code;
@@ -1958,7 +1965,7 @@ describe("M5-I5: shots and turret aims reach the client, and only the ones the s
       firstWaveMs: 5,
       startingMetal: 1_000,
       startingAmmo: 9,
-      rng: () => 0.75,
+      rng: () => 0.73,
     });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Solo" }));
     hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
@@ -2129,7 +2136,7 @@ describe("#102: bullets are server-owned, and a shot spends one", () => {
       tickMs: TICK,
       firstWaveMs: 5,
       scheduler: clock,
-      rng: () => 0.75,
+      rng: () => 0.73,
       ...config,
     });
     hub.handleMessage("s1", JSON.stringify({ type: "lobby/create", name: "Ana" }));

@@ -1,6 +1,8 @@
 import { BUILDABLES, TILE } from "../game/build";
 import {
   BLOODLING_RADIUS,
+  BROODLING_RADIUS,
+  BROODLORD_RADIUS,
   ELITE_RADIUS,
   GRUNT_RADIUS,
   NEST_RADIUS,
@@ -49,6 +51,8 @@ export type SpriteName =
   | "elite"
   | "bloodling" // the one that runs at you and goes off (#140)
   | "spiderman" // the one that comes in on the slant and throws cobweb (#137)
+  | "broodlord" // the slow one that stops to birth a brood (#138)
+  | "broodling" // what a Broodlord births, three at a time — no nest can make one (#138)
   | "nest" // the egg sac: facing 0 intact, facing 1 destroyed
   | "miner"
   | "wall"
@@ -91,6 +95,8 @@ export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
   elite: ELITE_RADIUS * 2, // 48
   bloodling: BLOODLING_RADIUS * 2, // 32
   spiderman: SPIDERMAN_RADIUS * 2, // 32
+  broodlord: BROODLORD_RADIUS * 2, // 52
+  broodling: BROODLING_RADIUS * 2, // 18
   nest: NEST_RADIUS * 2, // 96
   miner: footprintBox("miner"), // 30
   wall: footprintBox("wall"), // 30

@@ -207,18 +207,25 @@ describe("defaults reproduce the world as it stood before the config", () => {
     expect(digest(nestLayout(ARENA, 2_178_503_905))).toBe("ec74e6c856a21d53");
   });
 
-  // **Re-captured at #140 and again at #137, which is the one row of this describe that is no longer
-  // the pre-config figure.** A bloodling was a third kind in every wave and a spiderman is now a
-  // fourth, so a given seed spawns something each capture had never seen. #140 moved the *count* as
-  // well — 500 was the cap holding, 516 is the cap holding while sixteen bloodlings blew themselves
-  // up and let sixteen more spawn behind them — and #137 leaves it exactly there, because a spiderman
-  // survives everything it does and takes nobody's place at the cap. The composition is what moved:
-  // 348 grunts, 65 elites, 53 bloodlings, 50 spidermen.
+  // **Re-captured at #140, #137 and again at #138, which is the one row of this describe that is no
+  // longer the pre-config figure.** Each added a kind a given seed had never spawned before. #140
+  // moved the *count* as well — 500 was the cap holding, 516 is the cap holding while sixteen
+  // bloodlings blew themselves up and let sixteen more spawn behind them — and #137 and #138 both
+  // leave it exactly there. The composition is what moves:
   //
-  // Nothing about the rng changed either time: a kind still costs one draw per enemy however many
-  // bands that draw is read as, which is why the count is untouched here and why the three rows
-  // above — the init, the ore grid and the nest layout, the ones derived on both sides of the wire —
-  // are the pre-config captures.
+  // - #137: 348 grunts, 65 elites, 53 bloodlings, 50 spidermen.
+  // - #138: 254 grunts, 42 elites, 41 bloodlings, 39 spidermen, 23 Broodlords, **117 broodlings**.
+  //
+  // **The count holding at 516 across #138 is the cap doing it, not a coincidence.** A brood is a
+  // second source of enemies and the first one that is not a nest, and it competes for `enemyCap`
+  // on the same terms — so 117 broodlings is 117 nest spawns that did not happen. That the total is
+  // unchanged is what says the cap governs both.
+  //
+  // Nothing about the rng changed any of the three times: a kind still costs one draw per enemy
+  // however many bands that draw is read as, and a brood is placed rather than drawn, so it spends
+  // nothing. That is why the count is untouched here and why the three rows above — the init, the
+  // ore grid and the nest layout, the ones derived on both sides of the wire — are the pre-config
+  // captures.
   test("the sim spawns the same waves, at the same places, over five minutes", () => {
     const world = generateWorld(players(3), { rng: mulberry32(4_242) });
     const sim = spawnEnemyState(world, mulberry32(11));
@@ -229,8 +236,8 @@ describe("defaults reproduce the world as it stood before the config", () => {
         trace.push(`${tick}|${s.id}|${s.kind}|${s.pos.x}|${s.pos.y}`);
       }
     }
-    expect([trace.length, digest(trace)]).toEqual([516, "e28b3d5b64b5060d"]);
-    expect(digest([...sim.enemies.values()])).toBe("c031b33a79844019");
+    expect([trace.length, digest(trace)]).toEqual([516, "6ce6a00cf7f2ed20"]);
+    expect(digest([...sim.enemies.values()])).toBe("402f662027743181");
   });
 });
 
