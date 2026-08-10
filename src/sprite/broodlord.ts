@@ -319,12 +319,7 @@ function drawTusks(ctx: CanvasRenderingContext2D, head: Point, across: number): 
 // Slits, never rounds: a white disc on a black curve is where a highlight goes, and at real size
 // that is what it reads as. They ride a bearing round the head, so the eight facings fall out of
 // the heading instead of being drawn one at a time.
-function drawFace(
-  ctx: CanvasRenderingContext2D,
-  head: Point,
-  theta: number,
-  drift: number,
-): void {
+function drawFace(ctx: CanvasRenderingContext2D, head: Point, theta: number, drift: number): void {
   ctx.save();
   ctx.beginPath();
   contourPath(ctx, head, (t) => headRadius(t, drift));
