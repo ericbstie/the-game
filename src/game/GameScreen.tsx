@@ -241,6 +241,7 @@ export function GameScreen({
   // returns the value already held, and React bails out of the re-render — the same way every other
   // mirror in this component keeps an unmoved reading off the render path.
   const [refusedAt, setRefusedAt] = useState(0);
+  const [intro, setIntro] = useState(true);
   const viewRef = useRef({ w: 0, h: 0, dpr: 1 }); // CSS viewport size + device pixel ratio
   const pointerRef = useRef<Vec2>({ x: 0, y: 0 }); // latest pointer, CSS px within the canvas
   const aimRef = useRef<{ camera: Camera; self: Vec2 }>({
@@ -1012,6 +1013,14 @@ export function GameScreen({
           )}
         </div>
       </div>
+      {/* The line every match opens on. It says where the match ends, once, and then takes itself
+          off screen — so it is written large and centred rather than parked in the HUD. Unmounted
+          on the fade's own end, so nothing invisible is left over the arena. */}
+      {intro && (
+        <p className="intro-title" role="status" onAnimationEnd={() => setIntro(false)}>
+          Find the exit somewhere on the edge of the map
+        </p>
+      )}
       {/* Prompt 6 (#134), which is the one prompt with nothing in the world to hang off: it is
           about a key and then about a button, so it is a line on the screen. Nothing behind it is
           made inert and nothing about it is timed — it is up until the thing it names is done. */}

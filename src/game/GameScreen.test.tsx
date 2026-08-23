@@ -92,6 +92,17 @@ function renderMatch(
   return screen.getByLabelText("Game arena");
 }
 
+describe("the opening line", () => {
+  test("every match opens on it, and it clears itself when the fade ends", () => {
+    renderMatch();
+    const title = screen.getByText("Find the exit somewhere on the edge of the map");
+    act(() => {
+      fireEvent.animationEnd(title);
+    });
+    expect(screen.queryByText("Find the exit somewhere on the edge of the map")).toBeNull();
+  });
+});
+
 // Equip the gun (#120). Left-click shoots only with it up, so every test about the trigger presses
 // this first — you spawn with it stowed and left-click mining instead.
 const equipGun = () => fireEvent.keyDown(window, { key: GUN_TOGGLE_KEY });
