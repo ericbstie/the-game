@@ -986,3 +986,37 @@ button:disabled {
   white-space: nowrap;
   pointer-events: none;
 }
+
+/* The opening line: in, held, out, and then gone. Sized off the viewport so it reads as a
+   title at any window and not as another HUD label. */
+.intro-title {
+  position: absolute;
+  top: 35%;
+  left: 50%;
+  z-index: 3;
+  margin: 0;
+  padding: 0 1rem;
+  color: var(--ink);
+  font-size: clamp(1.4rem, 3.4vw, 3rem);
+  text-align: center;
+  text-wrap: balance;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-50%);
+  animation: intro-title 5s ease-in-out forwards;
+}
+
+@keyframes intro-title {
+  0% {
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
