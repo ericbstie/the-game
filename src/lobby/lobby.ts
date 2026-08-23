@@ -141,6 +141,9 @@ interface SessionRecord {
   // The knobs the next match is built from: the host's to change (#128), and on every snapshot the
   // squad is sent so they can see the choice before Start (#129).
   settings: WorldSettings;
+  // Whether the next match plays the tutorial for the whole squad — the host's to flip, and on
+  // every snapshot for the same reason `settings` is.
+  tutorial: boolean;
   worldInit?: WorldInit; // generated once at start; re-sent verbatim on reconnect
   // Last-known relayed position per player, plus the sample it replaced — together they are the
   // only heading the server has, and the enemy sim leads its chases by it (#131).
@@ -217,6 +220,9 @@ export class LobbyHub {
         return;
       case "game/settings":
         this.setSettings(socketId, msg.settings);
+        break;
+      case "game/tutorial":
+        this.setTutorial(socketId, msg.tutorial);
         return;
       case "game/pos":
         this.gamePos(socketId, msg.pos, msg.seq);
@@ -309,6 +315,7 @@ export class LobbyHub {
       host: player.id,
       rev: 0,
       settings: DEFAULT_WORLD_SETTINGS,
+      tutorial: false,
       players: new Map([[player.id, player]]),
       graceTimers: new Map(),
       positions: new Map(),
@@ -474,6 +481,21 @@ export class LobbyHub {
     // excepting them would leave the one player who cannot see their own lobby. Stamped with the
     // session's own rev, so `applyRoster` orders it against the roster deltas.
     this.broadcast(session, { type: "lobby/settings-changed", settings, rev: ++session.rev });
+  }
+
+  // Host-only: choose whether the next match plays the tutorial. Gated exactly as `setSettings` is,
+  // on the same two conditions and for the same two reasons — one answer for the whole squad, and
+  // chosen before Start rather than during.
+  private setTutorial(socketId: string, tutorial: boolean): void {
+    const bind = this.sockets.get(socketId);
+    if (!bind) return;
+    const session = this.sessions.get(bind.code);
+    const player = session?.players.get(bind.playerId);
+    if (!session || !player || player.socketId !== socketId) return;
+    if (session.host !== player.id) return;
+    if (session.phase !== "lobby") return;
+    session.tutorial = tutorial;
+    this.broadcast(session, { type: "lobby/tutorial-changed", tutorial, rev: ++session.rev });
   }
 
   // Host-only: flip the Session into a match, generate the shared world once from the
@@ -1048,6 +1070,7 @@ function snapshotOf(session: SessionRecord): LobbySnapshot {
     players: [...session.players.values()].sort((a, b) => a.slot - b.slot).map(publicOf),
     rev: session.rev,
     settings: session.settings,
+    tutorial: session.tutorial,
   };
 }
 

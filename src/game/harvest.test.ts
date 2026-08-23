@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { HAND_MINE_RATE } from "./build";
 import {
   freshHarvest,
-  minePreview,
+  harvestProgress,
   ORE_HARVEST_MS,
   STRUCTURE_HARVEST_MS,
   stepHarvest,
@@ -106,38 +106,40 @@ describe("harvest progress", () => {
   });
 });
 
-// The bar over the tile a hold is digging (#5). It reports the mine and nothing else — a demolish
-// is not earning Metal, so it has no bar.
-describe("the mining bar's progress", () => {
+// The bar over the tile a held button is spent on. Both verbs wear it: a hold that ends in a Metal
+// and a hold that ends in a building coming down are the same gesture with two payouts.
+describe("the harvest bar's progress", () => {
   test("is nothing before a button goes down", () => {
-    expect(minePreview(freshHarvest())).toBeNull();
+    expect(harvestProgress(freshHarvest())).toBeNull();
   });
 
   test("starts at the bottom on the first frame of a hold and fills to the payout", () => {
     const harvest = freshHarvest();
     stepHarvest(harvest, mine(), 0);
-    expect(minePreview(harvest)).toEqual({ tile: TILE_A, filled: 0 });
+    expect(harvestProgress(harvest)).toBe(0);
     hold(harvest, mine(), ORE_HARVEST_MS / 2);
-    expect(minePreview(harvest)?.filled).toBeCloseTo(0.5, 6);
+    expect(harvestProgress(harvest)).toBeCloseTo(0.5, 6);
   });
 
   test("starts over on the tile a hold moves to", () => {
     const harvest = freshHarvest();
     hold(harvest, mine(), ORE_HARVEST_MS / 2);
     stepHarvest(harvest, mine(TILE_B), 0);
-    expect(minePreview(harvest)).toEqual({ tile: TILE_B, filled: 0 });
+    expect(harvestProgress(harvest)).toBe(0);
   });
 
-  test("is nothing while a building is being pulled down", () => {
+  // The demolish reads against its own length, which is a fifth of a mine's — so the two bars fill
+  // over their own holds rather than one of them crawling against the other's clock.
+  test("fills over a demolish the same way, against the demolish's own length", () => {
     const harvest = freshHarvest();
     hold(harvest, demolish(), STRUCTURE_HARVEST_MS / 2);
-    expect(minePreview(harvest)).toBeNull();
+    expect(harvestProgress(harvest)).toBeCloseTo(0.5, 6);
   });
 
   test("is nothing the frame the button comes up", () => {
     const harvest = freshHarvest();
     hold(harvest, mine(), ORE_HARVEST_MS / 2);
     stepHarvest(harvest, null, 16);
-    expect(minePreview(harvest)).toBeNull();
+    expect(harvestProgress(harvest)).toBeNull();
   });
 });

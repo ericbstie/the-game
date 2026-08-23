@@ -291,6 +291,25 @@ button:disabled {
   font-size: 0.8rem;
 }
 
+/* The tutorial box, under Start. A ruled line of the sheet like every field above it, not a boxed
+   control — the accent is the browser's own, which is the one thing on this page that is not ours. */
+.tutorial-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.tutorial-toggle input {
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+
+.tutorial-toggle:has(input:disabled) {
+  cursor: default;
+}
+
 /* The world the next match is built from (#129). Set as a second ruled list under the roster rather
    than as a grid of boxes: sixteen figures are read down the page far more often than they are typed
    into, and the whole squad reads them. Label left, figure right, hairline between. */
@@ -531,6 +550,9 @@ button:disabled {
   right: 1rem;
   z-index: 1;
   display: flex;
+  /* Bottom-aligned rather than stretched: the ammo box makes the right-hand column much the taller
+     of the two, and a stretched Metal readout is a box of empty paper under one line of type. */
+  align-items: flex-end;
   gap: 0.5rem;
   pointer-events: none;
 }

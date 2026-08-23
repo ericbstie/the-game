@@ -29,6 +29,7 @@ const snapshot: LobbySnapshot = {
   ],
   rev: 3,
   settings: DEFAULT_WORLD_SETTINGS,
+  tutorial: false,
 };
 
 const state: LobbyState = {
@@ -47,21 +48,45 @@ const asHost = (over: Partial<LobbySnapshot> = {}): LobbyState => ({
 
 describe("LobbyScreen", () => {
   test("shows the shareable code and one row per seat", () => {
-    render(<LobbyScreen state={state} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={state}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     expect(screen.getByText("AB3K")).not.toBeNull();
     expect(screen.getAllByRole("listitem")).toHaveLength(6);
     expect(screen.getAllByText(/empty/i)).toHaveLength(4);
   });
 
   test("marks the host and the current player", () => {
-    render(<LobbyScreen state={state} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={state}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     const rows = screen.getAllByRole("listitem");
     expect(within(rows[0]).getByText(/host/i)).not.toBeNull(); // Ana in slot 1
     expect(within(rows[1]).getByText(/you/i)).not.toBeNull(); // Ben (self) in slot 2
   });
 
   test("greys a disconnected player and shows a reconnecting hint", () => {
-    render(<LobbyScreen state={state} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={state}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     const rows = screen.getAllByRole("listitem");
     expect(rows[1].className).toContain("disconnected");
     expect(within(rows[1]).getByText(/reconnecting/i)).not.toBeNull();
@@ -74,6 +99,7 @@ describe("LobbyScreen", () => {
         onLeave={mock()}
         onStart={mock()}
         onSettings={mock()}
+        onTutorial={mock()}
       />,
     );
     expect(screen.getByRole("status").textContent).toMatch(/reconnecting/i);
@@ -81,11 +107,27 @@ describe("LobbyScreen", () => {
 
   test("only the host sees Start, and clicking it starts the match", () => {
     // `state.self` is Ben (slot 2), not the host — no Start for a non-host.
-    render(<LobbyScreen state={state} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={state}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     expect(screen.queryByRole("button", { name: /start/i })).toBeNull();
 
     const onStart = mock();
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={onStart} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={onStart}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     const startBtn = screen.getByRole("button", { name: /start/i });
     fireEvent.click(startBtn);
     expect(onStart).toHaveBeenCalled();
@@ -94,6 +136,54 @@ describe("LobbyScreen", () => {
 
 // #129. The controls live here, one per knob, and the squad reads the host's choice off the same
 // snapshot the roster comes on.
+describe("the tutorial box", () => {
+  const box = () => screen.getByRole("checkbox", { name: /play tutorial/i }) as HTMLInputElement;
+
+  test("the host can tick it, and the tick is sent", () => {
+    const onTutorial = mock();
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={onTutorial}
+      />,
+    );
+    expect(box().checked).toBe(false);
+    fireEvent.click(box());
+    expect(onTutorial).toHaveBeenCalledWith(true);
+  });
+
+  // The squad reads the host's answer off the same box rather than a second readout, and cannot
+  // move it — the gate is the server's (`setTutorial`), and this is what says so on screen.
+  test("a non-host reads the host's answer and cannot change it", () => {
+    render(
+      <LobbyScreen
+        state={{ ...asHost(), self: { id: "p2", token: "t", slot: 2 } }}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
+    expect(box().disabled).toBe(true);
+  });
+
+  test("it shows the choice the session is carrying", () => {
+    render(
+      <LobbyScreen
+        state={{ ...asHost(), snapshot: { ...snapshot, tutorial: true } }}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
+    expect(box().checked).toBe(true);
+  });
+});
+
 describe("the world controls", () => {
   // The ceiling a knob is offered, off the knob list rather than written out here, so a retune of
   // `MAX_MULTIPLE` cannot leave the assertion asserting the old figure.
@@ -109,7 +199,15 @@ describe("the world controls", () => {
   // world generation and the sim": the exposed set is exactly `DEFAULT_WORLD_SETTINGS`'s knobs, and
   // `worldSettings.test.ts` asserts each of those reaches the generator or the sim, one test apiece.
   test("one control per knob the world has, each with an accessible name", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     expect(controls().map((i) => i.name)).toEqual(worldKnobs().map((k) => k.path));
     for (const input of controls()) {
       expect(input.labels?.[0]?.textContent ?? "").not.toBe("");
@@ -120,7 +218,15 @@ describe("the world controls", () => {
   // them separately" — so a shared name for the pair is a decision this ticket is not allowed to make,
   // not a wording preference. Asserted as two distinct names, each naming what it moves.
   test("the two distributions are labelled as the two knobs they are", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     const nameOf = (path: string) =>
       controls().find((i) => i.name === path)?.labels?.[0]?.textContent ?? "";
     expect(nameOf("oreEdgeBias")).toMatch(/ore/i);
@@ -131,13 +237,29 @@ describe("the world controls", () => {
   // The ask excludes presets outright, so the absence is asserted rather than assumed: a preset is a
   // choice between named worlds, which in a form is a select or a radio group.
   test("nothing offers a preset world", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     expect(screen.queryAllByRole("combobox")).toHaveLength(0);
     expect(screen.queryAllByRole("radio")).toHaveLength(0);
   });
 
   test("each control shows the value the session is holding for its knob", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     const shown = controls().map((i) => Number(i.value));
     expect(shown).toEqual(worldKnobs().map((k) => knobValue(DEFAULT_WORLD_SETTINGS, k.path)));
   });
@@ -147,7 +269,13 @@ describe("the world controls", () => {
   test("the host moving a knob sends the whole world with that one knob changed", () => {
     const onSettings = mock();
     render(
-      <LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={onSettings} />,
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={onSettings}
+        onTutorial={mock()}
+      />,
     );
     fireEvent.change(screen.getByRole("spinbutton", { name: /^nests$/i }), {
       target: { value: "9" },
@@ -166,6 +294,7 @@ describe("the world controls", () => {
         onLeave={mock()}
         onStart={mock()}
         onSettings={mock()}
+        onTutorial={mock()}
       />,
     );
     expect((screen.getByRole("spinbutton", { name: /enemy cap/i }) as HTMLInputElement).value).toBe(
@@ -175,7 +304,15 @@ describe("the world controls", () => {
   });
 
   test("the host's own controls are not read-only", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     for (const input of controls()) expect(input.readOnly).toBe(false);
   });
 
@@ -185,7 +322,13 @@ describe("the world controls", () => {
   test("a value the server would refuse is never sent, and the control says so", () => {
     const onSettings = mock();
     render(
-      <LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={onSettings} />,
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={onSettings}
+        onTutorial={mock()}
+      />,
     );
     const width = screen.getByRole("spinbutton", { name: /arena width/i });
     fireEvent.change(width, { target: { value: "0" } });
@@ -197,7 +340,13 @@ describe("the world controls", () => {
   test("a half-typed control sends nothing and is not marked wrong", () => {
     const onSettings = mock();
     render(
-      <LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={onSettings} />,
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={onSettings}
+        onTutorial={mock()}
+      />,
     );
     const nests = screen.getByRole("spinbutton", { name: /^nests$/i });
     fireEvent.change(nests, { target: { value: "" } });
@@ -209,7 +358,15 @@ describe("the world controls", () => {
   // exactly that ceiling — read off the knob list rather than written out here, so the two cannot
   // drift apart.
   test("a counted knob offers no more than the server will accept", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     for (const knob of worldKnobs()) {
       if (knob.max === undefined) continue;
       const input = controls().find((i) => i.name === knob.path);
@@ -218,7 +375,13 @@ describe("the world controls", () => {
     const onSettings = mock();
     cleanup();
     render(
-      <LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={onSettings} />,
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={onSettings}
+        onTutorial={mock()}
+      />,
     );
     fireEvent.change(screen.getByRole("spinbutton", { name: /^nests$/i }), {
       target: { value: String(ceilingOf("nestCount") + 1) },
@@ -229,7 +392,15 @@ describe("the world controls", () => {
   // Every floor but the arena's is the parser's, and offered exactly as the parser states it. The
   // arena's is this form's own — the next test is where it is asserted.
   test("a knob with a floor offers it, and a strictly-positive knob offers none", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     for (const knob of worldKnobs()) {
       if (knob.path.startsWith("arena.")) continue;
       const input = controls().find((i) => i.name === knob.path);
@@ -242,7 +413,13 @@ describe("the world controls", () => {
   test("the arena is not offered past the side the packed tile key survives", () => {
     const onSettings = mock();
     render(
-      <LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={onSettings} />,
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={onSettings}
+        onTutorial={mock()}
+      />,
     );
     const width = screen.getByRole("spinbutton", { name: /arena width/i });
     expect(width.getAttribute("max")).toBe(String(MAX_ARENA_SIDE));
@@ -259,7 +436,13 @@ describe("the world controls", () => {
   test("the arena is not offered below the side the nest band needs, on either side", () => {
     const onSettings = mock();
     render(
-      <LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={onSettings} />,
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={onSettings}
+        onTutorial={mock()}
+      />,
     );
     for (const name of [/arena width/i, /arena height/i]) {
       const side = screen.getByRole("spinbutton", { name });
@@ -277,7 +460,13 @@ describe("the world controls", () => {
   // player promoted to host mid-lobby, whose draft of the rest of the world is nothing at all.
   test("a knob the host has not typed into follows the session's settings", () => {
     const { rerender } = render(
-      <LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />,
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
     );
     fireEvent.change(screen.getByRole("spinbutton", { name: /^nests$/i }), {
       target: { value: "9" },
@@ -290,6 +479,7 @@ describe("the world controls", () => {
         onLeave={mock()}
         onStart={mock()}
         onSettings={mock()}
+        onTutorial={mock()}
       />,
     );
     expect((screen.getByRole("spinbutton", { name: /enemy cap/i }) as HTMLInputElement).value).toBe(
@@ -304,7 +494,15 @@ describe("the world controls", () => {
   // tabbing them gives a screen reader three unrelated fields. The fence is what carries the
   // relationship, so it is asserted by the name a group is announced under, not by the markup.
   test("the numbers of one curve are fenced together under a name", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     for (const [legend, count] of [
       [/^arena$/i, 2],
       [/^nest period$/i, 3],
@@ -319,7 +517,15 @@ describe("the world controls", () => {
   // The fence must not reorder the form: the order is the settings' own, so a knob added to the middle
   // of a group later lands where the settings put it rather than where the screen's markup would.
   test("fencing leaves the controls in the order the settings give them", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     expect(controls().map((i) => i.name)).toEqual(worldKnobs().map((k) => k.path));
   });
 
@@ -327,7 +533,15 @@ describe("the world controls", () => {
   // refuses a payload whole rather than clamping it (ADR 0006), so the bounds are said in full — and
   // said on the page, so a sighted host reads the same reason a screen reader is given.
   test("a refused figure says why, and the field points at the saying", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     const nests = screen.getByRole("spinbutton", { name: /^nests$/i }) as HTMLInputElement;
     fireEvent.change(nests, { target: { value: String(ceilingOf("nestCount") + 1) } });
 
@@ -341,7 +555,15 @@ describe("the world controls", () => {
   // Nothing is said about a field that is merely unfinished — a half-typed number is not yet wrong,
   // and announcing a reason for it would be noise on every keystroke.
   test("a half-typed figure is pointed at no saying at all", () => {
-    render(<LobbyScreen state={asHost()} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+    render(
+      <LobbyScreen
+        state={asHost()}
+        onLeave={mock()}
+        onStart={mock()}
+        onSettings={mock()}
+        onTutorial={mock()}
+      />,
+    );
     const nests = screen.getByRole("spinbutton", { name: /^nests$/i }) as HTMLInputElement;
     fireEvent.change(nests, { target: { value: "" } });
     expect(nests.getAttribute("aria-describedby")).toBeNull();
@@ -384,7 +606,15 @@ describe("warming the sprite cache (#162)", () => {
   test("starts warming while the squad is still gathering", async () => {
     await withCanvas(() =>
       spyingOnWarm(async (calls) => {
-        render(<LobbyScreen state={state} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+        render(
+          <LobbyScreen
+            state={state}
+            onLeave={mock()}
+            onStart={mock()}
+            onSettings={mock()}
+            onTutorial={mock()}
+          />,
+        );
         await new Promise((resolve) => setTimeout(resolve, 5));
         expect(calls.length).toBeGreaterThan(0);
         // At the scale a match opens on, which is the only one a bake can cover (ADR 0008).
@@ -395,7 +625,15 @@ describe("warming the sprite cache (#162)", () => {
 
   test("bakes nothing when there is nothing to bake into", async () => {
     await spyingOnWarm(async (calls) => {
-      render(<LobbyScreen state={state} onLeave={mock()} onStart={mock()} onSettings={mock()} />);
+      render(
+        <LobbyScreen
+          state={state}
+          onLeave={mock()}
+          onStart={mock()}
+          onSettings={mock()}
+          onTutorial={mock()}
+        />,
+      );
       await new Promise((resolve) => setTimeout(resolve, 5));
       expect(calls).toEqual([]);
     });
@@ -405,7 +643,13 @@ describe("warming the sprite cache (#162)", () => {
     await withCanvas(() =>
       spyingOnWarm(async (calls) => {
         const view = render(
-          <LobbyScreen state={state} onLeave={mock()} onStart={mock()} onSettings={mock()} />,
+          <LobbyScreen
+            state={state}
+            onLeave={mock()}
+            onStart={mock()}
+            onSettings={mock()}
+            onTutorial={mock()}
+          />,
         );
         view.unmount();
         await new Promise((resolve) => setTimeout(resolve, 5));

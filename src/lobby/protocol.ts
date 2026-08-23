@@ -66,6 +66,10 @@ export interface LobbySnapshot {
   // it: otherwise a player who arrives after the host has chosen would show the shipped world until
   // the host happened to move another knob, and nothing would ever tell them.
   settings: WorldSettings;
+  // Whether the next match plays the mini-tutorial for the whole squad. The host's choice, seen by
+  // the squad before Start, and on the snapshot for the reason `settings` is: a joiner's welcome
+  // has to carry it or they would show the default until the host happened to move it again.
+  tutorial: boolean;
 }
 
 // World wire types (Milestone 2). The server owns all of these; the client only
@@ -433,6 +437,9 @@ export type StartGame = Envelope<"game/start">;
 // repeat of the same message is a no-op and a lost one costs the sender nothing beyond re-sending;
 // and no `seq`, on `game/forge`'s reasoning — the message carries no state that could arrive stale.
 export type SetWorldSettings = Envelope<"game/settings", { settings: WorldSettings }>;
+// Whether the next match plays the tutorial. Host-only and lobby-only, gated exactly as
+// `game/settings` is and for the same reason: one answer is chosen for the whole squad.
+export type SetTutorial = Envelope<"game/tutorial", { tutorial: boolean }>;
 export type GamePos = Envelope<"game/pos", { pos: Vec2; seq: number }>;
 // A reported player shot (M3, single-weapon since M4): the client fires and reports it; the
 // server validates (cadence + loose range + seq) and applies the damage — enemy HP is never
@@ -461,6 +468,7 @@ export type ClientMessage =
   | LeaveLobby
   | StartGame
   | SetWorldSettings
+  | SetTutorial
   | GamePos
   | GameAttack
   | GameHealth
@@ -505,6 +513,12 @@ export type HostChanged = Envelope<"lobby/host-changed", { host: PlayerId; rev: 
 export type SettingsChanged = Envelope<
   "lobby/settings-changed",
   { settings: WorldSettings; rev: number }
+>;
+// The host flipped the tutorial box, and the squad is told. A lobby-shaped delta carrying the
+// session `rev`, exactly as `lobby/settings-changed` is.
+export type TutorialChanged = Envelope<
+  "lobby/tutorial-changed",
+  { tutorial: boolean; rev: number }
 >;
 export type Superseded = Envelope<"lobby/superseded">;
 export type LobbyError = Envelope<"lobby/error", { code: LobbyErrorCode; message?: string }>;
@@ -567,6 +581,7 @@ export type ServerMessage =
   | PlayerLeft
   | HostChanged
   | SettingsChanged
+  | TutorialChanged
   | Superseded
   | LobbyError
   | GameWorldInit
@@ -619,6 +634,10 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       const settings = parseWorldSettings(msg.settings);
       if (settings === null) return null;
       return { type: "game/settings", settings };
+    }
+    case "game/tutorial": {
+      if (typeof msg.tutorial !== "boolean") return null;
+      return { type: "game/tutorial", tutorial: msg.tutorial };
     }
     case "game/pos": {
       const pos = asVec2(msg.pos);

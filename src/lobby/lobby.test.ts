@@ -2851,6 +2851,45 @@ describe("#128: the world's settings ride WorldInit", () => {
       hub.dispose();
     });
 
+    // The tutorial box rides the same channel on the same terms: the host chooses one answer for the
+    // whole squad, everyone sees it before Start, and a non-host asking changes nothing.
+    describe("the tutorial box", () => {
+      const flipsTo = (t: Capture, socketId: string) =>
+        t.sent
+          .filter((m) => m.socketId === socketId && m.msg.type === "lobby/tutorial-changed")
+          .map((m) => expectMessage(m.msg, "lobby/tutorial-changed").tutorial);
+
+      test("a lobby nobody has touched has it unticked", () => {
+        const { t, hub } = lobby();
+        expect(snapshotFor(t, "s2").tutorial).toBe(false);
+        hub.dispose();
+      });
+
+      test("the host's tick reaches the whole squad, the host included", () => {
+        const { t, hub } = lobby();
+        hub.handleMessage("s1", JSON.stringify({ type: "game/tutorial", tutorial: true }));
+        expect(flipsTo(t, "s2")).toEqual([true]);
+        expect(flipsTo(t, "s1")).toEqual([true]);
+        hub.dispose();
+      });
+
+      test("a non-host ticking it tells nobody anything", () => {
+        const { t, hub } = lobby();
+        hub.handleMessage("s2", JSON.stringify({ type: "game/tutorial", tutorial: true }));
+        expect(flipsTo(t, "s1")).toEqual([]);
+        expect(flipsTo(t, "s2")).toEqual([]);
+        hub.dispose();
+      });
+
+      test("it is chosen before Start, not during", () => {
+        const { t, hub } = lobby();
+        hub.handleMessage("s1", JSON.stringify({ type: "game/start" }));
+        hub.handleMessage("s1", JSON.stringify({ type: "game/tutorial", tutorial: true }));
+        expect(flipsTo(t, "s1")).toEqual([]);
+        hub.dispose();
+      });
+    });
+
     test("the host's choice reaches the rest of the squad, whole", () => {
       const { t, hub } = lobby();
       hub.handleMessage("s1", JSON.stringify({ type: "game/settings", settings: CHOSEN }));

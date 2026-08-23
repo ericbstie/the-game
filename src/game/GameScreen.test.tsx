@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { LobbyState } from "../lobby/client";
-import type { BuildableKind, MoveInput, Tile, Vec2, WorldInit } from "../lobby/protocol";
+import type {
+  BuildableKind,
+  LobbySnapshot,
+  MoveInput,
+  Tile,
+  Vec2,
+  WorldInit,
+} from "../lobby/protocol";
 import {
   BUILD_CADENCE_MS,
   BUILD_SLOTS,
@@ -59,12 +66,14 @@ function armed(initialHp?: number): ClientWorld {
 function renderMatch(
   handlers: Partial<Omit<React.ComponentProps<typeof GameScreen>, "state">> = {},
   world = armed(),
+  snapshot?: LobbySnapshot,
 ): HTMLElement {
   const state: LobbyState = {
     status: "lobby",
     code: "ABCD",
     self: { id: "me", token: "secret", slot: 1 },
     world,
+    snapshot,
   };
   render(
     <GameScreen
@@ -1905,6 +1914,18 @@ describe("#136: hand-mining a whole Metal floats a +1 over the ore tile", () => 
 describe("#134: the mini-tutorial", () => {
   beforeEach(() => localStorage.clear());
 
+  // A lobby snapshot carrying the host's answer, which is the only field of it this screen reads.
+  const tutorialLobby = (tutorial: boolean): LobbySnapshot => ({
+    code: "ABCD",
+    phase: "in-game",
+    maxPlayers: 6,
+    host: "me",
+    players: [],
+    rev: 1,
+    settings: DEFAULT_WORLD_SETTINGS,
+    tutorial,
+  });
+
   // An enemy appears on this client. Streamed rather than placed, because that is the only way one
   // ever arrives — and it is what makes "a teammate's first enemy is not yours" a question about
   // which client is looking rather than about a check.
@@ -2043,6 +2064,33 @@ describe("#134: the mini-tutorial", () => {
     await nextFrames();
     expect(screen.queryByText("Press G to equip/unequip your gun")).toBeNull();
     expect(screen.queryByText("Left click to shoot")).toBeNull();
+  });
+
+  // The host's box overrides the browser's own record: ticked, everyone in the squad is taught
+  // again, whatever they have already been through on this machine.
+  test("the host's ticked box replays the tutorial for a player who has seen it", async () => {
+    localStorage.setItem("tutorial:learned", JSON.stringify(["gun", "shoot"]));
+    const taught = armed();
+    renderMatch({}, taught);
+    sight(taught);
+    await nextFrames();
+    expect(screen.queryByText("Press G to equip/unequip your gun")).toBeNull();
+    cleanup();
+
+    const replayed = armed();
+    renderMatch({}, replayed, tutorialLobby(true));
+    sight(replayed);
+    await nextFrames();
+    expect(screen.getByText("Press G to equip/unequip your gun")).toBeDefined();
+  });
+
+  test("an unticked box leaves the browser's own record deciding", async () => {
+    localStorage.setItem("tutorial:learned", JSON.stringify(["gun", "shoot"]));
+    const world = armed();
+    renderMatch({}, world, tutorialLobby(false));
+    sight(world);
+    await nextFrames();
+    expect(screen.queryByText("Press G to equip/unequip your gun")).toBeNull();
   });
 
   test("with no store to read, the tutorial shows rather than being suppressed", async () => {
@@ -2201,6 +2249,14 @@ describe("#154: the pointer is marked on the canvas", () => {
     return tileOf({ x: span(0), y: span(1) });
   }
 
+  // Where the gun's mark stands, read off the canvas: with the weapon up the pointer is an ink dot
+  // on the point itself rather than an outline on its tile.
+  function markedDot(calls: DrawnCall[], into: HTMLElement): Vec2 | null {
+    const ours = calls.filter((c) => c.into === (into as HTMLCanvasElement) && c.fn === "arc");
+    const dot = ours.at(-1);
+    return dot ? { x: dot.args[0] as number, y: dot.args[1] as number } : null;
+  }
+
   test("the mark stands on the tile the pointer is in", async () => {
     const canvas = renderMatch();
     fireEvent.mouseMove(canvas, { clientX: POINTER.x, clientY: POINTER.y });
@@ -2209,10 +2265,10 @@ describe("#154: the pointer is marked on the canvas", () => {
   });
 
   // The whole of the ask: the point a shot is aimed at is legible without the OS cursor. `aimDir` is
-  // what a shot is fired along, so the mark is the aim only if the shot goes into the very tile the
-  // mark is drawn around — and the mark is read off the canvas rather than off the number it was
-  // drawn from.
-  test("a shot is fired into the tile the mark stands on", async () => {
+  // what a shot is fired along, so the mark is the aim only if the shot runs through the very point
+  // the mark stands on — and the mark is read off the canvas rather than off the number it was
+  // drawn from. With the gun up that mark is a dot on the point, which is what a shot bears off.
+  test("a shot is fired through the point the mark stands on", async () => {
     const world = armed();
     const shots: Vec2[] = [];
     const canvas = renderMatch({ onAttack: (_pos: Vec2, dir: Vec2) => shots.push(dir) }, world);
@@ -2222,12 +2278,10 @@ describe("#154: the pointer is marked on the canvas", () => {
     fireEvent.mouseDown(canvas, { button: 0, clientX: POINTER.x, clientY: POINTER.y });
     fireEvent.mouseUp(window, { button: 0 });
     const self = world.selfPos() as Vec2;
-    const tile = markedTile(drawn.calls, canvas) as Tile;
+    const middle = markedDot(drawn.calls, canvas) as Vec2;
     expect(shots).toHaveLength(1);
-    // How far the shot's own line passes from the middle of that tile. Inside the tile's half
-    // diagonal, the line crosses the tile — which is what "the shot goes where the mark says" means
-    // once the mark is snapped to the grid rather than floating on the point.
-    const middle = { x: tile.tx * TILE + TILE / 2, y: tile.ty * TILE + TILE / 2 };
+    // How far the shot's own line passes from the mark. Inside half a tile's diagonal, the line
+    // runs through it — which is what "the shot goes where the mark says" means.
     const to = { x: middle.x - self.x, y: middle.y - self.y };
     const along = to.x * shots[0].x + to.y * shots[0].y;
     const off = Math.hypot(to.x - along * shots[0].x, to.y - along * shots[0].y);

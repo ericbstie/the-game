@@ -36,7 +36,7 @@ import {
 } from "./draw";
 import { MARKER_INSET } from "./edgeMarker";
 import { FLOAT_MS, type MetalFloat } from "./floats";
-import { inkPuff, reticle, starburst } from "./fx";
+import { AIM_ARM, inkPuff, reticle, starburst } from "./fx";
 import {
   MINIMAP_COVERAGE_CLOSE_U,
   MINIMAP_COVERAGE_U,
@@ -3259,6 +3259,31 @@ describe("the aim point's mark", () => {
     return wide.map((pair) => Number.parseInt(pair, 16)) as [number, number, number];
   };
 
+  // A click is three verbs (#120), and the pointer wears one mark per verb. With the gun up the
+  // shot bears off the point rather than the tile, so the mark stops snapping and stands on it.
+  test("is an ink dot on the pointer itself with the gun up, not an outline on its tile", () => {
+    const ctx = marked({ gunUp: true });
+    expect(struck(ctx)).toEqual([]);
+    const dot = ctx.calls.find((c) => c.fn === "arc" && c.args[0] === AIM.x);
+    expect(dot?.args[1]).toBe(AIM.y);
+    expect(dot?.fill).toBe("#000");
+  });
+
+  // The ghost is already a full-size mark on the very tile this one would outline, so a second mark
+  // over it is two cursors on one tile.
+  test("is not drawn at all while a buildable's ghost is up", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, {
+      camera,
+      viewport,
+      aim: AIM,
+      ghost: { kind: "wall", tile: AIM_TILE, valid: true },
+    });
+    expect(
+      ctx.calls.some((c) => c.fn === "moveTo" && c.args[0] === reticle(AIM_TILE)[0][0].x),
+    ).toBe(false);
+  });
+
   test("strikes the corners `fx.ts` lays out, around the tile the pointer is in", () => {
     expect(points(marked())).toEqual(
       reticle(AIM_TILE).flatMap((corner) => corner.map((p) => [p.x, p.y] as [number, number])),
@@ -3299,12 +3324,12 @@ describe("the aim point's mark", () => {
     expect(Math.min(r, 255 - r)).toBeGreaterThan(96);
   });
 
-  // Heavier than the ink the drawing is struck in, because it is not part of the drawing: everything
-  // else in this file is the picture, and this is the instrument the picture is aimed with.
-  test("is struck at one weight, heavier than the ink the rest of the frame is drawn in", () => {
+  // One weight, and lighter than the tile it outlines can carry closed: a stroke that thick turns
+  // four corners into a bar and stops being an outline at all.
+  test("is struck at one weight, light enough to stay an outline on a single tile", () => {
     const widths = struck(marked()).map((c) => c.width as number);
     expect(new Set(widths).size).toBe(1);
-    expect(widths[0]).toBeGreaterThan(SHOT_WIDTH);
+    expect(widths[0]).toBeLessThan(AIM_ARM);
   });
 
   // One path and one stroke. Nothing composites, nothing is laid twice, and nothing is rimmed — the
@@ -3347,26 +3372,26 @@ describe("the aim point's mark", () => {
   });
 });
 
-// The bar over the tile a hand is digging (#5): a small black bar filling once per Metal.
-describe("the mining bar", () => {
+// The bar over the tile a held button is spent on: a small black bar filling once per payout.
+describe("the harvest bar", () => {
   const MINE_TILE = tileOf({ x: 1_303, y: 1_252 });
   const bars = (filled: number) => {
     const ctx = spyCtx();
-    drawWorld(ctx, world, { camera, viewport, mining: { tile: MINE_TILE, filled } });
+    drawWorld(ctx, world, { camera, viewport, harvest: { tile: MINE_TILE, filled } });
     const origin = tileOrigin(MINE_TILE);
     return ctx.calls.filter(
       (c) => (c.fn === "fillRect" || c.fn === "strokeRect") && c.args[0] === origin.x,
     );
   };
 
-  test("is not drawn at all when nothing is being mined", () => {
+  test("is not drawn at all when no button is being held", () => {
     const ctx = spyCtx();
     drawWorld(ctx, world, { camera, viewport });
     const origin = tileOrigin(MINE_TILE);
     expect(ctx.calls.some((c) => c.fn === "strokeRect" && c.args[0] === origin.x)).toBe(false);
   });
 
-  test("sits over the tile being mined, above it rather than on it", () => {
+  test("sits over the tile being harvested, above it rather than on it", () => {
     const frame = bars(0.5).find((c) => c.fn === "strokeRect");
     const origin = tileOrigin(MINE_TILE);
     expect(frame?.args[0]).toBe(origin.x);

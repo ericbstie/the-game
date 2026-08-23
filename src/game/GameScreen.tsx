@@ -27,7 +27,7 @@ import { damageFx } from "./damageFx";
 import { BURST_MS, type BuildGhost, drawWorld, PUFF_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { freshMetalFloats, stepMetalFloats } from "./floats";
-import { freshHarvest, minePreview, stepHarvest } from "./harvest";
+import { freshHarvest, type Harvest, harvestProgress, stepHarvest } from "./harvest";
 import {
   aimDir,
   isGunToggleKey,
@@ -200,7 +200,13 @@ export function GameScreen({
   // Seeded from the browser's own record, so a player who has already been taught a lesson is not
   // taught it again — and from nothing at all where that record cannot be read, which shows the
   // tutorial rather than suppressing it.
-  const tutorialRef = useRef(freshTutorial(loadLessons()));
+  //
+  // The host's box overrides that record: ticked, the whole squad starts having learned nothing,
+  // which is what "play the tutorial for all players" asks for. Read once, at mount, because that
+  // is when a match begins and the box only ever decides the *next* one.
+  const tutorialRef = useRef(
+    state.snapshot?.tutorial ? freshTutorial() : freshTutorial(loadLessons()),
+  );
   const promptsRef = useRef<TutorialView>({
     ore: null,
     cursor: null,
@@ -677,6 +683,9 @@ export function GameScreen({
             // canvas origin, and the mark stands there: it says where the game believes the pointer
             // is, and a click made without moving would be spent at exactly that tile.
             aim: pointerWorld(pointerRef.current, camera, zoom),
+            // Which of the pointer's three marks this frame gets. The ghost above is the other
+            // half of that answer, and both are read off the same refs the click is spent from.
+            gunUp: equippedRef.current,
             // **Not `scale`** (ADR 0008). A re-bake is 10.6 ms for the eager set and up to 130.7 ms
             // once a 0.5× screen's ore is in it, so re-keying the cache on every frame of a wheel
             // gesture is not affordable. `bakeZoom` holds the scale the bakes in hand were made at
@@ -694,9 +703,10 @@ export function GameScreen({
             // two prompts travel no further than this component: they are screen-fixed chrome, and
             // the HUD is where chrome lives.
             tutorial: promptsRef.current,
-            // The bar over the tile a hold is digging. Read after `stepHarvest` above, so it is
-            // this frame's progress rather than last frame's.
-            mining: minePreview(harvestRef.current) ?? undefined,
+            // The bar over the tile a hold is spent on, mining or demolishing alike. Read after
+            // `stepHarvest` above, so it is this frame's progress rather than last frame's, and
+            // laid on the tile the target was resolved from — the true camera, like the ghost.
+            harvest: harvestBar(harvestRef.current, pointerRef.current, camera, zoom),
           });
         }
       }
@@ -1100,6 +1110,19 @@ function liveHarvest(
   // refuses is not a live mine, and pinning on one would hold the player still banking nothing.
   const self = world.selfPos();
   return self && !withinReach(tileCenter(target.tile), self, INTERACT_REACH) ? null : target;
+}
+
+// The bar over the tile a held button is spent on, or nothing. The tile is the cursor's own — the
+// very one `liveHarvest` resolved the target from — so the bar can never stand on a tile the hold
+// is not acting on.
+function harvestBar(
+  harvest: Harvest,
+  pointer: Vec2,
+  camera: Camera,
+  zoom: number,
+): { tile: Tile; filled: number } | undefined {
+  const filled = harvestProgress(harvest);
+  return filled === null ? undefined : { tile: cursorTile(pointer, camera, zoom), filled };
 }
 
 // The tile under the pointer. `pointerWorld` is the inverse of the transform the frame was painted

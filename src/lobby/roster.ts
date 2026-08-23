@@ -30,6 +30,8 @@ export function applyRoster(prev: LobbySnapshot | null, msg: ServerMessage): Lob
       return withDelta(prev, msg.rev, (s) => ({ ...s, host: msg.host }));
     case "lobby/settings-changed":
       return withDelta(prev, msg.rev, (s) => ({ ...s, settings: msg.settings }));
+    case "lobby/tutorial-changed":
+      return withDelta(prev, msg.rev, (s) => ({ ...s, tutorial: msg.tutorial }));
     default:
       return prev;
   }

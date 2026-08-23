@@ -44,6 +44,7 @@ export function App({ wsUrl }: { wsUrl?: string } = {}) {
         onLeave={() => client.leave()}
         onStart={() => client.start()}
         onSettings={(settings) => client.sendSettings(settings)}
+        onTutorial={(tutorial) => client.sendTutorial(tutorial)}
       />
     );
   }

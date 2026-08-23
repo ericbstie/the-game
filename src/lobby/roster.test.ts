@@ -11,6 +11,7 @@ const snapshot = (rev: number, players: LobbySnapshot["players"]): LobbySnapshot
   players,
   rev,
   settings: DEFAULT_WORLD_SETTINGS,
+  tutorial: false,
 });
 
 const CHOSEN = withKnob(DEFAULT_WORLD_SETTINGS, "nestCount", 7) as WorldSettings;
@@ -101,6 +102,20 @@ describe("applyRoster", () => {
       rev: 3,
     };
     expect(applyRoster(base, stale)).toBe(base); // rev 3 !> 3
+  });
+
+  // The tutorial box travels the same way, on the same rule.
+  test("tutorial-changed carries the host's answer and advances rev", () => {
+    const base = snapshot(1, [p("p1", 1), p("p2", 2)]);
+    const next = applyRoster(base, { type: "lobby/tutorial-changed", tutorial: true, rev: 2 });
+    expect(next?.tutorial).toBe(true);
+    expect(next?.rev).toBe(2);
+  });
+
+  test("a stale tutorial-changed leaves the host's answer alone", () => {
+    const base = { ...snapshot(3, [p("p1", 1)]), tutorial: true };
+    const stale: ServerMessage = { type: "lobby/tutorial-changed", tutorial: false, rev: 3 };
+    expect(applyRoster(base, stale)).toBe(base);
   });
 
   test("a delta not newer than the baseline is ignored (apply-if-newer, idempotent)", () => {

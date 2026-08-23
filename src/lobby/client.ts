@@ -111,6 +111,11 @@ export class LobbyClient {
     this.send({ type: "game/settings", settings });
   }
 
+  // Choose whether the next match plays the tutorial, host-only on the same terms as `sendSettings`.
+  sendTutorial(tutorial: boolean): void {
+    this.send({ type: "game/tutorial", tutorial });
+  }
+
   // Stream the client's own integrated position. `seq` is monotonic across the client's
   // life (never reset on reconnect) so the server and peers accept it in order. A no-op
   // while the socket is down (reconnecting).

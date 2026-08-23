@@ -19,6 +19,7 @@ interface LobbyScreenProps {
   onLeave: () => void;
   onStart: () => void;
   onSettings: (settings: WorldSettings) => void;
+  onTutorial: (tutorial: boolean) => void;
 }
 
 // #162. Bake the registry while the squad is still gathering, which is the one stretch of the app
@@ -51,7 +52,7 @@ function useWarmSprites(): void {
 // The lobby screen: shareable code, the Squad roster, and the world the next match is built from.
 // Every seat 1..maxPlayers is shown; occupied seats mark the host and you, and grey out during a
 // disconnect grace. Only the host sees Start — it drops the whole Squad into the match.
-export function LobbyScreen({ state, onLeave, onStart, onSettings }: LobbyScreenProps) {
+export function LobbyScreen({ state, onLeave, onStart, onSettings, onTutorial }: LobbyScreenProps) {
   useWarmSprites();
   const snapshot = state.snapshot;
   if (!snapshot) return null;
@@ -105,6 +106,17 @@ export function LobbyScreen({ state, onLeave, onStart, onSettings }: LobbyScreen
           Leave
         </button>
       </div>
+      {/* Under Start, because it is a choice about the match Start begins. The squad reads it and
+          the host chooses it, on the same terms as every world knob above. */}
+      <label className="tutorial-toggle">
+        <input
+          type="checkbox"
+          checked={snapshot.tutorial}
+          disabled={!isHost}
+          onChange={(e) => onTutorial(e.target.checked)}
+        />
+        Play tutorial?
+      </label>
     </main>
   );
 }

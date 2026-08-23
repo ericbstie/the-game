@@ -199,10 +199,14 @@ export interface DrawOptions {
   // box's prompt and the gun's banner are screen-fixed chrome and stay in the HUD. Absent, none of
   // it is drawn, which is every frame after a player has been through it once.
   tutorial?: TutorialMarks;
-  // The hand-mine in progress and how far through it is, in [0, 1] — `minePreview`. A bar over the
-  // tile fills as the hold earns its Metal, and is gone the frame the button comes up. Absent, no
-  // bar is drawn, which is every frame nobody is mining on.
-  mining?: { tile: Tile; filled: number };
+  // The harvest in progress and how far through it is, in [0, 1] — `harvestProgress`, on the tile
+  // the cursor resolved it from. A bar over that tile fills as the hold runs and is gone the frame
+  // the button comes up. Both verbs wear it: a mine fills to its Metal, a demolish to the building
+  // coming down. Absent, no bar is drawn, which is every frame nobody is holding a button on.
+  harvest?: { tile: Tile; filled: number };
+  // Whether this player's gun is out (#120). It decides what the pointer's mark is, and nothing
+  // else here reads it.
+  gunUp?: boolean;
 }
 
 // One thing standing on the floor, waiting for its turn to paint. `y` is its floor line — the
@@ -295,16 +299,15 @@ export const SHOT_WIDTH = 2;
 // exception because it is a colour; this is the absence of one.
 const AIM = "#808080";
 
-// How thick the mark is struck, in world units. **Provisional**, and already retuned once: heavier
-// than `SHOT_WIDTH` because it is the instrument rather than the drawing — it has to be found before
-// it is read — and light enough that a 45 u outline stays an outline instead of closing into a bar.
-//
-// Cut at 3 first. A blind reader given the whole frame over a dense patch found the mark only after
-// a deliberate hunt, called it "thin, small", and picked out two of the four corners; at 5 the same
-// read landed on it unprompted, called it "fairly obvious — the eye lands there quickly", named it a
-// targeting reticle, and found three. **The fourth corner is still lost where the stipple runs
-// densest**, which is the honest residual and is recorded on #154 rather than drawn over.
-const AIM_WIDTH = 5;
+// How thick the mark is struck, in world units. **Provisional**, and retuned twice: the readings
+// that settled it on 5 were taken against a 45 u outline, and the mark now spans one 15 u tile —
+// at that size 5 closes the corners into a bar rather than leaving them an outline.
+const AIM_WIDTH = 1.5;
+
+// The dot the mark becomes with the gun up, as a radius in world units. **Provisional.** A gun is
+// aimed at a point rather than at a tile — `aimDir` takes a shot's bearing off this very position —
+// so with the weapon out the mark stops snapping and stands on the point itself.
+const AIM_DOT = 3;
 
 // Blood (#140), and the one place the black-and-white theme is broken on purpose. #76 grants the
 // game two colours and this is neither of them — it is a stated exception, and it earns it by being
@@ -660,7 +663,7 @@ export function drawWorld(
   // Over the map as well as over the world. It is the player's own hand, and a mark you can lose
   // behind a plate is one you have to hunt for on the frame you most need it.
   drawAim(ctx, options);
-  drawMineBar(ctx, options);
+  drawHarvestBar(ctx, options);
 
   // Last of all, and only ever on the dying player's own screen. It falls over the map too — a
   // player who is down is out of the fight, and reading the arena is part of the fight.
@@ -1460,16 +1463,21 @@ function drawMinimap(
 // were each tried and each was found on the open floor and lost on stipple by blind readers. `AIM`
 // is what leaves that argument behind; there is nothing else here spending anything on contrast.
 //
-// **Drawn whatever the gun is doing**, which is a choice and not a reading of the ticket. Hiding the
-// OS arrow is unconditional over `.arena`, and left-click still mines and lays buildings with the
-// gun down (#120) — so a mark that came and went with the weapon would leave a player pointing at
-// 15 u tiles with nothing on screen at all. The ask hides one cursor and owes exactly one back.
+// **One mark per thing the click does**, since hiding the OS arrow over `.arena` is unconditional
+// and a click is three different verbs (#120). With the gun up it is an ink dot on the point the
+// shot is bearing off; with a buildable selected the ghost is already a full-size mark on the tile
+// and a second one over it is two cursors; otherwise it is the snapped outline.
 //
-// One path, eight segments, no lifetime, no list and no cull: there is one pointer and it is up on
-// every frame. Not culled alone among the marks in this file — every other one is a point in a
-// 31,200² arena and almost always off screen, while this one is under the player's own hand.
-function drawAim(ctx: CanvasRenderingContext2D, { aim }: DrawOptions): void {
-  if (!aim) return;
+// One path, no lifetime, no list and no cull: there is one pointer and it is up on every frame. Not
+// culled alone among the marks in this file — every other one is a point in a 31,200² arena and
+// almost always off screen, while this one is under the player's own hand.
+function drawAim(ctx: CanvasRenderingContext2D, { aim, ghost, gunUp }: DrawOptions): void {
+  if (!aim || ghost) return;
+  if (gunUp) {
+    ctx.fillStyle = INK;
+    fillCircle(ctx, aim.x, aim.y, AIM_DOT);
+    return;
+  }
   ctx.beginPath();
   for (const corner of reticle(tileOf(aim))) {
     ctx.moveTo(corner[0].x, corner[0].y);
@@ -1973,23 +1981,23 @@ function strokeCircle(ctx: CanvasRenderingContext2D, x: number, y: number, r: nu
   ctx.stroke();
 }
 
-// The mining bar (#5): a small black bar over the tile being hand-mined, filling once per Metal.
-// Over the aim mark rather than under it — the mark frames the tile the bar is about, and the bar
-// is the one thing on screen that says how close the hold is to paying out.
-const MINE_BAR_WIDTH = TILE;
-const MINE_BAR_HEIGHT = 4;
-const MINE_BAR_GAP = 6;
+// The harvest bar: a small black bar over the tile a button is being held on, filling once per
+// Metal mined or once per building pulled down. Over the aim mark rather than under it — the mark
+// frames the tile the bar is about, and the bar is what says how close the hold is to paying out.
+const HARVEST_BAR_WIDTH = TILE;
+const HARVEST_BAR_HEIGHT = 4;
+const HARVEST_BAR_GAP = 6;
 
-function drawMineBar(ctx: CanvasRenderingContext2D, { mining }: DrawOptions): void {
-  if (!mining) return;
-  const origin = tileOrigin(mining.tile);
-  const x = origin.x + (TILE - MINE_BAR_WIDTH) / 2;
-  const y = origin.y - MINE_BAR_GAP - MINE_BAR_HEIGHT;
+function drawHarvestBar(ctx: CanvasRenderingContext2D, { harvest }: DrawOptions): void {
+  if (!harvest) return;
+  const origin = tileOrigin(harvest.tile);
+  const x = origin.x + (TILE - HARVEST_BAR_WIDTH) / 2;
+  const y = origin.y - HARVEST_BAR_GAP - HARVEST_BAR_HEIGHT;
   ctx.fillStyle = PAPER;
-  ctx.fillRect(x, y, MINE_BAR_WIDTH, MINE_BAR_HEIGHT);
+  ctx.fillRect(x, y, HARVEST_BAR_WIDTH, HARVEST_BAR_HEIGHT);
   ctx.fillStyle = INK;
-  ctx.fillRect(x, y, MINE_BAR_WIDTH * mining.filled, MINE_BAR_HEIGHT);
+  ctx.fillRect(x, y, HARVEST_BAR_WIDTH * harvest.filled, HARVEST_BAR_HEIGHT);
   ctx.lineWidth = 1;
   ctx.strokeStyle = INK;
-  ctx.strokeRect(x, y, MINE_BAR_WIDTH, MINE_BAR_HEIGHT);
+  ctx.strokeRect(x, y, HARVEST_BAR_WIDTH, HARVEST_BAR_HEIGHT);
 }
