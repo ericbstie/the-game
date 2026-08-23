@@ -208,6 +208,18 @@ describe("generateOre", () => {
     expect(nearby.length).toBeGreaterThan(0);
   });
 
+  // A generator needs power ore, and a squad spawns dead centre — so at least one power patch is
+  // pinned there rather than left to the outward gradient. Every seed, not just this one.
+  test("power ore is present near center, so a generator can go up from spawn", () => {
+    for (let seed = 0; seed < 8; seed++) {
+      const grid = generateOre(ARENA, seed);
+      const nearby = [...grid.entries()].filter(
+        ([key, kind]) => kind === "power" && edgeFrac(untileKey(key)) < 0.1,
+      );
+      expect(nearby.length).toBeGreaterThan(0);
+    }
+  });
+
   test("every tile is inside the arena", () => {
     const grid = generateOre(ARENA, SEED);
     const max = ARENA.width / TILE - 1;

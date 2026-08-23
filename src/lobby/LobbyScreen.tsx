@@ -227,8 +227,8 @@ function World({
   };
 
   return (
-    <section className="world">
-      <h2>World</h2>
+    <details className="world">
+      <summary>World</summary>
       <div className="knobs">
         {runs(OFFERED).map((run) =>
           run.group === null ? (
@@ -241,7 +241,7 @@ function World({
           ),
         )}
       </div>
-    </section>
+    </details>
   );
 }
 

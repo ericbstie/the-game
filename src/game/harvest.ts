@@ -1,3 +1,4 @@
+import type { Tile } from "../lobby/protocol";
 import { HAND_MINE_RATE, type HarvestTarget } from "./build";
 
 // Harvest progress: how much of the thing under the cursor is left to take, and the event that
@@ -74,4 +75,13 @@ function sameTarget(a: HarvestTarget, b: HarvestTarget): boolean {
     return b.kind === "mine" && a.tile.tx === b.tile.tx && a.tile.ty === b.tile.ty;
   }
   return b.kind === "demolish" && a.id === b.id;
+}
+
+// The mine in progress this frame, as the tile it is on and how much of it is done in [0, 1], or
+// null when nothing is being mined. What the bar over the tile is drawn from — demolishing is not
+// reported, because the bar is about the Metal a hold is earning.
+export function minePreview(harvest: Harvest): { tile: Tile; filled: number } | null {
+  if (harvest.target?.kind !== "mine") return null;
+  const filled = 1 - harvest.remainingMs / ORE_HARVEST_MS;
+  return { tile: harvest.target.tile, filled: Math.min(1, Math.max(0, filled)) };
 }

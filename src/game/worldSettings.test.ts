@@ -197,9 +197,12 @@ describe("defaults reproduce the world as it stood before the config", () => {
     expect([other.oreSeed, other.nestSeed]).toEqual([3_999_632_104, 2_178_503_905]);
   });
 
+  // **Re-captured once power patches were pinned near spawn**, which moved where the first few
+  // power blobs are grown and — since power is placed before metal — every metal blob behind them.
+  // The claim is still reproducibility: one seed, one grid.
   test("generateOre expands a seed into the same grid, tile for tile", () => {
-    expect(fingerprintOre(generateOre(ARENA, 2_265_367_787))).toEqual([8_322, "ca14c7390e2b046d"]);
-    expect(fingerprintOre(generateOre(ARENA, 3_999_632_104))).toEqual([8_150, "6f6b0b06ed83f743"]);
+    expect(fingerprintOre(generateOre(ARENA, 2_265_367_787))).toEqual([8_146, "ae6cb86959185fab"]);
+    expect(fingerprintOre(generateOre(ARENA, 3_999_632_104))).toEqual([8_664, "b4004addb552a933"]);
   });
 
   test("nestLayout expands a seed into the same fifty nests", () => {

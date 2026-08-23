@@ -75,8 +75,7 @@ describe("the words, verbatim", () => {
   });
 
   test("prompt 3 says what the ask says, long and short", () => {
-    expect(METAL_WORDS.taught).toBe("Metal. Mine with left click");
-    expect(METAL_WORDS.learned).toBe("Metal");
+    expect(METAL_WORDS).toBe("Metal. Mine with left click");
   });
 
   test("prompt 4 says what the ask says", () => {
@@ -118,6 +117,16 @@ describe("prompt 1 — highlight an ore", () => {
       }),
     );
     expect(view.ore?.tile).toEqual(near);
+  });
+
+  test("keeps the tile it first marked as the player walks the patch", () => {
+    const near: Tile = { tx: 20, ty: 4 };
+    const tutorial = freshTutorial();
+    const ore = grid([ORE_TILE, "metal"], [near, "metal"]);
+    expect(stepTutorial(tutorial, scene({ ore })).ore?.tile).toEqual(ORE_TILE);
+    expect(stepTutorial(tutorial, scene({ ore, self: centreOf(near) })).ore?.tile).toEqual(
+      ORE_TILE,
+    );
   });
 
   test("marks nothing where no metal is on screen, rather than pointing off it", () => {
@@ -166,7 +175,7 @@ describe("prompt 3 — the metal ore tooltip", () => {
   test("shows the long form while hovering metal ore", () => {
     expect(stepTutorial(freshTutorial(), overOre).cursor).toEqual({
       at: overOre.cursor as { x: number; y: number },
-      words: METAL_WORDS.taught,
+      words: METAL_WORDS,
     });
   });
 
@@ -174,12 +183,12 @@ describe("prompt 3 — the metal ore tooltip", () => {
     expect(stepTutorial(freshTutorial(), scene({ cursor: null })).cursor).toBeNull();
   });
 
-  test("drops to the short form once this player has hand-mined three Metal", () => {
+  test("says nothing at all once this player has hand-mined three Metal", () => {
     const tutorial = freshTutorial();
     for (let i = 0; i < HAND_MINES_TAUGHT - 1; i++) observe(tutorial, { did: "mine" });
-    expect(stepTutorial(tutorial, overOre).cursor?.words).toBe(METAL_WORDS.taught);
+    expect(stepTutorial(tutorial, overOre).cursor?.words).toBe(METAL_WORDS);
     observe(tutorial, { did: "mine" });
-    expect(stepTutorial(tutorial, overOre).cursor?.words).toBe(METAL_WORDS.learned);
+    expect(stepTutorial(tutorial, overOre).cursor).toBeNull();
   });
 
   test("a teammate's mining is not this client's, so nothing but its own count moves it", () => {
@@ -187,9 +196,7 @@ describe("prompt 3 — the metal ore tooltip", () => {
     // event, which only ever fires on the client whose own hand took the tile to nothing. Three
     // Metal that arrived in the shared bank from anywhere else leaves the long form standing.
     const tutorial = freshTutorial();
-    expect(stepTutorial(tutorial, { ...overOre, metal: 300 }).cursor?.words).toBe(
-      METAL_WORDS.taught,
-    );
+    expect(stepTutorial(tutorial, { ...overOre, metal: 300 }).cursor?.words).toBe(METAL_WORDS);
   });
 
   test("says nothing over bare ground", () => {
@@ -321,9 +328,7 @@ describe("seen once ever", () => {
     saveLessons(first);
 
     const second = freshTutorial(loadLessons());
-    expect(stepTutorial(second, scene({ cursor: centreOf(ORE_TILE) })).cursor?.words).toBe(
-      METAL_WORDS.learned,
-    );
+    expect(stepTutorial(second, scene({ cursor: centreOf(ORE_TILE) })).cursor).toBeNull();
   });
 
   test("only a landed lesson is written down", () => {

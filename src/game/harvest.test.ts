@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { HAND_MINE_RATE } from "./build";
-import { freshHarvest, ORE_HARVEST_MS, STRUCTURE_HARVEST_MS, stepHarvest } from "./harvest";
+import {
+  freshHarvest,
+  minePreview,
+  ORE_HARVEST_MS,
+  STRUCTURE_HARVEST_MS,
+  stepHarvest,
+} from "./harvest";
 
 const TILE_A = { tx: 4, ty: 7 };
 const TILE_B = { tx: 5, ty: 7 };
@@ -97,5 +103,41 @@ describe("harvest progress", () => {
     hold(harvest, mine(), ORE_HARVEST_MS - 100);
     expect(stepHarvest(harvest, mine(), -10_000)).toBeNull();
     expect(hold(harvest, mine(), 100)).toEqual([mine()]);
+  });
+});
+
+// The bar over the tile a hold is digging (#5). It reports the mine and nothing else — a demolish
+// is not earning Metal, so it has no bar.
+describe("the mining bar's progress", () => {
+  test("is nothing before a button goes down", () => {
+    expect(minePreview(freshHarvest())).toBeNull();
+  });
+
+  test("starts at the bottom on the first frame of a hold and fills to the payout", () => {
+    const harvest = freshHarvest();
+    stepHarvest(harvest, mine(), 0);
+    expect(minePreview(harvest)).toEqual({ tile: TILE_A, filled: 0 });
+    hold(harvest, mine(), ORE_HARVEST_MS / 2);
+    expect(minePreview(harvest)?.filled).toBeCloseTo(0.5, 6);
+  });
+
+  test("starts over on the tile a hold moves to", () => {
+    const harvest = freshHarvest();
+    hold(harvest, mine(), ORE_HARVEST_MS / 2);
+    stepHarvest(harvest, mine(TILE_B), 0);
+    expect(minePreview(harvest)).toEqual({ tile: TILE_B, filled: 0 });
+  });
+
+  test("is nothing while a building is being pulled down", () => {
+    const harvest = freshHarvest();
+    hold(harvest, demolish(), STRUCTURE_HARVEST_MS / 2);
+    expect(minePreview(harvest)).toBeNull();
+  });
+
+  test("is nothing the frame the button comes up", () => {
+    const harvest = freshHarvest();
+    hold(harvest, mine(), ORE_HARVEST_MS / 2);
+    stepHarvest(harvest, null, 16);
+    expect(minePreview(harvest)).toBeNull();
   });
 });

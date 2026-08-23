@@ -27,7 +27,7 @@ import { damageFx } from "./damageFx";
 import { BURST_MS, type BuildGhost, drawWorld, PUFF_MS } from "./draw";
 import { RANGED_CADENCE_MS } from "./enemies";
 import { freshMetalFloats, stepMetalFloats } from "./floats";
-import { freshHarvest, stepHarvest } from "./harvest";
+import { freshHarvest, minePreview, stepHarvest } from "./harvest";
 import {
   aimDir,
   isGunToggleKey,
@@ -694,6 +694,9 @@ export function GameScreen({
             // two prompts travel no further than this component: they are screen-fixed chrome, and
             // the HUD is where chrome lives.
             tutorial: promptsRef.current,
+            // The bar over the tile a hold is digging. Read after `stepHarvest` above, so it is
+            // this frame's progress rather than last frame's.
+            mining: minePreview(harvestRef.current) ?? undefined,
           });
         }
       }

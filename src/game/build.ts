@@ -116,6 +116,10 @@ const ORE_MAX_FRAC = 1 - DANGER_BAND_FRAC / 2; // patches reach past the nest ri
 const ORE_MIN_FRAC = 0.02;
 const BOOTSTRAP_PATCHES = 4; // metal patches pinned near center; the rest follow the gradient
 const BOOTSTRAP_MAX_FRAC = 0.06;
+// And how many power patches are pinned there too, so a squad that has just spawned can always
+// find somewhere to stand a generator. Provisional, like every balance number.
+const POWER_BOOTSTRAP_MIN = 1;
+const POWER_BOOTSTRAP_MAX = 3;
 
 const NEIGHBORS: ReadonlyArray<readonly [number, number]> = [
   [1, 0],
@@ -140,11 +144,12 @@ export function generateOre(
   const rng = mulberry32(seed);
   const grid: OreGrid = new Map();
   const maxTile = Math.floor(Math.min(arena.width, arena.height) / TILE) - 1;
+  const powerBootstrap = size(rng, POWER_BOOTSTRAP_MIN, POWER_BOOTSTRAP_MAX);
   for (let i = 0; i < settings.powerPatches; i++) {
     growPatch(
       grid,
       "power",
-      patchSeedTile(arena, rng, false, settings.oreEdgeBias),
+      patchSeedTile(arena, rng, i < powerBootstrap, settings.oreEdgeBias),
       size(rng, POWER_PATCH_MIN, POWER_PATCH_MAX),
       rng,
       maxTile,

@@ -266,23 +266,11 @@ export function inkPuff(at: Vec2): Lobe[] {
 // is reading, and a blot on it would be the one drawing that hides the thing it is about.
 
 // The block the mark outlines, in tiles a side, and how much of each edge each corner's arm covers.
-// Both **provisional**; that the block is odd and that an arm is a whole number of tiles are not —
-// an even block has no middle tile to be centred on, and an arm that stopped inside a tile would put
-// the mark's ends off the grid it is snapped to.
-//
-// Three because it is the smallest odd block that leaves the marked tile untouched: the outline
-// stands one whole tile clear of it on every side, so what is being aimed at is never under ink.
-//
-// One tile per arm is what settles the opening, and the opening is the whole of the mark's silhouette
-// — struck as a closed square it reads as a building's footprint, which is a thing the game already
-// draws. Each edge is three tiles, the corners take the outer two, and the middle one is the gap.
-//
-// **An arm is a whole `TILE` long because that is the scale of the coarsest thing the floor can
-// lay.** Ore is generated one tile at a time and its largest shard reaches about 7 u
-// (`src/sprite/ore-metal.ts`), so a stroke a whole tile long is one no splinter can counterfeit —
-// which is the measured lesson of the arms of 6 u that three blind reads failed to find on stipple.
-export const AIM_TILES = 3;
-export const AIM_ARM_TILES = 1;
+// The mark spans the single tile the cursor is over, so its outline runs along that tile's own
+// edges. An arm covers a third of an edge, leaving the middle third of each edge open — the opening
+// is the whole of the mark's silhouette, since struck closed it reads as a building's footprint.
+export const AIM_TILES = 1;
+export const AIM_ARM_TILES = 1 / 3;
 
 // How far the outline stands from the middle of the tile it marks, in world units, and how long each
 // arm runs. Derived, so a retune of either count above carries them.
@@ -293,8 +281,8 @@ export const AIM_ARM = AIM_ARM_TILES * TILE;
 // polyline and the joint mitres shut. Struck as two strands instead, the outer corner comes out
 // notched by half a line width — which is most of the visual weight of a mark this size.
 //
-// Every point it returns is a whole multiple of `TILE` on both axes: the block's own corners, and
-// the tile boundaries an arm's length in from them. That is the grid snap, and it is checkable.
+// The block's own corners are whole multiples of `TILE` on both axes — the marked tile's corners.
+// That is the grid snap, and it is checkable.
 export function reticle(tile: Tile): Vec2[][] {
   const middle = tileCenter(tile);
   const corners: Vec2[][] = [];

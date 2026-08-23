@@ -375,13 +375,13 @@ describe("the reticle marking the aim point", () => {
   const AT: Tile = { tx: 321, ty: 1_271 };
   const points = (tile: Tile) => reticle(tile).flat();
 
-  // The whole of "it snaps to grid spaces": every point struck is a corner of the tile grid, so the
+  // The whole of "it snaps to grid spaces": every corner struck is a corner of the tile grid, so the
   // mark is ruled by the same lines the floor is and can be nowhere but on them. This is what fails
   // if the mark is ever laid out from the pointer's own position again.
-  test("every point it strikes lands on a tile boundary, so the mark is on the grid", () => {
-    for (const p of points(AT)) {
-      expect(p.x % TILE).toBe(0);
-      expect(p.y % TILE).toBe(0);
+  test("every corner it strikes lands on a tile boundary, so the mark is on the grid", () => {
+    for (const [, bend] of reticle(AT)) {
+      expect(bend.x % TILE).toBe(0);
+      expect(bend.y % TILE).toBe(0);
     }
   });
 
@@ -438,27 +438,15 @@ describe("the reticle marking the aim point", () => {
         9,
       );
       expect(Math.min(Math.abs(p.x - middle.x), Math.abs(p.y - middle.y))).toBeGreaterThanOrEqual(
-        gap / 2,
+        gap / 2 - 1e-9,
       );
     }
   });
 
-  // The point being aimed at is what the player is reading, and the mark is a frame around it rather
-  // than a blot on it: the outline stands a whole tile clear of the tile it marks, on every side.
-  test("the tile it marks is left bare, so what is being aimed at shows through", () => {
-    expect(AIM_REACH).toBeGreaterThan(TILE / 2);
-    const clear = AIM_REACH - TILE / 2;
-    expect(clear).toBeGreaterThanOrEqual(TILE);
-  });
-
-  // Three blind reads of an earlier cut failed to find the mark on ore, and the fault was the length
-  // of its strokes rather than their colour: an arm was 6 u where the floor's own splinters run
-  // longer. Ore is generated one `TILE` at a time (`src/sprite/ore-metal.ts`), so a tile is the scale
-  // of the coarsest thing the floor can lay — and an arm shorter than one is a stroke the stipple can
-  // counterfeit, whatever it is drawn in.
-  test("an arm is a whole tile, so no splinter of ore can be mistaken for one", () => {
-    expect(AIM_ARM).toBeGreaterThanOrEqual(TILE);
-    expect(AIM_ARM % TILE).toBe(0); // or the arms' ends would come off the grid the mark snaps to
+  // The mark spans exactly the tile it marks, so its outline runs along that tile's own edges.
+  test("it outlines the single tile the cursor is over", () => {
+    expect(AIM_TILES).toBe(1);
+    expect(AIM_REACH).toBe(TILE / 2);
   });
 
   // The burst on a connect (#115) and the puff on a death (#116) are struck in the same pen a few
@@ -472,18 +460,6 @@ describe("the reticle marking the aim point", () => {
       const bearings = corner.map((p) => Math.atan2(p.y - middle.y, p.x - middle.x));
       expect(new Set(bearings.map((b) => b.toFixed(6))).size).toBe(3);
     }
-  });
-
-  // The mark frames what is aimed at rather than blotting it, and once it is snapped what it frames
-  // is a *tile* — a body stands where it stands and the grid cannot be asked to clear it. A grunt on
-  // the marked tile is inside the opening; an elite is wider than the whole block, and its outline
-  // crosses each arm 0.85 u from the arm's inner end, which is the trade the snap makes.
-  test("the opening holds a body standing on the tile it marks", () => {
-    expect(AIM_REACH).toBeGreaterThan(GRUNT_RADIUS);
-    // Where an elite's silhouette meets the block's edge, measured from the middle of that edge —
-    // inside the opening the mark leaves there, so what it crosses is the last unit of an arm.
-    const clipped = Math.sqrt(ELITE_RADIUS ** 2 - AIM_REACH ** 2);
-    expect(clipped).toBeLessThan(((AIM_TILES - 2 * AIM_ARM_TILES) * TILE) / 2 + 1);
   });
 
   test("it is the same mark wherever on the grid it is struck", () => {

@@ -41,9 +41,9 @@ export type Say = string | { icon: SpriteName };
 
 export const MINE_WORDS = "mine to get metal";
 export const AMMO_WORDS = "Click to build ammo. You will need it!";
-// One tooltip with two lengths: what a metal tile says while it is still teaching, and what it says
-// once this player has dug three Metal out of one by hand.
-export const METAL_WORDS = { taught: "Metal. Mine with left click", learned: "Metal" };
+// What a metal tile says while it is still teaching. Once this player has dug three Metal out of
+// one by hand it says nothing at all — the lesson has landed and a bare noun is not worth a tooltip.
+export const METAL_WORDS = "Metal. Mine with left click";
 export const POWER_WORDS = "Power ore. Place a generator here to extract electricity";
 export const TURRET_WORDS: readonly Say[] = [
   "Turrets require energy. Build a",
@@ -98,6 +98,10 @@ export interface Tutorial {
   // that read occupancy straight would blink out on the frame it was raised and never come back.
   // The tile has to be seen filled before its emptying can mean anything.
   turretUp: boolean;
+  // The metal tile prompt 1 marks, once one has been found. Locked rather than re-picked each
+  // frame: the mark is teaching one tile, and a highlight that hopped to whichever ore was nearest
+  // as the player walked an ore patch read as a thing moving rather than a thing pointed at.
+  oreMark: Tile | null;
   // Latched frame facts. Both are one-way: a prompt raised by a passing condition must not blink
   // out when that condition passes — the bank being spent back under a bullet's price does not
   // un-teach ammo, and a wave being cleared does not un-teach the gun.
@@ -111,6 +115,7 @@ export function freshTutorial(learned: Iterable<Lesson> = []): Tutorial {
     handMined: 0,
     turret: null,
     turretUp: false,
+    oreMark: null,
     banked: false,
     sighted: false,
   };
@@ -197,7 +202,7 @@ export function stepTutorial(tutorial: Tutorial, scene: TutorialScene): Tutorial
     else if (tutorial.turretUp) tutorial.turret = null;
   }
   return {
-    ore: tutorial.learned.has("mine") ? null : markOre(scene),
+    ore: tutorial.learned.has("mine") ? null : markOre(tutorial, scene),
     cursor: hoverWords(tutorial, scene),
     turret: tutorial.turret ? { tile: tutorial.turret, words: TURRET_WORDS } : null,
     ammo: tutorial.banked && !tutorial.learned.has("ammo") ? AMMO_WORDS : null,
@@ -205,14 +210,18 @@ export function stepTutorial(tutorial: Tutorial, scene: TutorialScene): Tutorial
   };
 }
 
-// The metal ore to mark: the one nearest the player, out of the tiles the camera can actually see.
+// The metal ore to mark: the one nearest the player, out of the tiles the camera can actually see,
+// picked once and then kept — it is only re-picked if the locked tile stops being metal ore.
 //
 // Bounded to the viewport rather than searched over the grid, for the reason every floor pass in
 // `draw.ts` is: a 2,080² tile world must cost what an 800 px one does. It also settles what would
 // otherwise be the mark's worst failure — a highlight on the nearest ore in the *arena* is a
 // highlight the player cannot see, which teaches nothing at all.
-function markOre(scene: TutorialScene): { tile: Tile; words: string } | null {
+function markOre(tutorial: Tutorial, scene: TutorialScene): { tile: Tile; words: string } | null {
   const { camera, viewport, ore, build, self } = scene;
+  if (tutorial.oreMark && oreUnder(tutorial.oreMark, ore, build) === "metal") {
+    return { tile: tutorial.oreMark, words: MINE_WORDS };
+  }
   const from = self ?? { x: camera.x + viewport.width / 2, y: camera.y + viewport.height / 2 };
   const first = tileOf({ x: camera.x, y: camera.y });
   const last = tileOf({ x: camera.x + viewport.width, y: camera.y + viewport.height });
@@ -230,6 +239,7 @@ function markOre(scene: TutorialScene): { tile: Tile; words: string } | null {
       nearest = tile;
     }
   }
+  tutorial.oreMark = nearest;
   return nearest === null ? null : { tile: nearest, words: MINE_WORDS };
 }
 
@@ -240,10 +250,8 @@ function hoverWords(tutorial: Tutorial, scene: TutorialScene): TutorialMarks["cu
   const kind = oreUnder(tileOf(scene.cursor), scene.ore, scene.build);
   if (kind === null) return null;
   if (kind === "power") return { at: scene.cursor, words: POWER_WORDS };
-  return {
-    at: scene.cursor,
-    words: tutorial.learned.has("hand") ? METAL_WORDS.learned : METAL_WORDS.taught,
-  };
+  if (tutorial.learned.has("hand")) return null;
+  return { at: scene.cursor, words: METAL_WORDS };
 }
 
 // Prompt 6, which is two prompts in a row: the key, then the button it makes useful. Both wait on

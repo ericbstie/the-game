@@ -20,7 +20,16 @@ import {
   WEST as TILE_WEST,
 } from "../sprite/tiled";
 import { BLOOD_FADE_MS, type BloodMark } from "./blood";
-import { BUILDABLES, footprintCenter, type OreGrid, oreAt, TILE, tileKey, tileOf } from "./build";
+import {
+  BUILDABLES,
+  footprintCenter,
+  type OreGrid,
+  oreAt,
+  TILE,
+  tileKey,
+  tileOf,
+  tileOrigin,
+} from "./build";
 import { type Camera, isVisible, type Viewport } from "./camera";
 import { HIT_FLASH_MS, type Mark } from "./clientWorld";
 import { edgeMarker, MARKER_STROKE, markerPoints } from "./edgeMarker";
@@ -190,6 +199,10 @@ export interface DrawOptions {
   // box's prompt and the gun's banner are screen-fixed chrome and stay in the HUD. Absent, none of
   // it is drawn, which is every frame after a player has been through it once.
   tutorial?: TutorialMarks;
+  // The hand-mine in progress and how far through it is, in [0, 1] — `minePreview`. A bar over the
+  // tile fills as the hold earns its Metal, and is gone the frame the button comes up. Absent, no
+  // bar is drawn, which is every frame nobody is mining on.
+  mining?: { tile: Tile; filled: number };
 }
 
 // One thing standing on the floor, waiting for its turn to paint. `y` is its floor line — the
@@ -647,6 +660,7 @@ export function drawWorld(
   // Over the map as well as over the world. It is the player's own hand, and a mark you can lose
   // behind a plate is one you have to hunt for on the frame you most need it.
   drawAim(ctx, options);
+  drawMineBar(ctx, options);
 
   // Last of all, and only ever on the dying player's own screen. It falls over the map too — a
   // player who is down is out of the fight, and reading the arena is part of the fight.
@@ -1957,4 +1971,25 @@ function strokeCircle(ctx: CanvasRenderingContext2D, x: number, y: number, r: nu
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.stroke();
+}
+
+// The mining bar (#5): a small black bar over the tile being hand-mined, filling once per Metal.
+// Over the aim mark rather than under it — the mark frames the tile the bar is about, and the bar
+// is the one thing on screen that says how close the hold is to paying out.
+const MINE_BAR_WIDTH = TILE;
+const MINE_BAR_HEIGHT = 4;
+const MINE_BAR_GAP = 6;
+
+function drawMineBar(ctx: CanvasRenderingContext2D, { mining }: DrawOptions): void {
+  if (!mining) return;
+  const origin = tileOrigin(mining.tile);
+  const x = origin.x + (TILE - MINE_BAR_WIDTH) / 2;
+  const y = origin.y - MINE_BAR_GAP - MINE_BAR_HEIGHT;
+  ctx.fillStyle = PAPER;
+  ctx.fillRect(x, y, MINE_BAR_WIDTH, MINE_BAR_HEIGHT);
+  ctx.fillStyle = INK;
+  ctx.fillRect(x, y, MINE_BAR_WIDTH * mining.filled, MINE_BAR_HEIGHT);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = INK;
+  ctx.strokeRect(x, y, MINE_BAR_WIDTH, MINE_BAR_HEIGHT);
 }

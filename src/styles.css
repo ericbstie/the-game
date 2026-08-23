@@ -35,6 +35,14 @@ body,
   height: 100%;
 }
 
+/* The screens live in #root, so the centring has to happen here — body's `place-items` only
+   centres #root itself, which is full height. */
+#root {
+  display: grid;
+  place-items: center;
+  overflow: auto;
+}
+
 body {
   display: grid;
   place-items: center;
@@ -65,7 +73,7 @@ body {
 .kicker,
 .field,
 .badge,
-.world h2,
+.world > summary,
 .code-label,
 .end-time-label,
 .bank-label,
@@ -291,14 +299,31 @@ button:disabled {
   padding-top: 1.15rem;
 }
 
-.world h2 {
+.world > summary {
   margin-bottom: 0.5rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+/* The disclosure arrow, drawn rather than borrowed: the UA marker is a rounded triangle and this
+   page has no rounded anything. */
+.world > summary::-webkit-details-marker {
+  display: none;
+}
+
+.world > summary::after {
+  content: "▾";
+  float: right;
+}
+
+.world[open] > summary::after {
+  content: "▴";
 }
 
 /* Scrolls inside the sheet rather than growing it past the viewport — the roster and Start have to
    stay reachable, and the sheet's torn-out-page frame only reads as one if it fits on screen. */
 .knobs {
-  max-height: 14rem;
+  max-height: 55vh;
   overflow-y: auto;
 }
 

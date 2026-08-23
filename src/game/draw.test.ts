@@ -13,7 +13,7 @@ import type { BakedSprite, SpriteSource } from "../sprite/cache";
 import lettering from "../sprite/lettering";
 import type { SpriteName } from "../sprite/registry";
 import { BLOOD_FADE_MS, type BloodMark } from "./blood";
-import { TILE, tileKey, tileOf } from "./build";
+import { TILE, tileKey, tileOf, tileOrigin } from "./build";
 import { type Camera, type Viewport, worldViewport } from "./camera";
 import {
   ClientWorld,
@@ -3013,8 +3013,8 @@ describe("#134: the tutorial's marks", () => {
   });
 
   test("writes the hover tooltip at the cursor", () => {
-    const ctx = drawn({ cursor: { at: CURSOR, words: METAL_WORDS.taught } });
-    const at = ctx.calls.find((c) => c.fn === "fillText" && c.args[0] === METAL_WORDS.taught);
+    const ctx = drawn({ cursor: { at: CURSOR, words: METAL_WORDS } });
+    const at = ctx.calls.find((c) => c.fn === "fillText" && c.args[0] === METAL_WORDS);
     expect(at).toBeDefined();
     expect(at?.args[2] as number).toBeLessThan(CURSOR.y); // clear of the pointer itself
   });
@@ -3344,5 +3344,42 @@ describe("the aim point's mark", () => {
   test("leaves the frame's alpha as it found it", () => {
     expect(marked().calls[0].alpha).toBe(1);
     expect(marked().calls.at(-1)?.alpha).toBe(1);
+  });
+});
+
+// The bar over the tile a hand is digging (#5): a small black bar filling once per Metal.
+describe("the mining bar", () => {
+  const MINE_TILE = tileOf({ x: 1_303, y: 1_252 });
+  const bars = (filled: number) => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport, mining: { tile: MINE_TILE, filled } });
+    const origin = tileOrigin(MINE_TILE);
+    return ctx.calls.filter(
+      (c) => (c.fn === "fillRect" || c.fn === "strokeRect") && c.args[0] === origin.x,
+    );
+  };
+
+  test("is not drawn at all when nothing is being mined", () => {
+    const ctx = spyCtx();
+    drawWorld(ctx, world, { camera, viewport });
+    const origin = tileOrigin(MINE_TILE);
+    expect(ctx.calls.some((c) => c.fn === "strokeRect" && c.args[0] === origin.x)).toBe(false);
+  });
+
+  test("sits over the tile being mined, above it rather than on it", () => {
+    const frame = bars(0.5).find((c) => c.fn === "strokeRect");
+    const origin = tileOrigin(MINE_TILE);
+    expect(frame?.args[0]).toBe(origin.x);
+    expect(frame?.args[1] as number).toBeLessThan(origin.y);
+    expect(frame?.args[2]).toBe(TILE);
+  });
+
+  test("fills in proportion to the progress it is handed", () => {
+    const empty = bars(0).filter((c) => c.fn === "fillRect");
+    const half = bars(0.5).filter((c) => c.fn === "fillRect");
+    const full = bars(1).filter((c) => c.fn === "fillRect");
+    expect(empty.at(-1)?.args[2]).toBe(0);
+    expect(half.at(-1)?.args[2]).toBe(TILE / 2);
+    expect(full.at(-1)?.args[2]).toBe(TILE);
   });
 });
