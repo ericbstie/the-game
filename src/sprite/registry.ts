@@ -12,6 +12,8 @@ import { PLAYER_RADIUS } from "../game/world";
 import type { BuildableKind } from "../lobby/protocol";
 import ammo from "./ammo";
 import bloodling from "./bloodling";
+import broodling from "./broodling";
+import broodlord from "./broodlord";
 import elite from "./elite";
 import generator from "./generator";
 import grass from "./grass";
@@ -125,6 +127,8 @@ export const SPRITE_BOX: Partial<Record<SpriteName, number>> = {
 export const SPRITES: Partial<Record<SpriteName, SpriteSubject>> = {
   ammo,
   bloodling,
+  broodling,
+  broodlord,
   grass,
   elite,
   generator,

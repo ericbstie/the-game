@@ -479,8 +479,20 @@ export function demoCrowd(
   const rng = mulberry32(4_242);
   const crowd = [...world.enemies];
   for (let i = crowd.length; i < count; i++) {
+    // Every kind the game has, so a frame at the cap shows the whole cast rather than the four it
+    // had when this was written (#138 added the last two).
     const elite = i % 5 === 0;
-    const kind = elite ? "elite" : i % 7 === 3 ? "bloodling" : i % 11 === 5 ? "spiderman" : "grunt";
+    const kind = elite
+      ? "elite"
+      : i % 7 === 3
+        ? "bloodling"
+        : i % 11 === 5
+          ? "spiderman"
+          : i % 13 === 6
+            ? "broodlord"
+            : i % 4 === 2
+              ? "broodling"
+              : "grunt";
     crowd.push({
       id: `crowd${i}`,
       kind,
